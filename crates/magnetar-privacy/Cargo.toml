@@ -1,0 +1,9 @@
+[package]
+name = "magnetar-privacy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+magnetar-transcript.workspace = true
+thiserror.workspace = true

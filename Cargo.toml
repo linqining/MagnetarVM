@@ -1,0 +1,48 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/magnetar-spec",
+    "crates/magnetar-guest",
+    "crates/magnetar-preprocess",
+    "crates/magnetar-executor",
+    "crates/magnetar-constraint",
+    "crates/magnetar-cpu",
+    "crates/magnetar-memory",
+    "crates/magnetar-routing",
+    "crates/magnetar-proof",
+    "crates/magnetar-pcs",
+    "crates/magnetar-transcript",
+    "crates/magnetar-runtime",
+    "crates/magnetar-recursion",
+    "crates/magnetar-privacy",
+    "crates/magnetar-testkit",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+sha2 = "0.10"
+thiserror = "2"
+
+magnetar-spec = { path = "crates/magnetar-spec" }
+magnetar-guest = { path = "crates/magnetar-guest" }
+magnetar-preprocess = { path = "crates/magnetar-preprocess" }
+magnetar-executor = { path = "crates/magnetar-executor" }
+magnetar-constraint = { path = "crates/magnetar-constraint" }
+magnetar-cpu = { path = "crates/magnetar-cpu" }
+magnetar-memory = { path = "crates/magnetar-memory" }
+magnetar-routing = { path = "crates/magnetar-routing" }
+magnetar-proof = { path = "crates/magnetar-proof" }
+magnetar-pcs = { path = "crates/magnetar-pcs" }
+magnetar-transcript = { path = "crates/magnetar-transcript" }
+magnetar-runtime = { path = "crates/magnetar-runtime" }
+magnetar-recursion = { path = "crates/magnetar-recursion" }
+magnetar-privacy = { path = "crates/magnetar-privacy" }
+magnetar-testkit = { path = "crates/magnetar-testkit" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

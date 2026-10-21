@@ -1,0 +1,21 @@
+[package]
+name = "magnetar-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+magnetar-spec.workspace = true
+magnetar-guest.workspace = true
+magnetar-preprocess.workspace = true
+magnetar-executor.workspace = true
+magnetar-constraint.workspace = true
+magnetar-cpu.workspace = true
+magnetar-memory.workspace = true
+magnetar-routing.workspace = true
+magnetar-proof.workspace = true
+magnetar-pcs.workspace = true
+magnetar-transcript.workspace = true
+magnetar-runtime.workspace = true
+magnetar-recursion.workspace = true
+magnetar-privacy.workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "magnetar-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+magnetar-spec.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+magnetar-executor.workspace = true

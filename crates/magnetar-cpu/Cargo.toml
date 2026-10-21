@@ -1,0 +1,13 @@
+[package]
+name = "magnetar-cpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+magnetar-spec.workspace = true
+magnetar-constraint.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+magnetar-executor.workspace = true

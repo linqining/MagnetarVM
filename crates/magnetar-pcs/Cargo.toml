@@ -1,0 +1,11 @@
+[package]
+name = "magnetar-pcs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+magnetar-proof.workspace = true
+magnetar-transcript.workspace = true
+magnetar-constraint.workspace = true
+thiserror.workspace = true

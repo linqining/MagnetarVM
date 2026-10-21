@@ -1,0 +1,11 @@
+[package]
+name = "magnetar-preprocess"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+magnetar-spec.workspace = true
+magnetar-routing.workspace = true
+magnetar-constraint.workspace = true
+thiserror.workspace = true
