@@ -6,4 +6,5 @@ license.workspace = true
 
 [dependencies]
 magnetar-transcript.workspace = true
+rand.workspace = true
 thiserror.workspace = true

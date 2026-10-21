@@ -5,4 +5,14 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+lambdaworks-math.workspace = true
+serde.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+proptest.workspace = true
+
+[[bench]]
+name = "field"
+harness = false

@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+bincode.workspace = true
+serde.workspace = true
 magnetar-spec.workspace = true
 magnetar-preprocess.workspace = true
 magnetar-executor.workspace = true
@@ -17,4 +19,12 @@ magnetar-pcs.workspace = true
 magnetar-transcript.workspace = true
 magnetar-recursion.workspace = true
 magnetar-privacy.workspace = true
+magnetar-guest.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "proof_path"
+harness = false

@@ -4,8 +4,29 @@
 //! It is not the optimized BinarySpartan prover; it is the executable
 //! specification that the optimized prover must match.
 
-use magnetar_constraint::Field;
+use magnetar_constraint::{Field, F2_128};
 use thiserror::Error;
+
+/// Commitment interface used by the reference Spartan reduction.
+///
+/// Implementations commit to a power-of-two evaluation vector. The reference
+/// Merkle implementation is not succinct; Ligerito can implement this trait
+/// without changing the reduction.
+pub trait Pcs {
+    type Commitment: Clone + std::fmt::Debug;
+    type Opening: Clone + std::fmt::Debug;
+
+    fn commit(&self, values: &[F2_128]) -> Result<Self::Commitment, ProofError>;
+    fn open(&self, values: &[F2_128], point: &[F2_128]) -> Result<Self::Opening, ProofError>;
+    fn verify(
+        &self,
+        commitment: &Self::Commitment,
+        point: &[F2_128],
+        value: F2_128,
+        opening: &Self::Opening,
+    ) -> Result<bool, ProofError>;
+    fn commitment_bytes(&self, commitment: &Self::Commitment) -> Vec<u8>;
+}
 
 /// A multilinear polynomial given by its evaluations on the Boolean hypercube.
 #[derive(Clone, Debug)]
@@ -82,7 +103,7 @@ pub fn eq<F: Field>(a: &[F], b: &[F]) -> F {
     result
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SumcheckProof<F: Field> {
     pub claimed_sum: F,
     pub round_polys: Vec<Vec<F>>,
@@ -144,14 +165,192 @@ where
     ))
 }
 
-/// Verify a sum-check proof against the oracle evaluation at the final point.
-pub fn verify<F, C>(
+fn fold_vector<F: Field>(values: &[F], challenge: F) -> Vec<F> {
+    values
+        .chunks_exact(2)
+        .map(|pair| pair[0] + challenge * (pair[1] - pair[0]))
+        .collect()
+}
+
+fn vector_sum<F: Field>(values: &[F]) -> F {
+    values.iter().fold(F::zero(), |sum, value| sum + *value)
+}
+
+/// Sum-check for an MLE given by its evaluation vector.
+///
+/// Each round polynomial has degree one, so the prover only folds the vector.
+pub fn prove_linear<F, C>(
+    values: Vec<F>,
+    mut challenge: C,
+) -> Result<(SumcheckProof<F>, Vec<F>, F), ProofError>
+where
+    F: Field,
+    C: FnMut(usize, &[F]) -> F,
+{
+    if values.is_empty() || !values.len().is_power_of_two() {
+        return Err(ProofError::NotPowerOfTwo(values.len()));
+    }
+    let mut values = values;
+    let claimed_sum = vector_sum(&values);
+    let rounds = values.len().trailing_zeros() as usize;
+    let mut challenges = Vec::with_capacity(rounds);
+    let mut round_polys = Vec::with_capacity(rounds);
+
+    for round in 0..rounds {
+        let even = values
+            .iter()
+            .step_by(2)
+            .fold(F::zero(), |sum, value| sum + *value);
+        let odd = values
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .fold(F::zero(), |sum, value| sum + *value);
+        let polynomial = vec![even, odd];
+        let r = challenge(round, &polynomial);
+        challenges.push(r);
+        values = fold_vector(&values, r);
+        round_polys.push(polynomial);
+    }
+
+    Ok((
+        SumcheckProof {
+            claimed_sum,
+            round_polys,
+        },
+        challenges,
+        values[0],
+    ))
+}
+
+/// Sum-check for a product of two MLEs, degree two per variable.
+pub fn prove_product2<F, C>(
+    left_values: Vec<F>,
+    right_values: Vec<F>,
+    mut challenge: C,
+) -> Result<(SumcheckProof<F>, Vec<F>, F), ProofError>
+where
+    F: Field,
+    C: FnMut(usize, &[F]) -> F,
+{
+    let len = left_values.len();
+    if len == 0 || !len.is_power_of_two() || right_values.len() != len {
+        return Err(ProofError::DimensionMismatch);
+    }
+    let mut left_values = left_values;
+    let mut right_values = right_values;
+    let claimed_sum = (0..len).fold(F::zero(), |sum, index| {
+        sum + left_values[index] * right_values[index]
+    });
+    let rounds = len.trailing_zeros() as usize;
+    let mut challenges = Vec::with_capacity(rounds);
+    let mut round_polys = Vec::with_capacity(rounds);
+
+    for round in 0..rounds {
+        let mut polynomial = Vec::with_capacity(3);
+        for t in 0..=2 {
+            let t = F::from_u64(t as u64);
+            let left_t = fold_vector(&left_values, t);
+            let right_t = fold_vector(&right_values, t);
+            polynomial.push(
+                (0..left_t.len())
+                    .fold(F::zero(), |sum, index| sum + left_t[index] * right_t[index]),
+            );
+        }
+        let r = challenge(round, &polynomial);
+        challenges.push(r);
+        left_values = fold_vector(&left_values, r);
+        right_values = fold_vector(&right_values, r);
+        round_polys.push(polynomial);
+    }
+
+    let final_eval = left_values[0] * right_values[0];
+    Ok((
+        SumcheckProof {
+            claimed_sum,
+            round_polys,
+        },
+        challenges,
+        final_eval,
+    ))
+}
+
+/// Sum-check for `eq(x) * (a(x)b(x) - c(x))`, degree three per variable.
+///
+/// All four inputs are evaluation vectors over the same Boolean hypercube.
+pub fn prove_product4<F, C>(
+    eq_values: Vec<F>,
+    a_values: Vec<F>,
+    b_values: Vec<F>,
+    c_values: Vec<F>,
+    mut challenge: C,
+) -> Result<(SumcheckProof<F>, Vec<F>, F), ProofError>
+where
+    F: Field,
+    C: FnMut(usize, &[F]) -> F,
+{
+    let len = eq_values.len();
+    if len == 0
+        || !len.is_power_of_two()
+        || a_values.len() != len
+        || b_values.len() != len
+        || c_values.len() != len
+    {
+        return Err(ProofError::DimensionMismatch);
+    }
+    let mut eq_values = eq_values;
+    let mut a_values = a_values;
+    let mut b_values = b_values;
+    let mut c_values = c_values;
+    let claimed_sum = (0..len).fold(F::zero(), |sum, index| {
+        sum + eq_values[index] * (a_values[index] * b_values[index] - c_values[index])
+    });
+    let rounds = len.trailing_zeros() as usize;
+    let mut challenges = Vec::with_capacity(rounds);
+    let mut round_polys = Vec::with_capacity(rounds);
+
+    for round in 0..rounds {
+        let mut polynomial = Vec::with_capacity(4);
+        for t in 0..=3 {
+            let t = F::from_u64(t as u64);
+            let eq_t = fold_vector(&eq_values, t);
+            let a_t = fold_vector(&a_values, t);
+            let b_t = fold_vector(&b_values, t);
+            let c_t = fold_vector(&c_values, t);
+            polynomial.push((0..eq_t.len()).fold(F::zero(), |sum, index| {
+                sum + eq_t[index] * (a_t[index] * b_t[index] - c_t[index])
+            }));
+        }
+        let r = challenge(round, &polynomial);
+        challenges.push(r);
+        eq_values = fold_vector(&eq_values, r);
+        a_values = fold_vector(&a_values, r);
+        b_values = fold_vector(&b_values, r);
+        c_values = fold_vector(&c_values, r);
+        round_polys.push(polynomial);
+    }
+
+    let final_eval = eq_values[0] * (a_values[0] * b_values[0] - c_values[0]);
+    Ok((
+        SumcheckProof {
+            claimed_sum,
+            round_polys,
+        },
+        challenges,
+        final_eval,
+    ))
+}
+
+/// Verify the round polynomials and return the challenges and final claim.
+///
+/// This is the inner half of `verify`; callers such as Spartan need the
+/// challenges before they can compute the oracle evaluation.
+pub fn verify_rounds<F, C>(
     proof: &SumcheckProof<F>,
     num_vars: usize,
     degree: usize,
-    oracle_eval: F,
     mut challenge: C,
-) -> Result<Vec<F>, ProofError>
+) -> Result<(Vec<F>, F), ProofError>
 where
     F: Field,
     C: FnMut(usize, &[F]) -> F,
@@ -187,6 +386,22 @@ where
         current = interpolate(values, r)?;
         challenges.push(r);
     }
+    Ok((challenges, current))
+}
+
+/// Verify a sum-check proof against the oracle evaluation at the final point.
+pub fn verify<F, C>(
+    proof: &SumcheckProof<F>,
+    num_vars: usize,
+    degree: usize,
+    oracle_eval: F,
+    challenge: C,
+) -> Result<Vec<F>, ProofError>
+where
+    F: Field,
+    C: FnMut(usize, &[F]) -> F,
+{
+    let (challenges, current) = verify_rounds(proof, num_vars, degree, challenge)?;
     if current != oracle_eval {
         return Err(ProofError::FinalOracle);
     }
@@ -201,7 +416,7 @@ fn interpolate<F: Field>(values: &[F], x: F) -> Result<F, ProofError> {
             if i == j {
                 continue;
             }
-            let denominator = F::from_u64(j as u64) - F::from_u64(i as u64);
+            let denominator = F::from_u64(i as u64) - F::from_u64(j as u64);
             let inverse = denominator.inv().ok_or(ProofError::Interpolation)?;
             term = term * (x - F::from_u64(j as u64)) * inverse;
         }
@@ -248,7 +463,14 @@ pub enum ProofError {
     Interpolation,
     #[error("final oracle evaluation mismatch")]
     FinalOracle,
+    #[error("PCS error: {0}")]
+    Pcs(String),
+    #[error("vector lengths do not match")]
+    DimensionMismatch,
 }
+
+pub mod spartan;
+pub use spartan::{prove_spartan, verify_spartan, SpartanError, SpartanProof};
 
 #[cfg(test)]
 mod tests {
@@ -283,6 +505,29 @@ mod tests {
     }
 
     #[test]
+    fn linear_sumcheck_matches_mle() {
+        let evaluations = vec![
+            F61::from(1),
+            F61::from(2),
+            F61::from(3),
+            F61::from(4),
+            F61::from(5),
+            F61::from(6),
+            F61::from(7),
+            F61::from(8),
+        ];
+        let (proof, challenges, final_eval) =
+            prove_linear(evaluations.clone(), |round, _| F61::from(round as u64 + 2)).unwrap();
+        let mle = Mle::new(evaluations).unwrap();
+        assert_eq!(final_eval, mle.eval(&challenges).unwrap());
+        let verified = verify(&proof, challenges.len(), 1, final_eval, |round, _| {
+            F61::from(round as u64 + 2)
+        })
+        .unwrap();
+        assert_eq!(challenges, verified);
+    }
+
+    #[test]
     fn sumcheck_rejects_a_tampered_round() {
         let poly = |point: &[F61]| point[0] * point[1] + F61::from(1);
         let (mut proof, _, final_eval) =
@@ -292,5 +537,91 @@ mod tests {
             round as u64 + 3
         ),)
         .is_err());
+    }
+
+    #[test]
+    fn mle_from_fn_matches_the_hypercube_layout() {
+        let mle = Mle::from_fn(2, |point: &[F61]| {
+            F61::from(point[1].value() * 2 + point[0].value())
+        })
+        .unwrap();
+        assert_eq!(
+            mle.evaluations(),
+            &[F61::from(0), F61::from(1), F61::from(2), F61::from(3)]
+        );
+        assert_eq!(mle.len(), 4);
+        assert!(!mle.is_empty());
+        assert_eq!(mle.num_vars(), 2);
+    }
+
+    #[test]
+    fn malformed_inputs_are_rejected() {
+        assert!(matches!(
+            Mle::new(Vec::<F61>::new()),
+            Err(ProofError::NotPowerOfTwo(0))
+        ));
+        assert!(matches!(
+            Mle::new(vec![F61::from(1); 3]),
+            Err(ProofError::NotPowerOfTwo(3))
+        ));
+        let mle = Mle::new(vec![F61::from(1), F61::from(2)]).unwrap();
+        assert!(matches!(
+            mle.eval(&[]),
+            Err(ProofError::PointLength {
+                expected: 1,
+                actual: 0
+            })
+        ));
+        assert!(matches!(
+            hypercube_size(usize::BITS as usize),
+            Err(ProofError::TooManyVariables(_))
+        ));
+
+        let empty = SumcheckProof {
+            claimed_sum: F61::from(0),
+            round_polys: Vec::new(),
+        };
+        assert!(matches!(
+            verify(&empty, 1, 1, F61::from(0), |_, _| F61::from(0)),
+            Err(ProofError::RoundCount {
+                expected: 1,
+                actual: 0
+            })
+        ));
+        let one_value = SumcheckProof {
+            claimed_sum: F61::from(0),
+            round_polys: vec![vec![F61::from(0)]],
+        };
+        assert!(matches!(
+            verify(&one_value, 1, 1, F61::from(0), |_, _| F61::from(0)),
+            Err(ProofError::RoundDegree { .. })
+        ));
+    }
+
+    #[test]
+    fn eq_is_the_hypercube_selector() {
+        let vertex = [F61::from(0), F61::from(1)];
+        assert_eq!(eq(&vertex, &vertex), F61::from(1));
+        assert_eq!(eq(&vertex, &[F61::from(1), F61::from(1)]), F61::from(0));
+        assert_eq!(eq::<F61>(&[], &[]), F61::from(1));
+    }
+
+    #[test]
+    fn verify_rounds_and_product_proofs_are_consistent() {
+        let poly = |point: &[F61]| point[0] * point[1] + F61::from(1);
+        let challenge = |round: usize, _: &[F61]| F61::from(round as u64 + 2);
+        let (proof, challenges, final_eval) = prove(poly, 2, 2, challenge).unwrap();
+        let (rx, value) = verify_rounds(&proof, 2, 2, challenge).unwrap();
+        assert_eq!(rx, challenges);
+        assert_eq!(value, final_eval);
+
+        let left = vec![F61::from(1), F61::from(2), F61::from(3), F61::from(4)];
+        let right = vec![F61::from(5), F61::from(6), F61::from(7), F61::from(8)];
+        let (product_proof, product_rx, product_eval) =
+            prove_product2(left.clone(), right.clone(), challenge).unwrap();
+        let expected = Mle::new(left).unwrap().eval(&product_rx).unwrap()
+            * Mle::new(right).unwrap().eval(&product_rx).unwrap();
+        assert_eq!(product_eval, expected);
+        verify(&product_proof, 2, 2, product_eval, challenge).unwrap();
     }
 }

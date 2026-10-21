@@ -6,4 +6,8 @@ license.workspace = true
 
 [dependencies]
 magnetar-spec.workspace = true
+magnetar-constraint.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

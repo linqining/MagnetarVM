@@ -8,7 +8,8 @@ use magnetar_routing::{
     RoutingError, RoutingTables, ShiftKind, ShiftRoute, StoreRoute, StoreWidth,
 };
 use magnetar_spec::{
-    decode, Addr, DecodeError, Instruction, MachineConfig, Op, ProgramImage, Word,
+    decode, decode_compressed, Addr, CompressedError, DecodeError, Instruction, MachineConfig, Op,
+    ProgramImage, Word,
 };
 use thiserror::Error;
 
@@ -119,6 +120,12 @@ pub enum PreprocessError {
         #[source]
         source: DecodeError,
     },
+    #[error("compressed decode failed at pc 0x{pc:x}: {source}")]
+    Compressed {
+        pc: Word,
+        #[source]
+        source: CompressedError,
+    },
     #[error(transparent)]
     Layout(#[from] LayoutError),
     #[error(transparent)]
@@ -132,24 +139,57 @@ pub fn preprocess(
     if image.rom.is_empty() {
         return Err(PreprocessError::EmptyRom);
     }
-    if config.rom_index(image.entry).is_none() {
+    let entry_in_rom = image
+        .entry
+        .checked_sub(config.rom_base)
+        .filter(|offset| offset.is_multiple_of(2))
+        .and_then(|offset| usize::try_from(offset / 4).ok())
+        .is_some_and(|index| index < image.rom.len());
+    if !entry_in_rom {
         return Err(PreprocessError::EntryOutOfBounds(image.entry));
     }
 
     let rom_base = config.rom_base;
     let mut bytecode = Vec::with_capacity(image.rom.len());
     let mut routing = RoutingTables::default();
-
-    for (index, word) in image.rom.iter().copied().enumerate() {
-        let pc = config.rom_base + (index as u64) * 4;
-        let instruction = decode(word).map_err(|source| PreprocessError::Decode { pc, source })?;
+    let halfwords = image.rom.len() * 2;
+    let mut halfword = 0usize;
+    while halfword < halfwords {
+        let word_index = halfword / 2;
+        let raw = if halfword.is_multiple_of(2) {
+            image.rom[word_index] & 0xffff
+        } else {
+            image.rom[word_index] >> 16
+        };
+        let pc = rom_base + (halfword as u64) * 2;
+        let (instruction_word, instruction, instruction_len) = if raw & 0x3 == 0x3 {
+            let word = if halfword.is_multiple_of(2) {
+                image.rom[word_index]
+            } else {
+                let low = image.rom[word_index] >> 16;
+                let next = image.rom.get(word_index + 1).copied().unwrap_or(0);
+                low | ((next & 0xffff) << 16)
+            };
+            let instruction =
+                decode(word).map_err(|source| PreprocessError::Decode { pc, source })?;
+            (word, instruction, 4)
+        } else {
+            let instruction = decode_compressed(raw as u16)
+                .map_err(|source| PreprocessError::Compressed { pc, source })?;
+            (raw, instruction, 2)
+        };
         let selectors = selectors_for(instruction, &mut routing)?;
+        let halt = selectors.is_halt;
         bytecode.push(BytecodeRow {
             micro_pc: pc,
-            instruction_word: word,
+            instruction_word,
             instruction,
             selectors,
         });
+        halfword += instruction_len / 2;
+        if halt {
+            break;
+        }
     }
 
     Ok(PreprocessedProgram {
@@ -262,5 +302,100 @@ mod tests {
         }
         assert_eq!(layout.direct_segments().count(), 9);
         assert_eq!(layout.virtual_segments().count(), 3);
+    }
+
+    #[test]
+    fn rom_lookup_and_bytecode_rows_respect_addresses() {
+        let program = preprocess(&image(), MachineConfig::default()).unwrap();
+        assert_eq!(program.rom.instruction(0x1000), Some(image().rom[0]));
+        assert_eq!(program.rom.instruction(0x1008), Some(image().rom[2]));
+        assert_eq!(program.rom.instruction(0x1002), None);
+        assert_eq!(program.rom.instruction(0x0ffc), None);
+        assert_eq!(program.rom.instruction(0x100c), None);
+        assert_eq!(program.rom.len(), 3);
+        assert!(!program.rom.is_empty());
+
+        assert_eq!(
+            program.bytecode_row(0x1004).unwrap().instruction.op,
+            Op::Slli
+        );
+        assert!(program.bytecode_row(0x1002).is_none());
+    }
+
+    #[test]
+    fn empty_trace_still_produces_an_aligned_layout() {
+        let program = preprocess(&image(), MachineConfig::default()).unwrap();
+        let layout = program.layout(0).unwrap();
+        assert_eq!(layout.segments.len(), 12);
+        for segment in &layout.segments {
+            assert_eq!(segment.len, 1);
+            assert_eq!(segment.offset % segment.len, 0);
+        }
+    }
+
+    #[test]
+    fn preprocess_rejects_empty_rom_bad_entry_and_undecodable_words() {
+        let empty = ProgramImage::new(0x1000, Vec::new());
+        assert!(matches!(
+            preprocess(&empty, MachineConfig::default()),
+            Err(PreprocessError::EmptyRom)
+        ));
+
+        let outside = ProgramImage::new(0x8000_0000, vec![Instruction::new(Op::Ecall).encode()]);
+        assert!(matches!(
+            preprocess(&outside, MachineConfig::default()),
+            Err(PreprocessError::EntryOutOfBounds(0x8000_0000))
+        ));
+
+        let invalid = ProgramImage::new(0x1000, vec![0xffff_ffff]);
+        assert!(matches!(
+            preprocess(&invalid, MachineConfig::default()),
+            Err(PreprocessError::Decode { pc: 0x1000, .. })
+        ));
+    }
+
+    #[test]
+    fn shift_and_store_selectors_register_every_route() {
+        let instruction = |op, rd, rs1, rs2, imm, shamt| Instruction {
+            op,
+            rd,
+            rs1,
+            rs2,
+            imm,
+            shamt,
+        };
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                instruction(Op::Slli, 1, 0, 0, 0, 3).encode(),
+                instruction(Op::Srli, 2, 1, 0, 0, 5).encode(),
+                instruction(Op::Srai, 3, 1, 0, 0, 7).encode(),
+                instruction(Op::Sb, 0, 4, 5, 0, 0).encode(),
+                instruction(Op::Sh, 0, 4, 5, 0, 0).encode(),
+                instruction(Op::Sw, 0, 4, 5, 0, 0).encode(),
+                instruction(Op::Sd, 0, 4, 5, 0, 0).encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let preprocessed = preprocess(&program, MachineConfig::default()).unwrap();
+        assert_eq!(preprocessed.routing.shifts.len(), 3);
+        assert_eq!(preprocessed.routing.stores.len(), 8 + 4 + 2 + 1);
+        assert_eq!(
+            preprocessed.bytecode[0].selectors.shift,
+            Some(ShiftRoute::new(ShiftKind::LogicalLeft, 3))
+        );
+        assert_eq!(
+            preprocessed.bytecode[2].selectors.shift,
+            Some(ShiftRoute::new(ShiftKind::ArithmeticRight, 7))
+        );
+        assert_eq!(
+            preprocessed.bytecode[3].selectors.store_width,
+            Some(StoreWidth::Byte)
+        );
+        assert_eq!(
+            preprocessed.bytecode[6].selectors.store_width,
+            Some(StoreWidth::Double)
+        );
+        assert!(preprocessed.bytecode[7].selectors.is_halt);
     }
 }

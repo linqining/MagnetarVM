@@ -1,7 +1,7 @@
 use crate::{Addr, Instruction, MachineConfig, MachineState, RegIdx, Word};
 
 /// A single memory access performed by one instruction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MemoryAccess {
     pub addr: Addr,
     pub value: Word,
@@ -9,10 +9,16 @@ pub struct MemoryAccess {
     pub is_write: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MemoryEvent {
     pub cycle: u64,
     pub access: MemoryAccess,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SyscallTrace {
+    pub number: u64,
+    pub args: [u64; 3],
 }
 
 /// One executed instruction, including the operands the CPU relation needs.
@@ -20,12 +26,13 @@ pub struct MemoryEvent {
 /// This is the reference trace shape. A production prover will columnarize it
 /// into the witness layout, but keeping a row-oriented reference trace makes
 /// the semantics independently testable.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TraceRow {
     pub cycle: u64,
     pub pc: Word,
     pub next_pc: Word,
     pub instruction_word: u32,
+    pub instruction_len: u8,
     pub instruction: Instruction,
     pub rs1: Option<RegIdx>,
     pub rs2: Option<RegIdx>,
@@ -34,11 +41,17 @@ pub struct TraceRow {
     pub rs2_val: Word,
     pub rd_val: Word,
     pub mem: Option<MemoryAccess>,
+    /// Additional memory writes performed by a syscall in this row.
+    pub extra_mem: Vec<MemoryAccess>,
+    pub reservation_before: Option<Addr>,
+    pub reservation_after: Option<Addr>,
+    pub syscall: Option<SyscallTrace>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Trace {
     pub config: MachineConfig,
+    pub rom: Vec<u32>,
     pub initial_state: MachineState,
     pub final_state: MachineState,
     pub rows: Vec<TraceRow>,
@@ -46,6 +59,10 @@ pub struct Trace {
     pub initial_ram: Vec<u8>,
     pub halted: bool,
     pub exit_code: Option<Word>,
+    /// Bytes emitted by write syscalls during execution.
+    pub io_output: Vec<u8>,
+    /// Bytes consumed by read syscalls during execution.
+    pub io_input: Vec<u8>,
 }
 
 impl Trace {

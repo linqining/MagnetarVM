@@ -10,21 +10,33 @@
 
 已实现：
 
-- RV64I base ISA 的解码/编码、解释执行、trace 记录；
+- RV64I base ISA（含 `*W` 字操作）、RV64M 乘除法、RV64A AMO/LR/SC、RV64C 整数压缩指令（解码与执行）以及 RV64F/D 核心解码器、解释执行、trace 记录，基于 `goblin` 的 RV64 ELF loader；参考 executor 支持 `exit`/`hint`/`write` 与按字节范围 `read`（含短读）的 `ecall` 处理（输入/输出缓冲），guest ABI 另有独立 dispatcher，并提供从 ELF 加载到执行/预处理的 `run_guest_elf` 编排入口；
 - 程序预处理：ROM、bytecode row、selector、witness layout；
-- 约束 IR（`F61` 参考域）、CPU 行检查、寄存器/RAM 一致性检查；
-- shift / sub-word store routing；
-- 参考 sum-check、SHA-256 transcript、Merkle tree、naive PCS；
-- 15 个 crate 的依赖边界和端到端集成测试。
+- 约束 IR 使用 `GF(2^128)`（lambdaworks tower field），并保留 `F61` 作为素数域参考；
+- CPU 行检查，以及 `F2_128` 上的位级 ripple-carry 加法 R1CS；ALU 采用 20 个 selector（覆盖全部 RV64I 寄存器/立即数 ALU 操作），并实现 PC+4、Auipc、Jal、Jalr 和全部 6 种条件分支；
+- 全部 RV64M 指令的 R1CS relation：`mul`（width 最高 64）、`mulhu`/`mulh`/`mulhsu`（完整 128-bit 乘积加符号修正）、`divu`/`remu`/`div`/`rem`（无符号长除法加绝对值/符号处理，最高 width 64），均接入逐行 trace proof；
+- 受支持的 RV64A AMO 子集（`.W`/`.D` 的 `swap`/`add`/`xor`/`and`/`or`/有符号与无符号 `min`/`max`）R1CS relation，以及 LR 读取和 SC 成功/失败行 relation：包含 64-bit 地址生成、access log 中先读旧值再写新值的顺序、逐行 reservation 状态记录，以及逐行与 unified 两种 trace proof；
+- 行绑定 CPU relation：把 opcode、操作数、结果和两个 PC 固定到 statement 常量；组合 `TraceProof` 同时验证交错的寄存器/内存访问日志与逐行 CPU proof（ALU、AMO、load/store、branch、jump、Auipc）；
+- `UnifiedTraceProof`：把所有行关系合并进单一约束系统并只生成一个 proof，提供 statement-bound verifier；另有 standalone verifier，只依赖 statement 与 proof 的 rows 重建经认证的 trace；`ChunkedTraceProof` 也支持同样的 standalone 验证；
+- 规范化 SHA-256 trace commitment（`trace_digest`，覆盖每行字段、ROM 镜像、machine config、syscall 输出与已消费的 read 输入），绑定进两种 trace proof 与 public `Statement`；statement-bound verification 会用 proof ROM 校验 program hash、拒绝输出/输入篡改，并在 syscall 发生点校验 write 输出与 RAM 镜像一致；
+- `ChunkedTraceProof`：按行区间生成合并 CPU proof，并通过 recursion crate 的寄存器/PC 状态链连接，共享同一访问日志与 trace commitment；
+- access log 支持 lane 级 sub-word load/store（`lb/lbu/lh/lhu/lw/lwu/sb/sh/sw`，限定在同一 8 字节 word 内，含符号扩展与 read-modify-write 检查）；
+- 寄存器/RAM 重放、Twist one-hot 地址/increment witness、shift/store routing witness，以及带权限与 superpage 检查的参考 Sv39 page-table walker；
+- 参考 sum-check、SHA-256 与 SHA3-256 transcript、带批量向量 opening 的 Merkle tree、naive PCS，以及基于 `arkworks` 的简洁 BN254 KZG 后端（支持单点与批量 opening）；Spartan proof 与逐行/unified/chunked trace proof 的规范化 bincode 编解码；
+- 基于现有约束 IR 与 Merkle PCS 的参考 Spartan 归约（含 Fiat–Shamir）；
+- 随机 blinding 的 hiding hash commitment，以及可验证的 hash-chain/状态连续性递归聚合器；
+- 15 个 crate 的依赖边界、端到端集成测试，以及域运算/证明路径的 criterion benchmark。
 
 显式未实现：
 
 - Dual SIMD R1CS、Virtual Spartan、BinarySpartan；
 - BinaryTwist、BinaryShout、BinaryRouter 的 sum-check 论证；
 - MosaicPCS、Ligerito、ring switching；
-- recursion（只有 chunk 规划和 backend trait）；
-- ZK hiding（只有 `NoPrivacy` 占位）；
-- RV64M/A/C/F/D、OS/MMU、真正可用的 syscall runtime；
+- recursion（只有 chunk 规划、hash-chain 与状态连续性参考聚合器、backend trait）；
+- ZK sum-check 与 private IO（只有 `NoPrivacy` 和随机 hiding hash commitment）；
+- R1CS 内部的 RV64A reservation 语义（reservation 链写入 trace，并在 proof 验证时检查）、RV64F/D 执行与 proof（当前实现核心 FP 解码子集）、Sv39 walker 的 executor/proof 集成，以及 `exit`/`hint`/`write`/`read` 之外的更完整 syscall runtime；
+- 非对齐内存访问（executor 会拒绝）；proof 路径覆盖所有保持在同一 8 字节 word 内的对齐宽度；
+- proof 内部的 PC 链接与 reservation 链约束（两者当前都在证明前对经认证的 trace 做检查）；
 - 性能优化与第三方安全审计。
 
 > 重要：`UnimplementedBackend` 会明确返回错误，不会伪造一个“proof”。参考实现只用于验证协议接线和语义。
@@ -33,21 +45,21 @@
 
 | # | 模块 | Crate | 当前状态 |
 |---|---|---|---|
-| 1 | 协议 / ISA 规格 | `magnetar-spec` | RV64I base 已实现；M/A/C/F/D 未实现 |
-| 2 | Guest 工具链 / ABI | `magnetar-guest` | ABI 与 syscall 解码已实现；编译器/runtime 未接入 |
+| 1 | 协议 / ISA 规格 | `magnetar-spec` | RV64I base（含 `*W` 操作）+ RV64M 解码/编码与算术语义 + RV64A AMO/LR/SC 解码/编码 + RV64C 整数解压 + RV64F/D 核心解码器；FP 执行/proof 未实现 |
+| 2 | Guest 工具链 / ABI | `magnetar-guest` | ABI、syscall 解码 + 参考 dispatcher、RV64 ELF loader 与 `run_guest_elf` 执行路径已实现；通用编译器/工具链支持未实现 |
 | 3 | 程序预处理 / ROM | `magnetar-preprocess` | 已实现；当前 1 条指令 = 1 个 micro-op |
-| 4 | 执行器 / Trace | `magnetar-executor` | RV64I base 解释器 + trace 已实现 |
-| 5 | 约束 IR / Witness 布局 | `magnetar-constraint` | 参考 R1CS IR、`F61`、aligned segments 已实现 |
-| 6 | CPU 约束 | `magnetar-cpu` | 行级语义检查已实现；uniform SIMD R1CS 未实现 |
-| 7 | 内存一致性 | `magnetar-memory` | replay 检查与 Twist log 已实现；Twist/Shout 论证未实现 |
-| 8 | 路由 / 位操作 | `magnetar-routing` | shift/store route 已实现；BinaryRouter sum-check 未实现 |
-| 9 | 证明引擎 | `magnetar-proof` | MLE + 参考 sum-check 已实现；Spartan/BinarySpartan 未实现 |
-| 10 | 承诺 / PCS | `magnetar-pcs` | Merkle tree + naive PCS 已实现；Ligerito 未实现 |
-| 11 | Transcript / 证明格式 | `magnetar-transcript` | SHA-256 Fiat–Shamir transcript 已实现 |
-| 12 | Prover / Verifier 运行时 | `magnetar-runtime` | reference pipeline + trait 已实现；proof backend 未实现 |
-| 13 | 递归 / 聚合 | `magnetar-recursion` | chunk plan + backend trait 已实现；backend 未实现 |
-| 14 | 隐私层 | `magnetar-privacy` | `NoPrivacy` + trait 已实现；ZK 未实现 |
-| 15 | 安全 / 性能工程 | `magnetar-testkit` | 集成测试与 fixtures 已实现；benchmark 未实现 |
+| 4 | 执行器 / Trace | `magnetar-executor` | RV64I（含 `*W`）+ RV64M + RV64A（AMO 与 LR/SC 预留）+ RV64C 整数压缩指令解释器 + trace 已实现，支持 `exit`/`hint`/`write` 与按字节范围 `read`（含短读）的 `ecall`，带输入/输出缓冲与 consumed-input trace 绑定 |
+| 5 | 约束 IR / Witness 布局 | `magnetar-constraint` | `GF(2^128)` 上的 R1CS IR、`F61` 参考域、aligned segments 已实现 |
+| 6 | CPU 约束 | `magnetar-cpu` | 行级检查（含 RV64M、A 与 `*W` 语义）、64-bit 20-selector ALU（Add/Sub/AddI/Xor/Lui/And/Or/Slt/Sltu/Slti/Sltiu/Sll/Srl/Sra/Slli/Srli/Srai/Xori/Ori/Andi）、RV64 `*W` relation、PC+4 step、Auipc、Jal、Jalr、全部 6 种条件分支、单步 load/store relation、所有 ALU/控制 relation 的行绑定版本、全部 8 个 RV64M 指令在完整 width 64 下的 R1CS relation、全部 AMO 指令（`swap`/`add`/`xor`/`and`/`or`/`min`/`max`，有符号与无符号，W/D）的 A R1CS，以及 LR 读取 / SC 成功失败行 relation；reservation 状态由 trace 绑定并在 proof 验证时检查 |
+| 7 | 内存一致性 | `magnetar-memory` | replay、Twist log、one-hot 地址/increment witness、load/store、memory/register chain、trace 顺序交错访问 proof，以及参考 Sv39 page-table walker |
+| 8 | 路由 / 位操作 | `magnetar-routing` | shift/store route 与 witness 已实现；BinaryRouter sum-check 未实现 |
+| 9 | 证明引擎 | `magnetar-proof` | MLE + sum-check + 参考 Spartan 归约已实现；BinarySpartan 未实现 |
+| 10 | 承诺 / PCS | `magnetar-pcs` | Merkle tree、批量 Merkle vector commitment、naive PCS、`Pcs` trait，以及基于 `arkworks` 的简洁 BN254 KZG 后端（支持批量 opening）；binary-field 路径的 Ligerito 未实现 |
+| 11 | Transcript / 证明格式 | `magnetar-transcript` | SHA-256 与 SHA3-256 Fiat–Shamir transcript 已实现；Spartan 与 unified/chunked trace proof 的规范化 bincode 编解码位于 `magnetar-pcs` / `magnetar-runtime` |
+| 12 | Prover / Verifier 运行时 | `magnetar-runtime` | reference pipeline + Spartan backend + load/store、AMO read-modify-write、LR/SC reservation 检查、syscall read 回写、memory/register chain、trace 顺序交错访问 proof；组合 `TraceProof` 将 CPU 行（ALU/AMO/LR/SC/load/store/branch/jump/Auipc）绑定到访问日志，并支持 lane 级 sub-word load/store；`UnifiedTraceProof` 合并所有行，`ChunkedTraceProof` 按区间生成并用状态链连接，两者都携带 ROM，并都有绑定规范化 trace digest 与 program hash 的 standalone verifier；隐藏/简洁 trace commitment 仍待做 |
+| 13 | 递归 / 聚合 | `magnetar-recursion` | chunk plan + hash-chain 与状态连续性参考聚合器已实现，并接入 runtime `ChunkedTraceProof`；zk verifier-in-the-VM backend 未实现 |
+| 14 | 隐私层 | `magnetar-privacy` | `NoPrivacy` + 随机 hiding hash commitment + trait 已实现；ZK sum-check 未实现 |
+| 15 | 安全 / 性能工程 | `magnetar-testkit` | 集成测试、fixtures 与 criterion benchmark 已实现；安全审计未做 |
 
 ### Magnetar 论文组件映射
 
@@ -77,7 +89,7 @@ constraint ──► preprocess
 transcript ──► pcs
 transcript ──► privacy
 
-preprocess, executor, cpu, memory, routing, proof, pcs, transcript,
+preprocess, executor, guest, cpu, memory, routing, proof, pcs, transcript,
 recursion, privacy ──► runtime
 all crates ──► testkit
 ```
@@ -93,9 +105,87 @@ cargo test --workspace --offline
 # 只跑端到端测试
 cargo test -p magnetar-testkit --test e2e --offline
 
+# Criterion benchmark（域运算与证明路径）
+cargo bench -p magnetar-constraint --bench field --offline
+cargo bench -p magnetar-runtime --bench proof_path --offline
+
+# Lint 与格式检查
+cargo clippy --workspace --all-targets --offline -- -D warnings
+cargo fmt --all -- --check
+
 # 正常联网环境
 cargo test --workspace
 ```
+
+当前测试套件包含 **15 个 crate 的 247 个测试，全部通过**；
+`clippy -D warnings` 与 `rustfmt --check` 均无问题。
+
+## 成熟依赖
+
+- `lambdaworks-math` — `GF(2^128)` binary tower field；
+- `goblin` — RV64 ELF 解析与 PT_LOAD 加载；
+- `sha2` / `sha3` — transcript 与 Merkle commitment 的标准哈希；
+- `proptest` — 域公理与 routing witness 的属性测试；
+- `rand` — hiding commitment 的随机 blinding；
+- `ark-bn254` / `ark-ec` / `ark-ff` — BN254 KZG 多项式承诺后端；
+- `criterion` — 域运算与证明路径的微基准；
+- `serde` / `bincode` — Spartan proof 的规范化编码；
+- `cargo-nextest` — 更快的测试执行；
+- Xcode `llvm-cov` / `llvm-profdata` — 本机可用的覆盖率工具。
+
+## 证明路径与性能说明
+
+`magnetar-runtime::ConstraintProofBackend` 现在能跑真实的 Spartan 归约：
+outer sum-check、inner sum-check、Fiat–Shamir 和 Merkle PCS opening。
+binary-field 的 PCS 仍会暴露完整 witness；另有基于 `arkworks` 的 BN254 KZG
+后端用于验证简洁素数域 PCS。`F2_128` 乘法保留 tower 基，但在 level 4 使用
+GF(2^16) log/exp 表（保留 GF(2^8) fallback），并用 lambdaworks 属性测试对照。
+除特别说明外，下面的计时均为 debug 模式测试结果。Spartan 已改用向量 folding
+的 sum-check prover（outer 用 `prove_product4`、inner 用 `prove_product2`、
+纯 MLE claim 用 `prove_linear`）：4-bit adder proof 约 0.1 秒，64-bit ALU proof
+约 9.3 秒，带 PC+4 的 64-bit step proof 约 9.2 秒，64-bit Jal proof 约 1.7 秒，
+64-bit Beq proof 约 2.0 秒，覆盖 Blt 的 64-bit 全分支 proof 约 3.4 秒，
+Auipc+Jalr 组合 proof 约 2.4 秒，
+16-cell committed memory 上的单步 load/store proof 约 0.9 秒；三步 memory chain
+约 3.3 秒，三步 register chain 约 4.8 秒，trace 级 register 一致性 proof 约 3.7 秒；
+五行程序的 register/memory 交错 trace-access proof 约 12.6 秒。组合 `TraceProof`
+在 16-bit 宽度下覆盖含 branch/Jal/Auipc/Jalr 的 6 行程序约需 36 秒；含 sub-word
+load/store 的 8 行程序约需 43 秒（这两个是 debug 模式集成测试的数字）。release
+模式下 criterion 测得：三行 trace-access proof 105 ms、16-bit ALU 单行 proof
+34 ms / verify 48 ms、width-8 `mul` 单行 proof 23.5 ms / verify 20.8 ms、
+width-8 `divu` 单行 proof 34.2 ms / verify 36.9 ms、三行 width-8 `TraceProof` 153 ms、合并后的
+`UnifiedTraceProof` 137 ms（三行规模下合并版还略快）。三行 width-8 unified proof
+序列化后为 **182,892 bytes（约 179 KiB）**，主要来自 naive PCS 的整表 opening；
+编码/解码约 14/16 µs。Criterion 在本机测得 `F2_128` 乘法约 170 ns、求逆约 22.9 µs（Itoh–Tsujii 平方链；求逆是域层主要
+瓶颈）。当前扩展瓶颈是 non-succinct 的 binary-field PCS、缺少 hiding/succinct trace
+commitment，以及浮点操作尚未进入 CPU 约束。
+
+## 覆盖率
+
+`scripts/coverage.sh` 会构建插桩测试、运行每个测试二进制，并把 per-binary
+`llvm-cov` 报告写到 `target/coverage/reports/`。
+
+最新审计的代表性行覆盖率（每个数字是该 crate 在 per-binary 报告中观察到的最高
+crate 级比例，因此是参考值，不是单一合并 profile）：
+
+| 区域 | 行覆盖率 |
+|---|---|
+| Spec 指令解码/编码、RV64C | 91% |
+| Executor | 96% |
+| Preprocess | 96% |
+| Constraint IR / field / layout | 93% |
+| CPU 约束 | 93% |
+| Memory / Sv39 | 93% |
+| Routing | 96% |
+| 证明引擎（含 Spartan） | 92% |
+| PCS（含 BN254 KZG） | 98% |
+| Transcript | 93% |
+| Runtime | 93% |
+| Recursion | 98% |
+| Privacy | 100% |
+| Guest ELF loader | 93% |
+| 端到端测试 | 100% |
+| **所有 crate 的加权参考值** | **93%** |
 
 ## P0 垂直切片做了什么
 
@@ -124,7 +214,7 @@ exit(0)
 
 ## 下一步
 
-1. **P1**：把 `magnetar-cpu` 的行级检查替换成 uniform SIMD R1CS（`s1`/`s2`），补 `Virtual Spartan` 的 claim 路由。
-2. **P2**：把 `magnetar-memory` 的 replay 检查替换成 BinaryTwist/BinaryShout 的 sum-check 归约；补 BinaryRouter。
-3. **P3**：实现 MosaicPCS + Ligerito，跑通一条真实的透明 SNARK 证明链。
-4. **P4**：递归聚合、ZK 层、链上 verifier、benchmark 与安全审计。
+1. **P1（已完成）**：把交错 access log 绑定到行级 CPU relation，并合并为单一 `TraceProof`；覆盖 branch、jump、Auipc。
+2. **P2**：用 succinct 的 Ligerito-style hash PCS 替换 `NaiveMerklePcs`；支持跨 8 字节 word 边界的访问。字段求逆已采用 tower 加法链与 GF(2^8)/GF(2^16) 查表。
+3. **P3**：构建完整执行 trace proof，对 trace 本身做承诺并在 proof 内逐行检查 PC 链接；合并版 `UnifiedTraceProof` 已消除逐行组合并绑定规范化 digest，但隐藏/简洁 trace commitment 与 proof 内链接仍待做。
+4. **P4**：递归 zk 验证、ZK hiding 层、链上 verifier 与安全审计。

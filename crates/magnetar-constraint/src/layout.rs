@@ -74,6 +74,7 @@ impl WitnessLayout {
         segments.sort_by_key(|segment| segment.offset);
         let mut names = HashSet::new();
         let mut end = 0;
+        let mut previous_name = String::new();
         for segment in &segments {
             if !names.insert(segment.name.clone()) {
                 return Err(LayoutError::DuplicateName(segment.name.clone()));
@@ -98,11 +99,12 @@ impl WitnessLayout {
             }
             if segment.offset < end {
                 return Err(LayoutError::Overlap {
-                    left: segment.name.clone(),
+                    left: previous_name,
                     right: segment.name.clone(),
                 });
             }
             end = segment.end();
+            previous_name = segment.name.clone();
         }
         let total_bits = end.next_power_of_two().max(1);
         Ok(Self {
@@ -192,5 +194,44 @@ mod tests {
         let layout = WitnessLayout::new(segments).unwrap();
         assert_eq!(layout.total_bits, 16);
         assert!(layout.check_cover());
+    }
+
+    fn segment(name: &str, offset: usize, len: usize) -> Segment {
+        Segment::new(name, offset, len, SegmentKind::Direct, SegmentOwner::Cpu)
+    }
+
+    #[test]
+    fn layout_rejects_duplicate_empty_and_non_power_of_two_segments() {
+        assert!(matches!(
+            WitnessLayout::new(vec![segment("a", 0, 0)]),
+            Err(LayoutError::EmptySegment { name }) if name == "a"
+        ));
+        assert!(matches!(
+            WitnessLayout::new(vec![segment("a", 0, 3)]),
+            Err(LayoutError::NonPowerOfTwo { name, len: 3 }) if name == "a"
+        ));
+        assert!(matches!(
+            WitnessLayout::new(vec![segment("a", 0, 4), segment("a", 4, 4)]),
+            Err(LayoutError::DuplicateName(name)) if name == "a"
+        ));
+    }
+
+    #[test]
+    fn layout_detects_overlaps_and_gaps() {
+        assert!(matches!(
+            WitnessLayout::new(vec![segment("a", 0, 8), segment("b", 4, 4)]),
+            Err(LayoutError::Overlap { left, right }) if left == "a" && right == "b"
+        ));
+
+        let layout = WitnessLayout::new(vec![segment("pc", 0, 4), segment("mem", 4, 4)]).unwrap();
+        assert_eq!(layout.segment("pc").unwrap().end(), 4);
+        assert!(layout.segment("missing").is_none());
+        assert_eq!(layout.direct_segments().count(), 2);
+        assert_eq!(layout.virtual_segments().count(), 0);
+
+        let gapped = WitnessLayout::new(vec![segment("late", 4, 4)]).unwrap();
+        assert_eq!(gapped.total_bits, 8);
+        assert!(!gapped.check_cover());
+        assert_eq!(WitnessLayout::new(Vec::new()).unwrap().total_bits, 1);
     }
 }

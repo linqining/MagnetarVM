@@ -5,5 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+goblin.workspace = true
 magnetar-spec.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+magnetar-executor.workspace = true

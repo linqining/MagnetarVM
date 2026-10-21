@@ -9,7 +9,7 @@ pub const NUM_REGS: usize = 32;
 ///
 /// ROM is public and read-only; RAM is private and mutable. Addresses are
 /// translated linearly from the respective base.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MachineConfig {
     pub entry: Word,
     pub rom_base: Addr,
@@ -51,7 +51,7 @@ impl MachineConfig {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MachineState {
     pub pc: Word,
     pub regs: [Word; NUM_REGS],
@@ -86,5 +86,43 @@ impl MachineState {
         if index != 0 {
             self.regs[index] = value;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_translates_rom_and_ram_addresses() {
+        let config = MachineConfig::default();
+        assert_eq!(config.rom_index(config.rom_base), Some(0));
+        assert_eq!(config.rom_index(config.rom_base + 8), Some(2));
+        assert_eq!(config.rom_index(config.rom_base + 2), None);
+        assert_eq!(config.rom_index(config.rom_base - 4), None);
+
+        assert_eq!(config.ram_index(config.ram_base, 8), Some(0));
+        assert_eq!(config.ram_index(config.ram_base + 8, 8), Some(8));
+        assert_eq!(config.ram_index(config.ram_base - 1, 1), None);
+        assert_eq!(
+            config.ram_index(config.ram_base + config.ram_size as u64, 1),
+            None
+        );
+        assert_eq!(
+            config.ram_index(config.ram_base + config.ram_size as u64 - 4, 8),
+            None
+        );
+    }
+
+    #[test]
+    fn machine_state_keeps_x0_zero() {
+        let mut state = MachineState::new(0x1000);
+        assert_eq!(state.pc, 0x1000);
+        assert_eq!(state.reg(0), 0);
+        state.set_reg(0, 123);
+        assert_eq!(state.reg(0), 0);
+        state.set_reg(5, 42);
+        assert_eq!(state.reg(5), 42);
+        assert_eq!(MachineState::default().pc, 0);
     }
 }

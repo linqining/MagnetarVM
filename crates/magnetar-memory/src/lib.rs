@@ -3,6 +3,9 @@
 //! The checks here replay the trace. They are the semantic oracle for the
 //! BinaryTwist/BinaryShout arguments, not a replacement for them.
 
+pub mod mmu;
+
+use magnetar_constraint::F2_128;
 use magnetar_spec::{Addr, MemoryEvent, Trace, Word};
 use thiserror::Error;
 
@@ -50,6 +53,121 @@ impl TwistLog {
 
     pub fn writes(&self) -> impl Iterator<Item = &TwistEvent> {
         self.events.iter().filter(|event| event.is_write)
+    }
+}
+
+/// Address width used by the one-hot memory representation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AddressLayout {
+    pub bits: usize,
+}
+
+impl AddressLayout {
+    pub fn new(bits: usize) -> Result<Self, MemoryError> {
+        if bits == 0 || bits > 64 {
+            return Err(MemoryError::InvalidAddressBits(bits));
+        }
+        Ok(Self { bits })
+    }
+
+    pub fn one_hot(&self, address: Addr) -> Result<Vec<F2_128>, MemoryError> {
+        if self.bits < 64 && address >= (1u64 << self.bits) {
+            return Err(MemoryError::AddressOutOfRange {
+                address,
+                bits: self.bits,
+            });
+        }
+        let mut bits = vec![F2_128::from(0u64); self.bits];
+        for (index, bit) in bits.iter_mut().enumerate() {
+            if (address >> index) & 1 == 1 {
+                *bit = F2_128::from(1u64);
+            }
+        }
+        Ok(bits)
+    }
+}
+
+/// Per-access witness for the BinaryTwist/BinaryShout reductions.
+#[derive(Clone, Debug)]
+pub struct TwistEventWitness {
+    pub cycle: u64,
+    pub address: Vec<F2_128>,
+    pub old_value: F2_128,
+    pub new_value: F2_128,
+    pub increment: F2_128,
+    pub is_write: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TwistWitness {
+    pub address_bits: usize,
+    pub events: Vec<TwistEventWitness>,
+}
+
+impl TwistWitness {
+    /// Build one-hot addresses and write increments by replaying the trace.
+    pub fn from_trace(trace: &Trace, address_bits: usize) -> Result<Self, MemoryError> {
+        let layout = AddressLayout::new(address_bits)?;
+        let mut ram = trace.initial_ram.clone();
+        let mut events = Vec::with_capacity(trace.memory_events.len());
+
+        for event in &trace.memory_events {
+            check_event(trace, &ram, event)?;
+            let access = event.access;
+            let width = usize::from(access.width);
+            let index =
+                trace
+                    .config
+                    .ram_index(access.addr, width)
+                    .ok_or(MemoryError::OutOfBounds {
+                        cycle: event.cycle,
+                        addr: access.addr,
+                        width,
+                    })?;
+            let old_value = read_value(&ram[index..index + width], width);
+            let new_value = if access.is_write {
+                access.value
+            } else {
+                old_value
+            };
+            let increment = if access.is_write {
+                old_value ^ new_value
+            } else {
+                0
+            };
+            events.push(TwistEventWitness {
+                cycle: event.cycle,
+                address: layout.one_hot(access.addr)?,
+                old_value: F2_128::from(old_value),
+                new_value: F2_128::from(new_value),
+                increment: F2_128::from(increment),
+                is_write: access.is_write,
+            });
+            if access.is_write {
+                write_ram(trace, &mut ram, *event)?;
+            }
+        }
+
+        Ok(Self {
+            address_bits,
+            events,
+        })
+    }
+
+    pub fn validate(&self) -> Result<(), MemoryError> {
+        for event in &self.events {
+            let ones = event.address.iter().filter(|bit| bit.value() == 1).count();
+            if ones != 1 || event.address.iter().any(|bit| bit.value() > 1) {
+                return Err(MemoryError::NotOneHot { cycle: event.cycle });
+            }
+            if event.old_value + event.new_value != event.increment {
+                return Err(MemoryError::IncrementMismatch { cycle: event.cycle });
+            }
+            if !event.is_write && event.old_value != event.new_value {
+                return Err(MemoryError::ReadValueMismatch { cycle: event.cycle });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -215,6 +333,16 @@ pub enum MemoryError {
         expected: Word,
         actual: Word,
     },
+    #[error("address width {0} must be in 1..=64")]
+    InvalidAddressBits(usize),
+    #[error("address {address:#x} does not fit in {bits} bits")]
+    AddressOutOfRange { address: Addr, bits: usize },
+    #[error("cycle {cycle} address is not one-hot")]
+    NotOneHot { cycle: u64 },
+    #[error("cycle {cycle} increment is not old XOR new")]
+    IncrementMismatch { cycle: u64 },
+    #[error("cycle {cycle} read changed the value")]
+    ReadValueMismatch { cycle: u64 },
 }
 
 #[cfg(test)]
@@ -306,5 +434,60 @@ mod tests {
         let log = TwistLog::from_trace(&trace);
         assert_eq!(log.reads().count(), 1);
         assert_eq!(log.writes().count(), 1);
+    }
+
+    #[test]
+    fn twist_witness_has_one_hot_addresses_and_increments() {
+        let trace = execute(&program(), config()).unwrap();
+        let witness = TwistWitness::from_trace(&trace, 32).unwrap();
+        witness.validate().unwrap();
+        assert_eq!(witness.events.len(), 2);
+        let write = &witness.events[0];
+        assert!(write.is_write);
+        assert_eq!(write.old_value, F2_128::from(0u64));
+        assert_eq!(write.new_value, F2_128::from(9u64));
+        assert_eq!(write.increment, F2_128::from(9u64));
+        let read = &witness.events[1];
+        assert!(!read.is_write);
+        assert_eq!(read.old_value, F2_128::from(9u64));
+        assert_eq!(read.increment, F2_128::from(0u64));
+    }
+
+    #[test]
+    fn twist_witness_rejects_non_one_hot_addresses() {
+        let trace = execute(&program(), config()).unwrap();
+        let mut witness = TwistWitness::from_trace(&trace, 32).unwrap();
+        for bit in &mut witness.events[0].address {
+            *bit = F2_128::from(0u64);
+        }
+        assert!(matches!(
+            witness.validate(),
+            Err(MemoryError::NotOneHot { .. })
+        ));
+    }
+
+    #[test]
+    fn twist_witness_rejects_bad_increment() {
+        let trace = execute(&program(), config()).unwrap();
+        let mut witness = TwistWitness::from_trace(&trace, 32).unwrap();
+        witness.events[0].increment = F2_128::from(0u64);
+        assert!(matches!(
+            witness.validate(),
+            Err(MemoryError::IncrementMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn address_layout_checks_range() {
+        let layout = AddressLayout::new(8).unwrap();
+        assert!(layout.one_hot(255).is_ok());
+        assert!(matches!(
+            layout.one_hot(256),
+            Err(MemoryError::AddressOutOfRange { .. })
+        ));
+        assert!(matches!(
+            AddressLayout::new(0),
+            Err(MemoryError::InvalidAddressBits(0))
+        ));
     }
 }
