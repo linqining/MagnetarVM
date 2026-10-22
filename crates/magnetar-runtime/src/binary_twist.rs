@@ -873,7 +873,6 @@ pub struct AddressBooleanClaim {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReadInitialClaim {
     pub claimed: F2_128,
-    pub cycle_point: Vec<F2_128>,
     pub rounds: Vec<Vec<F2_128>>,
 }
 
@@ -911,7 +910,6 @@ pub struct BinaryTwistWriteClaim {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BinaryTwistUpdateClaim {
-    pub cell_point: Vec<F2_128>,
     pub rounds: Vec<Vec<F2_128>>,
 }
 
@@ -1213,7 +1211,6 @@ pub(crate) fn prove_binary_twist_claims(
             }
             total
         },
-        cycle_point: rho_j.clone(),
         rounds,
     };
     let mut read_columns = (0..a).collect::<Vec<_>>();
@@ -1596,10 +1593,7 @@ pub(crate) fn prove_binary_twist_claims(
         .collect::<Vec<_>>();
     let wa_valid_eval = fold_all(&addr[wa_valid], r_jp);
     let inc_eval = fold_all(increments, &inc_point(r_jp));
-    let update = BinaryTwistUpdateClaim {
-        cell_point: rho_k,
-        rounds,
-    };
+    let update = BinaryTwistUpdateClaim { rounds };
     let mut final_columns = (a..2 * a).collect::<Vec<_>>();
     final_columns.push(wa_valid);
     addr_points.push(P3MosaicPoint {
@@ -1719,9 +1713,6 @@ pub(crate) fn verify_binary_twist_claims(
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-read");
     absorb_mosaic_commitment(&mut transcript, commitment);
     let rho_j = sample_point(&mut transcript, cycle_bits);
-    if proof.read.initial.cycle_point != rho_j {
-        return Ok(None);
-    }
     let eq_j = eq_vector(&rho_j, cycles);
     let claimed_read = eq_j
         .iter()
@@ -1958,9 +1949,6 @@ pub(crate) fn verify_binary_twist_claims(
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-final");
     absorb_mosaic_commitment(&mut transcript, commitment);
     let rho_k = sample_point(&mut transcript, address_bits);
-    if proof.update.cell_point != rho_k {
-        return Ok(None);
-    }
     let Some((sum, update_challenges)) =
         replay_terms_derived(&proof.update.rounds, F2_128::from(0u64), &mut transcript)
     else {
