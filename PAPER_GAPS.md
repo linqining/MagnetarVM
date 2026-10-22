@@ -252,3 +252,11 @@
 7. **G**: no large-trace/100 GiB runs, 15-workload suite, or parallel prover; chunked proofs duplicate per-chunk CPU proofs and grow quickly.
 
 These are architectural or research-level items; the current tree is a verified reference for the implemented components, not a complete Magnetar implementation.
+
+## Verification snapshot
+
+- Workspace: `feat/BinaryTwist`, clean; 307 tests passing at the last full run.
+- Unified hello proof: 261,695 B at width 64, 225,191 B at width 32, 228,423 B at width 8.
+- Current proof components: access 12,778; CPU lockstep 241,240; Shout 2,298; shift Router 1; store Router 5,346.
+- Trace is committed in the shared P3 commitment and routed via 2 segment claims; admission still requires the full trace to rebuild the CPU system.
+- Address multiplicity claim works standalone (including no-write and multi-table cases), but unified integration is still blocked by a trace-specific claim mismatch; the independent address table cost (+43 KB) ruled out the naive integration.
