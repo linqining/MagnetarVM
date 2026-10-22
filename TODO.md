@@ -13,8 +13,11 @@
       full-address evaluations with sum-checks instead of committing `K × T`
       one-hot address tables.
 - [x] Add a standalone bit-sliced `BinaryShout` ROM-read reduction.
+- [x] Add a standalone 64-bit shift `BinaryRouter` reference proof.
 - [ ] Wire `BinaryShout` into `UnifiedTraceProof` (standalone proof exists in
       `binary_shout.rs`).
+- [ ] Extend `BinaryRouter` to sub-word store routing and wire it into the
+      unified proof (`binary_router.rs`).
 - [ ] Optimize the P3 shared opening path (currently the runtime pre-commit and
       Spartan's internal commit/open repeat the same batch commitment).
 

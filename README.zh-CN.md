@@ -33,7 +33,7 @@
 显式未实现：
 
 - Dual SIMD R1CS、Virtual Spartan、BinarySpartan；
-- BinaryRouter 的 sum-check 论证；BinaryShout 已有独立的 bit-sliced 参考 proof，但尚未接入 unified trace proof；BinaryTwist 的 `LT` prover 仍会物化二次表；
+- BinaryShout 与 BinaryRouter 已有独立的参考 proof，但尚未接入 unified trace proof；BinaryRouter 目前只覆盖 64-bit shift routing，尚未覆盖 sub-word store routing；BinaryTwist 的 `LT` prover 仍会物化二次表；
 - 完整的 MosaicPCS ring switching、与 runtime 集成的 Ligerito（P3 多表堆叠、virtual `Val`/`Inc`、地址虚拟化与 CPU+RAM 共享 opening 已实现）；
 - recursion（只有 chunk 规划、hash-chain 与状态连续性参考聚合器、backend trait）；
 - ZK sum-check 与 private IO（只有 `NoPrivacy` 和随机 hiding hash commitment）；
@@ -55,11 +55,11 @@
 | 5 | 约束 IR / Witness 布局 | `magnetar-constraint` | `GF(2^128)` 上的 R1CS IR、`F61` 参考域、aligned segments 已实现 |
 | 6 | CPU 约束 | `magnetar-cpu` | 行级检查（含 RV64M、A 与 `*W` 语义）、64-bit 20-selector ALU（Add/Sub/AddI/Xor/Lui/And/Or/Slt/Sltu/Slti/Sltiu/Sll/Srl/Sra/Slli/Srli/Srai/Xori/Ori/Andi）、RV64 `*W` relation、PC+4 step、Auipc、Jal、Jalr、全部 6 种条件分支、单步 load/store relation、所有 ALU/控制 relation 的行绑定版本、全部 8 个 RV64M 指令在完整 width 64 下的 R1CS relation、全部 AMO 指令（`swap`/`add`/`xor`/`and`/`or`/`min`/`max`，有符号与无符号，W/D）的 A R1CS，以及 LR 读取 / SC 成功失败行 relation；reservation 状态由 trace 绑定并在 proof 验证时检查；非移位/非比较的专用 ALU relation 把 `addi`/`lui` 从 4,492 个变量降到 449/64 |
 | 7 | 内存一致性 | `magnetar-memory` | replay、Twist log、one-hot 地址/increment witness、load/store、memory/register chain、trace 顺序交错访问 proof、带批量 P3 claim 的参考 BinaryTwist RAM 归约，以及参考 Sv39 page-table walker |
-| 8 | 路由 / 位操作 | `magnetar-routing` | shift/store route 与 witness 已实现；BinaryRouter sum-check 未实现 |
+| 8 | 路由 / 位操作 | `magnetar-routing` | shift/store route 与 witness 已实现；已有独立的 64-bit shift BinaryRouter proof；sub-word store routing 与 unified 集成待做 |
 | 9 | 证明引擎 | `magnetar-proof` | MLE + sum-check + 参考 Spartan 归约已实现；BinarySpartan 未实现 |
 | 10 | 承诺 / PCS | `magnetar-pcs` | Merkle tree、批量 Merkle vector commitment、naive PCS、`Pcs` trait、基于 `arkworks` 的简洁 BN254 KZG 后端（支持批量 opening）、vendored Ligerito 0.8.0 索引 opening 后端（2^16：118,624 字节 / 99 ms / 3.1 ms），以及带单向量、多列/多点与多表 mosaic API 的 Plonky3 `p3-binary-pcs` 多线性点 PCS，并提供 `P3SharedPcs` 适配器（unified proof 中 CPU+RAM 共享 opening） |
 | 11 | Transcript / 证明格式 | `magnetar-transcript` | SHA-256 与 SHA3-256 Fiat–Shamir transcript 已实现；Spartan 与 unified/chunked trace proof 的规范化 bincode 编解码位于 `magnetar-pcs` / `magnetar-runtime` |
-| 12 | Prover / Verifier 运行时 | `magnetar-runtime` | reference pipeline + Spartan backend + load/store、AMO read-modify-write、LR/SC reservation 检查、syscall read 回写、memory/register chain、trace 顺序交错访问 proof；组合 `TraceProof` 将 CPU 行（ALU/AMO/LR/SC/load/store/branch/jump/Auipc）绑定到访问日志，并支持 lane 级 sub-word load/store；`UnifiedTraceProof` 合并所有行，并让 CPU witness 与 BinaryTwist RAM 列共享一个 mosaic P3 commitment/opening；`ChunkedTraceProof` 按区间生成并用状态链连接，两者都携带 ROM，并都有绑定规范化 trace digest 与 program hash 的 standalone verifier；access proof 只为寄存器保留 Merkle opening，memory step 绑定到 BinaryTwist claim，public `Statement` 携带初始 RAM；隐藏/简洁 trace commitment 与 BinaryRouter 仍待做；BinaryShout 已有独立 proof |
+| 12 | Prover / Verifier 运行时 | `magnetar-runtime` | reference pipeline + Spartan backend + load/store、AMO read-modify-write、LR/SC reservation 检查、syscall read 回写、memory/register chain、trace 顺序交错访问 proof；组合 `TraceProof` 将 CPU 行（ALU/AMO/LR/SC/load/store/branch/jump/Auipc）绑定到访问日志，并支持 lane 级 sub-word load/store；`UnifiedTraceProof` 合并所有行，并让 CPU witness 与 BinaryTwist RAM 列共享一个 mosaic P3 commitment/opening；`ChunkedTraceProof` 按区间生成并用状态链连接，两者都携带 ROM，并都有绑定规范化 trace digest 与 program hash 的 standalone verifier；access proof 只为寄存器保留 Merkle opening，memory step 绑定到 BinaryTwist claim，public `Statement` 携带初始 RAM；隐藏/简洁 trace commitment 仍待做；BinaryShout 与 BinaryRouter 已有独立 proof |
 | 13 | 递归 / 聚合 | `magnetar-recursion` | chunk plan + hash-chain 与状态连续性参考聚合器已实现，并接入 runtime `ChunkedTraceProof`；zk verifier-in-the-VM backend 未实现 |
 | 14 | 隐私层 | `magnetar-privacy` | `NoPrivacy` + 随机 hiding hash commitment + trait 已实现；ZK sum-check 未实现 |
 | 15 | 安全 / 性能工程 | `magnetar-testkit` | 集成测试、fixtures 与 criterion benchmark 已实现；安全审计未做 |
@@ -71,7 +71,7 @@
 | Dual SIMD R1CS over shared witness | `magnetar-constraint` + `magnetar-cpu` | 生成 uniform `s1`/`s2`，替换行级检查 |
 | Virtual Spartan | `magnetar-proof` + `magnetar-runtime` | 双关系 lockstep、per-segment claim、claim router |
 | BinaryTwist / BinaryShout | `magnetar-memory` + `magnetar-runtime` | BinaryTwist 已有 bit-sliced 虚拟地址、紧凑 increment、virtual `Val`、read/write/final-state/address sum-check 与批量 P3 claim；BinaryShout 已有独立的 bit-sliced ROM-read proof；下一步：接入 unified proof 并优化性能 |
-| BinaryRouter | `magnetar-routing` + `magnetar-preprocess` | routing identity + selector/offset claims |
+| BinaryRouter | `magnetar-routing` + `magnetar-preprocess` | 已有独立的 64-bit shift routing 参考实现（`binary_router.rs`）；下一步：store routing 与 unified proof 集成 |
 | MosaicPCS | `magnetar-pcs` | 已有多表 P3 堆叠与 CPU+RAM 共享 opening；下一步：ring switching |
 | Ligerito | `magnetar-pcs` | 线性码 PCS + Merkle + query sampling |
 | Recursion | `magnetar-recursion` | verifier-in-the-VM、chunk state、aggregation |
@@ -120,7 +120,7 @@ cargo fmt --all -- --check
 cargo test --workspace
 ```
 
-当前测试套件包含 **15 个 crate 的 268 个测试，全部通过**；
+当前测试套件包含 **15 个 crate 的 269 个测试，全部通过**；
 `clippy -D warnings` 与 `rustfmt --check` 均无问题。dev profile 将依赖设为
 `opt-level = 3`、workspace crate 设为 `opt-level = 2`，避免 PCS 密集的测试
 在未优化构建里跑到几十秒。
@@ -168,8 +168,8 @@ cargo test --workspace
 当前 prover 是**参考实现**，基于 GF(2^128) 上的通用 Spartan 归约。unified CPU
 proof 把 Spartan witness 与 bit-sliced BinaryTwist 地址表及紧凑 increment 表放进**同一个 mosaic P3
 commitment**，并用**同一个 P3 opening proof** 打开 CPU 点和 RAM claim；value history 是虚拟的，由公开初始 RAM 与已承诺的 write history 重建。
-只有寄存器文件仍使用 Merkle path。BinarySpartan、SIMD R1CS 与 BinaryRouter 仍未实现；BinaryShout
-已有独立参考实现。仓库内 vendored Ligerito 0.8.0 继续提供按索引 claim 的
+只有寄存器文件仍使用 Merkle path。BinarySpartan 与 SIMD R1CS 仍未实现；
+BinaryShout 与 BinaryRouter 已有独立参考实现。仓库内 vendored Ligerito 0.8.0 继续提供按索引 claim 的
 PCS 后端。
 
 `F2_128` 已对齐 Plonky3 的 canonical 128-bit tower：乘法和求逆调用
@@ -216,7 +216,7 @@ width=64 时证明体积分解为 access=19,033、cpu=238,376、rows=1,860、rom
 论文的线性时间处理留作后续。地址 sum-check 已拆成 `(cell, cycle)` 上的
 initial/base 部分和 `(cycle, previous-cycle)` 上的 history 部分，消除了
 `K × T²` 的 prover 放大，prove 时间回到几百毫秒。共享 P3 的 arity 由 CPU
-witness 决定，RAM 表都是 cycle-length。BinaryShout 仍需接入 unified proof，BinaryRouter 仍待实现；
+witness 决定，RAM 表都是 cycle-length。BinaryShout 与 BinaryRouter 仍需接入 unified proof；
 SIMD R1CS/BinarySpartan 可把多条 bit-lane 打包进一个 GF(2^128) 元素。verifier
 仍会重建 trace 与合并 system，再验证简洁 CPU PCS proof，因此还不是完整的
 简洁 verifier。
