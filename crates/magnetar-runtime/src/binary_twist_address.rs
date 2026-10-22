@@ -832,4 +832,51 @@ mod tests {
         let opening = pcs.open_mosaic(&mosaic, &points).unwrap();
         assert!(pcs.verify_mosaic(&opening, &points, &values).unwrap());
     }
+    #[test]
+    fn bit_multiplicity_claim_handles_no_writes() {
+        use magnetar_executor::execute;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 5,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let witness = BinaryTwistWitness::from_trace(&trace).unwrap();
+        let tables = crate::binary_twist::batch_tables(&witness).unwrap();
+        let mosaic = vec![tables.addr.clone()];
+        let pcs = P3BinaryPcs::new(100);
+        let commitment = pcs.commit_mosaic(&mosaic).unwrap();
+        let (claim, points, values) =
+            prove_address_multiplicity_bits(&witness, true, &commitment, 0).unwrap();
+        let (_, verified_values) =
+            verify_address_multiplicity_bits(&witness, true, &claim, &commitment, 0)
+                .unwrap()
+                .unwrap();
+        assert_eq!(values, verified_values);
+        let opening = pcs.open_mosaic(&mosaic, &points).unwrap();
+        assert!(pcs.verify_mosaic(&opening, &points, &values).unwrap());
+    }
 }
