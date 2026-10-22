@@ -22,8 +22,8 @@ Implemented:
 - `ChunkedTraceProof`: per-row-range merged CPU proofs linked through the recursion crate's register/PC state chain, with the same access log and trace commitment;
 - Lane-level sub-word load/store support in the access log (`lb/lbu/lh/lhu/lw/lwu/sb/sh/sw` within an aligned 8-byte word, with sign extension and read-modify-write checks);
 - Register/RAM replay, Twist one-hot address/increment witnesses, shift/store routing witnesses, and a reference Sv39 page-table walker with permission and superpage checks;
-- A reference BinaryTwist RAM reduction (`d = 1`, full one-hot tables) covering read-value, write-value, update, and read/write address Boolean-multiplicity/collision identities. All five columns share one Plonky3 P3 commitment and every terminal claim is discharged by one batched P3 opening argument;
-- A multi-table P3 mosaic layer: `P3SharedPcs` stacks the unified CPU Spartan witness and the five RAM columns into one commitment, and opens the CPU point plus the nine RAM claims with one P3 proof;
+- A reference BinaryTwist RAM reduction (`d = 1`, full one-hot tables) covering read-value, write-value, update, and read/write address Boolean-multiplicity/collision identities. The four main columns and the compact increment table share one Plonky3 P3 commitment, and every terminal claim is discharged by one batched P3 opening argument;
+- A multi-table P3 mosaic layer: `P3SharedPcs` stacks the unified CPU Spartan witness, the four RAM columns, and the compact increment table into one commitment, and opens the CPU point plus the RAM claims with one P3 proof;
 - The access proof keeps Merkle openings only for the 32-register file. Memory steps carry their event index and full-word values, are checked against the same BinaryTwist witness, and the initial RAM is bound by the public `Statement` instead of being serialized into the proof;
 - Reference sum-check, SHA-256 and SHA3-256 transcripts, Merkle tree with batched vector openings, naive PCS, and a succinct BN254 KZG backend with single and batch openings from `arkworks`, with canonical bincode encode/decode for Spartan proofs and per-row/unified/chunked trace proofs;
 - Reference Spartan reduction with Fiat–Shamir, over the existing constraint IR and Merkle PCS;
@@ -120,7 +120,7 @@ cargo fmt --all -- --check
 cargo test --workspace
 ```
 
-At the time of writing the suite contains **266 tests across the 15 crates,
+At the time of writing the suite contains **267 tests across the 15 crates,
 all passing**; clippy with `-D warnings` and `rustfmt --check` are clean.
 The dev profile optimizes dependencies at `opt-level = 3` and workspace crates
 at `opt-level = 2`, so the PCS-heavy tests stay in the second range instead of
@@ -169,8 +169,9 @@ current fetcher rejects a 32-bit instruction that starts at a 2-byte boundary.
 
 The prover is a **reference implementation** built on a generic Spartan
 reduction over GF(2^128). The unified CPU proof commits the Spartan witness and
-the five BinaryTwist RAM columns under **one mosaic P3 commitment**, and opens
-both at the CPU point plus the nine RAM claims with **one P3 opening proof**.
+the four BinaryTwist RAM columns and the compact increment table under **one
+mosaic P3 commitment**, and opens them at the CPU point plus the RAM claims with
+**one P3 opening proof**.
 Only the register file still uses Merkle paths. BinarySpartan, SIMD R1CS,
 BinaryShout, and BinaryRouter are still absent. A vendored Ligerito 0.8.0
 backend remains available for index openings.
@@ -183,11 +184,11 @@ them:
 
 | width | CPU vars | CPU constraints | proof bytes | prove | verify |
 |---|---|---|---|---|---|
-| 64 | 6,991 | 11,933 | 401,965 | 0.420 s | 0.038 s |
-| 32 | 4,015 | 6,813 | 400,333 | 0.417 s | 0.022 s |
-| 8 | 1,783 | 2,973 | 397,293 | 0.392 s | 0.014 s |
+| 64 | 6,991 | 11,933 | 388,237 | 0.49 s | 0.043 s |
+| 32 | 4,015 | 6,813 | 400,077 | 0.47 s | 0.025 s |
+| 8 | 1,783 | 2,973 | 401,773 | 0.48 s | 0.018 s |
 
-At width 64 the proof splits into access=17,113, cpu=382,864, rows=1,860, and
+At width 64 the proof splits into access=17,113, cpu=369,136, rows=1,860, and
 rom=96 bytes. The changes behind these numbers:
 
 1. **Per-op ALU relations.** `simple_alu_row_relation` allocates only the gates
@@ -195,15 +196,16 @@ rom=96 bytes. The changes behind these numbers:
    variables/5,264 constraints per row under the uniform shifter+comparator
    circuit.
 2. **One mosaic PCS for CPU and RAM.** `P3MosaicCommitment` stacks the CPU
-   witness (2^13) and the five RAM columns (5 × 2^14) into one 2^17 polynomial.
+   witness (2^13), the four RAM columns (4 × 2^14), and the compact increment table into one 2^17 polynomial.
    `P3SharedPcs` plugs this batch into the Spartan proof: the CPU point and the
    nine BinaryTwist claims are opened by the same P3 argument. The proof no
    longer pays for a separate CPU opening plus a separate RAM opening; the old
-   separate layout was 593,508 bytes, the shared layout is 401,965 bytes.
-3. **Batched BinaryTwist reductions.** `ra`, `wa`, `Val`, `Inc`, and the
-   successor history share that commitment. Read, write, update, and the two
-   address reductions contribute nine point claims. The proof is bound to the
-   trace's read/write words, and sub-word accesses update only their lane.
+   separate layout was 593,508 bytes, the shared layout is 388,237 bytes.
+3. **Batched BinaryTwist reductions.** `ra`, `wa`, `Val`, and the successor
+   history share that commitment, while `Inc` is now a compact cycle-only
+   table instead of being replicated over every cell. Read, write, update, and
+   the two address reductions contribute point claims. The proof is bound to
+   the trace's read/write words, and sub-word accesses update only their lane.
 4. **Register-only Merkle access log.** Memory steps no longer carry a Merkle
    chain or a 131 KiB initial-memory table: each step stores its event index
    and full-word values and is checked against the BinaryTwist witness. The

@@ -130,6 +130,8 @@ pub struct P3MosaicPoint {
     pub table: usize,
     pub point: Vec<F2_128>,
     pub columns: Vec<usize>,
+    /// Columns evaluated through the repeat-last successor view at the same point.
+    pub next_columns: Vec<usize>,
 }
 
 impl std::fmt::Debug for P3Opening {
@@ -494,7 +496,10 @@ impl P3BinaryPcs {
         for (table, shape) in shapes.iter().enumerate() {
             let mut schedule = Vec::with_capacity(per_table[table].len());
             for &index in &per_table[table] {
-                schedule.push(OpeningBatch::new(points[index].columns.clone(), Vec::new()));
+                schedule.push(OpeningBatch::new(
+                    points[index].columns.clone(),
+                    points[index].next_columns.clone(),
+                ));
                 ordered.push(Self::point(&points[index].point));
             }
             specs.push(TableSpec::new(
@@ -603,11 +608,15 @@ impl P3BinaryPcs {
             return Ok(false);
         }
         for ((batch, expected), point) in evals.iter().zip(values).zip(points) {
-            if expected.len() != point.columns.len()
-                || batch.current().len() != expected.len()
+            let current_len = point.columns.len();
+            let next_len = point.next_columns.len();
+            if expected.len() != current_len + next_len
+                || batch.current().len() != current_len
+                || batch.next().len() != next_len
                 || batch
                     .current()
                     .iter()
+                    .chain(batch.next())
                     .zip(expected)
                     .any(|(observed, value)| *observed != F::from_repr(value.value()))
             {
@@ -737,6 +746,7 @@ impl P3SharedPcs {
             table: 0,
             point: point.to_vec(),
             columns: vec![0],
+            next_columns: Vec::new(),
         });
         points.extend(self.aux_points.clone());
         points
@@ -896,11 +906,13 @@ mod tests {
                 table: 0,
                 point: primary_point.clone(),
                 columns: vec![0],
+                next_columns: Vec::new(),
             },
             P3MosaicPoint {
                 table: 1,
                 point: aux_point.clone(),
                 columns: vec![0, 1],
+                next_columns: Vec::new(),
             },
         ];
         let opening = pcs.open_mosaic(&tables, &points).unwrap();
@@ -926,6 +938,40 @@ mod tests {
     }
 
     #[test]
+    fn p3_mosaic_successor_view_matches_shifted_mle() {
+        let pcs = P3BinaryPcs::new(100);
+        let values = values(1 << 8);
+        let table = P3MosaicTable {
+            columns: vec![values.clone()],
+        };
+        let point: Vec<F2_128> = (0..8u64)
+            .map(|index| F2_128::from((index * 7 + 3) & 1))
+            .collect();
+        let current = magnetar_proof::Mle::new(values.clone())
+            .unwrap()
+            .eval(&point)
+            .unwrap();
+        let mut shifted = values[1..].to_vec();
+        shifted.push(*values.last().unwrap());
+        let next = magnetar_proof::Mle::new(shifted)
+            .unwrap()
+            .eval(&point)
+            .unwrap();
+        let points = vec![P3MosaicPoint {
+            table: 0,
+            point: point.clone(),
+            columns: vec![0],
+            next_columns: vec![0],
+        }];
+        let opening = pcs
+            .open_mosaic(core::slice::from_ref(&table), &points)
+            .unwrap();
+        assert!(pcs
+            .verify_mosaic(&opening, &points, &[vec![current, next]])
+            .unwrap());
+    }
+
+    #[test]
     fn p3_shared_pcs_batches_primary_and_auxiliary_claims() {
         let primary = values(1 << 9);
         let aux = values(1 << 10);
@@ -946,6 +992,7 @@ mod tests {
                 table: 1,
                 point: aux_point.clone(),
                 columns: vec![0],
+                next_columns: Vec::new(),
             }],
             vec![vec![aux_value]],
         );

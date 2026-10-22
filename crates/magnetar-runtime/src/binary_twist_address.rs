@@ -101,16 +101,19 @@ pub(crate) fn prove_address_batch_claim(
             table: table_index,
             point: challenges.clone(),
             columns: vec![column],
+            next_columns: Vec::new(),
         },
         P3MosaicPoint {
             table: table_index,
             point: r_point,
             columns: vec![column],
+            next_columns: Vec::new(),
         },
         P3MosaicPoint {
             table: table_index,
             point: rp_point,
             columns: vec![column],
+            next_columns: Vec::new(),
         },
     ];
     let values = vec![vec![a_eval], vec![a_r_eval], vec![a_rp_eval]];
@@ -219,16 +222,19 @@ pub(crate) fn verify_address_batch_claim(
             table: table_index,
             point: claim.challenges.clone(),
             columns: vec![column],
+            next_columns: Vec::new(),
         },
         P3MosaicPoint {
             table: table_index,
             point: r_point,
             columns: vec![column],
+            next_columns: Vec::new(),
         },
         P3MosaicPoint {
             table: table_index,
             point: rp_point,
             columns: vec![column],
+            next_columns: Vec::new(),
         },
     ];
     let values = vec![

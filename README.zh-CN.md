@@ -22,8 +22,8 @@
 - `ChunkedTraceProof`：按行区间生成合并 CPU proof，并通过 recursion crate 的寄存器/PC 状态链连接，共享同一访问日志与 trace commitment；
 - access log 支持 lane 级 sub-word load/store（`lb/lbu/lh/lhu/lw/lwu/sb/sh/sw`，限定在同一 8 字节 word 内，含符号扩展与 read-modify-write 检查）；
 - 寄存器/RAM 重放、Twist one-hot 地址/increment witness、shift/store routing witness，以及带权限与 superpage 检查的参考 Sv39 page-table walker；
-- 参考 BinaryTwist RAM 归约（`d = 1`，完整 one-hot 表）：read-value、write-value、update，以及 read/write 地址的 Boolean-multiplicity/collision 恒等式；五列共享一个 Plonky3 P3 commitment，所有终值 claim 由同一个批量 P3 opening 参数证明；
-- 多表 P3 mosaic 层：`P3SharedPcs` 把 unified CPU Spartan witness 与五列 RAM 数据堆进同一个 commitment，并用同一个 P3 proof 打开 CPU 点与九个 RAM claim；
+- 参考 BinaryTwist RAM 归约（`d = 1`，完整 one-hot 表）：read-value、write-value、update，以及 read/write 地址的 Boolean-multiplicity/collision 恒等式；四列主数据与紧凑 increment 表共享一个 Plonky3 P3 commitment，所有终值 claim 由同一个批量 P3 opening 参数证明；
+- 多表 P3 mosaic 层：`P3SharedPcs` 把 unified CPU Spartan witness、四列 RAM 数据与紧凑 increment 表堆进同一个 commitment，并用同一个 P3 proof 打开 CPU 点与 RAM claim；
 - access proof 只为 32 项寄存器文件保留 Merkle opening；memory step 记录 event 索引与完整 word 值，并与同一个 BinaryTwist witness 交叉检查；初始 RAM 改由 public `Statement` 绑定，不再放入 proof；
 - 参考 sum-check、SHA-256 与 SHA3-256 transcript、带批量向量 opening 的 Merkle tree、naive PCS，以及基于 `arkworks` 的简洁 BN254 KZG 后端（支持单点与批量 opening）；Spartan proof 与逐行/unified/chunked trace proof 的规范化 bincode 编解码；
 - 基于现有约束 IR 与 Merkle PCS 的参考 Spartan 归约（含 Fiat–Shamir）；
@@ -120,7 +120,7 @@ cargo fmt --all -- --check
 cargo test --workspace
 ```
 
-当前测试套件包含 **15 个 crate 的 266 个测试，全部通过**；
+当前测试套件包含 **15 个 crate 的 267 个测试，全部通过**；
 `clippy -D warnings` 与 `rustfmt --check` 均无问题。dev profile 将依赖设为
 `opt-level = 3`、workspace crate 设为 `opt-level = 2`，避免 PCS 密集的测试
 在未优化构建里跑到几十秒。
@@ -166,8 +166,8 @@ cargo test --workspace
 ## 证明路径与性能说明
 
 当前 prover 是**参考实现**，基于 GF(2^128) 上的通用 Spartan 归约。unified CPU
-proof 把 Spartan witness 与五列 BinaryTwist RAM 数据放进**同一个 mosaic P3
-commitment**，并用**同一个 P3 opening proof** 打开 CPU 点和九个 RAM claim。
+proof 把 Spartan witness 与四列 BinaryTwist RAM 数据及紧凑 increment 表放进**同一个 mosaic P3
+commitment**，并用**同一个 P3 opening proof** 打开 CPU 点和 RAM claim。
 只有寄存器文件仍使用 Merkle path。BinarySpartan、SIMD R1CS、BinaryShout 与
 BinaryRouter 仍未实现。仓库内 vendored Ligerito 0.8.0 继续提供按索引 claim 的
 PCS 后端。
@@ -179,24 +179,25 @@ hello guest 上以 release 模式实测（Apple arm64，单线程）；
 
 | 宽度 | CPU 变量 | CPU 约束 | 证明字节 | prove | verify |
 |---|---|---|---|---|---|
-| 64 | 6,991 | 11,933 | 401,965 | 0.420 s | 0.038 s |
-| 32 | 4,015 | 6,813 | 400,333 | 0.417 s | 0.022 s |
-| 8 | 1,783 | 2,973 | 397,293 | 0.392 s | 0.014 s |
+| 64 | 6,991 | 11,933 | 388,237 | 0.49 s | 0.043 s |
+| 32 | 4,015 | 6,813 | 400,077 | 0.47 s | 0.025 s |
+| 8 | 1,783 | 2,973 | 401,773 | 0.48 s | 0.018 s |
 
-width=64 时证明体积分解为 access=17,113、cpu=382,864、rows=1,860、rom=96
+width=64 时证明体积分解为 access=17,113、cpu=369,136、rows=1,860、rom=96
 字节。产生这些数字的改动：
 
 1. **按操作裁剪 ALU 约束。** `simple_alu_row_relation` 只分配操作真正需要的
    gate：`addi` 449 个变量、`lui` 64 个，而统一 shifter+comparator 电路每行
    需要 4,492 个变量/5,264 条约束。
 2. **CPU 与 RAM 共用一个 mosaic PCS。** `P3MosaicCommitment` 把 CPU witness
-   (2^13) 与五列 RAM (5 × 2^14) 堆叠成一个 2^17 多项式。`P3SharedPcs` 把这个
-   批量接入 Spartan proof：CPU 点与九个 BinaryTwist claim 由同一个 P3 参数打开。
+   (2^13)、四列 RAM (4 × 2^14) 与紧凑 increment 表堆叠成一个 2^17 多项式。`P3SharedPcs` 把这个
+   批量接入 Spartan proof：CPU 点与 BinaryTwist claim 由同一个 P3 参数打开。
    不再同时支付独立的 CPU opening 和 RAM opening；旧的分离布局是 593,508 字节，
-   共享布局是 401,965 字节。
-3. **批量 BinaryTwist 归约。** `ra`、`wa`、`Val`、`Inc` 与后继历史共享同一个
-   commitment。read、write、update 与两个 address 归约共提供九个点 claim。
-   proof 与 trace 的 read/write word 绑定，sub-word 访问只更新所在 lane。
+   共享布局是 388,237 字节。
+3. **批量 BinaryTwist 归约。** `ra`、`wa`、`Val` 与后继历史共享同一个
+   commitment；`Inc` 已改为按 cycle 存储的紧凑表，不再复制到每个 cell。
+   read、write、update 与两个 address 归约提供点 claim。proof 与 trace 的
+   read/write word 绑定，sub-word 访问只更新所在 lane。
 4. **access log 只为寄存器保留 Merkle。** memory step 不再携带 Merkle 链或
    131 KiB initial-memory 表；每一步只记录 event 索引与完整 word 值，并与
    BinaryTwist witness 交叉检查。初始 RAM 作为 public input 放入 `Statement`。

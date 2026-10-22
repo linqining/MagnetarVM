@@ -2159,13 +2159,22 @@ pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTracePr
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
 
     let pcs = P3BinaryPcs::new(100);
-    let mosaic_tables = vec![P3MosaicTable { columns: vec![z] }, tables.table.clone()];
+    let mosaic_tables = vec![
+        P3MosaicTable { columns: vec![z] },
+        tables.main.clone(),
+        tables.inc.clone(),
+    ];
     let commitment = pcs
         .commit_mosaic(&mosaic_tables)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let (access, (points, values)) =
         prove_trace_access_shared(trace, &witness, &tables, &commitment)?;
-    let shared_pcs = P3SharedPcs::new(100, vec![mosaic_tables[1].clone()], points, values);
+    let shared_pcs = P3SharedPcs::new(
+        100,
+        vec![mosaic_tables[1].clone(), mosaic_tables[2].clone()],
+        points,
+        values,
+    );
     let cpu = prove_spartan(&system, &cpu_witness, &shared_pcs)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     debug_assert_eq!(cpu.commitment, commitment);
@@ -2195,7 +2204,7 @@ pub fn verify_unified_trace(
             "unified proof ROM does not match the supplied trace".into(),
         ));
     }
-    if proof.cpu.commitment.tables.len() != 2 {
+    if proof.cpu.commitment.tables.len() != 3 {
         return Err(RuntimeError::Proof(
             "unified proof does not commit the CPU and RAM tables".into(),
         ));
@@ -3057,7 +3066,7 @@ mod tests {
 
         let proof = prove_unified_trace(&trace, 8).unwrap();
         assert!(proof.access.ram.opening.is_none());
-        assert_eq!(proof.cpu.commitment.tables.len(), 2);
+        assert_eq!(proof.cpu.commitment.tables.len(), 3);
         verify_unified_trace(&trace, &proof, 8).unwrap();
 
         let statement = Statement {

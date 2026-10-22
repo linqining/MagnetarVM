@@ -803,24 +803,32 @@ use crate::binary_twist_address::{
 const RA: usize = 0;
 const WA: usize = 1;
 const VAL: usize = 2;
-const INC: usize = 3;
-const NEXT: usize = 4;
-const RAM_COLUMNS: usize = 5;
+const NEXT: usize = 3;
+const MAIN_COLUMNS: usize = 4;
 
 /// Opening points and expected values a mosaic owner must discharge.
 pub(crate) type MosaicClaims = (Vec<P3MosaicPoint>, Vec<Vec<F2_128>>);
 pub(crate) type ClaimedRam = (BinaryTwistRamProof, MosaicClaims);
 
-/// The five committed BinaryTwist RAM columns.
+/// The committed BinaryTwist RAM tables.
+///
+/// `main` holds the four cell-by-cycle columns; `inc` is the compact
+/// cycle-only increment table. The value history is still materialized here;
+/// only the increment has been virtualized so far.
 pub(crate) struct BatchTables {
-    pub table: P3MosaicTable,
+    pub main: P3MosaicTable,
+    pub inc: P3MosaicTable,
     pub address_bits: usize,
     pub cycle_bits: usize,
 }
 
 impl BatchTables {
     pub(crate) fn columns(&self) -> &[Vec<F2_128>] {
-        &self.table.columns
+        &self.main.columns
+    }
+
+    pub(crate) fn increments(&self) -> &[F2_128] {
+        &self.inc.columns[0]
     }
 }
 
@@ -837,7 +845,9 @@ pub(crate) fn batch_tables(witness: &BinaryTwistWitness) -> Result<BatchTables, 
     let len = cells
         .checked_mul(cycles)
         .ok_or_else(|| ProofError::Pcs("BinaryTwist table overflows".into()))?;
-    let mut columns = vec![vec![F2_128::from(0u64); len]; RAM_COLUMNS];
+    let mut columns = vec![vec![F2_128::from(0u64); len]; MAIN_COLUMNS];
+    let inc_bits = cycles.max(2).trailing_zeros() as usize;
+    let mut increments = vec![F2_128::from(0u64); 1usize << inc_bits];
     for cycle in 0..witness.cycles {
         let start = cycle * cells;
         columns[RA][start..start + cells].copy_from_slice(&witness.read_address[cycle]);
@@ -849,12 +859,13 @@ pub(crate) fn batch_tables(witness: &BinaryTwistWitness) -> Result<BatchTables, 
             &witness.final_value
         };
         columns[NEXT][start..start + cells].copy_from_slice(following);
-        for cell in 0..cells {
-            columns[INC][start + cell] = witness.increment[cycle];
-        }
     }
+    increments[..witness.cycles].copy_from_slice(&witness.increment);
     Ok(BatchTables {
-        table: P3MosaicTable { columns },
+        main: P3MosaicTable { columns },
+        inc: P3MosaicTable {
+            columns: vec![increments],
+        },
         address_bits,
         cycle_bits,
     })
@@ -910,6 +921,14 @@ pub struct BinaryTwistRamProof {
     pub opening: Option<P3MosaicOpening>,
 }
 
+fn compact_inc_point(challenges: &[F2_128], address_bits: usize) -> Vec<F2_128> {
+    let mut point = challenges[address_bits..].to_vec();
+    if point.is_empty() {
+        point.push(F2_128::from(0u64));
+    }
+    point
+}
+
 fn absorb_mosaic_commitment(transcript: &mut Sha256Transcript, commitment: &P3MosaicCommitment) {
     transcript.absorb(
         "commitment",
@@ -928,8 +947,19 @@ pub(crate) fn prove_binary_twist_claims(
     table_index: usize,
 ) -> Result<ClaimedRam, ProofError> {
     let columns = tables.columns();
+    let increments = tables.increments();
+    let cycles = 1usize << tables.cycle_bits;
+    let cells = columns[VAL].len() / cycles;
+    let mut inc_full = vec![F2_128::from(0u64); columns[VAL].len()];
+    for cycle in 0..cycles {
+        for cell in 0..cells {
+            inc_full[cycle * cells + cell] = increments[cycle];
+        }
+    }
     let mut points = Vec::new();
     let mut expected = Vec::new();
+    let mut inc_points = Vec::new();
+    let mut inc_expected = Vec::new();
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-read");
     absorb_mosaic_commitment(&mut transcript, commitment);
@@ -956,12 +986,13 @@ pub(crate) fn prove_binary_twist_claims(
         table: table_index,
         point: challenges,
         columns: vec![RA, VAL],
+        next_columns: Vec::new(),
     });
     expected.push(vec![ra_eval, val_eval]);
 
     let payoff: Vec<F2_128> = columns[VAL]
         .iter()
-        .zip(&columns[INC])
+        .zip(&inc_full)
         .map(|(value, increment)| *value + *increment)
         .collect();
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-write");
@@ -977,7 +1008,7 @@ pub(crate) fn prove_binary_twist_claims(
     let (rounds, challenges) = sumcheck(&columns[WA], &payoff, &eq, &mut transcript)?;
     let wa_eval = fold_all(&columns[WA], &challenges);
     let val_eval = fold_all(&columns[VAL], &challenges);
-    let inc_eval = fold_all(&columns[INC], &challenges);
+    let inc_eval = fold_all(increments, &challenges[tables.address_bits..]);
     let write = BinaryTwistWriteClaim {
         claimed_write,
         cycle_point: cycle_point.clone(),
@@ -987,12 +1018,20 @@ pub(crate) fn prove_binary_twist_claims(
         val_eval,
         inc_eval,
     };
+    inc_points.push(P3MosaicPoint {
+        table: table_index + 1,
+        point: compact_inc_point(&challenges, tables.address_bits),
+        columns: vec![0],
+        next_columns: Vec::new(),
+    });
+    inc_expected.push(vec![inc_eval]);
     points.push(P3MosaicPoint {
         table: table_index,
         point: challenges,
-        columns: vec![WA, VAL, INC],
+        columns: vec![WA, VAL],
+        next_columns: Vec::new(),
     });
-    expected.push(vec![wa_eval, val_eval, inc_eval]);
+    expected.push(vec![wa_eval, val_eval]);
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-update");
     absorb_mosaic_commitment(&mut transcript, commitment);
@@ -1002,14 +1041,14 @@ pub(crate) fn prove_binary_twist_claims(
         &columns[NEXT],
         &columns[VAL],
         &columns[WA],
-        &columns[INC],
+        &inc_full,
         &eq,
         &mut transcript,
     )?;
     let next_eval = fold_all(&columns[NEXT], &challenges);
     let val_eval = fold_all(&columns[VAL], &challenges);
     let wa_eval = fold_all(&columns[WA], &challenges);
-    let inc_eval = fold_all(&columns[INC], &challenges);
+    let inc_eval = fold_all(increments, &challenges[tables.address_bits..]);
     let update = BinaryTwistUpdateClaim {
         cycle_point,
         rounds,
@@ -1019,12 +1058,20 @@ pub(crate) fn prove_binary_twist_claims(
         wa_eval,
         inc_eval,
     };
+    inc_points.push(P3MosaicPoint {
+        table: table_index + 1,
+        point: compact_inc_point(&challenges, tables.address_bits),
+        columns: vec![0],
+        next_columns: Vec::new(),
+    });
+    inc_expected.push(vec![inc_eval]);
     points.push(P3MosaicPoint {
         table: table_index,
         point: challenges,
-        columns: vec![NEXT, VAL, WA, INC],
+        columns: vec![NEXT, VAL, WA],
+        next_columns: Vec::new(),
     });
-    expected.push(vec![next_eval, val_eval, wa_eval, inc_eval]);
+    expected.push(vec![next_eval, val_eval, wa_eval]);
 
     let read_address = prove_address_batch_claim(
         &columns[RA],
@@ -1048,6 +1095,8 @@ pub(crate) fn prove_binary_twist_claims(
     expected.extend(read_address.values);
     points.extend(write_address.points);
     expected.extend(write_address.values);
+    points.extend(inc_points);
+    expected.extend(inc_expected);
 
     Ok((
         BinaryTwistRamProof {
@@ -1072,10 +1121,11 @@ pub fn prove_binary_twist_ram(
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
     let tables = batch_tables(witness)?;
     let pcs = P3BinaryPcs::new(100);
-    let commitment = pcs.commit_mosaic(core::slice::from_ref(&tables.table))?;
+    let mosaic_tables = vec![tables.main.clone(), tables.inc.clone()];
+    let commitment = pcs.commit_mosaic(&mosaic_tables)?;
     let (mut proof, (points, expected)) =
         prove_binary_twist_claims(&tables, witness, &commitment, 0)?;
-    let opening = pcs.open_mosaic(core::slice::from_ref(&tables.table), &points)?;
+    let opening = pcs.open_mosaic(&mosaic_tables, &points)?;
     debug_assert!(pcs.verify_mosaic(&opening, &points, &expected)?);
     proof.opening = Some(opening);
     Ok(proof)
@@ -1097,14 +1147,18 @@ pub(crate) fn verify_binary_twist_claims(
     let cycle_bits = cycles.trailing_zeros() as usize;
     if proof.address_bits != address_bits
         || proof.cycle_bits != cycle_bits
-        || commitment.tables.len() <= table_index
+        || commitment.tables.len() <= table_index + 1
         || commitment.tables[table_index].num_variables != address_bits + cycle_bits
-        || commitment.tables[table_index].num_columns != RAM_COLUMNS
+        || commitment.tables[table_index].num_columns != MAIN_COLUMNS
+        || commitment.tables[table_index + 1].num_variables != cycle_bits.max(1)
+        || commitment.tables[table_index + 1].num_columns != 1
     {
         return Ok(None);
     }
     let mut points = Vec::new();
     let mut expected = Vec::new();
+    let mut inc_points = Vec::new();
+    let mut inc_expected = Vec::new();
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-read");
     absorb_mosaic_commitment(&mut transcript, commitment);
@@ -1143,6 +1197,7 @@ pub(crate) fn verify_binary_twist_claims(
         table: table_index,
         point: proof.read.challenges.clone(),
         columns: vec![RA, VAL],
+        next_columns: Vec::new(),
     });
     expected.push(vec![proof.read.ra_eval, proof.read.val_eval]);
 
@@ -1181,16 +1236,20 @@ pub(crate) fn verify_binary_twist_claims(
     {
         return Ok(None);
     }
+    inc_points.push(P3MosaicPoint {
+        table: table_index + 1,
+        point: compact_inc_point(&proof.write.challenges, address_bits),
+        columns: vec![0],
+        next_columns: Vec::new(),
+    });
+    inc_expected.push(vec![proof.write.inc_eval]);
     points.push(P3MosaicPoint {
         table: table_index,
         point: proof.write.challenges.clone(),
-        columns: vec![WA, VAL, INC],
+        columns: vec![WA, VAL],
+        next_columns: Vec::new(),
     });
-    expected.push(vec![
-        proof.write.wa_eval,
-        proof.write.val_eval,
-        proof.write.inc_eval,
-    ]);
+    expected.push(vec![proof.write.wa_eval, proof.write.val_eval]);
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-update");
     absorb_mosaic_commitment(&mut transcript, commitment);
@@ -1220,16 +1279,23 @@ pub(crate) fn verify_binary_twist_claims(
     if eq.len() != 1 || sum != eq[0] * combined {
         return Ok(None);
     }
+    inc_points.push(P3MosaicPoint {
+        table: table_index + 1,
+        point: compact_inc_point(&proof.update.challenges, address_bits),
+        columns: vec![0],
+        next_columns: Vec::new(),
+    });
+    inc_expected.push(vec![proof.update.inc_eval]);
     points.push(P3MosaicPoint {
         table: table_index,
         point: proof.update.challenges.clone(),
-        columns: vec![NEXT, VAL, WA, INC],
+        columns: vec![NEXT, VAL, WA],
+        next_columns: Vec::new(),
     });
     expected.push(vec![
         proof.update.next_eval,
         proof.update.val_eval,
         proof.update.wa_eval,
-        proof.update.inc_eval,
     ]);
 
     let Some(read_address) = verify_address_batch_claim(
@@ -1261,6 +1327,8 @@ pub(crate) fn verify_binary_twist_claims(
     };
     points.extend(write_address.points);
     expected.extend(write_address.values);
+    points.extend(inc_points);
+    expected.extend(inc_expected);
 
     Ok(Some((points, expected)))
 }
@@ -1272,7 +1340,7 @@ pub fn verify_binary_twist_ram(
     let Some(opening) = &proof.opening else {
         return Ok(false);
     };
-    if opening.commitment.tables.len() != 1 {
+    if opening.commitment.tables.len() != 2 {
         return Ok(false);
     }
     let Some((points, expected)) =
