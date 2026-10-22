@@ -2236,6 +2236,34 @@ pub fn unified_proof_sizes(proof: &UnifiedTraceProof) -> Result<UnifiedProofSize
     })
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ChunkedProofSizes {
+    pub access: usize,
+    pub cpu: usize,
+    pub aux: usize,
+    pub chain: usize,
+}
+
+impl ChunkedProofSizes {
+    pub fn total(&self) -> usize {
+        self.access + self.cpu + self.aux + self.chain
+    }
+}
+
+pub fn chunked_proof_sizes(proof: &ChunkedTraceProof) -> Result<ChunkedProofSizes, RuntimeError> {
+    let size = |bytes: Result<Vec<u8>, bincode::Error>| {
+        bytes
+            .map(|bytes| bytes.len())
+            .map_err(|error| RuntimeError::Proof(error.to_string()))
+    };
+    Ok(ChunkedProofSizes {
+        access: size(bincode::serialize(&proof.access))?,
+        cpu: size(bincode::serialize(&proof.chunks))?,
+        aux: size(bincode::serialize(&proof.aux))?,
+        chain: size(bincode::serialize(&proof.chain))?,
+    })
+}
+
 pub fn decode_unified_proof(bytes: &[u8]) -> Result<UnifiedTraceProof, RuntimeError> {
     bincode::deserialize(bytes).map_err(|error| RuntimeError::Proof(error.to_string()))
 }
@@ -3794,6 +3822,8 @@ mod tests {
         );
         let trace = execute(&program, config()).unwrap();
         let proof = prove_chunked_trace(&trace, 8, 2).unwrap();
+        let sizes = chunked_proof_sizes(&proof).unwrap();
+        assert!(sizes.total() > 0 && sizes.access > 0 && sizes.cpu > 0);
         let aux = proof.aux.as_ref().expect("aux claims");
         assert!(aux.shout.is_some() && aux.shift_router.is_some() && aux.store_router.is_some());
         verify_chunked_trace(&trace, &proof, 8).unwrap();
