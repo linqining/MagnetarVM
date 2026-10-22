@@ -26,12 +26,20 @@ const SOURCE_OFFSET: usize = WORD_BITS;
 pub enum RouterRoute {
     Shift(ShiftRoute),
     Store(StoreRoute),
+    None,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RouterMode {
+    Shifts,
+    Stores,
+    Both,
 }
 
 impl RouterRoute {
     fn offset(&self) -> usize {
         match self {
-            RouterRoute::Shift(_) => 0,
+            RouterRoute::Shift(_) | RouterRoute::None => 0,
             RouterRoute::Store(route) => route.offset,
         }
     }
@@ -46,7 +54,7 @@ impl RouterRoute {
                 };
                 kind * 64 + u64::from(route.shamt)
             }
-            RouterRoute::Store(_) => 0,
+            RouterRoute::Store(_) | RouterRoute::None => 0,
         }
     }
 
@@ -56,6 +64,7 @@ impl RouterRoute {
                 BitSource::Zero => Vec::new(),
                 BitSource::Input(bit) => vec![usize::from(bit)],
             },
+            RouterRoute::None => Vec::new(),
             RouterRoute::Store(route) => {
                 let written = route.written_bits();
                 if written.contains(&output_bit) {
@@ -104,11 +113,42 @@ fn write_word(ram: &mut [u8], word: usize, value: u64) {
 
 impl BinaryRouterWitness {
     pub fn from_trace(trace: &Trace) -> Result<Self, ProofError> {
+        Self::from_trace_mode(trace, RouterMode::Both)
+    }
+
+    pub fn from_trace_mode(trace: &Trace, mode: RouterMode) -> Result<Self, ProofError> {
         let mut routes = Vec::new();
         let mut inputs = Vec::new();
         let mut outputs = Vec::new();
         let mut ram = trace.initial_ram.clone();
         for row in &trace.rows {
+            let is_shift = matches!(
+                row.instruction.op,
+                Op::Sll | Op::Srl | Op::Sra | Op::Slli | Op::Srli | Op::Srai
+            );
+            let is_store = matches!(row.instruction.op, Op::Sb | Op::Sh | Op::Sw | Op::Sd);
+            if (is_shift && mode == RouterMode::Stores) || (is_store && mode == RouterMode::Shifts)
+            {
+                if let Some(access) = row.mem {
+                    if access.is_write {
+                        let offset = access.addr.wrapping_sub(trace.config.ram_base);
+                        let word = usize::try_from(offset / 8)
+                            .map_err(|_| ProofError::Pcs("RAM word overflows usize".into()))?;
+                        let lane = (offset % 8) as usize;
+                        if word * 8 + 8 <= ram.len() {
+                            let old = read_word(&ram, word);
+                            let width = usize::from(access.width);
+                            let source = if row.instruction.op.amo_width().is_some() {
+                                access.value
+                            } else {
+                                row.rs2_val
+                            };
+                            write_word(&mut ram, word, store_word(old, lane, width, source));
+                        }
+                    }
+                }
+                continue;
+            }
             match row.instruction.op {
                 Op::Sll | Op::Srl | Op::Sra | Op::Slli | Op::Srli | Op::Srai => {
                     let route = match row.instruction.op {
@@ -232,10 +272,7 @@ impl BinaryRouterWitness {
                 output[bit][cycle] = F2_128::from((outputs[cycle] >> bit) & 1);
             }
         }
-        routes.resize(
-            cycles,
-            RouterRoute::Shift(ShiftRoute::new(ShiftKind::LogicalLeft, 0)),
-        );
+        routes.resize(cycles, RouterRoute::None);
         for cycle in 0..cycles {
             is_shift[cycle] =
                 F2_128::from(u64::from(matches!(routes[cycle], RouterRoute::Shift(_))));
@@ -1296,5 +1333,27 @@ mod tests {
         let mut tampered = proof;
         tampered.input_bit_evals[0] = tampered.input_bit_evals[0] + F2_128::from(1u64);
         assert!(!verify_binary_router(&witness, &tampered).unwrap());
+    }
+    #[test]
+    fn router_modes_round_trip() {
+        let trace = trace();
+        for mode in [RouterMode::Shifts, RouterMode::Stores] {
+            let witness = BinaryRouterWitness::from_trace_mode(&trace, mode).unwrap();
+            let expected = match mode {
+                RouterMode::Shifts => {
+                    RouterRoute::Shift(ShiftRoute::new(ShiftKind::LogicalLeft, 0))
+                }
+                RouterMode::Stores => {
+                    RouterRoute::Store(StoreRoute::new(StoreWidth::Byte, 0).unwrap())
+                }
+                RouterMode::Both => unreachable!(),
+            };
+            assert!(witness
+                .routes
+                .iter()
+                .any(|route| std::mem::discriminant(route) == std::mem::discriminant(&expected)));
+            let proof = prove_binary_router(&witness).unwrap();
+            assert!(verify_binary_router(&witness, &proof).unwrap());
+        }
     }
 }
