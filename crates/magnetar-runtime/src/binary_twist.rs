@@ -22,9 +22,7 @@ pub struct BinaryTwistReadProof {
     pub ra_commitment: P3Commitment,
     pub val_commitment: P3Commitment,
     pub claimed_read: F2_128,
-    pub cycle_point: Vec<F2_128>,
     pub rounds: Vec<[F2_128; 4]>,
-    pub challenges: Vec<F2_128>,
     pub ra_eval: F2_128,
     pub val_eval: F2_128,
     pub ra_opening: P3Opening,
@@ -62,9 +60,7 @@ pub fn prove_read_identity(
         ra_commitment,
         val_commitment,
         claimed_read,
-        cycle_point,
         rounds,
-        challenges,
         ra_eval,
         val_eval,
         ra_opening,
@@ -79,18 +75,13 @@ pub fn verify_read_identity(
     let pcs = P3BinaryPcs::new(100);
     let cells = 1usize << proof.address_bits;
     let cycles = 1usize << proof.cycle_bits;
-    if proof.challenges.len() != proof.address_bits + proof.cycle_bits
-        || proof.rounds.len() != proof.challenges.len()
-    {
+    if proof.rounds.len() != proof.address_bits + proof.cycle_bits {
         return Ok(false);
     }
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-read");
     absorb_commitment(&mut transcript, "ra", &proof.ra_commitment);
     absorb_commitment(&mut transcript, "val", &proof.val_commitment);
     let cycle_point = sample_point(&mut transcript, proof.cycle_bits);
-    if proof.cycle_point != cycle_point {
-        return Ok(false);
-    }
     let values = padded_values(&witness.read_value, proof.cycle_bits);
     if fold_all(&values, &cycle_point) != proof.claimed_read {
         return Ok(false);
@@ -99,7 +90,8 @@ pub fn verify_read_identity(
     transcript.absorb("claimed-read", &proof.claimed_read.value().to_le_bytes());
 
     let mut sum = proof.claimed_read;
-    for (round, &expected) in proof.rounds.iter().zip(&proof.challenges) {
+    let mut challenges = Vec::with_capacity(proof.rounds.len());
+    for round in &proof.rounds {
         if round[0] + round[1] != sum {
             return Ok(false);
         }
@@ -107,9 +99,7 @@ pub fn verify_read_identity(
             transcript.absorb("round", &coefficient.value().to_le_bytes());
         }
         let challenge = challenge(&mut transcript, "sumcheck");
-        if challenge != expected {
-            return Ok(false);
-        }
+        challenges.push(challenge);
         sum = evaluate_round(round, challenge);
         eq = fold(&eq, challenge);
     }
@@ -121,13 +111,13 @@ pub fn verify_read_identity(
     }
     let ra_ok = pcs.verify(
         &proof.ra_commitment,
-        &proof.challenges,
+        &challenges,
         proof.ra_eval,
         &proof.ra_opening,
     )?;
     let val_ok = pcs.verify(
         &proof.val_commitment,
-        &proof.challenges,
+        &challenges,
         proof.val_eval,
         &proof.val_opening,
     )?;
@@ -278,9 +268,7 @@ pub struct BinaryTwistWriteProof {
     pub val_commitment: P3Commitment,
     pub inc_commitment: P3Commitment,
     pub claimed_write: F2_128,
-    pub cycle_point: Vec<F2_128>,
     pub rounds: Vec<[F2_128; 4]>,
-    pub challenges: Vec<F2_128>,
     pub wa_eval: F2_128,
     pub val_eval: F2_128,
     pub inc_eval: F2_128,
@@ -326,9 +314,7 @@ pub fn prove_write_identity(
         val_commitment,
         inc_commitment,
         claimed_write,
-        cycle_point,
         rounds,
-        challenges,
         wa_eval,
         val_eval,
         inc_eval,
@@ -343,9 +329,7 @@ pub fn verify_write_identity(
     witness: &BinaryTwistWitness,
 ) -> Result<bool, ProofError> {
     let pcs = P3BinaryPcs::new(100);
-    if proof.challenges.len() != proof.address_bits + proof.cycle_bits
-        || proof.rounds.len() != proof.challenges.len()
-    {
+    if proof.rounds.len() != proof.address_bits + proof.cycle_bits {
         return Ok(false);
     }
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-write");
@@ -353,9 +337,6 @@ pub fn verify_write_identity(
     absorb_commitment(&mut transcript, "val", &proof.val_commitment);
     absorb_commitment(&mut transcript, "inc", &proof.inc_commitment);
     let cycle_point = sample_point(&mut transcript, proof.cycle_bits);
-    if proof.cycle_point != cycle_point {
-        return Ok(false);
-    }
     let values = padded_values(&witness.write_value, proof.cycle_bits);
     if fold_all(&values, &cycle_point) != proof.claimed_write {
         return Ok(false);
@@ -363,7 +344,8 @@ pub fn verify_write_identity(
     let mut eq = eq_index(&cycle_point, proof.address_bits, proof.cycle_bits);
     transcript.absorb("claimed-write", &proof.claimed_write.value().to_le_bytes());
     let mut sum = proof.claimed_write;
-    for (round, &expected) in proof.rounds.iter().zip(&proof.challenges) {
+    let mut challenges = Vec::with_capacity(proof.rounds.len());
+    for round in &proof.rounds {
         if round[0] + round[1] != sum {
             return Ok(false);
         }
@@ -371,9 +353,7 @@ pub fn verify_write_identity(
             transcript.absorb("round", &coefficient.value().to_le_bytes());
         }
         let challenge = challenge(&mut transcript, "sumcheck");
-        if challenge != expected {
-            return Ok(false);
-        }
+        challenges.push(challenge);
         sum = evaluate_round(round, challenge);
         eq = fold(&eq, challenge);
     }
@@ -382,19 +362,19 @@ pub fn verify_write_identity(
     }
     let wa_ok = pcs.verify(
         &proof.wa_commitment,
-        &proof.challenges,
+        &challenges,
         proof.wa_eval,
         &proof.wa_opening,
     )?;
     let val_ok = pcs.verify(
         &proof.val_commitment,
-        &proof.challenges,
+        &challenges,
         proof.val_eval,
         &proof.val_opening,
     )?;
     let inc_ok = pcs.verify(
         &proof.inc_commitment,
-        &proof.challenges,
+        &challenges,
         proof.inc_eval,
         &proof.inc_opening,
     )?;

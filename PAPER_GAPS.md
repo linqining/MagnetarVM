@@ -80,7 +80,8 @@
 - `e010322`：Router proof 移除可重算的 `*_cycle_point`。
 - `37c2c1e`：Router proof 移除可重算的 `*_challenges`。
 - `6ee9096`：BinaryShout proof 移除可重算的 `cycle_point`/`challenges`，proof 降至 274,639 B。
-- 本轮：`BinaryTwistUpdateProof` 移除可重算的 `challenges`，verifier 从 transcript 重新派生并用于 P3 opening。
+- `ee1d413`：`BinaryTwistUpdateProof` 移除可重算的 `challenges`。
+- 本轮：`BinaryTwistReadProof`/`BinaryTwistWriteProof` 同步移除 `cycle_point` 与 `challenges`，verifier 重新派生。
 
 ## 二、逐项差距
 
