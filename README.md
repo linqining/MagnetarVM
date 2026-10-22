@@ -188,11 +188,11 @@ them:
 
 | width | CPU vars | CPU constraints | proof bytes | prove | verify |
 |---|---|---|---|---|---|
-| 64 | 6,991 | 11,933 | 265,023 | 0.39 s | 0.043 s |
-| 32 | 4,015 | 6,813 | 227,079 | 0.38 s | 0.023 s |
-| 8 | 1,783 | 2,973 | 226,823 | 0.35 s | 0.013 s |
+| 64 | 6,991 | 11,933 | 266,431 | 0.39 s | 0.043 s |
+| 32 | 4,015 | 6,813 | 228,231 | 0.36 s | 0.023 s |
+| 8 | 1,783 | 2,973 | 226,727 | 0.35 s | 0.015 s |
 
-At width 64 the proof splits into access=12,778, cpu=244,568, shout=2,298,
+At width 64 the proof splits into access=12,778, cpu=245,976, shout=2,298,
 shift_router=1, store_router=5,346 bytes. Unified proofs no longer carry the
 redundant trace rows; the verifier takes the trace alongside the proof. The changes behind these numbers:
 
@@ -205,7 +205,7 @@ redundant trace rows; the verifier takes the trace alongside the proof. The chan
    `P3SharedPcs` plugs this batch into the Spartan proof: the CPU point and the
    BinaryTwist point claims are opened by the same P3 argument. The proof no
    longer pays for a separate CPU opening plus a separate RAM opening; the old
-   separate layout was 593,508 bytes, the shared layout is 265,023 bytes.
+   separate layout was 593,508 bytes, the shared layout is 266,431 bytes.
 3. **Bit-sliced virtual addresses and values.** The address table commits
    `2a+2` cycle-length bit columns (read bits, write bits, and two validity
    bits); full one-hot addresses are reconstructed by the verifier. Booleanity
@@ -249,11 +249,11 @@ following reference measurements on unified and chunked proofs (chunk size 4):
 
 | rows | unified bytes | chunked bytes | prove ms | verify ms |
 |---:|---:|---:|---:|---:|
-| 2 | 140,478 | 201,455 | 12.9 | 6.1 |
-| 4 | 173,494 | 279,911 | 25.1 | 11.2 |
-| 8 | 207,766 | 444,623 | 50.8 | 20.6 |
-| 16 | 252,598 | 749,319 | 125.9 | 40.9 |
-| 32 | 294,070 | 1,326,655 | 352.5 | 85.2 |
+| 2 | 142,078 | 201,455 | 26.8 | 10.2 |
+| 4 | 172,566 | 279,911 | 27.0 | 10.8 |
+| 8 | 208,278 | 444,623 | 51.0 | 20.2 |
+| 16 | 252,662 | 749,319 | 127.0 | 40.9 |
+| 32 | 293,078 | 1,326,655 | 353.4 | 86.0 |
 
 The unified proof no longer carries `rows`; the remaining growth comes from the
 per-row CPU relation and PCS work. Chunked proofs additionally duplicate CPU

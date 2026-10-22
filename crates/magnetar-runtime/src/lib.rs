@@ -2021,17 +2021,28 @@ pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTracePr
     aux_tables.push(register_tables.addr.clone());
     aux_tables.push(register_tables.inc.clone());
     aux_tables.push(trace_table);
-    let trace_value = Mle::new(trace_witness.values.clone())
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?
-        .eval(&trace_witness.point)
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    points.push(P3MosaicPoint {
-        table: trace_index,
-        point: trace_witness.point.clone(),
-        columns: vec![0],
-        next_columns: Vec::new(),
-    });
-    values.push(vec![trace_value]);
+    let trace_claims = magnetar_proof::virtual_spartan::split_segment_claims(
+        &trace_witness.layout,
+        &trace_witness.values,
+        &trace_witness.point,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let total_bits = trace_witness.layout.total_bits.trailing_zeros() as usize;
+    for (segment, claim) in trace_witness.layout.segments.iter().zip(&trace_claims) {
+        let size_bits = segment.len.trailing_zeros() as usize;
+        let suffix = segment.offset >> size_bits;
+        let mut point = trace_witness.point[..size_bits].to_vec();
+        for bit in 0..total_bits - size_bits {
+            point.push(F2_128::from(((suffix >> bit) & 1) as u64));
+        }
+        points.push(P3MosaicPoint {
+            table: trace_index,
+            point,
+            columns: vec![0],
+            next_columns: Vec::new(),
+        });
+        values.push(vec![claim.value]);
+    }
     let shared_pcs = P3SharedPcs::new(100, aux_tables, points, values);
     let (system_a, system_b) = split_cpu_relations(&system);
     let layout = cpu_segment_layout(z.len())?;
@@ -2176,17 +2187,39 @@ pub fn verify_unified_trace(
     values.extend(register_values);
     let trace_witness = crate::trace_commitment::trace_witness(trace)?;
     let trace_index = register_index + 2;
+    let trace_claims = magnetar_proof::virtual_spartan::split_segment_claims(
+        &trace_witness.layout,
+        &trace_witness.values,
+        &trace_witness.point,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let trace_value = Mle::new(trace_witness.values.clone())
         .map_err(|error| RuntimeError::Proof(error.to_string()))?
         .eval(&trace_witness.point)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    points.push(P3MosaicPoint {
-        table: trace_index,
-        point: trace_witness.point.clone(),
-        columns: vec![0],
-        next_columns: Vec::new(),
-    });
-    values.push(vec![trace_value]);
+    magnetar_proof::virtual_spartan::verify_segment_claims(
+        &trace_witness.layout,
+        &trace_claims,
+        &trace_witness.point,
+        trace_value,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let total_bits = trace_witness.layout.total_bits.trailing_zeros() as usize;
+    for (segment, claim) in trace_witness.layout.segments.iter().zip(&trace_claims) {
+        let size_bits = segment.len.trailing_zeros() as usize;
+        let suffix = segment.offset >> size_bits;
+        let mut point = trace_witness.point[..size_bits].to_vec();
+        for bit in 0..total_bits - size_bits {
+            point.push(F2_128::from(((suffix >> bit) & 1) as u64));
+        }
+        points.push(P3MosaicPoint {
+            table: trace_index,
+            point,
+            columns: vec![0],
+            next_columns: Vec::new(),
+        });
+        values.push(vec![claim.value]);
+    }
     let (system, cpu_witness) = merged_cpu_system(trace, width)?;
     let (system_a, system_b) = split_cpu_relations(&system);
     let z = witness_vector(&system, &cpu_witness)
