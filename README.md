@@ -54,7 +54,7 @@ Explicitly not implemented:
 | 7 | Memory consistency | `magnetar-memory` | Replay checks, Twist log, one-hot address/increment witness, load/store, memory/register chain, trace-order interleaved access proofs, and a reference Sv39 page-table walker |
 | 8 | Routing / Bit operations | `magnetar-routing` | Shift/store routes and witnesses implemented; BinaryRouter sum-check not implemented |
 | 9 | Proof engine | `magnetar-proof` | MLE + sum-check + reference Spartan reduction implemented; BinarySpartan not implemented |
-| 10 | Commitment / PCS | `magnetar-pcs` | Merkle tree, batched Merkle vector commitment, naive polynomial PCS, `Pcs` trait, a succinct BN254 KZG backend with batch openings via `arkworks`, and a vendored Ligerito 0.8.0 index-opening backend for binary fields (2^16 proof: 118,624 bytes, 99 ms prove, 3.1 ms verify); Ligerito multilinear point openings are not wired into the CPU Spartan path |
+| 10 | Commitment / PCS | `magnetar-pcs` | Merkle tree, batched Merkle vector commitment, naive polynomial PCS, `Pcs` trait, a succinct BN254 KZG backend with batch openings via `arkworks`, a vendored Ligerito 0.8.0 index-opening backend (2^16: 118,624 bytes / 99 ms / 3.1 ms), and Plonky3 `p3-binary-pcs` multilinear point PCS wired into the CPU Spartan proof (2^16: 321,232 bytes / 45 ms / 3.1 ms) |
 | 11 | Transcript / Proof format | `magnetar-transcript` | SHA-256 and SHA3-256 Fiat–Shamir transcripts implemented; canonical bincode encoding for Spartan and unified/chunked trace proofs lives in `magnetar-pcs` / `magnetar-runtime` |
 | 12 | Prover / Verifier runtime | `magnetar-runtime` | Reference pipeline + Spartan backend + load/store, AMO read-modify-write, LR/SC reservation checks, syscall read write-back, memory/register chains, and trace-order interleaved access proofs; combined `TraceProof` binds CPU rows (ALU/AMO/LR/SC/load/store/branch/jump/Auipc) to the access log, including lane-level sub-word loads/stores, and `UnifiedTraceProof` merges all rows into one proof, `ChunkedTraceProof` produces per-range proofs linked by state digests, and both carry the ROM and have standalone verifiers bound to a canonical trace digest and program hash; memory/register tables now use Merkle-path leaf openings with single-cell root updates, and the access log no longer duplicates CPU load/store proofs; a hiding/succinct trace commitment and BinaryTwist/Shout remain |
 | 13 | Recursion / Aggregation | `magnetar-recursion` | Chunk plan + hash-chain and state-continuity reference aggregators implemented, wired to runtime `ChunkedTraceProof`; zk verifier-in-the-VM backend not implemented |
@@ -117,7 +117,7 @@ cargo fmt --all -- --check
 cargo test --workspace
 ```
 
-At the time of writing the suite contains **253 tests across the 15 crates,
+At the time of writing the suite contains **256 tests across the 15 crates,
 all passing**; clippy with `-D warnings` and `rustfmt --check` are clean.
 
 ## Compiling and Proving a Guest Program
@@ -153,6 +153,7 @@ current fetcher rejects a 32-bit instruction that starts at a 2-byte boundary.
 - `rand` — fresh blinding for hiding commitments.
 - `ark-bn254` / `ark-ec` / `ark-ff` — BN254 KZG polynomial commitment backend.
 - `ligerito` (vendored, MIT) — binary tower-field Ligerito PCS with SIMD/parallel backends.
+- `p3-binary-pcs` / `p3-binary-field` (vendored Plonky3, MIT/Apache-2.0) — multilinear point PCS over the canonical 128-bit binary tower and CLMUL field arithmetic.
 - `criterion` — micro-benchmarks for field arithmetic and the proof path.
 - `serde` / `bincode` — canonical Spartan proof encoding.
 - `cargo-nextest` — faster test execution.
@@ -161,24 +162,25 @@ current fetcher rejects a 32-bit instruction that starts at a 2-byte boundary.
 ## Proof Path and Performance Note
 
 The prover is a **reference implementation** built on a generic Spartan
-reduction over GF(2^128). The CPU witness still uses the naive Merkle PCS;
-BinarySpartan, SIMD R1CS, BinaryTwist/Shout, and BinaryRouter are not on this
-path. A vendored Ligerito 0.8.0 backend provides a real binary-field PCS and is
-measured separately; its public API exposes indexed claims, not the multilinear
-point openings the CPU Spartan reduction needs.
+reduction over GF(2^128). The CPU witness now opens through Plonky3's multilinear
+binary-field PCS (`p3-binary-pcs`), while memory tables use Merkle-path openings.
+BinarySpartan, SIMD R1CS, BinaryTwist/Shout, and BinaryRouter are still absent.
+A vendored Ligerito 0.8.0 backend remains available for index openings.
 
-Measured on the compiled 18-row hello guest in release mode (Apple arm64,
-single-threaded); `./scripts/prove_guest.sh <width>` reproduces them:
+`F2_128` is now aligned with Plonky3's canonical 128-bit tower: multiplication
+and inversion call `BinaryField128` (CLMUL/Karatsuba), so PCS values need no
+basis change. Measured on the compiled 18-row hello guest in release mode
+(Apple arm64, single-threaded); `./scripts/prove_guest.sh <width>` reproduces
+them:
 
 | width | CPU vars | CPU constraints | proof bytes | prove | verify |
 |---|---|---|---|---|---|
-| 64 | 6,991 | 11,933 | 278,772 | 0.335 s | 0.335 s |
-| 32 | 4,015 | 6,813 | 213,108 | 0.178 s | 0.165 s |
-| 16 | 2,527 | 4,253 | 213,108 | 0.186 s | 0.162 s |
-| 8 | 1,783 | 2,973 | 180,212 | 0.101 s | 0.083 s |
+| 64 | 6,991 | 11,933 | 340,932 | 0.072 s | 0.048 s |
+| 32 | 4,015 | 6,813 | 305,548 | 0.047 s | 0.030 s |
+| 8 | 1,783 | 2,973 | 277,332 | 0.030 s | 0.022 s |
 
-At width 64 the proof splits into access=143,808, cpu=132,976, rows=1,860,
-and rom=96 bytes. The optimization pass that produced these numbers:
+At width 64 the proof splits into access=143,808, cpu=195,136, rows=1,860,
+and rom=96 bytes. The changes behind these numbers:
 
 1. **Per-op ALU relations.** `simple_alu_row_relation` allocates only the gates
    an operation needs: `addi` is 449 variables and `lui` is 64, down from 4,492
@@ -190,20 +192,22 @@ and rom=96 bytes. The optimization pass that produced these numbers:
 3. **No duplicated access proofs.** CPU row proofs already bind load/store
    address/value relations, so the access log no longer repeats a Spartan proof
    for every register or memory access.
-4. **Ligerito PCS baseline.** The vendored Ligerito backend commits a 2^16
-   vector of 128-bit symbols and produces a **118,624-byte** evaluation proof
-   in **99 ms** (verify **3.1 ms**) on this host:
-   `cargo run --release -p magnetar-pcs --example ligerito_bench`. Upstream
-   reports roughly 150 KB and 50 ms for 2^20 with AVX-512.
+4. **Multilinear PCS in the CPU proof.** `p3-binary-pcs` commits 2^k witness
+   values and opens at the Spartan challenge point. A 2^16 standalone opening
+   takes **321,232 bytes / 45 ms prove / 3.1 ms verify**
+   (`cargo run --release -p magnetar-pcs --example p3_bench -- 16`). The
+   vendored Ligerito index-opening backend measures 118,624 bytes / 99 ms /
+   3.1 ms for the same size.
+5. **Field arithmetic.** Plonky3's CLMUL tower brings `F2_128` multiplication to
+   about **9.6 ns** and inversion to **84 ns** on this host, down from 238 ns
+   and 62 µs.
 
-The remaining gap is structural: BinaryTwist/Shout would remove the sequential
+The remaining gap is structural: BinaryTwist/Shout would replace the sequential
 Merkle-path memory proof, BinaryRouter would replace the remaining shift and
 compare circuits, and SIMD R1CS/BinarySpartan would pack many bit-lanes into
-each GF(2^128) element. The CPU witness PCS also remains non-succinct, and the
-verifier still reconstructs the trace, merged system, and final table roots, so
-verification is O(trace + RAM) rather than succinct. Portable tower
-multiplication is about 238 ns and inversion about 62 µs on this host, without
-CLMUL/AVX packing or parallel hashing.
+one GF(2^128) element. The verifier still reconstructs the trace and merged
+system before checking the succinct CPU PCS proof, so it is not yet a fully
+succinct verifier.
 
 ## Coverage
 

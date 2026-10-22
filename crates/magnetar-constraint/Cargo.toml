@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 lambdaworks-math.workspace = true
+p3-binary-field = { path = "../../vendor/plonky3/binary-field" }
+p3-field = { path = "../../vendor/plonky3/field" }
 serde.workspace = true
 thiserror.workspace = true
 

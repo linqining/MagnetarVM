@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 exclude = [
+    "vendor/plonky3",
     "vendor/ligerito",
     "vendor/ligerito-binary-fields",
     "vendor/ligerito-merkle",

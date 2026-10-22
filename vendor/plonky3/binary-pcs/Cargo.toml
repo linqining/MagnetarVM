@@ -1,0 +1,35 @@
+[package]
+name = "p3-binary-pcs"
+description = "Multilinear polynomial commitment over Plonky3 binary tower fields, via additive-domain proximity"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+# criterion pulls rayon transitively and rayon does not build on wasi.
+[features]
+parallel = ["p3-maybe-rayon/parallel"]
+test-utils = []
+
+[dependencies]
+p3-binary-dft.workspace = true
+p3-binary-field.workspace = true
+p3-challenger.workspace = true
+p3-commit.workspace = true
+p3-field.workspace = true
+p3-matrix.workspace = true
+p3-maybe-rayon.workspace = true
+p3-multilinear-util.workspace = true
+p3-security.workspace = true
+p3-sumcheck.workspace = true
+p3-util.workspace = true
+p3-whir.workspace = true
+serde = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

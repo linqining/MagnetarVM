@@ -8,6 +8,17 @@ license.workspace = true
 bincode.workspace = true
 ligerito = { path = "../../vendor/ligerito", default-features = false, features = ["std", "prover", "parallel", "hardware-accel", "transcript-sha256", "serde"] }
 ligerito-binary-fields = { path = "../../vendor/ligerito-binary-fields", default-features = false, features = ["std"] }
+p3-binary-field = { path = "../../vendor/plonky3/binary-field" }
+p3-binary-pcs = { path = "../../vendor/plonky3/binary-pcs", default-features = false }
+p3-challenger = { path = "../../vendor/plonky3/challenger" }
+p3-commit = { path = "../../vendor/plonky3/commit" }
+p3-field = { path = "../../vendor/plonky3/field" }
+p3-keccak = { path = "../../vendor/plonky3/keccak" }
+p3-matrix = { path = "../../vendor/plonky3/matrix" }
+p3-merkle-tree = { path = "../../vendor/plonky3/merkle-tree" }
+p3-multilinear-util = { path = "../../vendor/plonky3/multilinear-util" }
+p3-sumcheck = { path = "../../vendor/plonky3/sumcheck" }
+p3-symmetric = { path = "../../vendor/plonky3/symmetric" }
 magnetar-proof.workspace = true
 magnetar-transcript.workspace = true
 magnetar-constraint.workspace = true

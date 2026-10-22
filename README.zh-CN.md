@@ -54,7 +54,7 @@
 | 7 | 内存一致性 | `magnetar-memory` | replay、Twist log、one-hot 地址/increment witness、load/store、memory/register chain、trace 顺序交错访问 proof，以及参考 Sv39 page-table walker |
 | 8 | 路由 / 位操作 | `magnetar-routing` | shift/store route 与 witness 已实现；BinaryRouter sum-check 未实现 |
 | 9 | 证明引擎 | `magnetar-proof` | MLE + sum-check + 参考 Spartan 归约已实现；BinarySpartan 未实现 |
-| 10 | 承诺 / PCS | `magnetar-pcs` | Merkle tree、批量 Merkle vector commitment、naive PCS、`Pcs` trait、基于 `arkworks` 的简洁 BN254 KZG 后端（支持批量 opening），以及 vendored Ligerito 0.8.0 binary-field 索引 opening 后端（2^16 proof：118,624 字节、prove 99 ms、verify 3.1 ms）；Ligerito 的多线性点 opening 尚未接入 CPU Spartan 路径 |
+| 10 | 承诺 / PCS | `magnetar-pcs` | Merkle tree、批量 Merkle vector commitment、naive PCS、`Pcs` trait、基于 `arkworks` 的简洁 BN254 KZG 后端（支持批量 opening）、vendored Ligerito 0.8.0 索引 opening 后端（2^16：118,624 字节 / 99 ms / 3.1 ms），以及接入 CPU Spartan 的 Plonky3 `p3-binary-pcs` 多线性点 PCS（2^16：321,232 字节 / 45 ms / 3.1 ms） |
 | 11 | Transcript / 证明格式 | `magnetar-transcript` | SHA-256 与 SHA3-256 Fiat–Shamir transcript 已实现；Spartan 与 unified/chunked trace proof 的规范化 bincode 编解码位于 `magnetar-pcs` / `magnetar-runtime` |
 | 12 | Prover / Verifier 运行时 | `magnetar-runtime` | reference pipeline + Spartan backend + load/store、AMO read-modify-write、LR/SC reservation 检查、syscall read 回写、memory/register chain、trace 顺序交错访问 proof；组合 `TraceProof` 将 CPU 行（ALU/AMO/LR/SC/load/store/branch/jump/Auipc）绑定到访问日志，并支持 lane 级 sub-word load/store；`UnifiedTraceProof` 合并所有行，`ChunkedTraceProof` 按区间生成并用状态链连接，两者都携带 ROM，并都有绑定规范化 trace digest 与 program hash 的 standalone verifier；memory/register 表现在使用 Merkle path leaf opening 与单 cell root 更新，access log 不再重复 CPU load/store proof；隐藏/简洁 trace commitment 与 BinaryTwist/Shout 仍待做 |
 | 13 | 递归 / 聚合 | `magnetar-recursion` | chunk plan + hash-chain 与状态连续性参考聚合器已实现，并接入 runtime `ChunkedTraceProof`；zk verifier-in-the-VM backend 未实现 |
@@ -117,7 +117,7 @@ cargo fmt --all -- --check
 cargo test --workspace
 ```
 
-当前测试套件包含 **15 个 crate 的 253 个测试，全部通过**；
+当前测试套件包含 **15 个 crate 的 256 个测试，全部通过**；
 `clippy -D warnings` 与 `rustfmt --check` 均无问题。
 
 ## 编译并证明一个 Guest 程序
@@ -152,6 +152,7 @@ cargo test --workspace
 - `rand` — hiding commitment 的随机 blinding；
 - `ark-bn254` / `ark-ec` / `ark-ff` — BN254 KZG 多项式承诺后端；
 - `ligerito`（vendored，MIT）— binary tower field 的 Ligerito PCS，带 SIMD/parallel 后端；
+- `p3-binary-pcs` / `p3-binary-field`（vendored Plonky3，MIT/Apache-2.0）— canonical 128-bit binary tower 上的多线性点 PCS 与 CLMUL 域运算；
 - `criterion` — 域运算与证明路径的微基准；
 - `serde` / `bincode` — Spartan proof 的规范化编码；
 - `cargo-nextest` — 更快的测试执行；
@@ -160,23 +161,24 @@ cargo test --workspace
 ## 证明路径与性能说明
 
 当前 prover 是**参考实现**，基于 GF(2^128) 上的通用 Spartan 归约。CPU witness
-仍使用 naive Merkle PCS；BinarySpartan、SIMD R1CS、BinaryTwist/Shout 与
-BinaryRouter 尚未进入这条路径。仓库内 vendored 的 Ligerito 0.8.0 提供了真正的
-binary-field PCS，并单独做了基准；它的公开 API 提供按索引 claim，而不是 CPU
-Spartan 归约所需的多线性点 opening。
+现已通过 Plonky3 的多线性 binary-field PCS（`p3-binary-pcs`）打开，memory table
+使用 Merkle-path opening；BinarySpartan、SIMD R1CS、BinaryTwist/Shout 与
+BinaryRouter 仍未实现。仓库内 vendored Ligerito 0.8.0 继续提供按索引 claim 的
+PCS 后端。
 
-在编译后的 18 行 hello guest 上以 release 模式实测（Apple arm64，单线程）；
+`F2_128` 已对齐 Plonky3 的 canonical 128-bit tower：乘法和求逆调用
+`BinaryField128`（CLMUL/Karatsuba），PCS 数值无需基变换。在编译后的 18 行
+hello guest 上以 release 模式实测（Apple arm64，单线程）；
 `./scripts/prove_guest.sh <width>` 可复现：
 
 | 宽度 | CPU 变量 | CPU 约束 | 证明字节 | prove | verify |
 |---|---|---|---|---|---|
-| 64 | 6,991 | 11,933 | 278,772 | 0.335 s | 0.335 s |
-| 32 | 4,015 | 6,813 | 213,108 | 0.178 s | 0.165 s |
-| 16 | 2,527 | 4,253 | 213,108 | 0.186 s | 0.162 s |
-| 8 | 1,783 | 2,973 | 180,212 | 0.101 s | 0.083 s |
+| 64 | 6,991 | 11,933 | 340,932 | 0.072 s | 0.048 s |
+| 32 | 4,015 | 6,813 | 305,548 | 0.047 s | 0.030 s |
+| 8 | 1,783 | 2,973 | 277,332 | 0.030 s | 0.022 s |
 
-width=64 时证明体积分解为 access=143,808、cpu=132,976、rows=1,860、rom=96
-字节。产生这些数字的优化：
+width=64 时证明体积分解为 access=143,808、cpu=195,136、rows=1,860、rom=96
+字节。产生这些数字的改动：
 
 1. **按操作裁剪 ALU 约束。** `simple_alu_row_relation` 只分配操作真正需要的
    gate：`addi` 449 个变量、`lui` 64 个，而统一 shifter+comparator 电路每行
@@ -185,17 +187,18 @@ width=64 时证明体积分解为 access=143,808、cpu=132,976、rows=1,860、ro
    仅在该 path 上不同，不再逐访问打开整张 RAM 表。
 3. **去掉重复 access proof。** CPU 行证明已经绑定 load/store 的地址/值关系，
    access log 不再为每次寄存器/内存访问重复生成 Spartan proof。
-4. **Ligerito PCS 基线。** vendored Ligerito 对 2^16 个 128-bit 符号生成
-   **118,624 字节** evaluation proof，prove **99 ms**、verify **3.1 ms**：
-   `cargo run --release -p magnetar-pcs --example ligerito_bench`。上游报告
-   2^20 在 AVX-512 下约 150 KB、50 ms。
+4. **CPU proof 接入多线性 PCS。** `p3-binary-pcs` 对 2^k 个 witness 值做承诺，
+   并在 Spartan challenge point 打开。2^16 standalone opening 实测
+   **321,232 字节 / prove 45 ms / verify 3.1 ms**
+   （`cargo run --release -p magnetar-pcs --example p3_bench -- 16`）；vendored
+   Ligerito 索引 opening 同规模为 118,624 字节 / 99 ms / 3.1 ms。
+5. **域运算。** Plonky3 CLMUL tower 使 `F2_128` 乘法约 **9.6 ns**、求逆约
+   **84 ns**，此前为 238 ns 和 62 µs。
 
 剩余差距是结构性的：BinaryTwist/Shout 可替代顺序 Merkle-path 内存证明；
 BinaryRouter 可替代剩余的 shift/compare 电路；SIMD R1CS/BinarySpartan 可把
-多条 bit-lane 打包进一个 GF(2^128) 元素。CPU witness PCS 仍非简洁，verifier
-仍会重建 trace、合并 system 和最终表 root，因此验证复杂度是 O(trace + RAM)，
-不是简洁验证。本机 portable tower 乘法约 238 ns、求逆约 62 µs，没有
-CLMUL/AVX packing 或并行哈希。
+多条 bit-lane 打包进一个 GF(2^128) 元素。verifier 仍会重建 trace 与合并
+system，再验证简洁 CPU PCS proof，因此还不是完整的简洁 verifier。
 
 ## 覆盖率
 

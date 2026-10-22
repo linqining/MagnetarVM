@@ -1,0 +1,31 @@
+[package]
+name = "p3-merkle-tree"
+description = "A Merkle tree implementation providing commitment scheme functionality for cryptographic proofs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+parallel = ["p3-maybe-rayon/parallel"]
+
+[dependencies]
+p3-commit.workspace = true
+p3-field.workspace = true
+p3-matrix.workspace = true
+p3-maybe-rayon.workspace = true
+p3-symmetric.workspace = true
+p3-util.workspace = true
+
+itertools.workspace = true
+rand = { workspace = true, features = ["std_rng"] }
+serde = { workspace = true, features = ["alloc"] }
+spin.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

@@ -8,7 +8,9 @@ use magnetar_constraint::{ConstraintSystem, LayoutError, Witness, WitnessLayout,
 use magnetar_cpu::{check_trace, CpuError};
 use magnetar_executor::{execute_with_io, ExecError, ExecutionIo};
 use magnetar_memory::{check_memory, check_ram, MemoryError, MemoryReport};
-use magnetar_pcs::{MerklePath, MerkleTree, NaiveCommitment, NaiveMerklePcs, NaiveOpening};
+use magnetar_pcs::{
+    MerklePath, MerkleTree, NaiveCommitment, NaiveMerklePcs, P3BinaryPcs, P3Commitment, P3Opening,
+};
 use magnetar_preprocess::{preprocess, PreprocessError, PreprocessedProgram};
 use magnetar_proof::{prove_spartan, verify_spartan, Pcs, SpartanError, SpartanProof};
 use magnetar_recursion::{ChainedChunk, ChainedProof, ChainedRecursion, ChunkPlan, RecursionError};
@@ -226,16 +228,27 @@ pub trait Verifier {
         -> Result<bool, Self::Error>;
 }
 
-/// Reference proof backend: Spartan over the constraint IR with a Merkle PCS.
-#[derive(Clone, Copy, Debug, Default)]
+pub type CpuSpartanProof = SpartanProof<P3Commitment, P3Opening>;
+
+/// Reference proof backend: Spartan over the constraint IR with the P3
+/// multilinear binary-field PCS.
+#[derive(Clone, Copy, Debug)]
 pub struct ConstraintProofBackend {
-    pub pcs: NaiveMerklePcs,
+    pub pcs: P3BinaryPcs,
+}
+
+impl Default for ConstraintProofBackend {
+    fn default() -> Self {
+        Self {
+            pcs: P3BinaryPcs::new(100),
+        }
+    }
 }
 
 impl Prover for ConstraintProofBackend {
     type Statement = ConstraintSystem;
     type Witness = Witness;
-    type Proof = SpartanProof<NaiveCommitment, NaiveOpening>;
+    type Proof = CpuSpartanProof;
     type Error = RuntimeError;
 
     fn prove(
@@ -249,7 +262,7 @@ impl Prover for ConstraintProofBackend {
 
 impl Verifier for ConstraintProofBackend {
     type Statement = ConstraintSystem;
-    type Proof = SpartanProof<NaiveCommitment, NaiveOpening>;
+    type Proof = CpuSpartanProof;
     type Error = RuntimeError;
 
     fn verify(
@@ -1141,23 +1154,23 @@ pub fn verify_trace_access(trace: &Trace, proof: &TraceAccessProof) -> Result<()
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum RowCpuProof {
-    Alu(SpartanProof<NaiveCommitment, NaiveOpening>),
-    Mul(SpartanProof<NaiveCommitment, NaiveOpening>),
-    Mulh(SpartanProof<NaiveCommitment, NaiveOpening>),
-    Mulhsu(SpartanProof<NaiveCommitment, NaiveOpening>),
-    Mulhu(SpartanProof<NaiveCommitment, NaiveOpening>),
-    Divu(SpartanProof<NaiveCommitment, NaiveOpening>),
-    Remu(SpartanProof<NaiveCommitment, NaiveOpening>),
-    Div(SpartanProof<NaiveCommitment, NaiveOpening>),
-    Rem(SpartanProof<NaiveCommitment, NaiveOpening>),
-    W(SpartanProof<NaiveCommitment, NaiveOpening>),
-    Amo(SpartanProof<NaiveCommitment, NaiveOpening>),
-    Load(SpartanProof<NaiveCommitment, NaiveOpening>),
-    Store(SpartanProof<NaiveCommitment, NaiveOpening>),
-    Jal(SpartanProof<NaiveCommitment, NaiveOpening>),
-    Jalr(SpartanProof<NaiveCommitment, NaiveOpening>),
-    Auipc(SpartanProof<NaiveCommitment, NaiveOpening>),
-    Branch(SpartanProof<NaiveCommitment, NaiveOpening>),
+    Alu(CpuSpartanProof),
+    Mul(CpuSpartanProof),
+    Mulh(CpuSpartanProof),
+    Mulhsu(CpuSpartanProof),
+    Mulhu(CpuSpartanProof),
+    Divu(CpuSpartanProof),
+    Remu(CpuSpartanProof),
+    Div(CpuSpartanProof),
+    Rem(CpuSpartanProof),
+    W(CpuSpartanProof),
+    Amo(CpuSpartanProof),
+    Load(CpuSpartanProof),
+    Store(CpuSpartanProof),
+    Jal(CpuSpartanProof),
+    Jalr(CpuSpartanProof),
+    Auipc(CpuSpartanProof),
+    Branch(CpuSpartanProof),
     Skip,
 }
 
@@ -1177,7 +1190,7 @@ pub struct TraceProof {
 pub struct UnifiedTraceProof {
     pub access: TraceAccessProof,
     pub trace_commitment: [u8; 32],
-    pub cpu: SpartanProof<NaiveCommitment, NaiveOpening>,
+    pub cpu: CpuSpartanProof,
     pub rom: Vec<u32>,
     pub rows: Vec<magnetar_spec::TraceRow>,
 }
@@ -2192,7 +2205,7 @@ fn trace_from_statement(
 pub struct ChunkCpuProof {
     pub start: usize,
     pub end: usize,
-    pub cpu: SpartanProof<NaiveCommitment, NaiveOpening>,
+    pub cpu: CpuSpartanProof,
 }
 
 /// Per-chunk CPU proofs linked by register/PC state digests.
@@ -2238,13 +2251,17 @@ fn chunk_proof_digest(
     trace_commitment: &[u8; 32],
     start: usize,
     end: usize,
-    proof: &SpartanProof<NaiveCommitment, NaiveOpening>,
+    proof: &CpuSpartanProof,
 ) -> [u8; 32] {
     let mut bytes = Vec::with_capacity(160);
     bytes.extend_from_slice(trace_commitment);
     bytes.extend_from_slice(&(start as u64).to_le_bytes());
     bytes.extend_from_slice(&(end as u64).to_le_bytes());
-    bytes.extend_from_slice(&proof.commitment.root);
+    bytes.extend_from_slice(
+        &bincode::serialize(&proof.commitment)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))
+            .unwrap_or_default(),
+    );
     for value in [proof.v_a, proof.v_b, proof.v_c, proof.vw] {
         bytes.extend_from_slice(&value.value().to_le_bytes());
     }

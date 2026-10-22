@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 #[cfg(test)]
 use lambdaworks_math::field::fields::binary::field::TowerFieldElement;
 use serde::{Deserialize, Serialize};
@@ -127,8 +128,18 @@ impl Mul for F2_128 {
     type Output = Self;
 
     fn mul(self, rhs: Self) -> Self::Output {
-        Self(tower_mul(self.0, rhs.0))
+        Self(p3_mul(self.0, rhs.0))
     }
+}
+
+/// Multiplication in Plonky3's canonical 128-bit binary tower.
+///
+/// The project uses the same field representation as `p3-binary-pcs`, so
+/// polynomial openings and our constraint arithmetic share one basis.
+fn p3_mul(a: u128, b: u128) -> u128 {
+    use p3_binary_field::{BinaryField128, TowerLevel};
+    let product = BinaryField128::from_repr(a) * BinaryField128::from_repr(b);
+    product.to_repr()
 }
 
 impl Neg for F2_128 {
@@ -153,10 +164,13 @@ impl Field for F2_128 {
     }
 
     fn inv(self) -> Option<Self> {
+        use p3_binary_field::{BinaryField128, TowerLevel};
+        use p3_field::Field as P3Field;
         if self.0 == 0 {
             None
         } else {
-            Some(Self(tower_inv(self.0)))
+            let inverse = P3Field::try_inverse(&BinaryField128::from_repr(self.0))?;
+            Some(Self(inverse.to_repr()))
         }
     }
 }
@@ -555,6 +569,15 @@ mod tests {
         assert_eq!(a * b, F61::new(F61_MODULUS - 2));
         assert_eq!(-a, F61::new(1));
         assert_eq!(F61::new(0) - F61::new(1), F61::new(F61_MODULUS - 1));
+    }
+
+    #[test]
+    fn p3_multiplication_matches_the_reference_tower() {
+        for index in 0..256u128 {
+            let a = index.wrapping_mul(0x0123_4567_89ab_cdef);
+            let b = index.wrapping_mul(0xfedc_ba98_7654_3210);
+            assert_eq!(p3_mul(a, b), tower_mul(a, b), "index {index}");
+        }
     }
 
     proptest! {

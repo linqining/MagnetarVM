@@ -1,0 +1,32 @@
+[package]
+name = "p3-binary-field"
+description = "Characteristic-2 tower fields GF(2) ⊂ GF(4) ⊂ … ⊂ GF(2^128) for Plonky3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+# criterion pulls rayon transitively and rayon does not build on wasi.
+[features]
+parallel = ["p3-maybe-rayon/parallel"]
+
+# Select eight polynomial-field lanes on AVX-512 builds for throughput-oriented row kernels.
+wide-poly = []
+
+[dependencies]
+p3-challenger.workspace = true
+p3-field.workspace = true
+p3-maybe-rayon.workspace = true
+p3-symmetric.workspace = true
+p3-util.workspace = true
+
+num-bigint.workspace = true
+rand.workspace = true
+serde = { workspace = true, features = ["derive"] }
+tracing.workspace = true
+
+[lints]
+workspace = true
