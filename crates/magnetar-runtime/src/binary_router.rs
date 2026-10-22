@@ -442,9 +442,7 @@ pub struct BinaryRouterProof {
     pub cycle_bits: usize,
     pub boolean: AddressBooleanClaim,
     pub claimed: F2_128,
-    pub cycle_point: Vec<F2_128>,
     pub rounds: Vec<Vec<F2_128>>,
-    pub challenges: Vec<F2_128>,
     pub input_bit_evals: Vec<F2_128>,
     pub offset_rounds: Vec<Vec<F2_128>>,
     pub offset_evals: Vec<F2_128>,
@@ -1091,9 +1089,7 @@ pub(crate) fn prove_binary_router_claims(
             cycle_bits: n,
             boolean,
             claimed: left,
-            cycle_point: rho_j,
             rounds,
-            challenges,
             input_bit_evals,
             offset_rounds,
             offset_evals,
@@ -1237,9 +1233,6 @@ pub(crate) fn verify_binary_router_claims(
     absorb_commitment(&mut transcript, commitment);
     let rho_o = sample_point(&mut transcript, WORD_BITS.trailing_zeros() as usize);
     let rho_j = sample_point(&mut transcript, n);
-    if proof.cycle_point != rho_j {
-        return Ok(None);
-    }
     let eq_o = eq_vector(&rho_o, WORD_BITS);
     let eq_j = eq_vector(&rho_j, cycles);
     let mut left = F2_128::from(0u64);
@@ -1252,16 +1245,13 @@ pub(crate) fn verify_binary_router_claims(
         return Ok(None);
     }
     transcript.absorb("claimed", &proof.claimed.value().to_le_bytes());
-    let Some(sum) = replay_terms(
-        &proof.rounds,
-        &proof.challenges,
-        proof.claimed,
-        &mut transcript,
-    ) else {
+    let Some((sum, challenges)) =
+        replay_terms_derived(&proof.rounds, proof.claimed, &mut transcript)
+    else {
         return Ok(None);
     };
-    let r_j = &proof.challenges[..n];
-    let r_i = &proof.challenges[n..];
+    let r_j = &challenges[..n];
+    let r_i = &challenges[n..];
     let coefficients = witness.route_coefficients_from_selectors(&rho_o);
     let mut coefficient_flat = vec![F2_128::from(0u64); INPUT_BITS * cycles];
     for bit in 0..INPUT_BITS {
@@ -1269,7 +1259,7 @@ pub(crate) fn verify_binary_router_claims(
             coefficient_flat[bit * cycles + cycle] = coefficients[bit][cycle] * eq_j[cycle];
         }
     }
-    let coefficient_eval = fold_all(&coefficient_flat, &proof.challenges);
+    let coefficient_eval = fold_all(&coefficient_flat, &challenges);
     let mut input_eval = F2_128::from(0u64);
     for (bit, eval) in proof.input_bit_evals.iter().enumerate() {
         input_eval = input_eval + eq_at_index(r_i, bit) * *eval;
