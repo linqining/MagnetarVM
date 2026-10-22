@@ -12,12 +12,12 @@
 - [x] Address virtualization: commit bit-sliced address components and prove
       full-address evaluations with sum-checks instead of committing `K × T`
       one-hot address tables.
-- [x] Add a standalone bit-sliced `BinaryShout` ROM-read reduction.
-- [x] Add a standalone `BinaryRouter` reference proof for 64-bit shifts and
-      sub-word store routing.
-- [ ] Wire `BinaryShout` into `UnifiedTraceProof` (standalone proof exists in
-      `binary_shout.rs`).
-- [ ] Wire `BinaryRouter` into the unified proof (`binary_router.rs`).
+- [x] Add a bit-sliced `BinaryShout` ROM-read reduction and wire its claim
+      into `UnifiedTraceProof` through the shared P3 opening.
+- [x] Add a `BinaryRouter` reference proof for 64-bit shifts and sub-word store
+      routing, and wire its claim into `UnifiedTraceProof`.
+- [x] Wire `BinaryShout` and `BinaryRouter` claims into `UnifiedTraceProof`
+      without adding a second P3 opening.
 - [ ] Optimize the P3 shared opening path (currently the runtime pre-commit and
       Spartan's internal commit/open repeat the same batch commitment).
 

@@ -11,7 +11,7 @@ use magnetar_pcs::{
     P3BinaryPcs, P3MosaicCommitment, P3MosaicOpening, P3MosaicPoint, P3MosaicTable,
 };
 use magnetar_proof::ProofError;
-use magnetar_routing::{BitSource, ShiftKind, ShiftRoute, StoreBitSource, StoreRoute, StoreWidth};
+use magnetar_routing::{BitSource, ShiftKind, ShiftRoute, StoreRoute, StoreWidth};
 use magnetar_spec::{Op, Trace};
 use magnetar_transcript::Sha256Transcript;
 use serde::{Deserialize, Serialize};
@@ -33,13 +33,14 @@ impl RouterRoute {
                 BitSource::Zero => Vec::new(),
                 BitSource::Input(bit) => vec![usize::from(bit)],
             },
-            RouterRoute::Store(route) => match route.bit_source(output_bit) {
-                StoreBitSource::Old(bit) => vec![usize::from(bit)],
-                StoreBitSource::Xor(old, source) => {
-                    vec![usize::from(old), SOURCE_OFFSET + usize::from(source)]
+            RouterRoute::Store(route) => {
+                let written = route.written_bits();
+                if written.contains(&output_bit) {
+                    vec![SOURCE_OFFSET + (output_bit - route.offset * 8)]
+                } else {
+                    vec![output_bit]
                 }
-                StoreBitSource::New(_) => Vec::new(),
-            },
+            }
         }
     }
 }
@@ -193,6 +194,12 @@ impl BinaryRouterWitness {
         })
     }
 
+    pub fn table(&self) -> P3MosaicTable {
+        P3MosaicTable {
+            columns: self.input.clone(),
+        }
+    }
+
     pub fn validate(&self) -> Result<(), ProofError> {
         if self.cycles != 1usize << self.cycle_bits
             || self.routes.len() != self.cycles
@@ -229,6 +236,9 @@ pub struct AddressBooleanClaim {
     pub bit_evals: Vec<F2_128>,
 }
 
+type ClaimPoints = (Vec<P3MosaicPoint>, Vec<Vec<F2_128>>);
+type ClaimBundle<T> = (T, Vec<P3MosaicPoint>, Vec<Vec<F2_128>>);
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BinaryRouterProof {
     pub cycle_bits: usize,
@@ -238,7 +248,7 @@ pub struct BinaryRouterProof {
     pub rounds: Vec<Vec<F2_128>>,
     pub challenges: Vec<F2_128>,
     pub input_bit_evals: Vec<F2_128>,
-    pub opening: P3MosaicOpening,
+    pub opening: Option<P3MosaicOpening>,
 }
 
 fn eq_at_index(point: &[F2_128], index: usize) -> F2_128 {
@@ -385,18 +395,17 @@ fn replay_terms(
 }
 
 #[allow(clippy::needless_range_loop)]
-pub fn prove_binary_router(witness: &BinaryRouterWitness) -> Result<BinaryRouterProof, ProofError> {
+pub(crate) fn prove_binary_router_claims(
+    witness: &BinaryRouterWitness,
+    commitment: &P3MosaicCommitment,
+    table_index: usize,
+) -> Result<ClaimBundle<BinaryRouterProof>, ProofError> {
     witness.validate()?;
     let n = witness.cycle_bits;
     let cycles = witness.cycles;
-    let pcs = P3BinaryPcs::new(100);
-    let table = P3MosaicTable {
-        columns: witness.input.clone(),
-    };
-    let commitment = pcs.commit_mosaic(core::slice::from_ref(&table))?;
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-router-boolean");
-    absorb_commitment(&mut transcript, commitment_ref(&commitment));
+    absorb_commitment(&mut transcript, commitment);
     let col_bits = INPUT_BITS.trailing_zeros() as usize;
     let rho_c = sample_point(&mut transcript, col_bits);
     let rho_j = sample_point(&mut transcript, n);
@@ -428,7 +437,7 @@ pub fn prove_binary_router(witness: &BinaryRouterWitness) -> Result<BinaryRouter
     };
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-router");
-    absorb_commitment(&mut transcript, commitment_ref(&commitment));
+    absorb_commitment(&mut transcript, commitment);
     let rho_o = sample_point(&mut transcript, WORD_BITS.trailing_zeros() as usize);
     let rho_j = sample_point(&mut transcript, n);
     let eq_o = eq_vector(&rho_o, WORD_BITS);
@@ -463,41 +472,52 @@ pub fn prove_binary_router(witness: &BinaryRouterWitness) -> Result<BinaryRouter
     } else {
         r_j.to_vec()
     };
-    let opening = pcs.open_mosaic(
-        core::slice::from_ref(&table),
-        &[
-            P3MosaicPoint {
-                table: 0,
-                point: if boolean.challenges[..n].is_empty() {
-                    vec![F2_128::from(0u64)]
-                } else {
-                    boolean.challenges[..n].to_vec()
-                },
-                columns: (0..INPUT_BITS).collect(),
-                next_columns: Vec::new(),
-            },
-            P3MosaicPoint {
-                table: 0,
-                point,
-                columns: (0..INPUT_BITS).collect(),
-                next_columns: Vec::new(),
-            },
-        ],
-    )?;
-    Ok(BinaryRouterProof {
-        cycle_bits: n,
-        boolean,
-        claimed: left,
-        cycle_point: rho_j,
-        rounds,
-        challenges,
-        input_bit_evals,
-        opening,
-    })
+    let boolean_point = if boolean.challenges[..n].is_empty() {
+        vec![F2_128::from(0u64)]
+    } else {
+        boolean.challenges[..n].to_vec()
+    };
+    let points = vec![
+        P3MosaicPoint {
+            table: table_index,
+            point: boolean_point,
+            columns: (0..INPUT_BITS).collect(),
+            next_columns: Vec::new(),
+        },
+        P3MosaicPoint {
+            table: table_index,
+            point,
+            columns: (0..INPUT_BITS).collect(),
+            next_columns: Vec::new(),
+        },
+    ];
+    let values = vec![boolean.bit_evals.clone(), input_bit_evals.clone()];
+    Ok((
+        BinaryRouterProof {
+            cycle_bits: n,
+            boolean,
+            claimed: left,
+            cycle_point: rho_j,
+            rounds,
+            challenges,
+            input_bit_evals,
+            opening: None,
+        },
+        points,
+        values,
+    ))
 }
 
-fn commitment_ref(commitment: &P3MosaicCommitment) -> &P3MosaicCommitment {
-    commitment
+pub fn prove_binary_router(witness: &BinaryRouterWitness) -> Result<BinaryRouterProof, ProofError> {
+    witness.validate()?;
+    let pcs = P3BinaryPcs::new(100);
+    let table = P3MosaicTable {
+        columns: witness.input.clone(),
+    };
+    let commitment = pcs.commit_mosaic(core::slice::from_ref(&table))?;
+    let (mut proof, points, _) = prove_binary_router_claims(witness, &commitment, 0)?;
+    proof.opening = Some(pcs.open_mosaic(core::slice::from_ref(&table), &points)?);
+    Ok(proof)
 }
 
 fn sumcheck_two_terms(
@@ -542,31 +562,32 @@ fn sumcheck_two_terms(
 }
 
 #[allow(clippy::needless_range_loop)]
-pub fn verify_binary_router(
+pub(crate) fn verify_binary_router_claims(
     witness: &BinaryRouterWitness,
     proof: &BinaryRouterProof,
-) -> Result<bool, ProofError> {
+    commitment: &P3MosaicCommitment,
+    table_index: usize,
+) -> Result<Option<ClaimPoints>, ProofError> {
     witness.validate()?;
     if proof.cycle_bits != witness.cycle_bits {
-        return Ok(false);
+        return Ok(None);
     }
     let n = witness.cycle_bits;
     let cycles = witness.cycles;
-    let pcs = P3BinaryPcs::new(100);
     let col_bits = INPUT_BITS.trailing_zeros() as usize;
-    if proof.opening.commitment.tables.len() != 1
-        || proof.opening.commitment.tables[0].num_variables != n.max(1)
-        || proof.opening.commitment.tables[0].num_columns != INPUT_BITS
+    if commitment.tables.len() <= table_index
+        || commitment.tables[table_index].num_variables != n.max(1)
+        || commitment.tables[table_index].num_columns != INPUT_BITS
     {
-        return Ok(false);
+        return Ok(None);
     }
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-router-boolean");
-    absorb_commitment(&mut transcript, commitment_ref(&proof.opening.commitment));
+    absorb_commitment(&mut transcript, commitment);
     let rho_c = sample_point(&mut transcript, col_bits);
     let rho_j = sample_point(&mut transcript, n);
     if proof.boolean.column_point != rho_c || proof.boolean.cycle_point != rho_j {
-        return Ok(false);
+        return Ok(None);
     }
     let Some(sum) = replay_terms(
         &proof.boolean.rounds,
@@ -574,7 +595,7 @@ pub fn verify_binary_router(
         F2_128::from(0u64),
         &mut transcript,
     ) else {
-        return Ok(false);
+        return Ok(None);
     };
     let r_j = &proof.boolean.challenges[..n];
     let r_c = &proof.boolean.challenges[n..];
@@ -583,15 +604,15 @@ pub fn verify_binary_router(
         b = b + eq_at_index(r_c, column) * proof.boolean.bit_evals[column];
     }
     if sum != eq_points(&rho_c, r_c) * eq_points(&rho_j, r_j) * b * (b + F2_128::from(1u64)) {
-        return Ok(false);
+        return Ok(None);
     }
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-router");
-    absorb_commitment(&mut transcript, commitment_ref(&proof.opening.commitment));
+    absorb_commitment(&mut transcript, commitment);
     let rho_o = sample_point(&mut transcript, WORD_BITS.trailing_zeros() as usize);
     let rho_j = sample_point(&mut transcript, n);
     if proof.cycle_point != rho_j {
-        return Ok(false);
+        return Ok(None);
     }
     let eq_o = eq_vector(&rho_o, WORD_BITS);
     let eq_j = eq_vector(&rho_j, cycles);
@@ -602,7 +623,7 @@ pub fn verify_binary_router(
         }
     }
     if proof.claimed != left {
-        return Ok(false);
+        return Ok(None);
     }
     transcript.absorb("claimed", &proof.claimed.value().to_le_bytes());
     let Some(sum) = replay_terms(
@@ -611,7 +632,7 @@ pub fn verify_binary_router(
         proof.claimed,
         &mut transcript,
     ) else {
-        return Ok(false);
+        return Ok(None);
     };
     let r_j = &proof.challenges[..n];
     let r_i = &proof.challenges[n..];
@@ -628,7 +649,7 @@ pub fn verify_binary_router(
         input_eval = input_eval + eq_at_index(r_i, bit) * *eval;
     }
     if sum != coefficient_eval * input_eval {
-        return Ok(false);
+        return Ok(None);
     }
 
     let point = if r_j.is_empty() {
@@ -643,13 +664,13 @@ pub fn verify_binary_router(
     };
     let points = vec![
         P3MosaicPoint {
-            table: 0,
+            table: table_index,
             point: boolean_point,
             columns: (0..INPUT_BITS).collect(),
             next_columns: Vec::new(),
         },
         P3MosaicPoint {
-            table: 0,
+            table: table_index,
             point,
             columns: (0..INPUT_BITS).collect(),
             next_columns: Vec::new(),
@@ -659,7 +680,22 @@ pub fn verify_binary_router(
         proof.boolean.bit_evals.clone(),
         proof.input_bit_evals.clone(),
     ];
-    pcs.verify_mosaic(&proof.opening, &points, &values)
+    Ok(Some((points, values)))
+}
+
+pub fn verify_binary_router(
+    witness: &BinaryRouterWitness,
+    proof: &BinaryRouterProof,
+) -> Result<bool, ProofError> {
+    let Some(opening) = &proof.opening else {
+        return Ok(false);
+    };
+    let Some((points, values)) =
+        verify_binary_router_claims(witness, proof, &opening.commitment, 0)?
+    else {
+        return Ok(false);
+    };
+    P3BinaryPcs::new(100).verify_mosaic(opening, &points, &values)
 }
 
 #[cfg(test)]

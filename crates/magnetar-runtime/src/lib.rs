@@ -9,6 +9,12 @@ pub mod binary_shout;
 pub mod binary_twist;
 pub mod binary_twist_address;
 
+use crate::binary_router::{
+    prove_binary_router_claims, verify_binary_router_claims, BinaryRouterWitness,
+};
+use crate::binary_shout::{
+    prove_binary_shout_claims, verify_binary_shout_claims, BinaryShoutWitness,
+};
 use crate::binary_twist::{
     batch_tables, prove_binary_twist_claims, prove_binary_twist_ram, verify_binary_twist_claims,
     verify_binary_twist_ram, BatchTables, BinaryTwistRamProof, MosaicClaims,
@@ -1327,6 +1333,8 @@ pub struct UnifiedTraceProof {
     pub access: TraceAccessProof,
     pub trace_commitment: [u8; 32],
     pub cpu: MosaicSpartanProof,
+    pub shout: Option<crate::binary_shout::BinaryShoutProof>,
+    pub router: Option<crate::binary_router::BinaryRouterProof>,
     pub rom: Vec<u32>,
     pub rows: Vec<magnetar_spec::TraceRow>,
 }
@@ -2160,23 +2168,60 @@ pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTracePr
     let z = witness_vector(&system, &cpu_witness)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
 
+    let shout_witness = BinaryShoutWitness::from_trace(trace).ok();
+    let router_witness = BinaryRouterWitness::from_trace(trace).ok();
     let pcs = P3BinaryPcs::new(100);
-    let mosaic_tables = vec![
+    let mut mosaic_tables = vec![
         P3MosaicTable { columns: vec![z] },
         tables.addr.clone(),
         tables.inc.clone(),
     ];
+    let mut next_table = 3usize;
+    let shout_table = shout_witness.as_ref().map(|witness| {
+        let index = next_table;
+        next_table += 1;
+        (index, witness.table())
+    });
+    if let Some((_, table)) = &shout_table {
+        mosaic_tables.push(table.clone());
+    }
+    let router_table = router_witness.as_ref().map(|witness| {
+        let index = next_table;
+        next_table += 1;
+        (index, witness.table())
+    });
+    if let Some((_, table)) = &router_table {
+        mosaic_tables.push(table.clone());
+    }
     let commitment = pcs
         .commit_mosaic(&mosaic_tables)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    let (access, (points, values)) =
+    let (access, (mut points, mut values)) =
         prove_trace_access_shared(trace, &witness, &tables, &commitment)?;
-    let shared_pcs = P3SharedPcs::new(
-        100,
-        vec![mosaic_tables[1].clone(), mosaic_tables[2].clone()],
-        points,
-        values,
-    );
+    let mut aux_tables = vec![mosaic_tables[1].clone(), mosaic_tables[2].clone()];
+    let shout = if let (Some(witness), Some((index, _))) = (&shout_witness, &shout_table) {
+        let (claim, claim_points, claim_values) =
+            prove_binary_shout_claims(witness, &commitment, *index)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        points.extend(claim_points);
+        values.extend(claim_values);
+        aux_tables.push(witness.table());
+        Some(claim)
+    } else {
+        None
+    };
+    let router = if let (Some(witness), Some((index, _))) = (&router_witness, &router_table) {
+        let (claim, claim_points, claim_values) =
+            prove_binary_router_claims(witness, &commitment, *index)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        points.extend(claim_points);
+        values.extend(claim_values);
+        aux_tables.push(witness.table());
+        Some(claim)
+    } else {
+        None
+    };
+    let shared_pcs = P3SharedPcs::new(100, aux_tables, points, values);
     let cpu = prove_spartan(&system, &cpu_witness, &shared_pcs)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     debug_assert_eq!(cpu.commitment, commitment);
@@ -2185,6 +2230,8 @@ pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTracePr
         access,
         trace_commitment: trace_digest(trace),
         cpu,
+        shout,
+        router,
         rom: trace.rom.clone(),
         rows: trace.rows.clone(),
     })
@@ -2206,18 +2253,71 @@ pub fn verify_unified_trace(
             "unified proof ROM does not match the supplied trace".into(),
         ));
     }
-    if proof.cpu.commitment.tables.len() != 3 {
+    let shout_witness = BinaryShoutWitness::from_trace(trace).ok();
+    let router_witness = BinaryRouterWitness::from_trace(trace).ok();
+    match (&shout_witness, &proof.shout) {
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(RuntimeError::Proof(
+                "BinaryShout proof presence does not match the trace".into(),
+            ));
+        }
+        _ => {}
+    }
+    match (&router_witness, &proof.router) {
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(RuntimeError::Proof(
+                "BinaryRouter proof presence does not match the trace".into(),
+            ));
+        }
+        _ => {}
+    }
+    let expected_tables =
+        3 + usize::from(shout_witness.is_some()) + usize::from(router_witness.is_some());
+    if proof.cpu.commitment.tables.len() != expected_tables {
         return Err(RuntimeError::Proof(
-            "unified proof does not commit the CPU and RAM tables".into(),
+            "unified proof does not commit the expected CPU/RAM/aux tables".into(),
         ));
     }
+    let mut next_table = 3usize;
+    let shout_index = shout_witness.as_ref().map(|_| {
+        let index = next_table;
+        next_table += 1;
+        index
+    });
+    let router_index = router_witness.as_ref().map(|_| {
+        let index = next_table;
+        next_table += 1;
+        index
+    });
     let witness = BinaryTwistWitness::from_trace(trace)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     witness
         .validate()
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    let (points, values) =
+    let (mut points, mut values) =
         verify_trace_access_shared(trace, &proof.access, &witness, &proof.cpu.commitment)?;
+    if let (Some(witness), Some(claim), Some(index)) = (&shout_witness, &proof.shout, shout_index) {
+        let Some((claim_points, claim_values)) =
+            verify_binary_shout_claims(witness, claim, &proof.cpu.commitment, index)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        else {
+            return Err(RuntimeError::Proof("BinaryShout proof rejected".into()));
+        };
+        points.extend(claim_points);
+        values.extend(claim_values);
+    }
+    if let (Some(witness), Some(claim), Some(index)) =
+        (&router_witness, &proof.router, router_index)
+    {
+        let Some((claim_points, claim_values)) =
+            verify_binary_router_claims(witness, claim, &proof.cpu.commitment, index)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        else {
+            return Err(RuntimeError::Proof("BinaryRouter proof rejected".into()));
+        };
+        points.extend(claim_points);
+        values.extend(claim_values);
+    }
     let (system, _) = merged_cpu_system(trace, width)?;
     let shared_pcs = P3SharedPcs::new(100, Vec::new(), points, values);
     verify_spartan(&system, &proof.cpu, &shared_pcs)
@@ -2294,13 +2394,15 @@ pub fn encode_unified_proof(proof: &UnifiedTraceProof) -> Result<Vec<u8>, Runtim
 pub struct UnifiedProofSizes {
     pub access: usize,
     pub cpu: usize,
+    pub shout: usize,
+    pub router: usize,
     pub rows: usize,
     pub rom: usize,
 }
 
 impl UnifiedProofSizes {
     pub fn total(&self) -> usize {
-        self.access + self.cpu + self.rows + self.rom
+        self.access + self.cpu + self.shout + self.router + self.rows + self.rom
     }
 }
 
@@ -2313,6 +2415,8 @@ pub fn unified_proof_sizes(proof: &UnifiedTraceProof) -> Result<UnifiedProofSize
     Ok(UnifiedProofSizes {
         access: size(bincode::serialize(&proof.access))?,
         cpu: size(bincode::serialize(&proof.cpu))?,
+        shout: size(bincode::serialize(&proof.shout))?,
+        router: size(bincode::serialize(&proof.router))?,
         rows: size(bincode::serialize(&proof.rows))?,
         rom: size(bincode::serialize(&proof.rom))?,
     })
@@ -3068,7 +3172,10 @@ mod tests {
 
         let proof = prove_unified_trace(&trace, 8).unwrap();
         assert!(proof.access.ram.opening.is_none());
-        assert_eq!(proof.cpu.commitment.tables.len(), 3);
+        assert_eq!(
+            proof.cpu.commitment.tables.len(),
+            3 + usize::from(proof.shout.is_some()) + usize::from(proof.router.is_some())
+        );
         verify_unified_trace(&trace, &proof, 8).unwrap();
 
         let statement = Statement {
