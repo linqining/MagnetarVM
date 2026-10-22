@@ -41,6 +41,33 @@ impl SimdR1cs {
         Ok(Self { system, instances })
     }
 
+    /// Build a combined block-diagonal system with one block per instance.
+    ///
+    /// This is the reference (unoptimized) SIMD encoding: the verifier can
+    /// rebuild the same block-diagonal system from the public base structure.
+    pub fn combined_system(&self) -> ConstraintSystem {
+        let mut combined = ConstraintSystem::new(0);
+        for _ in 0..self.instances {
+            combined.merge(self.system.clone());
+        }
+        combined
+    }
+
+    /// Concatenate instance witnesses in the same order as `combined_system`.
+    pub fn combined_witness(&self, witnesses: &[Witness]) -> Result<Witness, SimdError> {
+        if witnesses.len() != self.instances {
+            return Err(SimdError::InstanceCount {
+                expected: self.instances,
+                actual: witnesses.len(),
+            });
+        }
+        let mut values = Vec::new();
+        for witness in witnesses {
+            values.extend_from_slice(witness.values());
+        }
+        Ok(Witness::new(values))
+    }
+
     pub fn check(&self, witnesses: &[Witness]) -> Result<(), SimdError> {
         if witnesses.len() != self.instances {
             return Err(SimdError::InstanceCount {
@@ -184,5 +211,34 @@ mod tests {
             F2_128::from(0u64),
         ]);
         assert!(dual.check(&tampered).is_err());
+    }
+
+    #[test]
+    fn combined_simd_system_checks_instances() {
+        let (binary, _) = systems();
+        let combined = binary.combined_system();
+        assert_eq!(combined.num_vars, 10);
+        let witnesses = vec![
+            Witness::new(vec![
+                F2_128::from(1u64),
+                F2_128::from(0u64),
+                F2_128::from(5u64),
+                F2_128::from(5u64),
+                F2_128::from(0u64),
+            ]),
+            Witness::new(vec![
+                F2_128::from(0u64),
+                F2_128::from(1u64),
+                F2_128::from(7u64),
+                F2_128::from(7u64),
+                F2_128::from(0u64),
+            ]),
+        ];
+        let joined = binary.combined_witness(&witnesses).unwrap();
+        combined.check(&joined).unwrap();
+
+        let mut tampered = joined;
+        tampered.values_mut()[5] = F2_128::from(2u64);
+        assert!(combined.check(&tampered).is_err());
     }
 }

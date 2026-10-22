@@ -122,7 +122,7 @@ cargo fmt --all -- --check
 cargo test --workspace
 ```
 
-当前测试套件包含 **15 个 crate 的 274 个测试，全部通过**；
+当前测试套件包含 **15 个 crate 的 275 个测试，全部通过**；
 `clippy -D warnings` 与 `rustfmt --check` 均无问题。dev profile 将依赖设为
 `opt-level = 3`、workspace crate 设为 `opt-level = 2`，避免 PCS 密集的测试
 在未优化构建里跑到几十秒。
