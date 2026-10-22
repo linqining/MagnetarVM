@@ -29,7 +29,8 @@
 - `4c36a8d`：BinaryRouter store 路由改为 `Inc`（old XOR new），与 BinaryTwist 的 committed `Inc` 对齐；offset-bit claims 与 `Q_st` 尚未实现。
 - `d66da44`：新增 register BinaryTwist witness（`register_twist.rs`），用两相编码实现 p=2 reads + 1 write；standalone proof 已验证。
 - `8665018`：把 register Twist 接入 `TraceAccessProof` 与 unified shared P3 opening。
-- 本轮：移除 register Merkle fields/steps；register Twist 成为唯一 register consistency proof。
+- `443def7`：移除 register Merkle fields/steps；register Twist 成为唯一 register consistency proof。
+- 本轮：BinaryShout 支持 `c=2` value columns（instruction word + instruction length），为 bytecode/decoded-field Shout 做铺垫。
 
 ## 二、逐项差距
 
@@ -79,7 +80,7 @@
 | D4 | one-hot/collision polynomial，Frobenius 优化（§4.4） | 只做 booleanity；one-hot 由 bit 构造保证 | 🟡 | 论文的 collision sum-check 未实现；当前 bit-sliced 下不需要，但不是论文原样 |
 | D5 | `LT` 线性时间处理（§4.4） | `LT` 物化 `T × T`，prover 二次；已记录 TODO | ❌ | 线性时间 `LT` 是研究项；当前不能扩展到大 T |
 | D6 | `Inc` 紧凑表、`Val`/`Next` 虚拟 | 已实现 | ✅ | 保持 |
-| D7 | BinaryShout for bytecode：公开表 `Val` 有 `c` 列，读地址 bits + 所有 value columns 一个 sum-check；bytecode 表含 micro-PC/decoded fields（§4.4、§5.5） | `binary_shout.rs`：16/32-bit ROM 读取，1 个 value 列（instruction word），地址 bit + valid；不含 decoded fields/micro-PC，不处理多列 `c` | 🟡 | 扩展 table columns；把 decoded fields/selector `Q` 变成 Shout claims；接 bytecode table |
+| D7 | BinaryShout for bytecode：公开表 `Val` 有 `c` 列，读地址 bits + 所有 value columns 一个 sum-check；bytecode 表含 micro-PC/decoded fields（§4.4、§5.5） | `binary_shout.rs`：16/32-bit ROM 读取，支持 `c=2` 个 value column（instruction word + instruction length），用随机 `γ` 合并成一个 read claim；地址 bit + valid；仍不含 decoded fields/micro-PC/完整 bytecode table | 🟡 | 增加更多 decoded fields / selector columns；接 bytecode table 与 micro-PC |
 | D8 | Shout 的地址虚拟化/one-hot 检查 | bit-sliced 地址 + booleanity；valid 列 | 🟡 | 同 D3/D4；当前是 bit-sliced 特化 |
 | D9 | BinaryRouter for shifts：`Y(o,j)=Σ X·Q·R`，`Q` 来自 bytecode 并由 Shout 认证；register-specified shift 展开为固定 virtual instructions（§5.4） | `binary_router.rs`：64-bit shift，按 public `ShiftRoute` 计算系数；`Q` 不存在，直接按 row 的 route 求值；register shamt 直接动态使用 | 🟡 | 引入 one-hot `Q`；由 Shout 认证 `Q`；register shift 展开；`X` 用 direct copy segment |
 | D10 | BinaryRouter for stores：输出是 `Inc`（old XOR new），`R_st` 带 3 个 offset bits，`Q_st` 4 个 width selector（§5.4） | 已改为路由 `Inc`（old XOR new）：written bits 用 old⊕source 两个 source，unwritten 为 0；offset 仍来自 public access，未输出 offset-bit claims；width 未做 one-hot `Q_st` | 🟡 | 输出 offset-bit claims；接 bytecode width selector `Q_st` |

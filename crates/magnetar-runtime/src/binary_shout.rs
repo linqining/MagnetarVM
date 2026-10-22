@@ -23,12 +23,12 @@ pub struct BinaryShoutWitness {
     pub cycle_bits: usize,
     pub cycles: usize,
     pub cells: usize,
-    pub rom: Vec<F2_128>,
+    pub rom: Vec<[F2_128; 2]>,
     pub address0: Vec<Vec<F2_128>>,
     pub address1: Vec<Vec<F2_128>>,
     pub is_32: Vec<F2_128>,
     pub valid: Vec<F2_128>,
-    pub read_value: Vec<F2_128>,
+    pub read_value: Vec<[F2_128; 2]>,
 }
 
 impl BinaryShoutWitness {
@@ -39,16 +39,16 @@ impl BinaryShoutWitness {
         let address_bits = cells.trailing_zeros() as usize;
         let cycles = trace.rows.len().next_power_of_two().max(2);
         let cycle_bits = cycles.trailing_zeros() as usize;
-        let mut rom = vec![F2_128::from(0u64); cells];
+        let mut rom = vec![[F2_128::from(0u64); 2]; cells];
         for (index, word) in trace.rom.iter().enumerate() {
-            rom[2 * index] = F2_128::from(u64::from(*word & 0xffff));
-            rom[2 * index + 1] = F2_128::from(u64::from(*word >> 16));
+            rom[2 * index][0] = F2_128::from(u64::from(*word & 0xffff));
+            rom[2 * index + 1][0] = F2_128::from(u64::from(*word >> 16));
         }
         let mut address0 = vec![vec![F2_128::from(0u64); cycles]; address_bits];
         let mut address1 = vec![vec![F2_128::from(0u64); cycles]; address_bits];
         let mut is_32 = vec![F2_128::from(0u64); cycles];
         let mut valid = vec![F2_128::from(0u64); cycles];
-        let mut read_value = vec![F2_128::from(0u64); cycles];
+        let mut read_value = vec![[F2_128::from(0u64); 2]; cycles];
         for (cycle, row) in trace.rows.iter().enumerate() {
             if row.instruction_len != 2 && row.instruction_len != 4 {
                 return Err(ProofError::Pcs(
@@ -70,11 +70,18 @@ impl BinaryShoutWitness {
             }
             valid[cycle] = F2_128::from(1u64);
             is_32[cycle] = F2_128::from(u64::from(row.instruction_len == 4));
+            rom[index][1] = F2_128::from(u64::from(row.instruction_len));
+            if row.instruction_len == 4 {
+                rom[high][1] = F2_128::from(4u64);
+            }
             for bit in 0..address_bits {
                 address0[bit][cycle] = F2_128::from(((index >> bit) & 1) as u64);
                 address1[bit][cycle] = F2_128::from(((high >> bit) & 1) as u64);
             }
-            read_value[cycle] = F2_128::from(u64::from(row.instruction_word));
+            read_value[cycle] = [
+                F2_128::from(u64::from(row.instruction_word)),
+                F2_128::from(u64::from(row.instruction_len)),
+            ];
         }
         Ok(Self {
             address_bits,
@@ -365,31 +372,33 @@ pub(crate) fn prove_binary_shout_claims(
     let mut transcript = Sha256Transcript::new("magnetar-binary-shout");
     absorb_commitment(&mut transcript, commitment);
     let rho_j = sample_point(&mut transcript, n);
+    let gamma = challenge(&mut transcript, "column");
     let eq_j = eq_vector(&rho_j, cycles);
     let claimed = eq_j
         .iter()
         .zip(&witness.read_value)
         .fold(F2_128::from(0u64), |sum, (weight, value)| {
-            sum + *weight * *value
+            sum + *weight * (value[0] + gamma * value[1])
         });
     transcript.absorb("claimed", &claimed.value().to_le_bytes());
     let terms = witness.cells * cycles;
-    let mut factors = vec![vec![F2_128::from(0u64); terms]; 2 * a + 4];
+    let mut factors = vec![vec![F2_128::from(0u64); terms]; 2 * a + 6];
     for cell in 0..witness.cells {
         for cycle in 0..cycles {
             let index = cell * cycles + cycle;
             factors[0][index] = eq_j[cycle];
             factors[1][index] = witness.valid[cycle];
             factors[2][index] = witness.is_32[cycle];
-            factors[3][index] = witness.rom[cell];
+            factors[3][index] = witness.rom[cell][0];
+            factors[4][index] = witness.rom[cell][1];
             for bit in 0..a {
                 let k = F2_128::from(((cell >> bit) & 1) as u64);
-                factors[4 + bit][index] = F2_128::from(1u64) + witness.address0[bit][cycle] + k;
-                factors[4 + a + bit][index] = F2_128::from(1u64) + witness.address1[bit][cycle] + k;
+                factors[5 + bit][index] = F2_128::from(1u64) + witness.address0[bit][cycle] + k;
+                factors[5 + a + bit][index] = F2_128::from(1u64) + witness.address1[bit][cycle] + k;
             }
         }
     }
-    let mut degrees = vec![a + 3; terms.trailing_zeros() as usize];
+    let mut degrees = vec![a + 4; terms.trailing_zeros() as usize];
     for degree in degrees.iter_mut().skip(n) {
         *degree = 2;
     }
@@ -397,16 +406,15 @@ pub(crate) fn prove_binary_shout_claims(
         (0..folded[0].len()).fold(F2_128::from(0u64), |sum, index| {
             let mut low = F2_128::from(1u64);
             for bit in 0..a {
-                low = low * folded[4 + bit][index];
+                low = low * folded[5 + bit][index];
             }
             let mut high = F2_128::from(1u64);
             for bit in 0..a {
-                high = high * folded[4 + a + bit][index];
+                high = high * folded[5 + a + bit][index];
             }
-            sum + folded[0][index]
-                * folded[1][index]
-                * folded[3][index]
-                * (low + folded[2][index] * high * F2_128::from(HIGH_SCALE))
+            let word = low * folded[3][index]
+                + folded[2][index] * high * F2_128::from(HIGH_SCALE) * folded[3][index];
+            sum + folded[0][index] * folded[1][index] * (word + gamma * low * folded[4][index])
         })
     })?;
     let r_j = &challenges[..n];
@@ -530,6 +538,7 @@ pub(crate) fn verify_binary_shout_claims(
     let mut transcript = Sha256Transcript::new("magnetar-binary-shout");
     absorb_commitment(&mut transcript, commitment);
     let rho_j = sample_point(&mut transcript, n);
+    let gamma = challenge(&mut transcript, "column");
     if proof.cycle_point != rho_j {
         return Ok(None);
     }
@@ -538,7 +547,7 @@ pub(crate) fn verify_binary_shout_claims(
         .iter()
         .zip(&witness.read_value)
         .fold(F2_128::from(0u64), |sum, (weight, value)| {
-            sum + *weight * *value
+            sum + *weight * (value[0] + gamma * value[1])
         });
     if proof.claimed != claimed {
         return Ok(None);
@@ -554,11 +563,16 @@ pub(crate) fn verify_binary_shout_claims(
     };
     let r_j = &proof.challenges[..n];
     let r_k = &proof.challenges[n..];
-    let rom_eval = fold_all(&witness.rom, r_k);
+    let word_column = witness.rom.iter().map(|row| row[0]).collect::<Vec<_>>();
+    let length_column = witness.rom.iter().map(|row| row[1]).collect::<Vec<_>>();
+    let word_eval = fold_all(&word_column, r_k);
+    let length_eval = fold_all(&length_column, r_k);
     let ra0_eval = address_value(&proof.ra0_bit_evals, r_k);
     let ra1_eval = address_value(&proof.ra1_bit_evals, r_k);
-    let read_eval = ra0_eval + proof.is_32_eval * ra1_eval * F2_128::from(HIGH_SCALE);
-    if sum != eq_points(&rho_j, r_j) * proof.valid_eval * rom_eval * read_eval {
+    let read_eval = ra0_eval * word_eval
+        + proof.is_32_eval * ra1_eval * F2_128::from(HIGH_SCALE) * word_eval
+        + gamma * ra0_eval * length_eval;
+    if sum != eq_points(&rho_j, r_j) * proof.valid_eval * read_eval {
         return Ok(None);
     }
 
