@@ -5,8 +5,9 @@
 //! `G` at `r || suffix_i` without an adapter sum-check. Batching and ring
 //! switching are not yet implemented.
 
+use crate::p3_pcs::{P3BinaryPcs, P3Commitment, P3Opening};
 use magnetar_constraint::F2_128;
-use magnetar_proof::{eq, prove, verify_rounds, Mle, ProofError, SumcheckProof};
+use magnetar_proof::{eq, prove, verify_rounds, Mle, Pcs, ProofError, SumcheckProof};
 use magnetar_transcript::Sha256Transcript;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -232,6 +233,32 @@ pub fn verify_batching(
     Ok(())
 }
 
+impl PackedMosaic {
+    /// Commit the packed polynomial as one field-element vector.
+    ///
+    /// This reference layer commits one field element per bit. It still gives
+    /// the single-commitment/single-evaluation structure of MosaicPCS; the
+    /// paper's 128-bits-per-element packing and ring switching are separate.
+    pub fn commit(&self, pcs: &P3BinaryPcs) -> Result<P3Commitment, MosaicError> {
+        Ok(pcs.commit(&self.values)?)
+    }
+
+    pub fn open(&self, pcs: &P3BinaryPcs, point: &[F2_128]) -> Result<P3Opening, MosaicError> {
+        Ok(pcs.open(&self.values, point)?)
+    }
+
+    pub fn verify(
+        &self,
+        pcs: &P3BinaryPcs,
+        commitment: &P3Commitment,
+        point: &[F2_128],
+        value: F2_128,
+        opening: &P3Opening,
+    ) -> Result<bool, MosaicError> {
+        Ok(pcs.verify(commitment, point, value, opening)?)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,5 +313,32 @@ mod tests {
         let mut verifier_transcript = Sha256Transcript::new("mosaic-batch-test");
         verify_batching(&proof, &claims, mosaic.total_bits, &mut verifier_transcript).unwrap();
         assert_eq!(proof.value, mosaic.eval_packed(&proof.point).unwrap());
+    }
+    #[test]
+    fn packed_mosaic_commits_and_opens_once() {
+        let components = vec![values(2, 1), values(4, 2), values(8, 3)];
+        let mosaic = PackedMosaic::new(&components).unwrap();
+        let pcs = P3BinaryPcs::new(100);
+        let commitment = mosaic.commit(&pcs).unwrap();
+        let point = vec![
+            F2_128::from(3u64),
+            F2_128::from(5u64),
+            F2_128::from(7u64),
+            F2_128::from(11u64),
+        ];
+        let value = mosaic.eval_packed(&point).unwrap();
+        let opening = mosaic.open(&pcs, &point).unwrap();
+        assert!(mosaic
+            .verify(&pcs, &commitment, &point, value, &opening)
+            .unwrap());
+        assert!(!mosaic
+            .verify(
+                &pcs,
+                &commitment,
+                &point,
+                value + F2_128::from(1u64),
+                &opening,
+            )
+            .unwrap());
     }
 }

@@ -43,7 +43,8 @@
 - `7398439`：`SimdR1cs` 增加 `combined_system`/`combined_witness`。
 - `28d1562`：`magnetar-proof` 增加 `prove_simd_spartan`/`verify_simd_spartan`，用 block-diagonal combined system 提供参考 SIMD proof 路径。
 - `331e33d`：`magnetar-pcs::mosaic` 增加 aligned-subcube packing + `PackedMosaic::lift`。
-- 本轮：增加 `batch_claims`/`verify_batching` 与测试，把多个 packed claims 归约成一个 `G(r)=v` claim。
+- `d88d2e7`：增加 `batch_claims`/`verify_batching`，把多个 packed claims 归约成一个 `G(r)=v` claim。
+- 本轮：`PackedMosaic::commit/open/verify` 用单个 P3 commitment/opening 验证 packed `G`；E5 原型完成（未接入 unified）。
 
 ## 二、逐项差距
 
@@ -108,8 +109,8 @@
 | E1 | 把所有 component 放到一个 packed polynomial `G` 的 aligned subcubes 上（§5.2） | `magnetar-pcs::mosaic` 已实现 aligned-subcube packing + `PackedMosaic`（参考原型）；统一 proof 仍用 P3 多表，不是单个 packed `G` | 🟡 | 把 `PackedMosaic` 接入 unified/chunked proof |
 | E2 | claim lift：`G(r ‖ s_i) = p_i(r)`，verifier 追加 Boolean suffix（§5.2） | `PackedMosaic::lift` 已实现 suffix layout + lift，并用 `eval_component == eval_packed(lift)` 测试；尚未接入 proof claims | 🟡 | 把 lift 接到 P3 claim batching |
 | E3 | 多 claim batching 成一个 claim（§5.2） | `mosaic.rs` 已实现 `batch_claims`/`verify_batching`：随机 α 合并多个 `G(r_i)=v_i`，sum-check 归约到单点 `G(r)=v`；测试通过；尚未接入 P3 proof | 🟡 | 把 batching 接入 P3 claim 流程 |
-| E4 | ring switching 到 packed representation `P_G`（§5.2） | 无 | ❌ | 实现 ring switching |
-| E5 | 单个 PCS evaluation argument（§5.5） | unified 一个 P3 opening；但 access register Merkle、chunked/per-row 另有 P3 | 🟡 | 全部 claim 进一个 packed commitment/opening |
+| E4 | ring switching 到 packed representation `P_G`（§5.2） | 无 | ❌ | 实现 ring switching；当前 reference 是 1 field element/bit，尚未采用 128-bit packed representation |
+| E5 | 单个 PCS evaluation argument（§5.5） | `mosaic.rs` 增加 `PackedMosaic::commit/open/verify`：packed `G` 用单个 P3 commitment + 单个 opening 验证；测试通过；unified proof 仍用多表 P3，尚未切换到 packed `G` | 🟡 | 把 unified/chunked claim 全部切到 packed `G` |
 | E6 | Ligerito/hash PCS 集成到 runtime（§6） | `ligerito` vendored backend 存在；runtime 默认用 P3 binary PCS | 🟡 | 把 Ligerito 接进 unified/chunked 路径并对比 |
 | E7 | 多表/多点 opening API | P3 mosaic 支持 multi-table/multi-point、`next_columns` | ✅ | 可作为 MosaicPCS 的实现基础 |
 | E8 | 证明大小随 trace 对数增长（§6.5） | `rows`/`steps` 线性；18 行 proof 270,713 B | ❌ | 与 A2 一起解决 |
