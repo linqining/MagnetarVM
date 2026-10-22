@@ -40,6 +40,152 @@ fn shared_transcript(commitment: &P3MosaicCommitment, table_index: usize) -> Sha
 
 #[allow(dead_code)]
 #[allow(clippy::type_complexity)]
+#[allow(clippy::needless_range_loop)]
+fn one_hot_columns(
+    witness: &BinaryTwistWitness,
+    write: bool,
+    cells: usize,
+    cycles: usize,
+) -> Vec<Vec<F2_128>> {
+    let mut columns = vec![vec![F2_128::from(0u64); cycles]; cells];
+    for cycle in 0..witness.cycles {
+        let addresses = if write {
+            &witness.write_address[cycle]
+        } else {
+            &witness.read_address[cycle]
+        };
+        if let Some(cell) = addresses.iter().position(|bit| bit.value() == 1) {
+            columns[cell][cycle] = F2_128::from(1u64);
+        }
+    }
+    columns
+}
+
+fn one_hot_at(columns: &[Vec<F2_128>], cycle_point: &[F2_128], cell_point: &[F2_128]) -> F2_128 {
+    columns
+        .iter()
+        .enumerate()
+        .fold(F2_128::from(0u64), |acc, (cell, column)| {
+            acc + eq_at(cell_point, cell) * fold_all(column, cycle_point)
+        })
+}
+
+#[allow(dead_code)]
+#[allow(clippy::type_complexity)]
+pub(crate) fn prove_address_multiplicity_columns(
+    witness: &BinaryTwistWitness,
+    write: bool,
+    commitment: &P3MosaicCommitment,
+    table_index: usize,
+) -> Result<
+    (
+        AddressMultiplicityClaim,
+        Vec<P3MosaicPoint>,
+        Vec<Vec<F2_128>>,
+    ),
+    ProofError,
+> {
+    let cells = witness.initial.len();
+    let cycles = witness.cycles.next_power_of_two();
+    let address_bits = cells.trailing_zeros() as usize;
+    let cycle_bits = cycles.trailing_zeros() as usize;
+    let (table, expected) = table_and_flags(witness, write, cells, cycles);
+    let mut transcript = shared_transcript(commitment, table_index);
+    let lambda = challenge(&mut transcript, "lambda");
+    let rho = sample_point(&mut transcript, cycle_bits);
+    let eq = eq_index(&rho, address_bits, cycle_bits);
+    let target = target_vector(&eq, &expected, cells);
+    let (rounds, challenges) =
+        sumcheck_boolean_multiplicity(&table, &eq, &target, lambda, &mut transcript)?;
+    let mut cycle_point = challenges[address_bits..].to_vec();
+    if cycle_point.is_empty() {
+        cycle_point.push(F2_128::from(0u64));
+    }
+    let columns = one_hot_columns(witness, write, cells, cycles);
+    let values = columns
+        .iter()
+        .map(|column| fold_all(column, &cycle_point))
+        .collect::<Vec<_>>();
+    let points = vec![P3MosaicPoint {
+        table: table_index,
+        point: cycle_point,
+        columns: (0..cells).collect(),
+        next_columns: Vec::new(),
+    }];
+    Ok((
+        AddressMultiplicityClaim { lambda, rounds },
+        points,
+        vec![values],
+    ))
+}
+
+#[allow(dead_code)]
+#[allow(clippy::type_complexity)]
+pub(crate) fn verify_address_multiplicity_columns(
+    witness: &BinaryTwistWitness,
+    write: bool,
+    claim: &AddressMultiplicityClaim,
+    commitment: &P3MosaicCommitment,
+    table_index: usize,
+) -> Result<Option<(Vec<P3MosaicPoint>, Vec<Vec<F2_128>>)>, ProofError> {
+    let cells = witness.initial.len();
+    let cycles = witness.cycles.next_power_of_two();
+    let address_bits = cells.trailing_zeros() as usize;
+    let cycle_bits = cycles.trailing_zeros() as usize;
+    let (_table, expected) = table_and_flags(witness, write, cells, cycles);
+    let mut transcript = shared_transcript(commitment, table_index);
+    if challenge(&mut transcript, "lambda") != claim.lambda {
+        return Ok(None);
+    }
+    let rho = sample_point(&mut transcript, cycle_bits);
+    let eq = eq_index(&rho, address_bits, cycle_bits);
+    let target = target_vector(&eq, &expected, cells);
+    let mut sum = F2_128::from(0u64);
+    let mut eq_folded = eq;
+    let mut target_folded = target;
+    let mut challenges = Vec::with_capacity(claim.rounds.len());
+    for round in &claim.rounds {
+        if round[0] + round[1] != sum {
+            return Ok(None);
+        }
+        for value in round {
+            transcript.absorb("round", &value.value().to_le_bytes());
+        }
+        let challenge = challenge(&mut transcript, "sumcheck");
+        challenges.push(challenge);
+        sum = evaluate_round4(round, challenge);
+        eq_folded = fold(&eq_folded, challenge);
+        target_folded = fold(&target_folded, challenge);
+    }
+    if eq_folded.len() != 1 || target_folded.len() != 1 {
+        return Ok(None);
+    }
+    let mut cycle_point = challenges[address_bits..].to_vec();
+    if cycle_point.is_empty() {
+        cycle_point.push(F2_128::from(0u64));
+    }
+    let columns = one_hot_columns(witness, write, cells, cycles);
+    let a_eval = one_hot_at(&columns, &cycle_point, &challenges[..address_bits]);
+    let expected_sum = a_eval * (a_eval + F2_128::from(1u64))
+        + claim.lambda * (a_eval * eq_folded[0] + target_folded[0]);
+    if sum != expected_sum {
+        return Err(ProofError::Pcs("address column terminal mismatch".into()));
+    }
+    let values = columns
+        .iter()
+        .map(|column| fold_all(column, &cycle_point))
+        .collect::<Vec<_>>();
+    let points = vec![P3MosaicPoint {
+        table: table_index,
+        point: cycle_point,
+        columns: (0..cells).collect(),
+        next_columns: Vec::new(),
+    }];
+    Ok(Some((points, vec![values])))
+}
+
+#[allow(dead_code)]
+#[allow(clippy::type_complexity)]
 pub(crate) fn prove_address_multiplicity_shared(
     witness: &BinaryTwistWitness,
     write: bool,
@@ -641,5 +787,25 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+    #[test]
+    fn column_multiplicity_claim_round_trips() {
+        let trace = trace();
+        let witness = BinaryTwistWitness::from_trace(&trace).unwrap();
+        let cells = witness.initial.len();
+        let cycles = witness.cycles.next_power_of_two();
+        let columns = one_hot_columns(&witness, true, cells, cycles);
+        let tables = vec![P3MosaicTable { columns }];
+        let pcs = P3BinaryPcs::new(100);
+        let commitment = pcs.commit_mosaic(&tables).unwrap();
+        let (claim, points, values) =
+            prove_address_multiplicity_columns(&witness, true, &commitment, 0).unwrap();
+        let (vp, vv) = verify_address_multiplicity_columns(&witness, true, &claim, &commitment, 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(points.len(), vp.len());
+        assert_eq!(values, vv);
+        let opening = pcs.open_mosaic(&tables, &points).unwrap();
+        assert!(pcs.verify_mosaic(&opening, &points, &values).unwrap());
     }
 }
