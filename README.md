@@ -188,11 +188,11 @@ them:
 
 | width | CPU vars | CPU constraints | proof bytes | prove | verify |
 |---|---|---|---|---|---|
-| 64 | 6,991 | 11,933 | 276,215 | 0.46 s | 0.052 s |
-| 32 | 4,015 | 6,813 | 238,255 | 0.46 s | 0.024 s |
-| 8 | 1,783 | 2,973 | 205,287 | 0.39 s | 0.014 s |
+| 64 | 6,991 | 11,933 | 275,999 | 0.40 s | 0.045 s |
+| 32 | 4,015 | 6,813 | 238,055 | 0.36 s | 0.023 s |
+| 8 | 1,783 | 2,973 | 205,103 | 0.34 s | 0.013 s |
 
-At width 64 the proof splits into access=18,890, cpu=246,048, shout=3,154,
+At width 64 the proof splits into access=18,890, cpu=245,832, shout=3,154,
 shift_router=1, store_router=8,090 bytes. Unified proofs no longer carry the
 redundant trace rows; the verifier takes the trace alongside the proof. The changes behind these numbers:
 
@@ -205,7 +205,7 @@ redundant trace rows; the verifier takes the trace alongside the proof. The chan
    `P3SharedPcs` plugs this batch into the Spartan proof: the CPU point and the
    BinaryTwist point claims are opened by the same P3 argument. The proof no
    longer pays for a separate CPU opening plus a separate RAM opening; the old
-   separate layout was 593,508 bytes, the shared layout is 276,215 bytes.
+   separate layout was 593,508 bytes, the shared layout is 275,999 bytes.
 3. **Bit-sliced virtual addresses and values.** The address table commits
    `2a+2` cycle-length bit columns (read bits, write bits, and two validity
    bits); full one-hot addresses are reconstructed by the verifier. Booleanity
@@ -249,11 +249,11 @@ following reference measurements on the current unified proof:
 
 | rows | proof bytes | prove ms | verify ms |
 |---:|---:|---:|---:|
-| 2 | 146,014 | 13.4 | 8.0 |
-| 4 | 180,486 | 32.1 | 11.1 |
-| 8 | 215,158 | 54.9 | 21.4 |
-| 16 | 252,038 | 133.7 | 42.7 |
-| 32 | 301,590 | 365.3 | 92.2 |
+| 2 | 145,846 | 12.3 | 5.9 |
+| 4 | 180,302 | 23.6 | 10.7 |
+| 8 | 214,958 | 52.3 | 20.5 |
+| 16 | 251,822 | 132.1 | 42.5 |
+| 32 | 301,358 | 374.4 | 88.1 |
 
 The proof no longer carries `rows`; the remaining growth comes from the
 per-row CPU relation and PCS work. Removing that dependence is the remaining

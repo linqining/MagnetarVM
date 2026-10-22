@@ -402,7 +402,6 @@ pub struct LockstepProof<C: Clone + std::fmt::Debug, O: Clone + std::fmt::Debug>
     pub v_c1: F2_128,
     pub outer: SumcheckProof<F2_128>,
     pub inner: SumcheckProof<F2_128>,
-    pub ry: Vec<F2_128>,
     pub segments: Vec<SegmentClaim>,
     pub opening: O,
 }
@@ -532,7 +531,6 @@ pub fn prove_lockstep<P: Pcs>(
         v_c1: vc1,
         outer,
         inner,
-        ry,
         segments,
         opening,
     })
@@ -605,11 +603,6 @@ pub fn verify_lockstep<P: Pcs>(
         2,
         |round, values| round_challenge(&transcript, "inner-round", round, values),
     )?;
-    if proof.ry != ry {
-        return Err(SpartanError::Verification(
-            "lockstep witness point mismatch",
-        ));
-    }
     let vw = reconstruct_segment_claim(layout, &proof.segments, &ry)?;
     let a0_at = a0.eval_mle(&rx, &ry)?;
     let b0_at = b0.eval_mle(&rx, &ry)?;
