@@ -469,6 +469,7 @@ pub enum ProofError {
     DimensionMismatch,
 }
 
+pub mod dual_field;
 pub mod spartan;
 pub mod virtual_spartan;
 pub use spartan::{
