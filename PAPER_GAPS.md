@@ -260,3 +260,7 @@ These are architectural or research-level items; the current tree is a verified 
 - Current proof components: access 12,778; CPU lockstep 241,240; Shout 2,298; shift Router 1; store Router 5,346.
 - Trace is committed in the shared P3 commitment and routed via 2 segment claims; admission still requires the full trace to rebuild the CPU system.
 - Address multiplicity claim works standalone (including no-write and multi-table cases), but unified integration is still blocked by a trace-specific claim mismatch; the independent address table cost (+43 KB) ruled out the naive integration.
+
+### Address-claim integration diagnostic
+
+A standalone diagnostic using the unified commitment on an unaligned-read trace produced a multiplicity terminal mismatch: the sum-check terminal `sum` did not equal the value reconstructed from the opened bit columns. This means the virtual one-hot identity currently fails for that trace's table/valid construction, even though it holds for the simple and no-write traces. The integration was therefore not landed; the next step is to compare the one-hot table evaluation at `challenges` directly against the bit-product for this trace and fix the valid/cycle padding accordingly.
