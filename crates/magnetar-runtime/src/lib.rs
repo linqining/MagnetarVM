@@ -4,6 +4,8 @@
 //! prover: `UnimplementedBackend` makes the missing cryptographic backend
 //! explicit rather than returning a misleading "proof".
 
+pub mod binary_twist;
+
 use magnetar_constraint::{ConstraintSystem, LayoutError, Witness, WitnessLayout, F2_128};
 use magnetar_cpu::{check_trace, CpuError};
 use magnetar_executor::{execute_with_io, ExecError, ExecutionIo};

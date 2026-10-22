@@ -3,7 +3,9 @@
 //! The checks here replay the trace. They are the semantic oracle for the
 //! BinaryTwist/BinaryShout arguments, not a replacement for them.
 
+pub mod binary_twist;
 pub mod mmu;
+pub use binary_twist::BinaryTwistWitness;
 
 use magnetar_constraint::F2_128;
 use magnetar_spec::{Addr, MemoryEvent, Trace, Word};
@@ -299,6 +301,8 @@ fn read_value(bytes: &[u8], width: usize) -> Word {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum MemoryError {
+    #[error("invalid BinaryTwist witness: {0}")]
+    InvalidBinaryTwist(String),
     #[error("row {row}: register x{reg} read {actual:#x}, expected {expected:#x}")]
     RegisterRead {
         row: usize,
