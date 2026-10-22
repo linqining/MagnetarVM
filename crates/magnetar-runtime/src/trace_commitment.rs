@@ -151,6 +151,11 @@ mod tests {
         let (witness, commitment, opening) = prove_trace_commitment(&trace).unwrap();
         assert_eq!(witness.values.len(), witness.layout.total_bits);
         verify_trace_commitment(&trace, &commitment, &opening).unwrap();
+
+        let mut tampered = commitment.clone();
+        tampered.num_variables += 1;
+        assert!(verify_trace_commitment(&trace, &tampered, &opening).is_err());
+
         let claims = magnetar_proof::virtual_spartan::split_segment_claims(
             &witness.layout,
             &witness.values,

@@ -102,7 +102,8 @@
 - `20f27d9`：trace commitment 改为 4 个 aligned segments，并校验 segment 重建。
 - `534cc9d`：standalone `AddressMultiplicityProof` 移除 header/challenges，verifier 从 transcript 派生。
 - `9e85a2d`：移除 `AddressMultiplicityProof` 中与 opening 重复的 `commitment` 字段。
-- 本轮：新增 `address_proof_binds_the_lambda_challenge` 测试，验证 lambda 篡改被拒绝；shared-claim 集成尝试未提交。
+- `5c99bf3`：新增 `address_proof_binds_the_lambda_challenge` 测试。
+- 本轮：trace commitment 增加 commitment tamper 测试；尝试把 trace PCS 接入 unified，但独立 P3 opening 使 proof 从 265,503 B 增至 332,111 B，已回退。
 
 ## 二、逐项差距
 
