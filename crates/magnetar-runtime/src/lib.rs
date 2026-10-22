@@ -11,7 +11,7 @@ pub mod binary_twist_address;
 pub mod register_twist;
 
 use crate::binary_router::{
-    prove_binary_router_claims, verify_binary_router_claims, BinaryRouterWitness,
+    prove_binary_router_claims, verify_binary_router_claims, BinaryRouterWitness, RouterMode,
 };
 use crate::binary_shout::{
     prove_binary_shout_claims, verify_binary_shout_claims, BinaryShoutWitness,
@@ -1002,7 +1002,8 @@ pub struct UnifiedTraceProof {
     pub trace_commitment: [u8; 32],
     pub cpu: MosaicSpartanProof,
     pub shout: Option<crate::binary_shout::BinaryShoutProof>,
-    pub router: Option<crate::binary_router::BinaryRouterProof>,
+    pub shift_router: Option<crate::binary_router::BinaryRouterProof>,
+    pub store_router: Option<crate::binary_router::BinaryRouterProof>,
     pub rows: Vec<magnetar_spec::TraceRow>,
 }
 
@@ -1830,7 +1831,8 @@ pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTracePr
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
 
     let shout_witness = BinaryShoutWitness::from_trace(trace).ok();
-    let router_witness = BinaryRouterWitness::from_trace(trace).ok();
+    let shift_router_witness = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Shifts).ok();
+    let store_router_witness = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Stores).ok();
     let register_witness = crate::register_twist::register_twist_witness(trace)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let register_tables =
@@ -1850,12 +1852,20 @@ pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTracePr
     if let Some((_, table)) = &shout_table {
         mosaic_tables.push(table.clone());
     }
-    let router_table = router_witness.as_ref().map(|witness| {
+    let shift_router_table = shift_router_witness.as_ref().map(|witness| {
         let index = next_table;
         next_table += 1;
         (index, witness.table())
     });
-    if let Some((_, table)) = &router_table {
+    if let Some((_, table)) = &shift_router_table {
+        mosaic_tables.push(table.clone());
+    }
+    let store_router_table = store_router_witness.as_ref().map(|witness| {
+        let index = next_table;
+        next_table += 1;
+        (index, witness.table())
+    });
+    if let Some((_, table)) = &store_router_table {
         mosaic_tables.push(table.clone());
     }
     let register_index = mosaic_tables.len();
@@ -1886,17 +1896,30 @@ pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTracePr
     } else {
         None
     };
-    let router = if let (Some(witness), Some((index, _))) = (&router_witness, &router_table) {
-        let (claim, claim_points, claim_values) =
-            prove_binary_router_claims(witness, &commitment, *index)
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        points.extend(claim_points);
-        values.extend(claim_values);
-        aux_tables.push(witness.table());
-        Some(claim)
-    } else {
-        None
-    };
+    let shift_router =
+        if let (Some(witness), Some((index, _))) = (&shift_router_witness, &shift_router_table) {
+            let (claim, claim_points, claim_values) =
+                prove_binary_router_claims(witness, &commitment, *index)
+                    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            points.extend(claim_points);
+            values.extend(claim_values);
+            aux_tables.push(witness.table());
+            Some(claim)
+        } else {
+            None
+        };
+    let store_router =
+        if let (Some(witness), Some((index, _))) = (&store_router_witness, &store_router_table) {
+            let (claim, claim_points, claim_values) =
+                prove_binary_router_claims(witness, &commitment, *index)
+                    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            points.extend(claim_points);
+            values.extend(claim_values);
+            aux_tables.push(witness.table());
+            Some(claim)
+        } else {
+            None
+        };
     let (register_points, register_values) = register_claims;
     points.extend(register_points);
     values.extend(register_values);
@@ -1912,7 +1935,8 @@ pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTracePr
         trace_commitment: trace_digest(trace),
         cpu,
         shout,
-        router,
+        shift_router,
+        store_router,
         rows: trace.rows.clone(),
     })
 }
@@ -1929,7 +1953,8 @@ pub fn verify_unified_trace(
         ));
     }
     let shout_witness = BinaryShoutWitness::from_trace(trace).ok();
-    let router_witness = BinaryRouterWitness::from_trace(trace).ok();
+    let shift_router_witness = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Shifts).ok();
+    let store_router_witness = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Stores).ok();
     match (&shout_witness, &proof.shout) {
         (Some(_), None) | (None, Some(_)) => {
             return Err(RuntimeError::Proof(
@@ -1938,16 +1963,26 @@ pub fn verify_unified_trace(
         }
         _ => {}
     }
-    match (&router_witness, &proof.router) {
+    match (&shift_router_witness, &proof.shift_router) {
         (Some(_), None) | (None, Some(_)) => {
             return Err(RuntimeError::Proof(
-                "BinaryRouter proof presence does not match the trace".into(),
+                "shift BinaryRouter proof presence does not match the trace".into(),
             ));
         }
         _ => {}
     }
-    let expected_tables =
-        5 + usize::from(shout_witness.is_some()) + usize::from(router_witness.is_some());
+    match (&store_router_witness, &proof.store_router) {
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(RuntimeError::Proof(
+                "store BinaryRouter proof presence does not match the trace".into(),
+            ));
+        }
+        _ => {}
+    }
+    let expected_tables = 5
+        + usize::from(shout_witness.is_some())
+        + usize::from(shift_router_witness.is_some())
+        + usize::from(store_router_witness.is_some());
     if proof.cpu.commitment.tables.len() != expected_tables {
         return Err(RuntimeError::Proof(
             "unified proof does not commit the expected CPU/RAM/aux tables".into(),
@@ -1959,7 +1994,12 @@ pub fn verify_unified_trace(
         next_table += 1;
         index
     });
-    let router_index = router_witness.as_ref().map(|_| {
+    let shift_router_index = shift_router_witness.as_ref().map(|_| {
+        let index = next_table;
+        next_table += 1;
+        index
+    });
+    let store_router_index = store_router_witness.as_ref().map(|_| {
         let index = next_table;
         next_table += 1;
         index
@@ -1991,14 +2031,34 @@ pub fn verify_unified_trace(
         points.extend(claim_points);
         values.extend(claim_values);
     }
-    if let (Some(witness), Some(claim), Some(index)) =
-        (&router_witness, &proof.router, router_index)
-    {
+    if let (Some(witness), Some(claim), Some(index)) = (
+        &shift_router_witness,
+        &proof.shift_router,
+        shift_router_index,
+    ) {
         let Some((claim_points, claim_values)) =
             verify_binary_router_claims(witness, claim, &proof.cpu.commitment, index)
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?
         else {
-            return Err(RuntimeError::Proof("BinaryRouter proof rejected".into()));
+            return Err(RuntimeError::Proof(
+                "shift BinaryRouter proof rejected".into(),
+            ));
+        };
+        points.extend(claim_points);
+        values.extend(claim_values);
+    }
+    if let (Some(witness), Some(claim), Some(index)) = (
+        &store_router_witness,
+        &proof.store_router,
+        store_router_index,
+    ) {
+        let Some((claim_points, claim_values)) =
+            verify_binary_router_claims(witness, claim, &proof.cpu.commitment, index)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        else {
+            return Err(RuntimeError::Proof(
+                "store BinaryRouter proof rejected".into(),
+            ));
         };
         points.extend(claim_points);
         values.extend(claim_values);
@@ -2084,13 +2144,14 @@ pub struct UnifiedProofSizes {
     pub access: usize,
     pub cpu: usize,
     pub shout: usize,
-    pub router: usize,
+    pub shift_router: usize,
+    pub store_router: usize,
     pub rows: usize,
 }
 
 impl UnifiedProofSizes {
     pub fn total(&self) -> usize {
-        self.access + self.cpu + self.shout + self.router + self.rows
+        self.access + self.cpu + self.shout + self.shift_router + self.store_router + self.rows
     }
 }
 
@@ -2104,7 +2165,8 @@ pub fn unified_proof_sizes(proof: &UnifiedTraceProof) -> Result<UnifiedProofSize
         access: size(bincode::serialize(&proof.access))?,
         cpu: size(bincode::serialize(&proof.cpu))?,
         shout: size(bincode::serialize(&proof.shout))?,
-        router: size(bincode::serialize(&proof.router))?,
+        shift_router: size(bincode::serialize(&proof.shift_router))?,
+        store_router: size(bincode::serialize(&proof.store_router))?,
         rows: size(bincode::serialize(&proof.rows))?,
     })
 }
@@ -2997,7 +3059,9 @@ mod tests {
         assert!(proof.access.ram.opening.is_none());
         assert_eq!(
             proof.cpu.commitment.tables.len(),
-            5 + usize::from(proof.shout.is_some()) + usize::from(proof.router.is_some())
+            5 + usize::from(proof.shout.is_some())
+                + usize::from(proof.shift_router.is_some())
+                + usize::from(proof.store_router.is_some())
         );
         verify_unified_trace(&trace, &proof, 8).unwrap();
 
