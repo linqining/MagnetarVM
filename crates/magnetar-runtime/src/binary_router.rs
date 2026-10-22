@@ -666,6 +666,10 @@ pub(crate) fn prove_binary_router_claims(
     witness.validate()?;
     let n = witness.cycle_bits;
     let cycles = witness.cycles;
+    let has_q = witness
+        .shift_q
+        .iter()
+        .any(|column| column.iter().any(|value| value.value() == 1));
     let bit_columns = INPUT_BITS + 9 + 64;
     let hq_columns = bit_columns + 64;
     let total_columns = hq_columns + 1;
@@ -911,68 +915,106 @@ pub(crate) fn prove_binary_router_claims(
     } else {
         valid_r_j.to_vec()
     };
-    let mut transcript = Sha256Transcript::new("magnetar-binary-router-q");
-    absorb_commitment(&mut transcript, commitment);
-    let q_rho_j = sample_point(&mut transcript, n);
-    let _q_rho_h = sample_point(&mut transcript, 8);
-    let q_eq_j = eq_vector(&q_rho_j, cycles);
-    let q_terms = 64 * cycles;
-    let mut q_left = vec![F2_128::from(0u64); q_terms];
-    let mut q_right = vec![F2_128::from(0u64); q_terms];
-    for h in 0..64usize {
-        for cycle in 0..cycles {
-            q_left[h * cycles + cycle] = q_eq_j[cycle];
-            if h < 64 {
-                q_right[h * cycles + cycle] = witness.shift_q[h][cycle];
+    let (
+        q_rounds,
+        q_challenges,
+        q_rho_j,
+        q_evals,
+        q_point,
+        hq_rounds,
+        hq_challenges,
+        hq_rho_j,
+        hq_evals,
+        hq_point,
+    ) = if has_q {
+        let mut transcript = Sha256Transcript::new("magnetar-binary-router-q");
+        absorb_commitment(&mut transcript, commitment);
+        let q_rho_j = sample_point(&mut transcript, n);
+        let _q_rho_h = sample_point(&mut transcript, 8);
+        let q_eq_j = eq_vector(&q_rho_j, cycles);
+        let q_terms = 64 * cycles;
+        let mut q_left = vec![F2_128::from(0u64); q_terms];
+        let mut q_right = vec![F2_128::from(0u64); q_terms];
+        for h in 0..64usize {
+            for cycle in 0..cycles {
+                q_left[h * cycles + cycle] = q_eq_j[cycle];
+                if h < 64 {
+                    q_right[h * cycles + cycle] = witness.shift_q[h][cycle];
+                }
             }
         }
-    }
-    let q_degrees = vec![2usize; q_terms.trailing_zeros() as usize];
-    let (q_rounds, q_challenges) =
-        sumcheck_product(&q_left, &q_right, &q_degrees, &mut transcript)?;
-    let q_r_j = &q_challenges[..n];
-    let q_evals = (0..64)
-        .map(|h| fold_all(&witness.shift_q[h], q_r_j))
-        .collect::<Vec<_>>();
-    let q_point = if q_r_j.is_empty() {
-        vec![F2_128::from(0u64)]
-    } else {
-        q_r_j.to_vec()
-    };
-    let mut transcript = Sha256Transcript::new("magnetar-binary-router-hq");
-    absorb_commitment(&mut transcript, commitment);
-    let hq_rho_j = sample_point(&mut transcript, n);
-    let _hq_rho_h = sample_point(&mut transcript, 8);
-    let hq_eq_j = eq_vector(&hq_rho_j, cycles);
-    let hq_terms = 64 * cycles;
-    let mut hq_left = vec![F2_128::from(0u64); hq_terms];
-    let mut hq_right = vec![F2_128::from(0u64); hq_terms];
-    for h in 0..64usize {
-        for cycle in 0..cycles {
-            hq_left[h * cycles + cycle] = hq_eq_j[cycle];
-            if h < 64 {
-                hq_right[h * cycles + cycle] = witness.shift_hq[h][cycle];
+        let q_degrees = vec![2usize; q_terms.trailing_zeros() as usize];
+        let (q_rounds, q_challenges) =
+            sumcheck_product(&q_left, &q_right, &q_degrees, &mut transcript)?;
+        let q_r_j = &q_challenges[..n];
+        let q_evals = (0..64)
+            .map(|h| fold_all(&witness.shift_q[h], q_r_j))
+            .collect::<Vec<_>>();
+        let q_point = if q_r_j.is_empty() {
+            vec![F2_128::from(0u64)]
+        } else {
+            q_r_j.to_vec()
+        };
+        let mut transcript = Sha256Transcript::new("magnetar-binary-router-hq");
+        absorb_commitment(&mut transcript, commitment);
+        let hq_rho_j = sample_point(&mut transcript, n);
+        let _hq_rho_h = sample_point(&mut transcript, 8);
+        let hq_eq_j = eq_vector(&hq_rho_j, cycles);
+        let hq_terms = 64 * cycles;
+        let mut hq_left = vec![F2_128::from(0u64); hq_terms];
+        let mut hq_right = vec![F2_128::from(0u64); hq_terms];
+        for h in 0..64usize {
+            for cycle in 0..cycles {
+                hq_left[h * cycles + cycle] = hq_eq_j[cycle];
+                if h < 64 {
+                    hq_right[h * cycles + cycle] = witness.shift_hq[h][cycle];
+                }
             }
         }
-    }
-    let hq_degrees = vec![2usize; hq_terms.trailing_zeros() as usize];
-    let (hq_rounds, hq_challenges) =
-        sumcheck_product(&hq_left, &hq_right, &hq_degrees, &mut transcript)?;
-    let hq_r_j = &hq_challenges[..n];
-    let hq_evals = (0..64)
-        .map(|h| fold_all(&witness.shift_hq[h], hq_r_j))
-        .collect::<Vec<_>>();
-    let hq_point = if hq_r_j.is_empty() {
-        vec![F2_128::from(0u64)]
+        let hq_degrees = vec![2usize; hq_terms.trailing_zeros() as usize];
+        let (hq_rounds, hq_challenges) =
+            sumcheck_product(&hq_left, &hq_right, &hq_degrees, &mut transcript)?;
+        let hq_r_j = &hq_challenges[..n];
+        let hq_evals = (0..64)
+            .map(|h| fold_all(&witness.shift_hq[h], hq_r_j))
+            .collect::<Vec<_>>();
+        let hq_point = if hq_r_j.is_empty() {
+            vec![F2_128::from(0u64)]
+        } else {
+            hq_r_j.to_vec()
+        };
+        (
+            q_rounds,
+            q_challenges,
+            q_rho_j,
+            q_evals,
+            q_point,
+            hq_rounds,
+            hq_challenges,
+            hq_rho_j,
+            hq_evals,
+            hq_point,
+        )
     } else {
-        hq_r_j.to_vec()
+        (
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
     };
     let boolean_point = if boolean.challenges[..n].is_empty() {
         vec![F2_128::from(0u64)]
     } else {
         boolean.challenges[..n].to_vec()
     };
-    let points = vec![
+    let mut points = vec![
         P3MosaicPoint {
             table: table_index,
             point: boolean_point,
@@ -1009,29 +1051,33 @@ pub(crate) fn prove_binary_router_claims(
             columns: (INPUT_BITS + 7..INPUT_BITS + 9).collect(),
             next_columns: Vec::new(),
         },
-        P3MosaicPoint {
+    ];
+    if has_q {
+        points.push(P3MosaicPoint {
             table: table_index,
             point: q_point,
             columns: (INPUT_BITS + 9..bit_columns).collect(),
             next_columns: Vec::new(),
-        },
-        P3MosaicPoint {
+        });
+        points.push(P3MosaicPoint {
             table: table_index,
             point: hq_point,
             columns: (bit_columns..hq_columns).collect(),
             next_columns: Vec::new(),
-        },
-    ];
-    let values = vec![
+        });
+    }
+    let mut values = vec![
         boolean.bit_evals.clone(),
         input_bit_evals.clone(),
         offset_evals.clone(),
         width_evals.clone(),
         vec![shift_eval],
         valid_evals.clone(),
-        q_evals.clone(),
-        hq_evals.clone(),
     ];
+    if has_q {
+        values.push(q_evals.clone());
+        values.push(hq_evals.clone());
+    }
     Ok((
         BinaryRouterProof {
             cycle_bits: n,
@@ -1154,6 +1200,7 @@ pub(crate) fn verify_binary_router_claims(
     }
     let n = witness.cycle_bits;
     let cycles = witness.cycles;
+    let has_q = !proof.q_evals.is_empty();
     let bit_columns = INPUT_BITS + 9 + 64;
     let hq_columns = bit_columns + 64;
     let total_columns = hq_columns + 1;
@@ -1367,56 +1414,82 @@ pub(crate) fn verify_binary_router_claims(
         return Ok(None);
     }
 
-    let mut transcript = Sha256Transcript::new("magnetar-binary-router-q");
-    absorb_commitment(&mut transcript, commitment);
-    let q_rho_j = sample_point(&mut transcript, n);
-    let _q_rho_h = sample_point(&mut transcript, 8);
-    if proof.q_cycle_point != q_rho_j {
-        return Ok(None);
-    }
-    let Some(sum) = replay_terms(
-        &proof.q_rounds,
-        &proof.q_challenges,
-        q_eq_claimed(witness, &q_rho_j),
-        &mut transcript,
-    ) else {
-        return Ok(None);
-    };
-    let q_r_j = &proof.q_challenges[..n];
-    let q_r_h = &proof.q_challenges[n..];
-    let mut q_eval = F2_128::from(0u64);
-    for (h, eval) in proof.q_evals.iter().enumerate() {
-        q_eval = q_eval + eq_at_index(q_r_h, h) * *eval;
-    }
-    if sum != eq_points(&q_rho_j, q_r_j) * q_eval {
-        return Ok(None);
-    }
+    let mut extra_points = Vec::new();
+    let mut extra_values = Vec::new();
+    if has_q {
+        let mut transcript = Sha256Transcript::new("magnetar-binary-router-q");
+        absorb_commitment(&mut transcript, commitment);
+        let q_rho_j = sample_point(&mut transcript, n);
+        let _q_rho_h = sample_point(&mut transcript, 8);
+        if proof.q_cycle_point != q_rho_j {
+            return Ok(None);
+        }
+        let Some(sum) = replay_terms(
+            &proof.q_rounds,
+            &proof.q_challenges,
+            q_eq_claimed(witness, &q_rho_j),
+            &mut transcript,
+        ) else {
+            return Ok(None);
+        };
+        let q_r_j = &proof.q_challenges[..n];
+        let q_r_h = &proof.q_challenges[n..];
+        let mut q_eval = F2_128::from(0u64);
+        for (h, eval) in proof.q_evals.iter().enumerate() {
+            q_eval = q_eval + eq_at_index(q_r_h, h) * *eval;
+        }
+        if sum != eq_points(&q_rho_j, q_r_j) * q_eval {
+            return Ok(None);
+        }
 
-    let mut transcript = Sha256Transcript::new("magnetar-binary-router-hq");
-    absorb_commitment(&mut transcript, commitment);
-    let hq_rho_j = sample_point(&mut transcript, n);
-    let _hq_rho_h = sample_point(&mut transcript, 8);
-    if proof.hq_cycle_point != hq_rho_j {
-        return Ok(None);
-    }
-    let Some(sum) = replay_terms(
-        &proof.hq_rounds,
-        &proof.hq_challenges,
-        hq_eq_claimed(witness, &hq_rho_j),
-        &mut transcript,
-    ) else {
-        return Ok(None);
-    };
-    let hq_r_j = &proof.hq_challenges[..n];
-    let hq_r_h = &proof.hq_challenges[n..];
-    let mut hq_eval = F2_128::from(0u64);
-    for (h, eval) in proof.hq_evals.iter().enumerate() {
-        hq_eval = hq_eval + eq_at_index(hq_r_h, h) * *eval;
-    }
-    if sum != eq_points(&hq_rho_j, hq_r_j) * hq_eval {
-        return Ok(None);
-    }
+        let mut transcript = Sha256Transcript::new("magnetar-binary-router-hq");
+        absorb_commitment(&mut transcript, commitment);
+        let hq_rho_j = sample_point(&mut transcript, n);
+        let _hq_rho_h = sample_point(&mut transcript, 8);
+        if proof.hq_cycle_point != hq_rho_j {
+            return Ok(None);
+        }
+        let Some(sum) = replay_terms(
+            &proof.hq_rounds,
+            &proof.hq_challenges,
+            hq_eq_claimed(witness, &hq_rho_j),
+            &mut transcript,
+        ) else {
+            return Ok(None);
+        };
+        let hq_r_j = &proof.hq_challenges[..n];
+        let hq_r_h = &proof.hq_challenges[n..];
+        let mut hq_eval = F2_128::from(0u64);
+        for (h, eval) in proof.hq_evals.iter().enumerate() {
+            hq_eval = hq_eval + eq_at_index(hq_r_h, h) * *eval;
+        }
+        if sum != eq_points(&hq_rho_j, hq_r_j) * hq_eval {
+            return Ok(None);
+        }
 
+        extra_points.push(P3MosaicPoint {
+            table: table_index,
+            point: if q_r_j.is_empty() {
+                vec![F2_128::from(0u64)]
+            } else {
+                q_r_j.to_vec()
+            },
+            columns: (INPUT_BITS + 9..bit_columns).collect(),
+            next_columns: Vec::new(),
+        });
+        extra_points.push(P3MosaicPoint {
+            table: table_index,
+            point: if hq_r_j.is_empty() {
+                vec![F2_128::from(0u64)]
+            } else {
+                hq_r_j.to_vec()
+            },
+            columns: (bit_columns..hq_columns).collect(),
+            next_columns: Vec::new(),
+        });
+        extra_values.push(proof.q_evals.clone());
+        extra_values.push(proof.hq_evals.clone());
+    }
     let point = if r_j.is_empty() {
         vec![F2_128::from(0u64)]
     } else {
@@ -1427,7 +1500,7 @@ pub(crate) fn verify_binary_router_claims(
     } else {
         proof.boolean.challenges[..n].to_vec()
     };
-    let points = vec![
+    let mut points = vec![
         P3MosaicPoint {
             table: table_index,
             point: boolean_point,
@@ -1480,37 +1553,17 @@ pub(crate) fn verify_binary_router_claims(
             columns: (INPUT_BITS + 7..INPUT_BITS + 9).collect(),
             next_columns: Vec::new(),
         },
-        P3MosaicPoint {
-            table: table_index,
-            point: if q_r_j.is_empty() {
-                vec![F2_128::from(0u64)]
-            } else {
-                q_r_j.to_vec()
-            },
-            columns: (INPUT_BITS + 9..bit_columns).collect(),
-            next_columns: Vec::new(),
-        },
-        P3MosaicPoint {
-            table: table_index,
-            point: if hq_r_j.is_empty() {
-                vec![F2_128::from(0u64)]
-            } else {
-                hq_r_j.to_vec()
-            },
-            columns: (bit_columns..hq_columns).collect(),
-            next_columns: Vec::new(),
-        },
     ];
-    let values = vec![
+    points.extend(extra_points);
+    let mut values = vec![
         proof.boolean.bit_evals.clone(),
         proof.input_bit_evals.clone(),
         proof.offset_evals.clone(),
         proof.width_evals.clone(),
         vec![proof.shift_eval],
         proof.valid_evals.clone(),
-        proof.q_evals.clone(),
-        proof.hq_evals.clone(),
     ];
+    values.extend(extra_values);
     Ok(Some((points, values)))
 }
 
