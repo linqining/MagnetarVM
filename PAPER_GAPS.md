@@ -98,7 +98,8 @@
 - `1b4a985`：`BinaryTwistRamProof` header/claimed 移除，access 降至 12,778 B。
 - `940f47b`：Router/Shout proof 移除 `address_bits`/`cycle_bits`/`claimed`，shout 2,298 B、store_router 5,346 B。
 - `e89225e`：standalone read/write proof 移除 `address_bits`/`cycle_bits`。
-- 本轮：新增 `trace_commitment` 原型，把 trace 展平为 P3 多项式并验证 commitment/opening；A2 仍为 🟡，尚未接入 unified。
+- `395630f`：新增 `trace_commitment` 原型，把 trace 展平为 P3 多项式并验证 commitment/opening。
+- 本轮：trace commitment 改为 4 个 aligned segments，并用 `split_segment_claims`/`verify_segment_claims` 校验重建；A2 仍为 🟡，尚未接入 unified。
 
 ## 二、逐项差距
 

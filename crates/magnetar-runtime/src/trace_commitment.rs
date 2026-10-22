@@ -37,14 +37,24 @@ pub fn trace_witness(trace: &Trace) -> Result<TraceWitness, RuntimeError> {
     }
     let len = values.len().next_power_of_two().max(1);
     values.resize(len, F2_128::from(0u64));
-    let layout = WitnessLayout::new(vec![Segment::new(
-        "trace",
-        0,
-        len,
-        SegmentKind::Direct,
-        SegmentOwner::Cpu,
-    )])
-    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let chunk = if len >= 4 { len / 4 } else { len };
+    let mut segments = Vec::new();
+    let mut offset = 0;
+    let mut index = 0;
+    while offset < len {
+        let size = chunk.min(len - offset);
+        segments.push(Segment::new(
+            format!("trace{index}"),
+            offset,
+            size,
+            SegmentKind::Direct,
+            SegmentOwner::Cpu,
+        ));
+        offset += size;
+        index += 1;
+    }
+    let layout =
+        WitnessLayout::new(segments).map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let digest = crate::trace_digest(trace);
     let point = (0..layout.total_bits.trailing_zeros() as usize)
         .map(|index| F2_128::from(u64::from(digest[index % 32])))
@@ -141,5 +151,22 @@ mod tests {
         let (witness, commitment, opening) = prove_trace_commitment(&trace).unwrap();
         assert_eq!(witness.values.len(), witness.layout.total_bits);
         verify_trace_commitment(&trace, &commitment, &opening).unwrap();
+        let claims = magnetar_proof::virtual_spartan::split_segment_claims(
+            &witness.layout,
+            &witness.values,
+            &witness.point,
+        )
+        .unwrap();
+        let value = Mle::new(witness.values.clone())
+            .unwrap()
+            .eval(&witness.point)
+            .unwrap();
+        magnetar_proof::virtual_spartan::verify_segment_claims(
+            &witness.layout,
+            &claims,
+            &witness.point,
+            value,
+        )
+        .unwrap();
     }
 }
