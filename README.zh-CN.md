@@ -73,7 +73,7 @@
 | Dual SIMD R1CS over shared witness | `magnetar-constraint` + `magnetar-cpu` | 生成 uniform `s1`/`s2`，替换行级检查 |
 | Virtual Spartan | `magnetar-proof` + `magnetar-runtime` | 双关系 lockstep、per-segment claim、claim router |
 | BinaryTwist / BinaryShout | `magnetar-memory` + `magnetar-runtime` | BinaryTwist 已有 bit-sliced 虚拟地址、紧凑 increment、virtual `Val`、read/write/final-state/address sum-check 与批量 P3 claim；BinaryShout 的 bit-sliced 多列（word + length + decoded fields + selectors）ROM-read claim 已接入共享 P3 opening；下一步：decoded fields 与性能优化 |
-| BinaryRouter | `magnetar-routing` + `magnetar-preprocess` | 已有 64-bit shift 与 sub-word store BinaryRouter 参考实现，提交 offset、width-selector 与 shift-route bits，并已接入 unified proof（`binary_router.rs`） |
+| BinaryRouter | `magnetar-routing` + `magnetar-preprocess` | 已有 64-bit shift 与 sub-word store BinaryRouter 参考实现，提交 offset、width-selector、shift-route 与 shift/store validity bits，并已接入 unified proof（`binary_router.rs`） |
 | MosaicPCS | `magnetar-pcs` | 已有多表 P3 堆叠与 CPU+RAM 共享 opening；下一步：ring switching |
 | Ligerito | `magnetar-pcs` | 线性码 PCS + Merkle + query sampling |
 | Recursion | `magnetar-recursion` | verifier-in-the-VM、chunk state、aggregation |
@@ -181,12 +181,12 @@ hello guest 上以 release 模式实测（Apple arm64，单线程）；
 
 | 宽度 | CPU 变量 | CPU 约束 | 证明字节 | prove | verify |
 |---|---|---|---|---|---|
-| 64 | 6,991 | 11,933 | 272,754 | 0.47 s | 0.039 s |
-| 32 | 4,015 | 6,813 | 233,050 | 0.39 s | 0.022 s |
-| 8 | 1,783 | 2,973 | 199,394 | 0.38 s | 0.013 s |
+| 64 | 6,991 | 11,933 | 276,930 | 0.43 s | 0.038 s |
+| 32 | 4,015 | 6,813 | 234,410 | 0.43 s | 0.026 s |
+| 8 | 1,783 | 2,973 | 202,802 | 0.42 s | 0.013 s |
 
-width=64 时证明体积分解为 access=19,002、cpu=241,960、shout=3,154、
-router=6,746、rows=1,860 字节。产生这些数字的改动：
+width=64 时证明体积分解为 access=19,002、cpu=245,880、shout=3,154、
+router=7,002、rows=1,860 字节。产生这些数字的改动：
 
 1. **按操作裁剪 ALU 约束。** `simple_alu_row_relation` 只分配操作真正需要的
    gate：`addi` 449 个变量、`lui` 64 个，而统一 shifter+comparator 电路每行
@@ -195,7 +195,7 @@ router=6,746、rows=1,860 字节。产生这些数字的改动：
    witness 与 cycle-length 地址/increment 表堆叠；width 64 为 2^14，width 32 为 2^13，width 8 为 2^12。`P3SharedPcs` 把这个
    批量接入 Spartan proof：CPU 点与 BinaryTwist 点 claim 由同一个 P3 参数打开。
    不再同时支付独立的 CPU opening 和 RAM opening；旧的分离布局是 593,508 字节，
-   共享布局是 272,754 字节。
+   共享布局是 276,930 字节。
 3. **bit-sliced 虚拟地址与 value history。** 地址表只提交 `2a+2` 列
    cycle-length bit（read bits、write bits、两个 validity bit）；完整 one-hot
    地址由 verifier 重建。booleanity 由覆盖全部地址列的批量 sum-check 检查。

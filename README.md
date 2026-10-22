@@ -73,7 +73,7 @@ Explicitly not implemented:
 | Dual SIMD R1CS over a shared witness | `magnetar-constraint` + `magnetar-cpu` | Generate uniform `s1`/`s2` and replace row-level checks |
 | Virtual Spartan | `magnetar-proof` + `magnetar-runtime` | Dual-relation lockstep, per-segment claims, claim router |
 | BinaryTwist / BinaryShout | `magnetar-memory` + `magnetar-runtime` | BinaryTwist has bit-sliced virtual addresses, compact increments, virtual `Val`, read/write/final-state/address sum-checks, and batched P3 claims; BinaryShout has a bit-sliced, multi-column (word + length + decoded fields + selectors) ROM-read claim wired into the shared P3 opening; next: decoded fields and performance tuning |
-| BinaryRouter | `magnetar-routing` + `magnetar-preprocess` | BinaryRouter reference covers 64-bit shifts and sub-word stores, commits offset, width-selector, and shift-route bits, and is wired into unified proofs (`binary_router.rs`) |
+| BinaryRouter | `magnetar-routing` + `magnetar-preprocess` | BinaryRouter reference covers 64-bit shifts and sub-word stores, commits offset, width-selector, shift-route, and shift/store validity bits, and is wired into unified proofs (`binary_router.rs`) |
 | MosaicPCS | `magnetar-pcs` | Multi-table P3 stacking and a shared CPU+RAM opening exist; next: ring switching |
 | Ligerito | `magnetar-pcs` | Linear-code PCS + Merkle + query sampling |
 | Recursion | `magnetar-recursion` | Verifier-in-the-VM, chunk state, aggregation |
@@ -188,12 +188,12 @@ them:
 
 | width | CPU vars | CPU constraints | proof bytes | prove | verify |
 |---|---|---|---|---|---|
-| 64 | 6,991 | 11,933 | 272,754 | 0.47 s | 0.039 s |
-| 32 | 4,015 | 6,813 | 233,050 | 0.39 s | 0.022 s |
-| 8 | 1,783 | 2,973 | 199,394 | 0.38 s | 0.013 s |
+| 64 | 6,991 | 11,933 | 276,930 | 0.43 s | 0.038 s |
+| 32 | 4,015 | 6,813 | 234,410 | 0.43 s | 0.026 s |
+| 8 | 1,783 | 2,973 | 202,802 | 0.42 s | 0.013 s |
 
-At width 64 the proof splits into access=19,002, cpu=241,960, shout=3,154,
-and router=6,746, rows=1,860 bytes. The changes behind these numbers:
+At width 64 the proof splits into access=19,002, cpu=245,880, shout=3,154,
+and router=7,002, rows=1,860 bytes. The changes behind these numbers:
 
 1. **Per-op ALU relations.** `simple_alu_row_relation` allocates only the gates
    an operation needs: `addi` is 449 variables and `lui` is 64, down from 4,492
@@ -204,7 +204,7 @@ and router=6,746, rows=1,860 bytes. The changes behind these numbers:
    `P3SharedPcs` plugs this batch into the Spartan proof: the CPU point and the
    BinaryTwist point claims are opened by the same P3 argument. The proof no
    longer pays for a separate CPU opening plus a separate RAM opening; the old
-   separate layout was 593,508 bytes, the shared layout is 272,754 bytes.
+   separate layout was 593,508 bytes, the shared layout is 276,930 bytes.
 3. **Bit-sliced virtual addresses and values.** The address table commits
    `2a+2` cycle-length bit columns (read bits, write bits, and two validity
    bits); full one-hot addresses are reconstructed by the verifier. Booleanity
