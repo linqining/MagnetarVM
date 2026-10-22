@@ -6,7 +6,7 @@
 
 use magnetar_constraint::{Field, F2_128};
 use magnetar_memory::BinaryTwistWitness;
-use magnetar_pcs::{P3BinaryPcs, P3Commitment, P3Opening};
+use magnetar_pcs::{P3BinaryPcs, P3Commitment, P3MosaicCommitment, P3MosaicPoint, P3Opening};
 use magnetar_proof::{Pcs, ProofError};
 use magnetar_transcript::Sha256Transcript;
 use serde::{Deserialize, Serialize};
@@ -19,6 +19,122 @@ pub struct AddressMultiplicityProof {
     pub collision_rounds: Vec<[F2_128; 5]>,
     pub r_opening: P3Opening,
     pub rp_opening: P3Opening,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AddressMultiplicityClaim {
+    pub lambda: F2_128,
+    pub rounds: Vec<[F2_128; 4]>,
+}
+
+#[allow(dead_code)]
+fn shared_transcript(commitment: &P3MosaicCommitment, table_index: usize) -> Sha256Transcript {
+    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-address-shared");
+    transcript.absorb(
+        "commitment",
+        &bincode::serialize(commitment).unwrap_or_default(),
+    );
+    transcript.absorb("table", &(table_index as u64).to_le_bytes());
+    transcript
+}
+
+#[allow(dead_code)]
+#[allow(clippy::type_complexity)]
+pub(crate) fn prove_address_multiplicity_shared(
+    witness: &BinaryTwistWitness,
+    write: bool,
+    commitment: &P3MosaicCommitment,
+    table_index: usize,
+) -> Result<
+    (
+        AddressMultiplicityClaim,
+        Vec<P3MosaicPoint>,
+        Vec<Vec<F2_128>>,
+    ),
+    ProofError,
+> {
+    let cells = witness.initial.len();
+    let cycles = witness.cycles.next_power_of_two();
+    let address_bits = cells.trailing_zeros() as usize;
+    let cycle_bits = cycles.trailing_zeros() as usize;
+    let (table, expected) = table_and_flags(witness, write, cells, cycles);
+    let mut transcript = shared_transcript(commitment, table_index);
+    let lambda = challenge(&mut transcript, "lambda");
+    let rho = sample_point(&mut transcript, cycle_bits);
+    let eq = eq_index(&rho, address_bits, cycle_bits);
+    let target = target_vector(&eq, &expected, cells);
+    let (rounds, challenges) =
+        sumcheck_boolean_multiplicity(&table, &eq, &target, lambda, &mut transcript)?;
+    let a_eval = fold_all(&table, &challenges);
+    let points = vec![P3MosaicPoint {
+        table: table_index,
+        point: challenges,
+        columns: vec![0],
+        next_columns: Vec::new(),
+    }];
+    Ok((
+        AddressMultiplicityClaim { lambda, rounds },
+        points,
+        vec![vec![a_eval]],
+    ))
+}
+
+#[allow(dead_code)]
+#[allow(clippy::type_complexity)]
+pub(crate) fn verify_address_multiplicity_shared(
+    witness: &BinaryTwistWitness,
+    write: bool,
+    claim: &AddressMultiplicityClaim,
+    commitment: &P3MosaicCommitment,
+    table_index: usize,
+) -> Result<Option<(Vec<P3MosaicPoint>, Vec<Vec<F2_128>>)>, ProofError> {
+    let cells = witness.initial.len();
+    let cycles = witness.cycles.next_power_of_two();
+    let address_bits = cells.trailing_zeros() as usize;
+    let cycle_bits = cycles.trailing_zeros() as usize;
+    let (table, expected) = table_and_flags(witness, write, cells, cycles);
+    let mut transcript = shared_transcript(commitment, table_index);
+    if challenge(&mut transcript, "lambda") != claim.lambda {
+        return Ok(None);
+    }
+    let rho = sample_point(&mut transcript, cycle_bits);
+    let eq = eq_index(&rho, address_bits, cycle_bits);
+    let target = target_vector(&eq, &expected, cells);
+    let mut sum = F2_128::from(0u64);
+    let mut eq_folded = eq;
+    let mut target_folded = target;
+    let mut challenges = Vec::with_capacity(claim.rounds.len());
+    for round in &claim.rounds {
+        if round[0] + round[1] != sum {
+            return Ok(None);
+        }
+        for value in round {
+            transcript.absorb("round", &value.value().to_le_bytes());
+        }
+        let challenge = challenge(&mut transcript, "sumcheck");
+        challenges.push(challenge);
+        sum = evaluate_round4(round, challenge);
+        eq_folded = fold(&eq_folded, challenge);
+        target_folded = fold(&target_folded, challenge);
+    }
+    if eq_folded.len() != 1 || target_folded.len() != 1 {
+        return Ok(None);
+    }
+    let a_eval = fold_all(&table, &challenges);
+    let expected_sum = a_eval * (a_eval + F2_128::from(1u64))
+        + claim.lambda * (a_eval * eq_folded[0] + target_folded[0]);
+    if sum != expected_sum {
+        return Ok(None);
+    }
+    Ok(Some((
+        vec![P3MosaicPoint {
+            table: table_index,
+            point: challenges,
+            columns: vec![0],
+            next_columns: Vec::new(),
+        }],
+        vec![vec![a_eval]],
+    )))
 }
 
 pub fn prove_address_multiplicity(
@@ -400,6 +516,7 @@ pub(crate) fn sample_collision_point(
 mod tests {
     use super::*;
     use magnetar_executor::execute;
+    use magnetar_pcs::P3MosaicTable;
     use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 
     fn trace() -> magnetar_spec::Trace {
@@ -488,5 +605,36 @@ mod tests {
         let mut tampered = proof;
         tampered.lambda = tampered.lambda + F2_128::from(1u64);
         assert!(!verify_address_multiplicity(&tampered, true, &witness).unwrap());
+    }
+    #[test]
+    fn shared_multiplicity_claim_round_trips() {
+        let trace = trace();
+        let witness = BinaryTwistWitness::from_trace(&trace).unwrap();
+        let cells = witness.initial.len();
+        let cycles = witness.cycles.next_power_of_two();
+        let (table, _) = table_and_flags(&witness, true, cells, cycles);
+        let tables = vec![P3MosaicTable {
+            columns: vec![table],
+        }];
+        let pcs = P3BinaryPcs::new(100);
+        let commitment = pcs.commit_mosaic(&tables).unwrap();
+        let (claim, points, values) =
+            prove_address_multiplicity_shared(&witness, true, &commitment, 0).unwrap();
+        let (verified_points, verified_values) =
+            verify_address_multiplicity_shared(&witness, true, &claim, &commitment, 0)
+                .unwrap()
+                .unwrap();
+        assert_eq!(points.len(), verified_points.len());
+        assert_eq!(values, verified_values);
+        let opening = pcs.open_mosaic(&tables, &points).unwrap();
+        assert!(pcs.verify_mosaic(&opening, &points, &values).unwrap());
+
+        let mut tampered = claim;
+        tampered.lambda = tampered.lambda + F2_128::from(1u64);
+        assert!(
+            verify_address_multiplicity_shared(&witness, true, &tampered, &commitment, 0)
+                .unwrap()
+                .is_none()
+        );
     }
 }
