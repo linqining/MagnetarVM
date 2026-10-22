@@ -629,10 +629,15 @@ mod tests {
         let opening = pcs.open_mosaic(&tables, &points).unwrap();
         assert!(pcs.verify_mosaic(&opening, &points, &values).unwrap());
 
-        let mut tampered = claim;
+        let mut tampered = claim.clone();
         tampered.lambda = tampered.lambda + F2_128::from(1u64);
         assert!(
             verify_address_multiplicity_shared(&witness, true, &tampered, &commitment, 0)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            verify_address_multiplicity_shared(&witness, true, &claim, &commitment, 1)
                 .unwrap()
                 .is_none()
         );
