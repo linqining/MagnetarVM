@@ -517,6 +517,7 @@ mod tests {
     use super::*;
     use magnetar_executor::execute;
     use magnetar_pcs::P3MosaicTable;
+    use magnetar_proof::Mle;
     use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 
     fn trace() -> magnetar_spec::Trace {
@@ -641,5 +642,31 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+    #[test]
+    fn one_hot_evaluation_equals_product_of_bit_evaluations() {
+        let trace = trace();
+        let witness = BinaryTwistWitness::from_trace(&trace).unwrap();
+        let cells = witness.initial.len();
+        let cycles = witness.cycles.next_power_of_two();
+        let address_bits = cells.trailing_zeros() as usize;
+        let (table, _) = table_and_flags(&witness, true, cells, cycles);
+        let addr = crate::binary_twist::batch_tables(&witness).unwrap();
+        let mut point = (0..address_bits)
+            .map(|bit| F2_128::from(bit as u64 * 5 + 1))
+            .collect::<Vec<_>>();
+        point.extend(
+            (0..cycles.trailing_zeros() as usize).map(|bit| F2_128::from(bit as u64 * 7 + 2)),
+        );
+        let one_hot = Mle::new(table).unwrap().eval(&point).unwrap();
+        let mut product = F2_128::from(1u64);
+        for bit in 0..address_bits {
+            let eval = fold_all(
+                &addr.address_columns()[address_bits + bit],
+                &point[address_bits..],
+            );
+            product = product * (F2_128::from(1u64) + eval + point[bit]);
+        }
+        assert_eq!(one_hot, product);
     }
 }
