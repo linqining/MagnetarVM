@@ -900,12 +900,6 @@ pub struct WriteBaseClaim {
 pub struct WriteHistoryClaim {
     pub claimed: F2_128,
     pub rounds: Vec<Vec<F2_128>>,
-    pub wa_current_bits: Vec<F2_128>,
-    pub wa_current_valid: F2_128,
-    pub inc_current: F2_128,
-    pub wa_successor_bits: Vec<F2_128>,
-    pub wa_successor_valid: F2_128,
-    pub inc_successor: F2_128,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1513,12 +1507,6 @@ pub(crate) fn prove_binary_twist_claims(
             total
         },
         rounds,
-        wa_current_bits: current_bits.clone(),
-        wa_current_valid: current_valid,
-        inc_current: current_inc,
-        wa_successor_bits: successor_bits.clone(),
-        wa_successor_valid: successor_valid,
-        inc_successor: successor_inc,
     };
     addr_points.push(P3MosaicPoint {
         table: table_index,
@@ -1913,24 +1901,24 @@ pub(crate) fn verify_binary_twist_claims(
     }
     let r_previous = &history_challenges[..cycle_bits];
     let r_j = &history_challenges[cycle_bits..];
+    let current_bits = (0..address_bits)
+        .map(|bit| fold_all(&addr[address_bits + bit], r_j))
+        .collect::<Vec<_>>();
+    let current_valid = fold_all(&addr[2 * address_bits + 1], r_j);
+    let current_inc = fold_all(increments, &inc_point(r_j));
+    let successor_bits = (0..address_bits)
+        .map(|bit| fold_all(&addr[address_bits + bit], r_previous))
+        .collect::<Vec<_>>();
+    let successor_valid = fold_all(&addr[2 * address_bits + 1], r_previous);
+    let successor_inc = fold_all(increments, &inc_point(r_previous));
     let eq_eval = eq_points(&rho_j, r_j);
     let lt_eval = lt_mle(r_previous, r_j, cycles);
     let mut equality = F2_128::from(1u64);
-    for (current, successor) in proof
-        .write
-        .history
-        .wa_current_bits
-        .iter()
-        .zip(&proof.write.history.wa_successor_bits)
-    {
+    for (current, successor) in current_bits.iter().zip(&successor_bits) {
         equality = equality * (F2_128::from(1u64) + *current + *successor);
     }
-    let write_history_terminal = eq_eval
-        * lt_eval
-        * proof.write.history.inc_successor
-        * proof.write.history.wa_current_valid
-        * proof.write.history.wa_successor_valid
-        * equality;
+    let write_history_terminal =
+        eq_eval * lt_eval * successor_inc * current_valid * successor_valid * equality;
     if sum != write_history_terminal {
         return Ok(None);
     }
@@ -1940,8 +1928,8 @@ pub(crate) fn verify_binary_twist_claims(
         columns: write_columns.clone(),
         next_columns: Vec::new(),
     });
-    let mut current_values = proof.write.history.wa_current_bits.clone();
-    current_values.push(proof.write.history.wa_current_valid);
+    let mut current_values = current_bits.clone();
+    current_values.push(current_valid);
     addr_expected.push(current_values);
     inc_points.push(P3MosaicPoint {
         table: table_index + 1,
@@ -1949,15 +1937,15 @@ pub(crate) fn verify_binary_twist_claims(
         columns: vec![0],
         next_columns: Vec::new(),
     });
-    inc_expected.push(vec![proof.write.history.inc_current]);
+    inc_expected.push(vec![current_inc]);
     addr_points.push(P3MosaicPoint {
         table: table_index,
         point: inc_point(r_previous),
         columns: write_columns,
         next_columns: Vec::new(),
     });
-    let mut successor_values = proof.write.history.wa_successor_bits.clone();
-    successor_values.push(proof.write.history.wa_successor_valid);
+    let mut successor_values = successor_bits.clone();
+    successor_values.push(successor_valid);
     addr_expected.push(successor_values);
     inc_points.push(P3MosaicPoint {
         table: table_index + 1,
@@ -1965,7 +1953,7 @@ pub(crate) fn verify_binary_twist_claims(
         columns: vec![0],
         next_columns: Vec::new(),
     });
-    inc_expected.push(vec![proof.write.history.inc_successor]);
+    inc_expected.push(vec![successor_inc]);
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-final");
     absorb_mosaic_commitment(&mut transcript, commitment);
@@ -2124,8 +2112,8 @@ mod ram_tests {
         assert!(!verify_binary_twist_ram(&witness, &tampered).unwrap());
 
         let mut tampered = proof.clone();
-        tampered.write.history.wa_successor_bits[0] =
-            tampered.write.history.wa_successor_bits[0] + F2_128::from(1u64);
+        tampered.write.history.rounds[0][0] =
+            tampered.write.history.rounds[0][0] + F2_128::from(1u64);
         assert!(!verify_binary_twist_ram(&witness, &tampered).unwrap());
 
         let mut tampered = proof.clone();
