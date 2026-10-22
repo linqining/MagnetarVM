@@ -444,17 +444,11 @@ pub struct BinaryRouterProof {
     pub claimed: F2_128,
     pub rounds: Vec<Vec<F2_128>>,
     pub offset_rounds: Vec<Vec<F2_128>>,
-    pub offset_evals: Vec<F2_128>,
     pub width_rounds: Vec<Vec<F2_128>>,
-    pub width_evals: Vec<F2_128>,
     pub shift_rounds: Vec<Vec<F2_128>>,
-    pub shift_eval: F2_128,
     pub q_rounds: Vec<Vec<F2_128>>,
-    pub q_evals: Vec<F2_128>,
     pub hq_rounds: Vec<Vec<F2_128>>,
-    pub hq_evals: Vec<F2_128>,
     pub valid_rounds: Vec<Vec<F2_128>>,
-    pub valid_evals: Vec<F2_128>,
     pub opening: Option<P3MosaicOpening>,
 }
 
@@ -1090,17 +1084,11 @@ pub(crate) fn prove_binary_router_claims(
             claimed: left,
             rounds,
             offset_rounds,
-            offset_evals,
             width_rounds,
-            width_evals,
             shift_rounds,
-            shift_eval,
             q_rounds,
-            q_evals,
             hq_rounds,
-            hq_evals,
             valid_rounds,
-            valid_evals,
             opening: None,
         },
         points,
@@ -1190,7 +1178,10 @@ pub(crate) fn verify_binary_router_claims(
     }
     let n = witness.cycle_bits;
     let cycles = witness.cycles;
-    let has_q = !proof.q_evals.is_empty();
+    let has_q = witness
+        .shift_q
+        .iter()
+        .any(|column| column.iter().any(|value| value.value() == 1));
     let bit_columns = INPUT_BITS + 9 + 64;
     let hq_columns = bit_columns + 64;
     let total_columns = hq_columns + 1;
@@ -1281,13 +1272,15 @@ pub(crate) fn verify_binary_router_claims(
         return Ok(None);
     };
     let offset_r_j = &offset_challenges[..n];
+    let offset_evals = (0..3)
+        .map(|bit| fold_all(&witness.offset_bits[bit], offset_r_j))
+        .collect::<Vec<_>>();
     let mut expected = F2_128::from(0u64);
     for bit in 0..3 {
         let public = (0..cycles)
             .map(|cycle| F2_128::from(((witness.routes[cycle].offset() >> bit) & 1) as u64))
             .collect::<Vec<_>>();
-        expected =
-            expected + deltas[bit] * (proof.offset_evals[bit] - fold_all(&public, offset_r_j));
+        expected = expected + deltas[bit] * (offset_evals[bit] - fold_all(&public, offset_r_j));
     }
     if sum != eq_points(&offset_rho_j, offset_r_j) * expected {
         return Ok(None);
@@ -1305,6 +1298,9 @@ pub(crate) fn verify_binary_router_claims(
         return Ok(None);
     };
     let width_r_j = &width_challenges[..n];
+    let width_evals = (0..4)
+        .map(|bit| fold_all(&witness.width_bits[bit], width_r_j))
+        .collect::<Vec<_>>();
     let mut expected = F2_128::from(0u64);
     for bit in 0..4 {
         let public = (0..cycles)
@@ -1323,8 +1319,7 @@ pub(crate) fn verify_binary_router_claims(
                 F2_128::from(expected)
             })
             .collect::<Vec<_>>();
-        expected =
-            expected + width_deltas[bit] * (proof.width_evals[bit] - fold_all(&public, width_r_j));
+        expected = expected + width_deltas[bit] * (width_evals[bit] - fold_all(&public, width_r_j));
     }
     if sum != eq_points(&width_rho_j, width_r_j) * expected {
         return Ok(None);
@@ -1339,11 +1334,11 @@ pub(crate) fn verify_binary_router_claims(
         return Ok(None);
     };
     let shift_r_j = &shift_challenges[..n];
+    let shift_eval = fold_all(&witness.shift_code, shift_r_j);
     let public = (0..cycles)
         .map(|cycle| F2_128::from(witness.routes[cycle].shift_code()))
         .collect::<Vec<_>>();
-    if sum != eq_points(&shift_rho_j, shift_r_j) * (proof.shift_eval - fold_all(&public, shift_r_j))
-    {
+    if sum != eq_points(&shift_rho_j, shift_r_j) * (shift_eval - fold_all(&public, shift_r_j)) {
         return Ok(None);
     }
 
@@ -1359,6 +1354,10 @@ pub(crate) fn verify_binary_router_claims(
         return Ok(None);
     };
     let valid_r_j = &valid_challenges[..n];
+    let valid_evals = [
+        fold_all(&witness.is_shift, valid_r_j),
+        fold_all(&witness.is_store, valid_r_j),
+    ];
     let mut expected = F2_128::from(0u64);
     for bit in 0..2 {
         let public = (0..cycles)
@@ -1370,8 +1369,7 @@ pub(crate) fn verify_binary_router_claims(
                 }))
             })
             .collect::<Vec<_>>();
-        expected =
-            expected + valid_deltas[bit] * (proof.valid_evals[bit] - fold_all(&public, valid_r_j));
+        expected = expected + valid_deltas[bit] * (valid_evals[bit] - fold_all(&public, valid_r_j));
     }
     if sum != eq_points(&valid_rho_j, valid_r_j) * expected {
         return Ok(None);
@@ -1393,8 +1391,11 @@ pub(crate) fn verify_binary_router_claims(
         };
         let q_r_j = &q_challenges[..n];
         let q_r_h = &q_challenges[n..];
+        let q_evals = (0..64)
+            .map(|h| fold_all(&witness.shift_q[h], q_r_j))
+            .collect::<Vec<_>>();
         let mut q_eval = F2_128::from(0u64);
-        for (h, eval) in proof.q_evals.iter().enumerate() {
+        for (h, eval) in q_evals.iter().enumerate() {
             q_eval = q_eval + eq_at_index(q_r_h, h) * *eval;
         }
         if sum != eq_points(&q_rho_j, q_r_j) * q_eval {
@@ -1414,8 +1415,11 @@ pub(crate) fn verify_binary_router_claims(
         };
         let hq_r_j = &hq_challenges[..n];
         let hq_r_h = &hq_challenges[n..];
+        let hq_evals = (0..64)
+            .map(|h| fold_all(&witness.shift_hq[h], hq_r_j))
+            .collect::<Vec<_>>();
         let mut hq_eval = F2_128::from(0u64);
-        for (h, eval) in proof.hq_evals.iter().enumerate() {
+        for (h, eval) in hq_evals.iter().enumerate() {
             hq_eval = hq_eval + eq_at_index(hq_r_h, h) * *eval;
         }
         if sum != eq_points(&hq_rho_j, hq_r_j) * hq_eval {
@@ -1442,8 +1446,8 @@ pub(crate) fn verify_binary_router_claims(
             columns: (bit_columns..hq_columns).collect(),
             next_columns: Vec::new(),
         });
-        extra_values.push(proof.q_evals.clone());
-        extra_values.push(proof.hq_evals.clone());
+        extra_values.push(q_evals.clone());
+        extra_values.push(hq_evals.clone());
     }
     let point = if r_j.is_empty() {
         vec![F2_128::from(0u64)]
@@ -1513,10 +1517,10 @@ pub(crate) fn verify_binary_router_claims(
     let mut values = vec![
         proof.boolean.bit_evals.clone(),
         input_bit_evals.clone(),
-        proof.offset_evals.clone(),
-        proof.width_evals.clone(),
-        vec![proof.shift_eval],
-        proof.valid_evals.clone(),
+        offset_evals.clone(),
+        width_evals.clone(),
+        vec![shift_eval],
+        valid_evals.to_vec(),
     ];
     values.extend(extra_values);
     Ok(Some((points, values)))
@@ -1602,11 +1606,11 @@ mod tests {
         assert!(!verify_binary_router(&witness, &tampered).unwrap());
 
         let mut tampered = proof.clone();
-        tampered.q_evals[0] = tampered.q_evals[0] + F2_128::from(1u64);
+        tampered.q_rounds[0][0] = tampered.q_rounds[0][0] + F2_128::from(1u64);
         assert!(!verify_binary_router(&witness, &tampered).unwrap());
 
         let mut tampered = proof.clone();
-        tampered.hq_evals[0] = tampered.hq_evals[0] + F2_128::from(1u64);
+        tampered.hq_rounds[0][0] = tampered.hq_rounds[0][0] + F2_128::from(1u64);
         assert!(!verify_binary_router(&witness, &tampered).unwrap());
 
         let mut tampered = proof;
@@ -1726,15 +1730,19 @@ mod tests {
         let store_witness =
             BinaryRouterWitness::from_trace_mode(&trace, RouterMode::Stores).unwrap();
         let store_proof = prove_binary_router(&store_witness).unwrap();
-        assert!(store_proof.q_evals.is_empty());
-        assert!(store_proof.hq_evals.is_empty());
+        assert!(!store_witness
+            .shift_q
+            .iter()
+            .any(|column| column.iter().any(|value| value.value() == 1)));
         assert!(verify_binary_router(&store_witness, &store_proof).unwrap());
 
         let shift_witness =
             BinaryRouterWitness::from_trace_mode(&trace, RouterMode::Shifts).unwrap();
         let shift_proof = prove_binary_router(&shift_witness).unwrap();
-        assert!(!shift_proof.q_evals.is_empty());
-        assert!(!shift_proof.hq_evals.is_empty());
+        assert!(shift_witness
+            .shift_q
+            .iter()
+            .any(|column| column.iter().any(|value| value.value() == 1)));
         assert!(verify_binary_router(&shift_witness, &shift_proof).unwrap());
     }
 }
