@@ -100,7 +100,8 @@
 - `e89225e`：standalone read/write proof 移除 `address_bits`/`cycle_bits`。
 - `395630f`：新增 `trace_commitment` 原型，把 trace 展平为 P3 多项式并验证 commitment/opening。
 - `20f27d9`：trace commitment 改为 4 个 aligned segments，并校验 segment 重建。
-- 本轮：standalone `AddressMultiplicityProof` 移除可重算的 `address_bits`/`cycle_bits`/`challenges`/`collision_challenges`，verifier 从 transcript 派生；D4 仍为 standalone，未接入 unified。
+- `534cc9d`：standalone `AddressMultiplicityProof` 移除 header/challenges，verifier 从 transcript 派生。
+- 本轮：移除 `AddressMultiplicityProof` 中与 opening 重复的 `commitment` 字段，verifier 用 opening 内的 commitment；D4 仍为 standalone。
 
 ## 二、逐项差距
 

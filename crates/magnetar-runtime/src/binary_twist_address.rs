@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AddressMultiplicityProof {
-    pub commitment: P3Commitment,
     pub lambda: F2_128,
     pub rounds: Vec<[F2_128; 4]>,
     pub a_eval: F2_128,
@@ -67,7 +66,6 @@ pub fn prove_address_multiplicity(
     let mut rp_point = r_prime;
     rp_point.extend_from_slice(&collision_challenges);
     Ok(AddressMultiplicityProof {
-        commitment,
         lambda,
         rounds,
         a_eval,
@@ -92,7 +90,7 @@ pub fn verify_address_multiplicity(
     let cycle_bits = cycles.trailing_zeros() as usize;
     let (_, expected) = table_and_flags(witness, write, cells, cycles);
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-address");
-    absorb_commitment(&mut transcript, &proof.commitment);
+    absorb_commitment(&mut transcript, &proof.opening.commitment);
     if challenge(&mut transcript, "lambda") != proof.lambda {
         return Ok(false);
     }
@@ -154,15 +152,20 @@ pub fn verify_address_multiplicity(
     r_point.extend_from_slice(&collision_challenges);
     let mut rp_point = r_prime;
     rp_point.extend_from_slice(&collision_challenges);
-    let boolean_ok = pcs.verify(&proof.commitment, &challenges, proof.a_eval, &proof.opening)?;
+    let boolean_ok = pcs.verify(
+        &proof.opening.commitment,
+        &challenges,
+        proof.a_eval,
+        &proof.opening,
+    )?;
     let r_ok = pcs.verify(
-        &proof.commitment,
+        &proof.r_opening.commitment,
         &r_point,
         proof.a_r_eval,
         &proof.r_opening,
     )?;
     let rp_ok = pcs.verify(
-        &proof.commitment,
+        &proof.rp_opening.commitment,
         &rp_point,
         proof.a_rp_eval,
         &proof.rp_opening,
