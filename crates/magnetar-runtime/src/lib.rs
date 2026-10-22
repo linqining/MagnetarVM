@@ -22,8 +22,8 @@ use crate::binary_twist::{
 };
 
 use magnetar_constraint::{
-    ConstraintSystem, LayoutError, Segment, SegmentKind, SegmentOwner, Witness, WitnessLayout,
-    F2_128,
+    Constraint, ConstraintSystem, Expr, LayoutError, Segment, SegmentKind, SegmentOwner, Witness,
+    WitnessLayout, F2_128,
 };
 use magnetar_cpu::{check_trace, CpuError};
 use magnetar_executor::{execute_with_io, ExecError, ExecutionIo};
@@ -1822,6 +1822,35 @@ pub fn verify_trace_proof(
     Ok(())
 }
 
+fn split_cpu_relations(system: &ConstraintSystem) -> (ConstraintSystem, ConstraintSystem) {
+    let mut even = ConstraintSystem::new(system.num_vars);
+    let mut odd = ConstraintSystem::new(system.num_vars);
+    even.public_inputs = system.public_inputs.clone();
+    odd.public_inputs = system.public_inputs.clone();
+    for (index, constraint) in system.constraints.iter().enumerate() {
+        if index % 2 == 0 {
+            even.constraints.push(constraint.clone());
+        } else {
+            odd.constraints.push(constraint.clone());
+        }
+    }
+    let rows = even.constraints.len().max(odd.constraints.len());
+    let zero = || {
+        Constraint::new(
+            Expr::constant(0u64),
+            Expr::constant(0u64),
+            Expr::constant(0u64),
+        )
+    };
+    while even.constraints.len() < rows {
+        even.constraints.push(zero());
+    }
+    while odd.constraints.len() < rows {
+        odd.constraints.push(zero());
+    }
+    (even, odd)
+}
+
 fn cpu_segment_layout(len: usize) -> Result<WitnessLayout, RuntimeError> {
     let chunk = if len >= 4 { len / 4 } else { len };
     let mut segments = Vec::new();
@@ -1852,11 +1881,12 @@ pub fn prove_cpu_lockstep(
     width: usize,
 ) -> Result<LockstepProof<P3Commitment, P3Opening>, RuntimeError> {
     let (system, witness) = merged_cpu_system(trace, width)?;
+    let (system_a, system_b) = split_cpu_relations(&system);
     let z = witness_vector(&system, &witness)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let layout = cpu_segment_layout(z.len())?;
     let pcs = P3BinaryPcs::new(100);
-    prove_lockstep(&system, &system, &witness, &layout, &pcs)
+    prove_lockstep(&system_a, &system_b, &witness, &layout, &pcs)
         .map_err(|error| RuntimeError::Proof(error.to_string()))
 }
 
@@ -1866,11 +1896,12 @@ pub fn verify_cpu_lockstep(
     width: usize,
 ) -> Result<(), RuntimeError> {
     let (system, witness) = merged_cpu_system(trace, width)?;
+    let (system_a, system_b) = split_cpu_relations(&system);
     let z = witness_vector(&system, &witness)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let layout = cpu_segment_layout(z.len())?;
     let pcs = P3BinaryPcs::new(100);
-    verify_lockstep(&system, &system, &layout, proof, &pcs)
+    verify_lockstep(&system_a, &system_b, &layout, proof, &pcs)
         .map_err(|error| RuntimeError::Proof(error.to_string()))
 }
 
