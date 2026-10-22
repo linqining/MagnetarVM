@@ -1014,4 +1014,20 @@ mod tests {
             )
             .unwrap());
     }
+    #[test]
+    fn shared_commitment_matches_mosaic_commitment() {
+        let z = values(8);
+        let aux = vec![P3MosaicTable {
+            columns: vec![values(4), values(4)],
+        }];
+        let shared = P3SharedPcs::new(90, aux.clone(), Vec::new(), Vec::new());
+        let shared_commitment = shared.commit(&z).unwrap();
+        let mut tables = vec![P3MosaicTable { columns: vec![z] }];
+        tables.extend(aux);
+        let mosaic_commitment = P3BinaryPcs::new(90).commit_mosaic(&tables).unwrap();
+        assert_eq!(
+            bincode::serialize(&shared_commitment).unwrap(),
+            bincode::serialize(&mosaic_commitment).unwrap()
+        );
+    }
 }
