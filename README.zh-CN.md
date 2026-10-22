@@ -181,11 +181,11 @@ hello guest 上以 release 模式实测（Apple arm64，单线程）；
 
 | 宽度 | CPU 变量 | CPU 约束 | 证明字节 | prove | verify |
 |---|---|---|---|---|---|
-| 64 | 6,991 | 11,933 | 261,727 | 0.41 s | 0.048 s |
-| 32 | 4,015 | 6,813 | 225,223 | 0.35 s | 0.023 s |
-| 8 | 1,783 | 2,973 | 228,455 | 0.35 s | 0.013 s |
+| 64 | 6,991 | 11,933 | 261,695 | 0.59 s | 0.045 s |
+| 32 | 4,015 | 6,813 | 225,191 | 0.35 s | 0.029 s |
+| 8 | 1,783 | 2,973 | 228,423 | 0.35 s | 0.015 s |
 
-width=64 时证明体积分解为 access=12,778、cpu=241,272、shout=2,298、
+width=64 时证明体积分解为 access=12,778、cpu=241,240、shout=2,298、
 shift_router=1、store_router=5,346 字节。Unified proof 不再携带冗余 trace rows；verifier 与 trace 一起接收 proof。产生这些数字的改动：
 
 1. **按操作裁剪 ALU 约束。** `simple_alu_row_relation` 只分配操作真正需要的
@@ -195,7 +195,7 @@ shift_router=1、store_router=5,346 字节。Unified proof 不再携带冗余 tr
    witness 与 cycle-length 地址/increment 表堆叠；width 64 为 2^14，width 32 为 2^13，width 8 为 2^12。`P3SharedPcs` 把这个
    批量接入 Spartan proof：CPU 点与 BinaryTwist 点 claim 由同一个 P3 参数打开。
    不再同时支付独立的 CPU opening 和 RAM opening；旧的分离布局是 593,508 字节，
-   共享布局是 261,727 字节。
+   共享布局是 261,695 字节。
 3. **bit-sliced 虚拟地址与 value history。** 地址表只提交 `2a+2` 列
    cycle-length bit（read bits、write bits、两个 validity bit）；完整 one-hot
    地址由 verifier 重建。booleanity 由覆盖全部地址列的批量 sum-check 检查。
@@ -232,11 +232,11 @@ unified proof 的参考测量：
 
 | rows | unified bytes | chunked bytes | prove ms | verify ms |
 |---:|---:|---:|---:|---:|
-| 2 | 140,254 | 201,455 | 12.7 | 6.0 |
-| 4 | 175,286 | 279,911 | 24.5 | 10.6 |
-| 8 | 212,118 | 444,623 | 50.8 | 20.3 |
-| 16 | 249,078 | 749,319 | 126.7 | 41.0 |
-| 32 | 293,718 | 1,326,655 | 374.3 | 88.1 |
+| 2 | 140,222 | 201,455 | 13.9 | 6.1 |
+| 4 | 175,254 | 279,911 | 31.0 | 17.2 |
+| 8 | 212,086 | 444,623 | 60.4 | 21.5 |
+| 16 | 249,046 | 749,319 | 146.4 | 49.4 |
+| 32 | 293,686 | 1,326,655 | 424.2 | 97.1 |
 
 unified proof 已不再携带 `rows`；剩余增长来自 per-row CPU relation 与 PCS 工作。
 chunked proof 还会按 chunk 复制 CPU 证明，因此增长更快。消除该依赖是后续

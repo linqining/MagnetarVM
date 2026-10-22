@@ -1852,7 +1852,7 @@ fn split_cpu_relations(system: &ConstraintSystem) -> (ConstraintSystem, Constrai
 }
 
 fn cpu_segment_layout(len: usize) -> Result<WitnessLayout, RuntimeError> {
-    let chunk = if len >= 4 { len / 4 } else { len };
+    let chunk = if len >= 2 { len / 2 } else { len };
     let mut segments = Vec::new();
     let mut offset = 0;
     let mut index = 0;
