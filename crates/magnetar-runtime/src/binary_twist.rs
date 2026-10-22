@@ -255,6 +255,514 @@ fn sumcheck(
     Ok((polynomials, challenges))
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BinaryTwistWriteProof {
+    pub address_bits: usize,
+    pub cycle_bits: usize,
+    pub wa_commitment: P3Commitment,
+    pub val_commitment: P3Commitment,
+    pub inc_commitment: P3Commitment,
+    pub claimed_write: F2_128,
+    pub rounds: Vec<[F2_128; 4]>,
+    pub challenges: Vec<F2_128>,
+    pub wa_eval: F2_128,
+    pub val_eval: F2_128,
+    pub inc_eval: F2_128,
+    pub wa_opening: P3Opening,
+    pub val_opening: P3Opening,
+    pub inc_opening: P3Opening,
+}
+
+pub fn prove_write_identity(
+    witness: &BinaryTwistWitness,
+) -> Result<BinaryTwistWriteProof, ProofError> {
+    let (wa, val, inc, address_bits, cycle_bits) = write_tables(witness)?;
+    let pcs = P3BinaryPcs::new(100);
+    let wa_commitment = pcs.commit(&wa)?;
+    let val_commitment = pcs.commit(&val)?;
+    let inc_commitment = pcs.commit(&inc)?;
+
+    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-write");
+    absorb_commitment(&mut transcript, "wa", &wa_commitment);
+    absorb_commitment(&mut transcript, "val", &val_commitment);
+    absorb_commitment(&mut transcript, "inc", &inc_commitment);
+    let cycle_point = sample_point(&mut transcript, cycle_bits);
+    let eq = eq_index(&cycle_point, address_bits, cycle_bits);
+    let payoff: Vec<F2_128> = val.iter().zip(&inc).map(|(v, i)| *v + *i).collect();
+    let claimed_write = wa
+        .iter()
+        .zip(&payoff)
+        .zip(&eq)
+        .fold(F2_128::from(0u64), |sum, ((a, b), e)| sum + *e * *a * *b);
+    transcript.absorb("claimed-write", &claimed_write.value().to_le_bytes());
+
+    let (rounds, challenges) = sumcheck(&wa, &payoff, &eq, &mut transcript)?;
+    let wa_eval = fold_all(&wa, &challenges);
+    let val_eval = fold_all(&val, &challenges);
+    let inc_eval = fold_all(&inc, &challenges);
+    let wa_opening = pcs.open(&wa, &challenges)?;
+    let val_opening = pcs.open(&val, &challenges)?;
+    let inc_opening = pcs.open(&inc, &challenges)?;
+    Ok(BinaryTwistWriteProof {
+        address_bits,
+        cycle_bits,
+        wa_commitment,
+        val_commitment,
+        inc_commitment,
+        claimed_write,
+        rounds,
+        challenges,
+        wa_eval,
+        val_eval,
+        inc_eval,
+        wa_opening,
+        val_opening,
+        inc_opening,
+    })
+}
+
+pub fn verify_write_identity(proof: &BinaryTwistWriteProof) -> Result<bool, ProofError> {
+    let pcs = P3BinaryPcs::new(100);
+    if proof.challenges.len() != proof.address_bits + proof.cycle_bits
+        || proof.rounds.len() != proof.challenges.len()
+    {
+        return Ok(false);
+    }
+    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-write");
+    absorb_commitment(&mut transcript, "wa", &proof.wa_commitment);
+    absorb_commitment(&mut transcript, "val", &proof.val_commitment);
+    absorb_commitment(&mut transcript, "inc", &proof.inc_commitment);
+    let cycle_point = sample_point(&mut transcript, proof.cycle_bits);
+    let mut eq = eq_index(&cycle_point, proof.address_bits, proof.cycle_bits);
+    transcript.absorb("claimed-write", &proof.claimed_write.value().to_le_bytes());
+    let mut sum = proof.claimed_write;
+    for (round, &expected) in proof.rounds.iter().zip(&proof.challenges) {
+        if round[0] + round[1] != sum {
+            return Ok(false);
+        }
+        for coefficient in round {
+            transcript.absorb("round", &coefficient.value().to_le_bytes());
+        }
+        let challenge = challenge(&mut transcript, "sumcheck");
+        if challenge != expected {
+            return Ok(false);
+        }
+        sum = evaluate_round(round, challenge);
+        eq = fold(&eq, challenge);
+    }
+    if eq.len() != 1 || sum != eq[0] * proof.wa_eval * (proof.val_eval + proof.inc_eval) {
+        return Ok(false);
+    }
+    let wa_ok = pcs.verify(
+        &proof.wa_commitment,
+        &proof.challenges,
+        proof.wa_eval,
+        &proof.wa_opening,
+    )?;
+    let val_ok = pcs.verify(
+        &proof.val_commitment,
+        &proof.challenges,
+        proof.val_eval,
+        &proof.val_opening,
+    )?;
+    let inc_ok = pcs.verify(
+        &proof.inc_commitment,
+        &proof.challenges,
+        proof.inc_eval,
+        &proof.inc_opening,
+    )?;
+    Ok(wa_ok && val_ok && inc_ok)
+}
+
+type WriteTables = (Vec<F2_128>, Vec<F2_128>, Vec<F2_128>, usize, usize);
+
+fn write_tables(witness: &BinaryTwistWitness) -> Result<WriteTables, ProofError> {
+    let cells = witness.initial.len();
+    let cycles = witness.cycles.next_power_of_two();
+    let address_bits = cells.trailing_zeros() as usize;
+    let cycle_bits = cycles.trailing_zeros() as usize;
+    let len = cells
+        .checked_mul(cycles)
+        .ok_or_else(|| ProofError::Pcs("BinaryTwist table overflows".into()))?;
+    let mut wa = vec![F2_128::from(0u64); len];
+    let mut val = vec![F2_128::from(0u64); len];
+    let mut inc = vec![F2_128::from(0u64); len];
+    for cycle in 0..witness.cycles {
+        let start = cycle * cells;
+        wa[start..start + cells].copy_from_slice(&witness.write_address[cycle]);
+        val[start..start + cells].copy_from_slice(&witness.value[cycle]);
+        for cell in 0..cells {
+            inc[start + cell] = witness.increment[cycle];
+        }
+    }
+    Ok((wa, val, inc, address_bits, cycle_bits))
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::*;
+    use magnetar_executor::execute;
+    use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+    fn trace() -> magnetar_spec::Trace {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Lui,
+                    rd: 2,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x1000_0000,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Sd,
+                    rd: 0,
+                    rs1: 2,
+                    rs2: 1,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Ld,
+                    rd: 3,
+                    rs1: 2,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn write_identity_sumcheck_round_trips() {
+        let trace = trace();
+        let witness = BinaryTwistWitness::from_trace(&trace).unwrap();
+        let proof = prove_write_identity(&witness).unwrap();
+        assert!(verify_write_identity(&proof).unwrap());
+        let mut tampered = proof;
+        tampered.inc_eval = tampered.inc_eval + F2_128::from(1u64);
+        assert!(!verify_write_identity(&tampered).unwrap());
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BinaryTwistUpdateProof {
+    pub address_bits: usize,
+    pub cycle_bits: usize,
+    pub next_commitment: P3Commitment,
+    pub val_commitment: P3Commitment,
+    pub wa_commitment: P3Commitment,
+    pub inc_commitment: P3Commitment,
+    pub rounds: Vec<[F2_128; 4]>,
+    pub challenges: Vec<F2_128>,
+    pub next_eval: F2_128,
+    pub val_eval: F2_128,
+    pub wa_eval: F2_128,
+    pub inc_eval: F2_128,
+    pub next_opening: P3Opening,
+    pub val_opening: P3Opening,
+    pub wa_opening: P3Opening,
+    pub inc_opening: P3Opening,
+}
+
+pub fn prove_update_identity(
+    witness: &BinaryTwistWitness,
+) -> Result<BinaryTwistUpdateProof, ProofError> {
+    let (next, val, wa, inc, address_bits, cycle_bits) = update_tables(witness)?;
+    let pcs = P3BinaryPcs::new(100);
+    let next_commitment = pcs.commit(&next)?;
+    let val_commitment = pcs.commit(&val)?;
+    let wa_commitment = pcs.commit(&wa)?;
+    let inc_commitment = pcs.commit(&inc)?;
+    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-update");
+    for (label, commitment) in [
+        ("next", &next_commitment),
+        ("val", &val_commitment),
+        ("wa", &wa_commitment),
+        ("inc", &inc_commitment),
+    ] {
+        absorb_commitment(&mut transcript, label, commitment);
+    }
+    let cycle_point = sample_point(&mut transcript, cycle_bits);
+    let eq = eq_index(&cycle_point, address_bits, cycle_bits);
+    let (rounds, challenges) = sumcheck_update(&next, &val, &wa, &inc, &eq, &mut transcript)?;
+    let next_eval = fold_all(&next, &challenges);
+    let val_eval = fold_all(&val, &challenges);
+    let wa_eval = fold_all(&wa, &challenges);
+    let inc_eval = fold_all(&inc, &challenges);
+    Ok(BinaryTwistUpdateProof {
+        address_bits,
+        cycle_bits,
+        next_commitment,
+        val_commitment,
+        wa_commitment,
+        inc_commitment,
+        rounds,
+        challenges: challenges.clone(),
+        next_eval,
+        val_eval,
+        wa_eval,
+        inc_eval,
+        next_opening: pcs.open(&next, &challenges)?,
+        val_opening: pcs.open(&val, &challenges)?,
+        wa_opening: pcs.open(&wa, &challenges)?,
+        inc_opening: pcs.open(&inc, &challenges)?,
+    })
+}
+
+pub fn verify_update_identity(proof: &BinaryTwistUpdateProof) -> Result<bool, ProofError> {
+    let pcs = P3BinaryPcs::new(100);
+    if proof.challenges.len() != proof.address_bits + proof.cycle_bits
+        || proof.rounds.len() != proof.challenges.len()
+    {
+        return Ok(false);
+    }
+    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-update");
+    for (label, commitment) in [
+        ("next", &proof.next_commitment),
+        ("val", &proof.val_commitment),
+        ("wa", &proof.wa_commitment),
+        ("inc", &proof.inc_commitment),
+    ] {
+        absorb_commitment(&mut transcript, label, commitment);
+    }
+    let cycle_point = sample_point(&mut transcript, proof.cycle_bits);
+    let mut eq = eq_index(&cycle_point, proof.address_bits, proof.cycle_bits);
+    let mut sum = F2_128::from(0u64);
+    for (round, &expected) in proof.rounds.iter().zip(&proof.challenges) {
+        if round[0] + round[1] != sum {
+            return Ok(false);
+        }
+        for coefficient in round {
+            transcript.absorb("round", &coefficient.value().to_le_bytes());
+        }
+        let challenge = challenge(&mut transcript, "sumcheck");
+        if challenge != expected {
+            return Ok(false);
+        }
+        sum = evaluate_round(round, challenge);
+        eq = fold(&eq, challenge);
+    }
+    let combined = proof.next_eval + proof.val_eval + proof.wa_eval * proof.inc_eval;
+    if eq.len() != 1 || sum != eq[0] * combined {
+        return Ok(false);
+    }
+    let next_ok = pcs.verify(
+        &proof.next_commitment,
+        &proof.challenges,
+        proof.next_eval,
+        &proof.next_opening,
+    )?;
+    let val_ok = pcs.verify(
+        &proof.val_commitment,
+        &proof.challenges,
+        proof.val_eval,
+        &proof.val_opening,
+    )?;
+    let wa_ok = pcs.verify(
+        &proof.wa_commitment,
+        &proof.challenges,
+        proof.wa_eval,
+        &proof.wa_opening,
+    )?;
+    let inc_ok = pcs.verify(
+        &proof.inc_commitment,
+        &proof.challenges,
+        proof.inc_eval,
+        &proof.inc_opening,
+    )?;
+    Ok(next_ok && val_ok && wa_ok && inc_ok)
+}
+
+type UpdateTables = (
+    Vec<F2_128>,
+    Vec<F2_128>,
+    Vec<F2_128>,
+    Vec<F2_128>,
+    usize,
+    usize,
+);
+
+fn update_tables(witness: &BinaryTwistWitness) -> Result<UpdateTables, ProofError> {
+    let cells = witness.initial.len();
+    let cycles = witness.cycles.next_power_of_two();
+    let address_bits = cells.trailing_zeros() as usize;
+    let cycle_bits = cycles.trailing_zeros() as usize;
+    let len = cells
+        .checked_mul(cycles)
+        .ok_or_else(|| ProofError::Pcs("BinaryTwist table overflows".into()))?;
+    let mut next = vec![F2_128::from(0u64); len];
+    let mut val = vec![F2_128::from(0u64); len];
+    let mut wa = vec![F2_128::from(0u64); len];
+    let mut inc = vec![F2_128::from(0u64); len];
+    for cycle in 0..witness.cycles {
+        let start = cycle * cells;
+        val[start..start + cells].copy_from_slice(&witness.value[cycle]);
+        wa[start..start + cells].copy_from_slice(&witness.write_address[cycle]);
+        for cell in 0..cells {
+            inc[start + cell] = witness.increment[cycle];
+        }
+        let following = if cycle + 1 < witness.cycles {
+            &witness.value[cycle + 1]
+        } else {
+            &witness.final_value
+        };
+        next[start..start + cells].copy_from_slice(following);
+    }
+    Ok((next, val, wa, inc, address_bits, cycle_bits))
+}
+
+fn sumcheck_update(
+    next: &[F2_128],
+    val: &[F2_128],
+    wa: &[F2_128],
+    inc: &[F2_128],
+    eq: &[F2_128],
+    transcript: &mut Sha256Transcript,
+) -> Result<(Vec<[F2_128; 4]>, Vec<F2_128>), ProofError> {
+    let len = next.len();
+    if val.len() != len || wa.len() != len || inc.len() != len || eq.len() != len {
+        return Err(ProofError::DimensionMismatch);
+    }
+    let rounds = len.trailing_zeros() as usize;
+    let mut next = next.to_vec();
+    let mut val = val.to_vec();
+    let mut wa = wa.to_vec();
+    let mut inc = inc.to_vec();
+    let mut eq = eq.to_vec();
+    let mut polynomials = Vec::with_capacity(rounds);
+    let mut challenges = Vec::with_capacity(rounds);
+    for _ in 0..rounds {
+        let mut polynomial = [F2_128::from(0u64); 4];
+        for (t, coefficient) in polynomial.iter_mut().enumerate() {
+            let t = F2_128::from(t as u64);
+            let next_t = fold(&next, t);
+            let val_t = fold(&val, t);
+            let wa_t = fold(&wa, t);
+            let inc_t = fold(&inc, t);
+            let eq_t = fold(&eq, t);
+            *coefficient = (0..next_t.len()).fold(F2_128::from(0u64), |sum, index| {
+                sum + eq_t[index] * (next_t[index] + val_t[index] + wa_t[index] * inc_t[index])
+            });
+        }
+        for coefficient in &polynomial {
+            transcript.absorb("round", &coefficient.value().to_le_bytes());
+        }
+        let challenge = challenge(transcript, "sumcheck");
+        next = fold(&next, challenge);
+        val = fold(&val, challenge);
+        wa = fold(&wa, challenge);
+        inc = fold(&inc, challenge);
+        eq = fold(&eq, challenge);
+        polynomials.push(polynomial);
+        challenges.push(challenge);
+    }
+    Ok((polynomials, challenges))
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::*;
+    use magnetar_executor::execute;
+    use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+    fn trace() -> magnetar_spec::Trace {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Lui,
+                    rd: 2,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x1000_0000,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Sd,
+                    rd: 0,
+                    rs1: 2,
+                    rs2: 1,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Ld,
+                    rd: 3,
+                    rs1: 2,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn update_identity_sumcheck_round_trips() {
+        let trace = trace();
+        let witness = BinaryTwistWitness::from_trace(&trace).unwrap();
+        let proof = prove_update_identity(&witness).unwrap();
+        assert!(verify_update_identity(&proof).unwrap());
+        let mut tampered = proof;
+        tampered.next_eval = tampered.next_eval + F2_128::from(1u64);
+        assert!(!verify_update_identity(&tampered).unwrap());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
