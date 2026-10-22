@@ -867,10 +867,7 @@ pub(crate) fn batch_tables(witness: &BinaryTwistWitness) -> Result<BatchTables, 
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AddressBooleanClaim {
-    pub column_point: Vec<F2_128>,
-    pub cycle_point: Vec<F2_128>,
     pub rounds: Vec<Vec<F2_128>>,
-    pub challenges: Vec<F2_128>,
     pub bit_evals: Vec<F2_128>,
 }
 
@@ -1087,31 +1084,6 @@ fn replay_terms_derived(
     Some((sum, challenges))
 }
 
-fn replay_terms(
-    rounds: &[Vec<F2_128>],
-    challenges: &[F2_128],
-    mut sum: F2_128,
-    transcript: &mut Sha256Transcript,
-) -> Option<F2_128> {
-    if rounds.len() != challenges.len() {
-        return None;
-    }
-    for (round, &expected_challenge) in rounds.iter().zip(challenges) {
-        if round.len() < 2 || round[0] + round[1] != sum {
-            return None;
-        }
-        for coefficient in round {
-            transcript.absorb("round", &coefficient.value().to_le_bytes());
-        }
-        let challenge = challenge(transcript, "sumcheck");
-        if challenge != expected_challenge {
-            return None;
-        }
-        sum = interpolate_values(round, challenge);
-    }
-    Some(sum)
-}
-
 fn absorb_point(transcript: &mut Sha256Transcript, label: &str, point: &[F2_128]) {
     for value in point {
         transcript.absorb(label, &value.value().to_le_bytes());
@@ -1188,10 +1160,7 @@ pub(crate) fn prove_binary_twist_claims(
         .map(|column| fold_all(&addr[column], r_j))
         .collect::<Vec<_>>();
     let boolean = AddressBooleanClaim {
-        column_point: rho_c,
-        cycle_point: rho_j,
         rounds,
-        challenges: challenges.clone(),
         bit_evals: bit_evals.clone(),
     };
     addr_points.push(P3MosaicPoint {
@@ -1758,19 +1727,13 @@ pub(crate) fn verify_binary_twist_claims(
     absorb_mosaic_commitment(&mut transcript, commitment);
     let rho_c = sample_point(&mut transcript, col_bits);
     let rho_j = sample_point(&mut transcript, cycle_bits);
-    if proof.boolean.column_point != rho_c || proof.boolean.cycle_point != rho_j {
-        return Ok(None);
-    }
-    let Some(sum) = replay_terms(
-        &proof.boolean.rounds,
-        &proof.boolean.challenges,
-        F2_128::from(0u64),
-        &mut transcript,
-    ) else {
+    let Some((sum, boolean_challenges)) =
+        replay_terms_derived(&proof.boolean.rounds, F2_128::from(0u64), &mut transcript)
+    else {
         return Ok(None);
     };
-    let r_j = &proof.boolean.challenges[..cycle_bits];
-    let r_c = &proof.boolean.challenges[cycle_bits..];
+    let r_j = &boolean_challenges[..cycle_bits];
+    let r_c = &boolean_challenges[cycle_bits..];
     let eq_c_eval = eq_points(&rho_c, r_c);
     let eq_j_eval = eq_points(&rho_j, r_j);
     let mut b_eval = F2_128::from(0u64);
