@@ -19,6 +19,7 @@ pub struct BinaryTwistReadProof {
     pub ra_commitment: P3Commitment,
     pub val_commitment: P3Commitment,
     pub claimed_read: F2_128,
+    pub cycle_point: Vec<F2_128>,
     pub rounds: Vec<[F2_128; 4]>,
     pub challenges: Vec<F2_128>,
     pub ra_eval: F2_128,
@@ -58,6 +59,7 @@ pub fn prove_read_identity(
         ra_commitment,
         val_commitment,
         claimed_read,
+        cycle_point,
         rounds,
         challenges,
         ra_eval,
@@ -67,7 +69,10 @@ pub fn prove_read_identity(
     })
 }
 
-pub fn verify_read_identity(proof: &BinaryTwistReadProof) -> Result<bool, ProofError> {
+pub fn verify_read_identity(
+    proof: &BinaryTwistReadProof,
+    witness: &BinaryTwistWitness,
+) -> Result<bool, ProofError> {
     let pcs = P3BinaryPcs::new(100);
     let cells = 1usize << proof.address_bits;
     let cycles = 1usize << proof.cycle_bits;
@@ -80,6 +85,13 @@ pub fn verify_read_identity(proof: &BinaryTwistReadProof) -> Result<bool, ProofE
     absorb_commitment(&mut transcript, "ra", &proof.ra_commitment);
     absorb_commitment(&mut transcript, "val", &proof.val_commitment);
     let cycle_point = sample_point(&mut transcript, proof.cycle_bits);
+    if proof.cycle_point != cycle_point {
+        return Ok(false);
+    }
+    let values = padded_values(&witness.read_value, proof.cycle_bits);
+    if fold_all(&values, &cycle_point) != proof.claimed_read {
+        return Ok(false);
+    }
     let mut eq = eq_index(&cycle_point, proof.address_bits, proof.cycle_bits);
     transcript.absorb("claimed-read", &proof.claimed_read.value().to_le_bytes());
 
@@ -263,6 +275,7 @@ pub struct BinaryTwistWriteProof {
     pub val_commitment: P3Commitment,
     pub inc_commitment: P3Commitment,
     pub claimed_write: F2_128,
+    pub cycle_point: Vec<F2_128>,
     pub rounds: Vec<[F2_128; 4]>,
     pub challenges: Vec<F2_128>,
     pub wa_eval: F2_128,
@@ -310,6 +323,7 @@ pub fn prove_write_identity(
         val_commitment,
         inc_commitment,
         claimed_write,
+        cycle_point,
         rounds,
         challenges,
         wa_eval,
@@ -321,7 +335,10 @@ pub fn prove_write_identity(
     })
 }
 
-pub fn verify_write_identity(proof: &BinaryTwistWriteProof) -> Result<bool, ProofError> {
+pub fn verify_write_identity(
+    proof: &BinaryTwistWriteProof,
+    witness: &BinaryTwistWitness,
+) -> Result<bool, ProofError> {
     let pcs = P3BinaryPcs::new(100);
     if proof.challenges.len() != proof.address_bits + proof.cycle_bits
         || proof.rounds.len() != proof.challenges.len()
@@ -333,6 +350,13 @@ pub fn verify_write_identity(proof: &BinaryTwistWriteProof) -> Result<bool, Proo
     absorb_commitment(&mut transcript, "val", &proof.val_commitment);
     absorb_commitment(&mut transcript, "inc", &proof.inc_commitment);
     let cycle_point = sample_point(&mut transcript, proof.cycle_bits);
+    if proof.cycle_point != cycle_point {
+        return Ok(false);
+    }
+    let values = padded_values(&witness.write_value, proof.cycle_bits);
+    if fold_all(&values, &cycle_point) != proof.claimed_write {
+        return Ok(false);
+    }
     let mut eq = eq_index(&cycle_point, proof.address_bits, proof.cycle_bits);
     transcript.absorb("claimed-write", &proof.claimed_write.value().to_le_bytes());
     let mut sum = proof.claimed_write;
@@ -466,10 +490,10 @@ mod write_tests {
         let trace = trace();
         let witness = BinaryTwistWitness::from_trace(&trace).unwrap();
         let proof = prove_write_identity(&witness).unwrap();
-        assert!(verify_write_identity(&proof).unwrap());
+        assert!(verify_write_identity(&proof, &witness).unwrap());
         let mut tampered = proof;
         tampered.inc_eval = tampered.inc_eval + F2_128::from(1u64);
-        assert!(!verify_write_identity(&tampered).unwrap());
+        assert!(!verify_write_identity(&tampered, &witness).unwrap());
     }
 }
 
@@ -763,6 +787,123 @@ mod update_tests {
     }
 }
 
+fn padded_values(values: &[F2_128], cycle_bits: usize) -> Vec<F2_128> {
+    let mut padded = values.to_vec();
+    padded.resize(1usize << cycle_bits, F2_128::from(0u64));
+    padded
+}
+
+use crate::binary_twist_address::{
+    prove_address_multiplicity, verify_address_multiplicity, AddressMultiplicityProof,
+};
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BinaryTwistRamProof {
+    pub read: BinaryTwistReadProof,
+    pub write: BinaryTwistWriteProof,
+    pub update: BinaryTwistUpdateProof,
+    pub read_address: AddressMultiplicityProof,
+    pub write_address: AddressMultiplicityProof,
+}
+
+pub fn prove_binary_twist_ram(
+    witness: &BinaryTwistWitness,
+) -> Result<BinaryTwistRamProof, ProofError> {
+    Ok(BinaryTwistRamProof {
+        read: prove_read_identity(witness)?,
+        write: prove_write_identity(witness)?,
+        update: prove_update_identity(witness)?,
+        read_address: prove_address_multiplicity(witness, false)?,
+        write_address: prove_address_multiplicity(witness, true)?,
+    })
+}
+
+pub fn verify_binary_twist_ram(
+    witness: &BinaryTwistWitness,
+    proof: &BinaryTwistRamProof,
+) -> Result<bool, ProofError> {
+    Ok(verify_read_identity(&proof.read, witness)?
+        && verify_write_identity(&proof.write, witness)?
+        && verify_update_identity(&proof.update)?
+        && verify_address_multiplicity(&proof.read_address, false, witness)?
+        && verify_address_multiplicity(&proof.write_address, true, witness)?)
+}
+
+#[cfg(test)]
+mod ram_tests {
+    use super::*;
+    use magnetar_executor::execute;
+    use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+    fn trace() -> magnetar_spec::Trace {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Lui,
+                    rd: 2,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x1000_0000,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Sd,
+                    rd: 0,
+                    rs1: 2,
+                    rs2: 1,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Ld,
+                    rd: 3,
+                    rs1: 2,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn ram_binary_twist_bundle_round_trips() {
+        let trace = trace();
+        let witness = BinaryTwistWitness::from_trace(&trace).unwrap();
+        let proof = prove_binary_twist_ram(&witness).unwrap();
+        assert!(verify_binary_twist_ram(&witness, &proof).unwrap());
+        let mut tampered = proof;
+        tampered.read.claimed_read = tampered.read.claimed_read + F2_128::from(1u64);
+        assert!(!verify_binary_twist_ram(&witness, &tampered).unwrap());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -832,12 +973,12 @@ mod tests {
         let witness = BinaryTwistWitness::from_trace(&trace).unwrap();
         witness.validate().unwrap();
         let proof = prove_read_identity(&witness).unwrap();
-        assert!(verify_read_identity(&proof).unwrap());
+        assert!(verify_read_identity(&proof, &witness).unwrap());
 
         let mut tampered = proof.clone();
         if let Some(round) = tampered.rounds.first_mut() {
             round[0] = round[0] + F2_128::from(1u64);
         }
-        assert!(!verify_read_identity(&tampered).unwrap());
+        assert!(!verify_read_identity(&tampered, &witness).unwrap());
     }
 }

@@ -51,9 +51,10 @@ impl BinaryTwistWitness {
 
         for event in &trace.memory_events {
             let access = event.access;
-            if access.width != 8 || !access.addr.is_multiple_of(8) {
+            let width = usize::from(access.width);
+            if width == 0 || width > 8 {
                 return Err(MemoryError::InvalidBinaryTwist(
-                    "BinaryTwist reference supports word-aligned 8-byte accesses".into(),
+                    "BinaryTwist supports 1..=8 byte accesses".into(),
                 ));
             }
             let offset = access
@@ -67,6 +68,12 @@ impl BinaryTwistWitness {
                 })?;
             let word = usize::try_from(offset / 8)
                 .map_err(|_| MemoryError::InvalidBinaryTwist("address overflows usize".into()))?;
+            let lane = usize::try_from(offset % 8).expect("lane fits");
+            if lane + width > 8 {
+                return Err(MemoryError::InvalidBinaryTwist(
+                    "BinaryTwist cannot span two words".into(),
+                ));
+            }
             if word >= cells {
                 return Err(MemoryError::InvalidBinaryTwist(format!(
                     "address {:#x} is outside the RAM table",
@@ -74,10 +81,17 @@ impl BinaryTwistWitness {
                 )));
             }
             value.push(current.clone());
-            read_value.push(current[word]);
+            let old = current[word];
+            read_value.push(old);
             let (read, write, delta, written) = if access.is_write {
-                let new = F2_128::from(access.value);
-                let delta = current[word] + new;
+                let mask = if width == 8 {
+                    u64::MAX
+                } else {
+                    ((1u64 << (width * 8)) - 1) << (lane * 8)
+                };
+                let shifted = access.value.wrapping_shl((lane * 8) as u32);
+                let new = F2_128::from(((old.value() as u64) & !mask) | (shifted & mask));
+                let delta = old + new;
                 let mut one_hot = vec![F2_128::from(0u64); cells];
                 one_hot[word] = F2_128::from(1u64);
                 let mut read_one_hot = vec![F2_128::from(0u64); cells];
@@ -98,7 +112,7 @@ impl BinaryTwistWitness {
             increment.push(delta);
             write_value.push(written);
             if access.is_write {
-                current[word] = F2_128::from(access.value);
+                current[word] = written;
             }
         }
 
