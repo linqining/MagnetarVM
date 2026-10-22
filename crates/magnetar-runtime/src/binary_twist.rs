@@ -868,7 +868,6 @@ pub(crate) fn batch_tables(witness: &BinaryTwistWitness) -> Result<BatchTables, 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AddressBooleanClaim {
     pub rounds: Vec<Vec<F2_128>>,
-    pub bit_evals: Vec<F2_128>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1159,10 +1158,7 @@ pub(crate) fn prove_binary_twist_claims(
     let bit_evals = (0..addr_columns)
         .map(|column| fold_all(&addr[column], r_j))
         .collect::<Vec<_>>();
-    let boolean = AddressBooleanClaim {
-        rounds,
-        bit_evals: bit_evals.clone(),
-    };
+    let boolean = AddressBooleanClaim { rounds };
     addr_points.push(P3MosaicPoint {
         table: table_index,
         point: inc_point(r_j),
@@ -1734,11 +1730,15 @@ pub(crate) fn verify_binary_twist_claims(
     };
     let r_j = &boolean_challenges[..cycle_bits];
     let r_c = &boolean_challenges[cycle_bits..];
+    let addr = batch_tables(witness)?;
+    let bit_evals = (0..addr_columns)
+        .map(|column| fold_all(&addr.address_columns()[column], r_j))
+        .collect::<Vec<_>>();
     let eq_c_eval = eq_points(&rho_c, r_c);
     let eq_j_eval = eq_points(&rho_j, r_j);
     let mut b_eval = F2_128::from(0u64);
-    for column in 0..addr_columns {
-        b_eval = b_eval + eq_at_index(r_c, column) * proof.boolean.bit_evals[column];
+    for (column, eval) in bit_evals.iter().enumerate() {
+        b_eval = b_eval + eq_at_index(r_c, column) * *eval;
     }
     let terminal = eq_c_eval * eq_j_eval * b_eval * (b_eval + F2_128::from(1u64));
     if sum != terminal {
@@ -1750,7 +1750,7 @@ pub(crate) fn verify_binary_twist_claims(
         columns: (0..addr_columns).collect(),
         next_columns: Vec::new(),
     });
-    addr_expected.push(proof.boolean.bit_evals.clone());
+    addr_expected.push(bit_evals.clone());
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-read");
     absorb_mosaic_commitment(&mut transcript, commitment);
@@ -2149,7 +2149,7 @@ mod ram_tests {
         assert!(!verify_binary_twist_ram(&witness, &tampered).unwrap());
 
         let mut tampered = proof.clone();
-        tampered.boolean.bit_evals[0] = tampered.boolean.bit_evals[0] + F2_128::from(1u64);
+        tampered.boolean.rounds[0][0] = tampered.boolean.rounds[0][0] + F2_128::from(1u64);
         assert!(!verify_binary_twist_ram(&witness, &tampered).unwrap());
 
         let mut bad_witness = witness.clone();
