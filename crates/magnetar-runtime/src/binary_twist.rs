@@ -17,8 +17,6 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BinaryTwistReadProof {
-    pub address_bits: usize,
-    pub cycle_bits: usize,
     pub ra_commitment: P3Commitment,
     pub val_commitment: P3Commitment,
     pub claimed_read: F2_128,
@@ -55,8 +53,6 @@ pub fn prove_read_identity(
     let ra_opening = pcs.open(&ra, &challenges)?;
     let val_opening = pcs.open(&val, &challenges)?;
     Ok(BinaryTwistReadProof {
-        address_bits,
-        cycle_bits,
         ra_commitment,
         val_commitment,
         claimed_read,
@@ -73,20 +69,22 @@ pub fn verify_read_identity(
     witness: &BinaryTwistWitness,
 ) -> Result<bool, ProofError> {
     let pcs = P3BinaryPcs::new(100);
-    let cells = 1usize << proof.address_bits;
-    let cycles = 1usize << proof.cycle_bits;
-    if proof.rounds.len() != proof.address_bits + proof.cycle_bits {
+    let cells = witness.initial.len();
+    let cycles = witness.cycles.next_power_of_two();
+    let address_bits = cells.trailing_zeros() as usize;
+    let cycle_bits = cycles.trailing_zeros() as usize;
+    if proof.rounds.len() != address_bits + cycle_bits {
         return Ok(false);
     }
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-read");
     absorb_commitment(&mut transcript, "ra", &proof.ra_commitment);
     absorb_commitment(&mut transcript, "val", &proof.val_commitment);
-    let cycle_point = sample_point(&mut transcript, proof.cycle_bits);
-    let values = padded_values(&witness.read_value, proof.cycle_bits);
+    let cycle_point = sample_point(&mut transcript, cycle_bits);
+    let values = padded_values(&witness.read_value, cycle_bits);
     if fold_all(&values, &cycle_point) != proof.claimed_read {
         return Ok(false);
     }
-    let mut eq = eq_index(&cycle_point, proof.address_bits, proof.cycle_bits);
+    let mut eq = eq_index(&cycle_point, address_bits, cycle_bits);
     transcript.absorb("claimed-read", &proof.claimed_read.value().to_le_bytes());
 
     let mut sum = proof.claimed_read;
@@ -262,8 +260,6 @@ fn sumcheck(
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BinaryTwistWriteProof {
-    pub address_bits: usize,
-    pub cycle_bits: usize,
     pub wa_commitment: P3Commitment,
     pub val_commitment: P3Commitment,
     pub inc_commitment: P3Commitment,
@@ -308,8 +304,6 @@ pub fn prove_write_identity(
     let val_opening = pcs.open(&val, &challenges)?;
     let inc_opening = pcs.open(&inc, &challenges)?;
     Ok(BinaryTwistWriteProof {
-        address_bits,
-        cycle_bits,
         wa_commitment,
         val_commitment,
         inc_commitment,
@@ -329,19 +323,22 @@ pub fn verify_write_identity(
     witness: &BinaryTwistWitness,
 ) -> Result<bool, ProofError> {
     let pcs = P3BinaryPcs::new(100);
-    if proof.rounds.len() != proof.address_bits + proof.cycle_bits {
+    let cycles = witness.cycles.next_power_of_two();
+    let address_bits = witness.initial.len().trailing_zeros() as usize;
+    let cycle_bits = cycles.trailing_zeros() as usize;
+    if proof.rounds.len() != address_bits + cycle_bits {
         return Ok(false);
     }
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-write");
     absorb_commitment(&mut transcript, "wa", &proof.wa_commitment);
     absorb_commitment(&mut transcript, "val", &proof.val_commitment);
     absorb_commitment(&mut transcript, "inc", &proof.inc_commitment);
-    let cycle_point = sample_point(&mut transcript, proof.cycle_bits);
-    let values = padded_values(&witness.write_value, proof.cycle_bits);
+    let cycle_point = sample_point(&mut transcript, cycle_bits);
+    let values = padded_values(&witness.write_value, cycle_bits);
     if fold_all(&values, &cycle_point) != proof.claimed_write {
         return Ok(false);
     }
-    let mut eq = eq_index(&cycle_point, proof.address_bits, proof.cycle_bits);
+    let mut eq = eq_index(&cycle_point, address_bits, cycle_bits);
     transcript.absorb("claimed-write", &proof.claimed_write.value().to_le_bytes());
     let mut sum = proof.claimed_write;
     let mut challenges = Vec::with_capacity(proof.rounds.len());

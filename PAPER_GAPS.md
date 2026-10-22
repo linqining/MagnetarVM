@@ -96,7 +96,8 @@
 - `81b0192`：`WriteHistoryClaim` current/successor evals 移除，access 降至 13,306 B。
 - `0450061`：`ReadInitialClaim.cycle_point` 与 `UpdateClaim.cell_point` 移除，access 降至 12,874 B。
 - `1b4a985`：`BinaryTwistRamProof` header/claimed 移除，access 降至 12,778 B。
-- 本轮：Router/Shout proof 移除 `address_bits`/`cycle_bits`/`claimed`，shout 2,298 B、store_router 5,346 B。
+- `940f47b`：Router/Shout proof 移除 `address_bits`/`cycle_bits`/`claimed`，shout 2,298 B、store_router 5,346 B。
+- 本轮：standalone `BinaryTwistReadProof`/`WriteProof` 移除 `address_bits`/`cycle_bits`，verifier 从 witness 推导。
 
 ## 二、逐项差距
 
