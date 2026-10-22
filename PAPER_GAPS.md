@@ -292,3 +292,7 @@ This is a PCS/transcript refactor, not a small compression; it is the prerequisi
 ### CPU proof dominates
 
 Measured a CPU-only lockstep proof for an 18-row trace: **233,488 B**, versus the unified CPU component **241,240 B** for the hello guest. Aux/trace claims therefore add only a small fraction of the proof; the CPU `z` P3/lockstep proof is the dominant term. Splitting aux into a separate PCS would not help and would add a second opening. Reducing the CPU proof requires the shared-matrix SIMD CPU representation (B1/B2), not aux packing.
+
+### Why Ligerito is not a drop-in CPU PCS here
+
+The vendored `LigeritoPcs` wrapper is an **index-opening** commitment: it proves values at chosen indices, not a multilinear evaluation at an arbitrary point. The CPU Spartan/lockstep reduction needs `W(r)` for a challenge point `r`, so it cannot directly use this wrapper without an additional evaluation-to-index reduction. This is why the CPU proof remains P3-based and dominates the proof size; using Ligerito for the CPU requires implementing the paper's polynomial-evaluation interface (or a sum-check reduction to index openings), not just swapping the PCS.
