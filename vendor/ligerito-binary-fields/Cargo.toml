@@ -1,0 +1,33 @@
+[package]
+name = "ligerito-binary-fields"
+version = "0.7.2"
+edition = "2021"
+authors = ["rotko networks"]
+license = "MIT"
+description = "Binary extension field arithmetic for Ligerito"
+repository = "https://github.com/rotkonetworks/ligerito"
+
+autotests = false
+autobenches = false
+autoexamples = false
+autobins = false
+
+[features]
+default = ["std", "rand"]
+std = ["rand?/std", "wide/std"]
+rand = ["dep:rand"]
+hardware-accel = []
+op-count = []
+serde = ["dep:serde"]
+scale = []
+
+[dependencies]
+bytemuck = { version = "1", features = ["extern_crate_alloc"], default-features = false }
+rand = { version = "0.8", optional = true }
+serde = { version = "1", features = ["derive"], optional = true, default-features = false }
+wide = { path = "../wide", version = "0.7", default-features = false }
+
+[lib]
+name = "ligerito_binary_fields"
+path = "src/lib.rs"
+

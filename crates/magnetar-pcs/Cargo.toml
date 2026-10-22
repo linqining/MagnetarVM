@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 bincode.workspace = true
+ligerito = { path = "../../vendor/ligerito", default-features = false, features = ["std", "prover", "parallel", "hardware-accel", "transcript-sha256", "serde"] }
+ligerito-binary-fields = { path = "../../vendor/ligerito-binary-fields", default-features = false, features = ["std"] }
 magnetar-proof.workspace = true
 magnetar-transcript.workspace = true
 magnetar-constraint.workspace = true

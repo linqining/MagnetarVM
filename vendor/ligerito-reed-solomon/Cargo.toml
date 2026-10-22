@@ -1,0 +1,28 @@
+[package]
+name = "ligerito-reed-solomon"
+version = "0.7.0"
+edition = "2021"
+authors = ["rotko networks"]
+license = "MIT"
+description = "Reed-Solomon erasure coding for Ligerito over binary fields"
+repository = "https://github.com/rotkonetworks/ligerito"
+
+autotests = false
+autobenches = false
+autoexamples = false
+autobins = false
+
+[features]
+default = ["std", "parallel"]
+std = ["ligerito-binary-fields/std"]
+parallel = ["rayon"]
+hardware-accel = ["ligerito-binary-fields/hardware-accel"]
+
+[dependencies]
+ligerito-binary-fields = { path = "../ligerito-binary-fields", version = "0.7.0", default-features = false }
+rayon = { version = "1.8", optional = true }
+
+[lib]
+name = "ligerito_reed_solomon"
+path = "src/lib.rs"
+

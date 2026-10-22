@@ -8,7 +8,7 @@ use magnetar_constraint::{ConstraintSystem, LayoutError, Witness, WitnessLayout,
 use magnetar_cpu::{check_trace, CpuError};
 use magnetar_executor::{execute_with_io, ExecError, ExecutionIo};
 use magnetar_memory::{check_memory, check_ram, MemoryError, MemoryReport};
-use magnetar_pcs::{NaiveCommitment, NaiveMerklePcs, NaiveOpening};
+use magnetar_pcs::{MerklePath, MerkleTree, NaiveCommitment, NaiveMerklePcs, NaiveOpening};
 use magnetar_preprocess::{preprocess, PreprocessError, PreprocessedProgram};
 use magnetar_proof::{prove_spartan, verify_spartan, Pcs, SpartanError, SpartanProof};
 use magnetar_recursion::{ChainedChunk, ChainedProof, ChainedRecursion, ChunkPlan, RecursionError};
@@ -268,6 +268,8 @@ pub struct CommittedMemory {
     pub values: Vec<F2_128>,
     pub commitment: NaiveCommitment,
     pub pcs: NaiveMerklePcs,
+    #[serde(skip)]
+    pub tree: Option<MerkleTree>,
 }
 
 impl CommittedMemory {
@@ -278,6 +280,12 @@ impl CommittedMemory {
         if values.len() != len {
             return Err(RuntimeError::InvalidMemoryTable);
         }
+        let leaves = values
+            .iter()
+            .map(|value| value.value().to_le_bytes().to_vec())
+            .collect();
+        let tree = MerkleTree::from_leaves(leaves)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         let pcs = NaiveMerklePcs;
         let commitment =
             Pcs::commit(&pcs, &values).map_err(|error| RuntimeError::Proof(error.to_string()))?;
@@ -286,6 +294,7 @@ impl CommittedMemory {
             values,
             commitment,
             pcs,
+            tree: Some(tree),
         })
     }
 
@@ -295,12 +304,44 @@ impl CommittedMemory {
             .and_then(|index| self.values.get(index))
             .copied()
     }
+
+    fn tree(&self) -> Result<&MerkleTree, RuntimeError> {
+        self.tree
+            .as_ref()
+            .ok_or_else(|| RuntimeError::Proof("committed table has no Merkle tree".into()))
+    }
+
+    /// Replace one cell and update only the affected Merkle path.
+    pub fn updated(&self, index: usize, value: F2_128) -> Result<Self, RuntimeError> {
+        if index >= self.values.len() {
+            return Err(RuntimeError::AddressOutOfTable(index as u64));
+        }
+        let mut values = self.values.clone();
+        values[index] = value;
+        let mut tree = self
+            .tree
+            .clone()
+            .ok_or_else(|| RuntimeError::Proof("committed table has no Merkle tree".into()))?;
+        tree.update(index, &value.value().to_le_bytes())
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        let commitment = NaiveCommitment {
+            root: tree.root(),
+            num_vars: self.addr_bits,
+            len: values.len(),
+        };
+        Ok(Self {
+            addr_bits: self.addr_bits,
+            values,
+            commitment,
+            pcs: NaiveMerklePcs,
+            tree: Some(tree),
+        })
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LoadProof {
-    pub spartan: SpartanProof<NaiveCommitment, NaiveOpening>,
-    pub opening: NaiveOpening,
+    pub path: MerklePath,
     pub addr: u64,
     pub value: F2_128,
 }
@@ -310,45 +351,29 @@ pub fn prove_load(memory: &CommittedMemory, rs1: u64, imm: u64) -> Result<LoadPr
     let value = memory
         .value(addr)
         .ok_or(RuntimeError::AddressOutOfTable(addr))?;
-    let value_u64 = value.value() as u64;
-    let (system, layout) = magnetar_cpu::uniform_load_relation(64, addr, value_u64);
-    let witness = layout.witness(rs1, imm);
-    let spartan = prove_spartan(&system, &witness, &memory.pcs)?;
-    let point = point_bits(addr, memory.addr_bits);
-    let opening = Pcs::open(&memory.pcs, &memory.values, &point)
+    let index = usize::try_from(addr).map_err(|_| RuntimeError::AddressOutOfTable(addr))?;
+    let path = memory
+        .tree()?
+        .proof(index)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    Ok(LoadProof {
-        spartan,
-        opening,
-        addr,
-        value,
-    })
+    Ok(LoadProof { path, addr, value })
 }
 
 pub fn verify_load(memory: &CommittedMemory, proof: &LoadProof) -> Result<(), RuntimeError> {
-    let point = point_bits(proof.addr, memory.addr_bits);
-    let opening_ok = Pcs::verify(
-        &memory.pcs,
-        &memory.commitment,
-        &point,
-        proof.value,
-        &proof.opening,
-    )
-    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    if !opening_ok {
+    let index =
+        usize::try_from(proof.addr).map_err(|_| RuntimeError::AddressOutOfTable(proof.addr))?;
+    let leaf = proof.value.value().to_le_bytes();
+    if proof.path.index != index || !MerkleTree::verify(memory.commitment.root, &leaf, &proof.path)
+    {
         return Err(RuntimeError::Proof("memory opening rejected".into()));
     }
-    let value_u64 = proof.value.value() as u64;
-    let (system, _) = magnetar_cpu::uniform_load_relation(64, proof.addr, value_u64);
-    verify_spartan(&system, &proof.spartan, &memory.pcs)?;
     Ok(())
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct StoreProof {
-    pub spartan: SpartanProof<NaiveCommitment, NaiveOpening>,
-    pub old_opening: NaiveOpening,
-    pub new_opening: NaiveOpening,
+    pub old_path: MerklePath,
+    pub new_path: MerklePath,
     pub new_commitment: NaiveCommitment,
     pub addr: u64,
     pub old_value: F2_128,
@@ -366,22 +391,19 @@ pub fn prove_store(
         .value(addr)
         .ok_or(RuntimeError::AddressOutOfTable(addr))?;
     let index = usize::try_from(addr).map_err(|_| RuntimeError::AddressOutOfTable(addr))?;
-    let mut new_values = memory.values.clone();
-    new_values[index] = new_value;
-    let new_memory = CommittedMemory::new(memory.addr_bits, new_values)?;
+    let old_path = memory
+        .tree()?
+        .proof(index)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let new_memory = memory.updated(index, new_value)?;
+    let new_path = new_memory
+        .tree()?
+        .proof(index)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
 
-    let (system, layout) = magnetar_cpu::uniform_store_relation(64, addr, new_value.value() as u64);
-    let witness = layout.witness(rs1, imm);
-    let spartan = prove_spartan(&system, &witness, &memory.pcs)?;
-    let point = point_bits(addr, memory.addr_bits);
-    let old_opening = Pcs::open(&memory.pcs, &memory.values, &point)
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    let new_opening = Pcs::open(&memory.pcs, &new_memory.values, &point)
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     Ok(StoreProof {
-        spartan,
-        old_opening,
-        new_opening,
+        old_path,
+        new_path,
         new_commitment: new_memory.commitment,
         addr,
         old_value,
@@ -390,47 +412,29 @@ pub fn prove_store(
 }
 
 pub fn verify_store(memory: &CommittedMemory, proof: &StoreProof) -> Result<(), RuntimeError> {
-    let point = point_bits(proof.addr, memory.addr_bits);
-    let old_ok = Pcs::verify(
-        &memory.pcs,
-        &memory.commitment,
-        &point,
-        proof.old_value,
-        &proof.old_opening,
-    )
-    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    let new_ok = Pcs::verify(
-        &memory.pcs,
-        &proof.new_commitment,
-        &point,
-        proof.new_value,
-        &proof.new_opening,
-    )
-    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    if !old_ok || !new_ok {
+    let index =
+        usize::try_from(proof.addr).map_err(|_| RuntimeError::AddressOutOfTable(proof.addr))?;
+    if proof.old_path.index != index || proof.new_path.index != index {
+        return Err(RuntimeError::Proof("store path index mismatch".into()));
+    }
+    if proof.old_path.siblings != proof.new_path.siblings {
+        return Err(RuntimeError::Proof(
+            "store changed more than one cell".into(),
+        ));
+    }
+    if proof.new_commitment.num_vars != memory.commitment.num_vars
+        || proof.new_commitment.len != memory.commitment.len
+    {
+        return Err(RuntimeError::Proof("memory table shape mismatch".into()));
+    }
+    let old_leaf = proof.old_value.value().to_le_bytes();
+    let new_leaf = proof.new_value.value().to_le_bytes();
+    if !MerkleTree::verify(memory.commitment.root, &old_leaf, &proof.old_path)
+        || !MerkleTree::verify(proof.new_commitment.root, &new_leaf, &proof.new_path)
+    {
         return Err(RuntimeError::Proof("memory opening rejected".into()));
     }
 
-    let old_values = &proof.old_opening.evaluations;
-    let new_values = &proof.new_opening.evaluations;
-    if old_values.len() != new_values.len() || old_values.len() != memory.values.len() {
-        return Err(RuntimeError::Proof("memory table shape mismatch".into()));
-    }
-    let index =
-        usize::try_from(proof.addr).map_err(|_| RuntimeError::AddressOutOfTable(proof.addr))?;
-    for (cell, (old, new)) in old_values.iter().zip(new_values.iter()).enumerate() {
-        if cell == index {
-            if *old != proof.old_value || *new != proof.new_value {
-                return Err(RuntimeError::Proof("store cell mismatch".into()));
-            }
-        } else if old != new {
-            return Err(RuntimeError::Proof("store changed multiple cells".into()));
-        }
-    }
-
-    let (system, _) =
-        magnetar_cpu::uniform_store_relation(64, proof.addr, proof.new_value.value() as u64);
-    verify_spartan(&system, &proof.spartan, &memory.pcs)?;
     Ok(())
 }
 
@@ -469,14 +473,12 @@ pub fn prove_memory_chain(
                 let proof = prove_store(&current, rs1, imm, value)?;
                 let index = usize::try_from(proof.addr)
                     .map_err(|_| RuntimeError::AddressOutOfTable(proof.addr))?;
-                let mut values = current.values.clone();
-                values[index] = value;
-                current = CommittedMemory {
-                    addr_bits: current.addr_bits,
-                    values,
-                    commitment: proof.new_commitment.clone(),
-                    pcs: NaiveMerklePcs,
-                };
+                current = current.updated(index, value)?;
+                if current.commitment != proof.new_commitment {
+                    return Err(RuntimeError::Proof(
+                        "store proof commitment mismatch".into(),
+                    ));
+                }
                 steps.push(MemoryStepProof::Store(proof));
             }
         }
@@ -494,24 +496,11 @@ pub fn verify_memory_chain(proof: &MemoryChainProof) -> Result<(), RuntimeError>
         match step {
             MemoryStepProof::Load(load) => {
                 verify_load(&current, load)?;
-                if load.opening.evaluations != current.values {
-                    return Err(RuntimeError::Proof(format!(
-                        "load step {step_index} opened a different memory table"
-                    )));
-                }
+                let _ = step_index;
             }
             MemoryStepProof::Store(store) => {
                 verify_store(&current, store)?;
-                let index = usize::try_from(store.addr)
-                    .map_err(|_| RuntimeError::AddressOutOfTable(store.addr))?;
-                let mut values = current.values.clone();
-                values[index] = store.new_value;
-                current = CommittedMemory {
-                    addr_bits: current.addr_bits,
-                    values,
-                    commitment: store.new_commitment.clone(),
-                    pcs: NaiveMerklePcs,
-                };
+                current.commitment = store.new_commitment.clone();
             }
         }
     }
@@ -564,14 +553,12 @@ pub fn prove_register_chain(
                 let proof = prove_store(&current, 0, index, value)?;
                 let cell =
                     usize::try_from(index).map_err(|_| RuntimeError::AddressOutOfTable(index))?;
-                let mut values = current.values.clone();
-                values[cell] = value;
-                current = CommittedMemory {
-                    addr_bits: current.addr_bits,
-                    values,
-                    commitment: proof.new_commitment.clone(),
-                    pcs: NaiveMerklePcs,
-                };
+                current = current.updated(cell, value)?;
+                if current.commitment != proof.new_commitment {
+                    return Err(RuntimeError::Proof(
+                        "register proof commitment mismatch".into(),
+                    ));
+                }
                 steps.push(RegisterStepProof::Write(proof));
             }
         }
@@ -598,16 +585,7 @@ pub fn verify_register_chain(proof: &RegisterChainProof) -> Result<(), RuntimeEr
             }
             RegisterStepProof::Write(proof) => {
                 verify_store(&current, proof)?;
-                let cell = usize::try_from(proof.addr)
-                    .map_err(|_| RuntimeError::AddressOutOfTable(proof.addr))?;
-                let mut values = current.values.clone();
-                values[cell] = proof.new_value;
-                current = CommittedMemory {
-                    addr_bits: current.addr_bits,
-                    values,
-                    commitment: proof.new_commitment.clone(),
-                    pcs: NaiveMerklePcs,
-                };
+                current.commitment = proof.new_commitment.clone();
             }
         }
     }
@@ -715,8 +693,6 @@ pub struct TraceAccessProof {
     pub steps: Vec<TraceAccessStep>,
     pub final_register_commitment: NaiveCommitment,
     pub final_memory_commitment: NaiveCommitment,
-    pub final_registers: Vec<F2_128>,
-    pub final_memory: Vec<F2_128>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -962,14 +938,7 @@ pub fn prove_trace_access(trace: &Trace) -> Result<TraceAccessProof, RuntimeErro
                 let proof = prove_store(&memory, 0, word, value)?;
                 let index =
                     usize::try_from(word).map_err(|_| RuntimeError::AddressOutOfTable(word))?;
-                let mut values = memory.values.clone();
-                values[index] = value;
-                memory = CommittedMemory {
-                    addr_bits: memory.addr_bits,
-                    values,
-                    commitment: proof.new_commitment.clone(),
-                    pcs: NaiveMerklePcs,
-                };
+                memory = memory.updated(index, value)?;
                 steps.push(TraceAccessStep::MemoryWrite(proof));
             } else {
                 let proof = prove_load(&memory, 0, word)?;
@@ -995,14 +964,7 @@ pub fn prove_trace_access(trace: &Trace) -> Result<TraceAccessProof, RuntimeErro
             if index != 0 {
                 let value = F2_128::from(row.rd_val);
                 let proof = prove_store(&registers, 0, index as u64, value)?;
-                let mut values = registers.values.clone();
-                values[index] = value;
-                registers = CommittedMemory {
-                    addr_bits: registers.addr_bits,
-                    values,
-                    commitment: proof.new_commitment.clone(),
-                    pcs: NaiveMerklePcs,
-                };
+                registers = registers.updated(index, value)?;
                 steps.push(TraceAccessStep::RegisterWrite(proof));
             }
         }
@@ -1017,14 +979,7 @@ pub fn prove_trace_access(trace: &Trace) -> Result<TraceAccessProof, RuntimeErro
             let value = F2_128::from(store_word(old_word, lane, width, access.value));
             let proof = prove_store(&memory, 0, word, value)?;
             let cell = usize::try_from(word).map_err(|_| RuntimeError::AddressOutOfTable(word))?;
-            let mut values = memory.values.clone();
-            values[cell] = value;
-            memory = CommittedMemory {
-                addr_bits: memory.addr_bits,
-                values,
-                commitment: proof.new_commitment.clone(),
-                pcs: NaiveMerklePcs,
-            };
+            memory = memory.updated(cell, value)?;
             steps.push(TraceAccessStep::MemoryWrite(proof));
         }
     }
@@ -1035,8 +990,6 @@ pub fn prove_trace_access(trace: &Trace) -> Result<TraceAccessProof, RuntimeErro
         steps,
         final_register_commitment: registers.commitment,
         final_memory_commitment: memory.commitment,
-        final_registers: registers.values,
-        final_memory: memory.values,
     })
 }
 
@@ -1099,16 +1052,7 @@ pub fn verify_trace_access(trace: &Trace, proof: &TraceAccessProof) -> Result<()
                     )));
                 }
                 verify_store(&registers, proof)?;
-                let cell =
-                    usize::try_from(*index).map_err(|_| RuntimeError::AddressOutOfTable(*index))?;
-                let mut values = registers.values.clone();
-                values[cell] = proof.new_value;
-                registers = CommittedMemory {
-                    addr_bits: registers.addr_bits,
-                    values,
-                    commitment: proof.new_commitment.clone(),
-                    pcs: NaiveMerklePcs,
-                };
+                registers.commitment = proof.new_commitment.clone();
             }
             (
                 TraceAccessStep::MemoryRead {
@@ -1158,16 +1102,7 @@ pub fn verify_trace_access(trace: &Trace, proof: &TraceAccessProof) -> Result<()
                         "memory write value mismatch at step {step_index}"
                     )));
                 }
-                let cell =
-                    usize::try_from(*word).map_err(|_| RuntimeError::AddressOutOfTable(*word))?;
-                let mut values = memory.values.clone();
-                values[cell] = proof.new_value;
-                memory = CommittedMemory {
-                    addr_bits: memory.addr_bits,
-                    values,
-                    commitment: proof.new_commitment.clone(),
-                    pcs: NaiveMerklePcs,
-                };
+                memory.commitment = proof.new_commitment.clone();
             }
             _ => {
                 return Err(RuntimeError::Proof(format!(
@@ -1188,12 +1123,16 @@ pub fn verify_trace_access(trace: &Trace, proof: &TraceAccessProof) -> Result<()
         .chunks_exact(8)
         .map(|chunk| F2_128::from(u64::from_le_bytes(chunk.try_into().expect("eight bytes"))))
         .collect::<Vec<_>>();
+    let expected_register_commitment =
+        <NaiveMerklePcs as Pcs>::commit(&NaiveMerklePcs, &final_registers)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let expected_memory_commitment =
+        <NaiveMerklePcs as Pcs>::commit(&NaiveMerklePcs, &final_memory)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     if registers.commitment != proof.final_register_commitment
         || memory.commitment != proof.final_memory_commitment
-        || registers.values != final_registers
-        || memory.values != final_memory
-        || proof.final_registers != final_registers
-        || proof.final_memory != final_memory
+        || expected_register_commitment != proof.final_register_commitment
+        || expected_memory_commitment != proof.final_memory_commitment
     {
         return Err(RuntimeError::Proof("final trace state mismatch".into()));
     }
@@ -1409,6 +1348,16 @@ fn row_cpu_relation(
             }
             _ => imm,
         };
+        if let Some((system, witness)) = magnetar_cpu::simple_alu_row_relation(
+            width,
+            step_op,
+            row.rs1_val,
+            row.rs2_val,
+            row.rd_val,
+            alu_imm,
+        ) {
+            return Ok(Some((system, witness)));
+        }
         let (system, layout) = magnetar_cpu::uniform_alu_row_relation(
             width,
             step_op,
@@ -1533,6 +1482,55 @@ fn merged_cpu_system_for_rows(
         }
     }
     Ok((merged, Witness::new(values)))
+}
+
+/// Constraint-system size of one CPU row (zero for rows without a CPU relation).
+#[derive(Clone, Debug, Default)]
+pub struct RowCpuStats {
+    pub cycle: u64,
+    pub pc: u64,
+    pub op: &'static str,
+    pub variables: usize,
+    pub constraints: usize,
+}
+
+/// Merged CPU constraint-system size for a whole trace at a witness width.
+#[derive(Clone, Debug, Default)]
+pub struct TraceCpuStats {
+    pub width: usize,
+    pub variables: usize,
+    pub constraints: usize,
+    pub rows: Vec<RowCpuStats>,
+}
+
+/// Report per-row and total CPU constraint sizes without constructing a proof.
+pub fn trace_cpu_stats(trace: &Trace, width: usize) -> Result<TraceCpuStats, RuntimeError> {
+    let mut stats = TraceCpuStats {
+        width,
+        ..TraceCpuStats::default()
+    };
+    for row in &trace.rows {
+        let (variables, constraints) = match row_cpu_relation(row, width)? {
+            Some((system, _)) => (system.num_vars, system.constraints.len()),
+            None => (0, 0),
+        };
+        stats.variables = stats
+            .variables
+            .checked_add(variables)
+            .ok_or_else(|| RuntimeError::Proof("constraint statistics overflow".into()))?;
+        stats.constraints = stats
+            .constraints
+            .checked_add(constraints)
+            .ok_or_else(|| RuntimeError::Proof("constraint statistics overflow".into()))?;
+        stats.rows.push(RowCpuStats {
+            cycle: row.cycle,
+            pc: row.pc,
+            op: row.instruction.op.name(),
+            variables,
+            constraints,
+        });
+    }
+    Ok(stats)
 }
 
 fn apply_trace_write(
@@ -2102,6 +2100,35 @@ pub fn encode_unified_proof(proof: &UnifiedTraceProof) -> Result<Vec<u8>, Runtim
     bincode::serialize(proof).map_err(|error| RuntimeError::Proof(error.to_string()))
 }
 
+/// Serialized size of each unified-proof component.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UnifiedProofSizes {
+    pub access: usize,
+    pub cpu: usize,
+    pub rows: usize,
+    pub rom: usize,
+}
+
+impl UnifiedProofSizes {
+    pub fn total(&self) -> usize {
+        self.access + self.cpu + self.rows + self.rom
+    }
+}
+
+pub fn unified_proof_sizes(proof: &UnifiedTraceProof) -> Result<UnifiedProofSizes, RuntimeError> {
+    let size = |bytes: Result<Vec<u8>, bincode::Error>| -> Result<usize, RuntimeError> {
+        bytes
+            .map(|bytes| bytes.len())
+            .map_err(|error| RuntimeError::Proof(error.to_string()))
+    };
+    Ok(UnifiedProofSizes {
+        access: size(bincode::serialize(&proof.access))?,
+        cpu: size(bincode::serialize(&proof.cpu))?,
+        rows: size(bincode::serialize(&proof.rows))?,
+        rom: size(bincode::serialize(&proof.rom))?,
+    })
+}
+
 pub fn decode_unified_proof(bytes: &[u8]) -> Result<UnifiedTraceProof, RuntimeError> {
     bincode::deserialize(bytes).map_err(|error| RuntimeError::Proof(error.to_string()))
 }
@@ -2356,12 +2383,6 @@ pub fn verify_chunked_statement(
     verify_chunked_trace(&trace, proof, width)
 }
 
-fn point_bits(value: u64, bits: usize) -> Vec<F2_128> {
-    (0..bits)
-        .map(|index| F2_128::from((value >> index) & 1))
-        .collect()
-}
-
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UnimplementedBackend;
 
@@ -2569,9 +2590,9 @@ mod tests {
         tampered.value = magnetar_constraint::F2_128::from(51u64);
         assert!(verify_load(&memory, &tampered).is_err());
 
-        let mut tampered_opening = proof.clone();
-        tampered_opening.opening.evaluations[0] = magnetar_constraint::F2_128::from(1u64);
-        assert!(verify_load(&memory, &tampered_opening).is_err());
+        let mut tampered_path = proof.clone();
+        tampered_path.path.siblings[0][0] ^= 1;
+        assert!(verify_load(&memory, &tampered_path).is_err());
     }
 
     #[test]
@@ -2806,6 +2827,27 @@ mod tests {
         let mut changed = trace.clone();
         changed.halted = false;
         assert_ne!(digest, trace_digest(&changed));
+    }
+
+    #[test]
+    fn trace_statistics_match_the_merged_cpu_system() {
+        let trace = execute(&program(), config()).unwrap();
+        let stats = trace_cpu_stats(&trace, 8).unwrap();
+        let (system, witness) = merged_cpu_system(&trace, 8).unwrap();
+        assert_eq!(stats.rows.len(), trace.rows.len());
+        assert_eq!(stats.variables, system.num_vars);
+        assert_eq!(stats.constraints, system.constraints.len());
+        assert_eq!(witness.len(), system.num_vars);
+        assert!(stats
+            .rows
+            .iter()
+            .any(|row| row.op == "addi" && row.constraints > 0));
+
+        let proof = prove_unified_trace(&trace, 8).unwrap();
+        let sizes = unified_proof_sizes(&proof).unwrap();
+        let encoded = encode_unified_proof(&proof).unwrap();
+        assert!(sizes.cpu > 0 && sizes.access > 0);
+        assert!(sizes.total() <= encoded.len());
     }
 
     #[test]
@@ -3963,7 +4005,7 @@ mod tests {
         verify_trace_access(&trace, &proof).unwrap();
 
         let mut tampered = proof.clone();
-        tampered.final_memory[0] = tampered.final_memory[0] + F2_128::from(1u64);
+        tampered.final_memory_commitment.root[0] ^= 1;
         assert!(verify_trace_access(&trace, &tampered).is_err());
 
         let mut tampered = proof.clone();
@@ -4082,25 +4124,20 @@ mod tests {
 
         let new_value = F2_128::from(999u64);
         let mut store = prove_store(&memory, 2, 3, new_value).unwrap();
-        let mut old_values = store.old_opening.evaluations.clone();
-        let mut new_values = store.new_opening.evaluations.clone();
-        old_values[0] = old_values[0] + F2_128::from(1u64);
-        new_values[0] = old_values[0] + F2_128::from(1u64);
-        let old_commitment = <NaiveMerklePcs as Pcs>::commit(&NaiveMerklePcs, &old_values).unwrap();
-        let new_commitment = <NaiveMerklePcs as Pcs>::commit(&NaiveMerklePcs, &new_values).unwrap();
-        let table = CommittedMemory {
-            addr_bits: 4,
-            values: old_values.clone(),
-            commitment: old_commitment,
-            pcs: NaiveMerklePcs,
-        };
-        store.old_opening.evaluations = old_values;
-        store.new_opening.evaluations = new_values;
-        store.new_commitment = new_commitment;
-        assert!(verify_store(&table, &store).is_err());
+        store.old_value = store.old_value + F2_128::from(1u64);
+        assert!(verify_store(&memory, &store).is_err());
+
+        let mut other_values = memory.values.clone();
+        other_values[0] = other_values[0] + F2_128::from(1u64);
+        other_values[5] = new_value;
+        let other = CommittedMemory::new(4, other_values).unwrap();
+        let mut store = prove_store(&memory, 2, 3, new_value).unwrap();
+        store.new_path = other.tree.as_ref().unwrap().proof(5).unwrap();
+        store.new_commitment = other.commitment.clone();
+        assert!(verify_store(&memory, &store).is_err());
 
         let mut store = prove_store(&memory, 2, 3, new_value).unwrap();
-        store.old_value = store.old_value + F2_128::from(1u64);
+        store.new_path.siblings[0][0] ^= 1;
         assert!(verify_store(&memory, &store).is_err());
 
         let initial_registers =
@@ -4236,9 +4273,9 @@ mod tests {
         tampered.new_value = magnetar_constraint::F2_128::from(998u64);
         assert!(verify_store(&memory, &tampered).is_err());
 
-        let mut tampered_opening = proof.clone();
-        tampered_opening.new_opening.evaluations[0] = magnetar_constraint::F2_128::from(1u64);
-        assert!(verify_store(&memory, &tampered_opening).is_err());
+        let mut tampered_path = proof.clone();
+        tampered_path.new_path.siblings[0][0] ^= 1;
+        assert!(verify_store(&memory, &tampered_path).is_err());
     }
 
     #[test]

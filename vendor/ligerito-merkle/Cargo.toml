@@ -1,0 +1,34 @@
+[package]
+name = "ligerito-merkle"
+version = "0.7.1"
+edition = "2021"
+authors = ["rotko networks"]
+license = "MIT"
+description = "Merkle tree implementation for Ligerito polynomial commitments"
+repository = "https://github.com/rotkonetworks/ligerito"
+
+autotests = false
+autobenches = false
+autoexamples = false
+autobins = false
+
+[features]
+default = ["std", "parallel", "rand"]
+std = []
+parallel = ["rayon"]
+rand = ["dep:rand"]
+serde = ["dep:serde"]
+scale = []
+op-count = []
+
+[dependencies]
+blake3 = { version = "1.5", default-features = false }
+bytemuck = { version = "1", default-features = false }
+rand = { version = "0.8", optional = true, default-features = false }
+rayon = { version = "1.10", optional = true }
+serde = { version = "1", features = ["derive"], optional = true, default-features = false }
+
+[lib]
+name = "ligerito_merkle"
+path = "src/lib.rs"
+

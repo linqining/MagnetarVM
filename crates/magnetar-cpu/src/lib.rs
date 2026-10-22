@@ -3365,6 +3365,137 @@ pub fn uniform_alu_row_relation(
     (system, layout)
 }
 
+fn alloc_pinned_bits(
+    system: &mut ConstraintSystem,
+    values: &mut Vec<F2_128>,
+    width: usize,
+    value: u64,
+) -> Vec<VarId> {
+    let vars: Vec<VarId> = system.alloc(width).collect();
+    values.resize(system.num_vars, F2_128::from(0u64));
+    let one = Expr::constant(1u64);
+    for (index, &var) in vars.iter().enumerate() {
+        let bit = (value >> index) & 1;
+        system.add_constraint(Expr::var(var), one.clone(), Expr::constant(bit));
+        values[var] = F2_128::from(bit);
+    }
+    vars
+}
+
+/// Specialized ALU relations that allocate only the gates the operation needs.
+///
+/// The uniform selector relation embeds a barrel shifter and four comparators
+/// in every ALU row; this path covers add/sub/logic/lui rows with a few hundred
+/// variables instead. Shifts and comparisons return `None` and use the uniform
+/// relation.
+pub fn simple_alu_row_relation(
+    width: usize,
+    op: StepOp,
+    rs1: u64,
+    rs2: u64,
+    rd: u64,
+    imm: u64,
+) -> Option<(ConstraintSystem, Witness)> {
+    assert!(width > 0 && width <= 64);
+    let mask = if width >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << width) - 1
+    };
+    let rs1 = rs1 & mask;
+    let rs2 = rs2 & mask;
+    let rd = rd & mask;
+    let imm = imm & mask;
+    let one = Expr::constant(1u64);
+
+    match op {
+        StepOp::Add | StepOp::Addi | StepOp::Sub => {
+            let rhs = match op {
+                StepOp::Addi => imm,
+                StepOp::Sub => (!rs2) & mask,
+                _ => rs2,
+            };
+            let carry_in = u64::from(op == StepOp::Sub);
+            let (mut system, layout) = bit_addition_constraints_with_carry(width, carry_in);
+            for index in 0..width {
+                for (var, bit) in [
+                    (layout.a[index], (rs1 >> index) & 1),
+                    (layout.b[index], (rhs >> index) & 1),
+                    (layout.sum[index], (rd >> index) & 1),
+                ] {
+                    system.add_constraint(Expr::var(var), one.clone(), Expr::constant(bit));
+                }
+            }
+            Some((system, layout.witness(rs1, rhs)))
+        }
+        StepOp::Lui => {
+            let mut system = ConstraintSystem::new(0);
+            let mut values = Vec::new();
+            let result = alloc_pinned_bits(&mut system, &mut values, width, rd);
+            for (index, &var) in result.iter().enumerate() {
+                system.add_constraint(
+                    Expr::var(var),
+                    one.clone(),
+                    Expr::constant((imm >> index) & 1),
+                );
+            }
+            Some((system, Witness::new(values)))
+        }
+        StepOp::Xor | StepOp::Xori | StepOp::And | StepOp::Andi | StepOp::Or | StepOp::Ori => {
+            let rhs = match op {
+                StepOp::Xori | StepOp::Andi | StepOp::Ori => imm,
+                _ => rs2,
+            };
+            let mut system = ConstraintSystem::new(0);
+            let mut values = Vec::new();
+            let a = alloc_pinned_bits(&mut system, &mut values, width, rs1);
+            let b = alloc_pinned_bits(&mut system, &mut values, width, rhs);
+            let result = alloc_pinned_bits(&mut system, &mut values, width, rd);
+            for index in 0..width {
+                match op {
+                    StepOp::Xor | StepOp::Xori => {
+                        system.add_constraint(
+                            Expr::var(a[index]).add(Expr::var(b[index])),
+                            one.clone(),
+                            Expr::var(result[index]),
+                        );
+                    }
+                    StepOp::And | StepOp::Andi => {
+                        system.add_constraint(
+                            Expr::var(a[index]),
+                            Expr::var(b[index]),
+                            Expr::var(result[index]),
+                        );
+                    }
+                    StepOp::Or | StepOp::Ori => {
+                        let product = system.alloc(1).start;
+                        values.resize(system.num_vars, F2_128::from(0u64));
+                        values[product] = F2_128::from(
+                            (values[a[index]].value() as u64 & 1)
+                                & (values[b[index]].value() as u64 & 1),
+                        );
+                        system.add_constraint(
+                            Expr::var(a[index]),
+                            Expr::var(b[index]),
+                            Expr::var(product),
+                        );
+                        system.add_constraint(
+                            Expr::var(a[index])
+                                .add(Expr::var(b[index]))
+                                .add(Expr::var(product)),
+                            one.clone(),
+                            Expr::var(result[index]),
+                        );
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            Some((system, Witness::new(values)))
+        }
+        _ => None,
+    }
+}
+
 /// Row relation for RV64 `*W` integer operations.
 ///
 /// The low 32 bits are constrained by the 32-bit uniform ALU relation; the
@@ -4098,6 +4229,44 @@ mod tests {
         let mut trace = trace();
         trace.rows[2].rd_val = 99;
         assert!(matches!(check_trace(&trace), Err(CpuError::RdValue { .. })));
+    }
+
+    #[test]
+    fn simple_alu_rows_use_fewer_constraints_and_bind_results() {
+        let cases = [
+            (StepOp::Add, 5, 3, 7, 8),
+            (StepOp::Addi, 5, 3, 7, 12),
+            (StepOp::Sub, 9, 3, 0, 6),
+            (StepOp::Xor, 5, 3, 0, 6),
+            (StepOp::And, 5, 3, 0, 1),
+            (StepOp::Or, 5, 3, 0, 7),
+            (StepOp::Xori, 5, 3, 7, 2),
+            (StepOp::Andi, 5, 3, 7, 5),
+            (StepOp::Ori, 5, 3, 7, 7),
+            (StepOp::Lui, 0, 0, 0x1234, 0x1234),
+        ];
+        for (op, rs1, rs2, imm, rd) in cases {
+            let (system, witness) =
+                simple_alu_row_relation(64, op, rs1, rs2, rd, imm).expect("specialized op");
+            system.check(&witness).unwrap();
+            let (uniform, _) = uniform_alu_row_relation(64, op, rs1, rs2, rd, imm);
+            assert!(
+                system.num_vars < uniform.num_vars / 4,
+                "{}: {} vs {} variables",
+                op.name(),
+                system.num_vars,
+                uniform.num_vars
+            );
+            let (bad, bad_witness) =
+                simple_alu_row_relation(64, op, rs1, rs2, rd ^ 1, imm).unwrap();
+            assert!(
+                bad.check(&bad_witness).is_err(),
+                "{} accepted a wrong rd",
+                op.name()
+            );
+        }
+        assert!(simple_alu_row_relation(64, StepOp::Sll, 1, 2, 4, 0).is_none());
+        assert!(simple_alu_row_relation(64, StepOp::Slt, 1, 2, 1, 0).is_none());
     }
 
     #[test]

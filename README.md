@@ -50,13 +50,13 @@ Explicitly not implemented:
 | 3 | Program preprocessing / ROM | `magnetar-preprocess` | Implemented; currently one instruction = one micro-op |
 | 4 | Executor / Trace | `magnetar-executor` | RV64I (including `*W`) + RV64M + RV64A (AMO and LR/SC reservations) + RV64C integer compressed instructions interpreter + trace implemented, with `ecall` handling for `exit`/`hint`/`write` and byte-range `read` including short reads, buffered input/output, and consumed-input trace binding |
 | 5 | Constraint IR / Witness layout | `magnetar-constraint` | R1CS IR over `GF(2^128)`, `F61` reference field, and aligned segments implemented |
-| 6 | CPU constraints | `magnetar-cpu` | Row checks (including RV64M, A, and `*W` semantics), 64-bit 20-selector ALU (Add/Sub/AddI/Xor/Lui/And/Or/Slt/Sltu/Slti/Sltiu/Sll/Srl/Sra/Slli/Srli/Srai/Xori/Ori/Andi), RV64 `*W` relations, PC+4 step, Auipc, Jal, Jalr, all six conditional branches, single-step load/store relations, row-bound variants for every ALU/control relation, R1CS relations for all eight RV64M ops at full width 64, A R1CS for all AMO ops (`swap`/`add`/`xor`/`and`/`or`/`min`/`max`, signed and unsigned, W/D), and LR load / SC success-failure row relations; reservation state is trace-bound and checked during proof verification |
+| 6 | CPU constraints | `magnetar-cpu` | Row checks (including RV64M, A, and `*W` semantics), 64-bit 20-selector ALU (Add/Sub/AddI/Xor/Lui/And/Or/Slt/Sltu/Slti/Sltiu/Sll/Srl/Sra/Slli/Srli/Srai/Xori/Ori/Andi), RV64 `*W` relations, PC+4 step, Auipc, Jal, Jalr, all six conditional branches, single-step load/store relations, row-bound variants for every ALU/control relation, R1CS relations for all eight RV64M ops at full width 64, A R1CS for all AMO ops (`swap`/`add`/`xor`/`and`/`or`/`min`/`max`, signed and unsigned, W/D), and LR load / SC success-failure row relations; reservation state is trace-bound and checked during proof verification; specialized non-shift/non-compare ALU relations cut `addi`/`lui` from 4,492 variables to 449/64 |
 | 7 | Memory consistency | `magnetar-memory` | Replay checks, Twist log, one-hot address/increment witness, load/store, memory/register chain, trace-order interleaved access proofs, and a reference Sv39 page-table walker |
 | 8 | Routing / Bit operations | `magnetar-routing` | Shift/store routes and witnesses implemented; BinaryRouter sum-check not implemented |
 | 9 | Proof engine | `magnetar-proof` | MLE + sum-check + reference Spartan reduction implemented; BinarySpartan not implemented |
-| 10 | Commitment / PCS | `magnetar-pcs` | Merkle tree, batched Merkle vector commitment, naive polynomial PCS, `Pcs` trait, and a succinct BN254 KZG backend with batch openings via `arkworks`; Ligerito for the binary-field path not implemented |
+| 10 | Commitment / PCS | `magnetar-pcs` | Merkle tree, batched Merkle vector commitment, naive polynomial PCS, `Pcs` trait, a succinct BN254 KZG backend with batch openings via `arkworks`, and a vendored Ligerito 0.8.0 index-opening backend for binary fields (2^16 proof: 118,624 bytes, 99 ms prove, 3.1 ms verify); Ligerito multilinear point openings are not wired into the CPU Spartan path |
 | 11 | Transcript / Proof format | `magnetar-transcript` | SHA-256 and SHA3-256 Fiat–Shamir transcripts implemented; canonical bincode encoding for Spartan and unified/chunked trace proofs lives in `magnetar-pcs` / `magnetar-runtime` |
-| 12 | Prover / Verifier runtime | `magnetar-runtime` | Reference pipeline + Spartan backend + load/store, AMO read-modify-write, LR/SC reservation checks, syscall read write-back, memory/register chains, and trace-order interleaved access proofs; combined `TraceProof` binds CPU rows (ALU/AMO/LR/SC/load/store/branch/jump/Auipc) to the access log, including lane-level sub-word loads/stores, and `UnifiedTraceProof` merges all rows into one proof, `ChunkedTraceProof` produces per-range proofs linked by state digests, and both carry the ROM and have standalone verifiers bound to a canonical trace digest and program hash; a hiding/succinct trace commitment remains |
+| 12 | Prover / Verifier runtime | `magnetar-runtime` | Reference pipeline + Spartan backend + load/store, AMO read-modify-write, LR/SC reservation checks, syscall read write-back, memory/register chains, and trace-order interleaved access proofs; combined `TraceProof` binds CPU rows (ALU/AMO/LR/SC/load/store/branch/jump/Auipc) to the access log, including lane-level sub-word loads/stores, and `UnifiedTraceProof` merges all rows into one proof, `ChunkedTraceProof` produces per-range proofs linked by state digests, and both carry the ROM and have standalone verifiers bound to a canonical trace digest and program hash; memory/register tables now use Merkle-path leaf openings with single-cell root updates, and the access log no longer duplicates CPU load/store proofs; a hiding/succinct trace commitment and BinaryTwist/Shout remain |
 | 13 | Recursion / Aggregation | `magnetar-recursion` | Chunk plan + hash-chain and state-continuity reference aggregators implemented, wired to runtime `ChunkedTraceProof`; zk verifier-in-the-VM backend not implemented |
 | 14 | Privacy layer | `magnetar-privacy` | `NoPrivacy` + randomized hiding hash commitment + trait implemented; ZK sum-check not implemented |
 | 15 | Security / Performance engineering | `magnetar-testkit` | Integration tests, fixtures, and criterion benchmarks implemented; security audit not performed |
@@ -117,7 +117,7 @@ cargo fmt --all -- --check
 cargo test --workspace
 ```
 
-At the time of writing the suite contains **248 tests across the 15 crates,
+At the time of writing the suite contains **253 tests across the 15 crates,
 all passing**; clippy with `-D warnings` and `rustfmt --check` are clean.
 
 ## Compiling and Proving a Guest Program
@@ -152,6 +152,7 @@ current fetcher rejects a 32-bit instruction that starts at a 2-byte boundary.
 - `proptest` — property tests for field axioms and routing witnesses.
 - `rand` — fresh blinding for hiding commitments.
 - `ark-bn254` / `ark-ec` / `ark-ff` — BN254 KZG polynomial commitment backend.
+- `ligerito` (vendored, MIT) — binary tower-field Ligerito PCS with SIMD/parallel backends.
 - `criterion` — micro-benchmarks for field arithmetic and the proof path.
 - `serde` / `bincode` — canonical Spartan proof encoding.
 - `cargo-nextest` — faster test execution.
@@ -159,39 +160,50 @@ current fetcher rejects a 32-bit instruction that starts at a 2-byte boundary.
 
 ## Proof Path and Performance Note
 
-`magnetar-runtime::ConstraintProofBackend` now runs a real Spartan reduction:
-outer sum-check, inner sum-check, Fiat–Shamir, and a Merkle PCS opening. The
-bundled binary-field PCS still reveals the whole witness; a separate BN254 KZG
-backend exercises a succinct prime-field PCS. `F2_128` multiplication keeps the
-tower basis but uses a GF(2^16) log/exp table at level 4 (with a GF(2^8)
-fallback), validated against lambdaworks with property tests. Unless stated
-otherwise, the timings below are debug-mode test runs. Spartan now uses
-vector-folding sum-check
-provers (`prove_product4` for the outer relation, `prove_product2` for the
-inner product, and `prove_linear` for MLE-only claims): a 4-bit adder proof runs
-in about 0.1 s, a 64-bit ALU proof in about 9.3 s, a 64-bit PC+4 step proof in
-about 9.2 s, a 64-bit Jal proof in about 1.7 s, a 64-bit Beq proof in about
-2.0 s, a 64-bit all-branch proof (Blt) in about 3.4 s, combined Auipc+Jalr
-proofs in about 2.4 s, and a single-step load
-or store proof over a 16-cell committed memory in about 0.9 s. A three-step
-memory chain is about 3.3 s, a three-step register chain about 4.8 s, a
-trace-level register consistency proof about 3.7 s, and the interleaved
-register/memory trace-access proof for a five-row program about 12.6 s. The
-combined `TraceProof` covers a 6-row program with branch, Jal, Auipc, and Jalr
-in about 36 s at 16-bit width; an 8-row sub-word load/store program takes about
-43 s (these two figures are debug-mode integration tests). In release mode,
-criterion measures 105 ms for a three-row trace-access proof, 34 ms to prove
-and 48 ms to verify a 16-bit ALU row, 23.5 ms / 20.8 ms for a width-8 `mul` row,
-34.2 ms / 36.9 ms for a width-8 `divu` row, 153 ms for a three-row width-8
-`TraceProof`, and 137 ms for the merged `UnifiedTraceProof` (the merged form is
-also slightly faster at this size). The three-row width-8 unified proof
-serializes to **182,892 bytes (≈179 KiB)**, dominated by the naive PCS's
-full-table openings; encoding/decoding takes about 14/16 µs. Criterion also
-reports about 166 ns for `F2_128` multiplication and 22.9 µs for inversion (Itoh–Tsujii squaring chain;
-inversion is the main field-level bottleneck). The remaining
-scalability limits are the non-succinct binary-field PCS, the absence of a
-hiding/succinct trace commitment, and the fact that floating-point operations
-are not covered by CPU constraints.
+The prover is a **reference implementation** built on a generic Spartan
+reduction over GF(2^128). The CPU witness still uses the naive Merkle PCS;
+BinarySpartan, SIMD R1CS, BinaryTwist/Shout, and BinaryRouter are not on this
+path. A vendored Ligerito 0.8.0 backend provides a real binary-field PCS and is
+measured separately; its public API exposes indexed claims, not the multilinear
+point openings the CPU Spartan reduction needs.
+
+Measured on the compiled 18-row hello guest in release mode (Apple arm64,
+single-threaded); `./scripts/prove_guest.sh <width>` reproduces them:
+
+| width | CPU vars | CPU constraints | proof bytes | prove | verify |
+|---|---|---|---|---|---|
+| 64 | 6,991 | 11,933 | 278,772 | 0.335 s | 0.335 s |
+| 32 | 4,015 | 6,813 | 213,108 | 0.178 s | 0.165 s |
+| 16 | 2,527 | 4,253 | 213,108 | 0.186 s | 0.162 s |
+| 8 | 1,783 | 2,973 | 180,212 | 0.101 s | 0.083 s |
+
+At width 64 the proof splits into access=143,808, cpu=132,976, rows=1,860,
+and rom=96 bytes. The optimization pass that produced these numbers:
+
+1. **Per-op ALU relations.** `simple_alu_row_relation` allocates only the gates
+   an operation needs: `addi` is 449 variables and `lui` is 64, down from 4,492
+   variables/5,264 constraints per row under the uniform shifter+comparator
+   circuit.
+2. **Merkle-path table openings.** Loads and stores open one leaf with a Merkle
+   path; a store proves the new root differs from the old one only on that path.
+   Full RAM tables are no longer opened per access.
+3. **No duplicated access proofs.** CPU row proofs already bind load/store
+   address/value relations, so the access log no longer repeats a Spartan proof
+   for every register or memory access.
+4. **Ligerito PCS baseline.** The vendored Ligerito backend commits a 2^16
+   vector of 128-bit symbols and produces a **118,624-byte** evaluation proof
+   in **99 ms** (verify **3.1 ms**) on this host:
+   `cargo run --release -p magnetar-pcs --example ligerito_bench`. Upstream
+   reports roughly 150 KB and 50 ms for 2^20 with AVX-512.
+
+The remaining gap is structural: BinaryTwist/Shout would remove the sequential
+Merkle-path memory proof, BinaryRouter would replace the remaining shift and
+compare circuits, and SIMD R1CS/BinarySpartan would pack many bit-lanes into
+each GF(2^128) element. The CPU witness PCS also remains non-succinct, and the
+verifier still reconstructs the trace, merged system, and final table roots, so
+verification is O(trace + RAM) rather than succinct. Portable tower
+multiplication is about 238 ns and inversion about 62 µs on this host, without
+CLMUL/AVX packing or parallel hashing.
 
 ## Coverage
 

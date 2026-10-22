@@ -1,5 +1,13 @@
 [workspace]
 resolver = "2"
+exclude = [
+    "vendor/ligerito",
+    "vendor/ligerito-binary-fields",
+    "vendor/ligerito-merkle",
+    "vendor/ligerito-reed-solomon",
+    "vendor/wide",
+    "vendor/safe_arch",
+]
 members = [
     "crates/magnetar-spec",
     "crates/magnetar-guest",

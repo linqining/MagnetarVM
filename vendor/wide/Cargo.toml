@@ -1,0 +1,27 @@
+[package]
+name = "wide"
+version = "0.7.33"
+edition = "2018"
+authors = ["Lokathor <zefria@gmail.com>"]
+license = "Zlib OR Apache-2.0 OR MIT"
+description = "A crate to help you go wide."
+repository = "https://github.com/Lokathor/wide"
+
+autotests = false
+autobenches = false
+autoexamples = false
+autobins = false
+
+[features]
+default = ["std"]
+std = []
+serde = []
+
+[dependencies]
+bytemuck = { version = "1" }
+safe_arch = { path = "../safe_arch", version = "0.7", features = ["bytemuck"] }
+
+[lib]
+name = "wide"
+path = "src/lib.rs"
+

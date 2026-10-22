@@ -1,8 +1,10 @@
 use std::error::Error;
+use std::time::Instant;
 
 use magnetar_executor::ExecutionIo;
 use magnetar_runtime::{
-    encode_unified_proof, prove_unified_trace, run_guest_elf, verify_unified_statement,
+    encode_unified_proof, prove_unified_trace, run_guest_elf, trace_cpu_stats, unified_proof_sizes,
+    verify_unified_statement,
 };
 use magnetar_spec::MachineConfig;
 
@@ -35,9 +37,37 @@ fn main() -> Result<(), Box<dyn Error>> {
         String::from_utf8_lossy(&outcome.trace.io_output)
     );
 
+    let stats = trace_cpu_stats(&outcome.trace, width)?;
+    println!(
+        "cpu system: width={} vars={} constraints={}",
+        stats.width, stats.variables, stats.constraints
+    );
+    for row in &stats.rows {
+        println!(
+            "  cycle={:<3} pc={:#06x} op={:<6} vars={:<6} constraints={}",
+            row.cycle, row.pc, row.op, row.variables, row.constraints
+        );
+    }
+
+    let started = Instant::now();
     let proof = prove_unified_trace(&outcome.trace, width)?;
-    let encoded = encode_unified_proof(&proof)?;
+    let prove_time = started.elapsed();
+
+    let started = Instant::now();
     verify_unified_statement(&outcome.statement, &proof, width)?;
-    println!("proof: {} bytes, verified", encoded.len());
+    let verify_time = started.elapsed();
+
+    let encoded = encode_unified_proof(&proof)?;
+    let sizes = unified_proof_sizes(&proof)?;
+    println!(
+        "proof: {} bytes (access={}, cpu={}, rows={}, rom={}), verified in {:?}",
+        encoded.len(),
+        sizes.access,
+        sizes.cpu,
+        sizes.rows,
+        sizes.rom,
+        verify_time
+    );
+    println!("prove: {prove_time:?}");
     Ok(())
 }

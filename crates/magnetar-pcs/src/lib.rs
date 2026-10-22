@@ -10,6 +10,9 @@ pub use bn254::{
     Bn254Kzg, Bn254KzgBatchOpening, Bn254KzgCommitment, Bn254KzgError, Bn254KzgOpening,
 };
 
+pub mod ligerito;
+pub use ligerito::{LigeritoCommitment, LigeritoIndexOpening, LigeritoPcs, LigeritoProof};
+
 use magnetar_constraint::F2_128;
 use magnetar_proof::{Mle, Pcs, ProofError, SpartanProof};
 use magnetar_transcript::sha256;
@@ -93,6 +96,29 @@ impl MerkleTree {
             index: original,
             siblings,
         })
+    }
+
+    pub fn update(&mut self, index: usize, leaf: &[u8]) -> Result<(), PcsError> {
+        if index >= self.leaves() {
+            return Err(PcsError::IndexOutOfRange(index));
+        }
+        let mut input = Vec::with_capacity(1 + leaf.len());
+        input.push(0x00);
+        input.extend_from_slice(leaf);
+        self.levels[0][index] = sha256(&input);
+        let mut cursor = index;
+        for level in 0..self.levels.len() - 1 {
+            let parent = cursor / 2;
+            let left = parent * 2;
+            let right = left + 1;
+            let mut input = Vec::with_capacity(65);
+            input.push(0x01);
+            input.extend_from_slice(&self.levels[level][left]);
+            input.extend_from_slice(&self.levels[level][right]);
+            self.levels[level + 1][parent] = sha256(&input);
+            cursor = parent;
+        }
+        Ok(())
     }
 
     pub fn verify(root: [u8; 32], leaf: &[u8], path: &MerklePath) -> bool {
@@ -347,6 +373,12 @@ pub enum PcsError {
     ShapeMismatch,
     #[error("evaluation mismatch")]
     EvaluationMismatch,
+    #[error("empty index set")]
+    EmptyIndices,
+    #[error("unsupported Ligerito size 2^{0}")]
+    UnsupportedLigeritoSize(usize),
+    #[error("Ligerito error: {0}")]
+    Ligerito(String),
     #[error("proof encoding failed: {0}")]
     Encoding(String),
 }
@@ -385,6 +417,33 @@ mod tests {
             let leaf = &leaves()[index];
             assert!(MerkleTree::verify(tree.root(), leaf, &path));
         }
+    }
+
+    #[test]
+    fn merkle_updates_refresh_paths_and_keep_other_leaves() {
+        let mut tree = MerkleTree::from_leaves(leaves()).unwrap();
+        let before = tree.root();
+        tree.update(2, b"updated").unwrap();
+        assert_ne!(tree.root(), before);
+        assert!(MerkleTree::verify(
+            tree.root(),
+            b"updated",
+            &tree.proof(2).unwrap()
+        ));
+        assert!(MerkleTree::verify(
+            tree.root(),
+            b"a",
+            &tree.proof(0).unwrap()
+        ));
+        assert!(!MerkleTree::verify(
+            tree.root(),
+            b"updated",
+            &tree.proof(1).unwrap()
+        ));
+        assert!(matches!(
+            tree.update(4, b"x"),
+            Err(PcsError::IndexOutOfRange(4))
+        ));
     }
 
     #[test]
