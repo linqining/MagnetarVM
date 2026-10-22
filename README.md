@@ -43,6 +43,8 @@ Explicitly not implemented:
 - Performance optimization and third-party security audit.
 
 > Important: `UnimplementedBackend` returns an explicit error; it never fabricates a "proof". Reference implementations exist only to validate protocol wiring and semantics.
+>
+> A detailed component-by-component audit against the paper is in [PAPER_GAPS.md](PAPER_GAPS.md).
 
 ## The 15 Modules
 

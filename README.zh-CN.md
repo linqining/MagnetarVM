@@ -43,6 +43,8 @@
 - 性能优化与第三方安全审计。
 
 > 重要：`UnimplementedBackend` 会明确返回错误，不会伪造一个“proof”。参考实现只用于验证协议接线和语义。
+>
+> 逐项对照论文的实现差距见 [PAPER_GAPS.md](PAPER_GAPS.md)。
 
 ## 15 模块
 

@@ -1,5 +1,7 @@
 # TODO
 
+Detailed paper gap audit: [PAPER_GAPS.md](PAPER_GAPS.md).
+
 ## BinaryTwist
 
 - [ ] Replace the reference `LT` reductions with the paper's linear-time
