@@ -95,11 +95,15 @@ pub(crate) fn prove_address_multiplicity_bits(
     let target = target_vector(&eq, &expected, cells);
     let (rounds, challenges) =
         sumcheck_boolean_multiplicity(&table, &eq, &target, lambda, &mut transcript)?;
-    let evals = bit_evals(witness, write, &challenges[address_bits..]);
+    let mut cycle_point = challenges[address_bits..].to_vec();
+    if cycle_point.is_empty() {
+        cycle_point.push(F2_128::from(0u64));
+    }
+    let evals = bit_evals(witness, write, &cycle_point);
     let offset = if write { address_bits } else { 0 };
     let points = vec![P3MosaicPoint {
         table: table_index,
-        point: challenges[address_bits..].to_vec(),
+        point: cycle_point.clone(),
         columns: (offset..offset + address_bits)
             .chain(std::iter::once(2 * address_bits + usize::from(write)))
             .collect(),
@@ -154,7 +158,11 @@ pub(crate) fn verify_address_multiplicity_bits(
     if eq_folded.len() != 1 || target_folded.len() != 1 {
         return Ok(None);
     }
-    let evals = bit_evals(witness, write, &challenges[address_bits..]);
+    let mut cycle_point = challenges[address_bits..].to_vec();
+    if cycle_point.is_empty() {
+        cycle_point.push(F2_128::from(0u64));
+    }
+    let evals = bit_evals(witness, write, &cycle_point);
     let a_eval = bit_one_hot(&evals, &challenges[..address_bits]);
     let expected_sum = a_eval * (a_eval + F2_128::from(1u64))
         + claim.lambda * (a_eval * eq_folded[0] + target_folded[0]);
@@ -164,7 +172,7 @@ pub(crate) fn verify_address_multiplicity_bits(
     let offset = if write { address_bits } else { 0 };
     let points = vec![P3MosaicPoint {
         table: table_index,
-        point: challenges[address_bits..].to_vec(),
+        point: cycle_point.clone(),
         columns: (offset..offset + address_bits)
             .chain(std::iter::once(2 * address_bits + usize::from(write)))
             .collect(),
