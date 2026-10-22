@@ -270,6 +270,24 @@ impl PackedMosaic {
     }
 }
 
+/// Convert a multi-column mosaic opening claim into one claim per column.
+///
+/// Each column becomes a single-column component at the same point; this is
+/// the representation expected by `PackedSharedPcs`.
+pub fn flatten_table_claims(
+    mosaic: &PackedMosaic,
+    columns: usize,
+    point: &[F2_128],
+    values: &[F2_128],
+) -> Result<Vec<(Vec<F2_128>, F2_128)>, MosaicError> {
+    if columns != values.len() || columns > mosaic.components.len() {
+        return Err(MosaicError::AuxShape);
+    }
+    (0..columns)
+        .map(|index| Ok((mosaic.lift(index, point)?, values[index])))
+        .collect()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PackedOpening {
     pub batch: MosaicBatchingProof,
@@ -509,5 +527,22 @@ mod tests {
         assert!(!adapter
             .verify(&commitment, &point, value + F2_128::from(1u64), &opening,)
             .unwrap_or(false));
+    }
+    #[test]
+    fn multi_column_claims_flatten_to_packed_components() {
+        let columns = vec![values(4, 21), values(4, 22)];
+        let point = vec![F2_128::from(5u64), F2_128::from(9u64)];
+        let claim_values = columns
+            .iter()
+            .map(|column| Mle::new(column.clone()).unwrap().eval(&point).unwrap())
+            .collect::<Vec<_>>();
+        let mosaic = PackedMosaic::new(&columns).unwrap();
+        let claims = flatten_table_claims(&mosaic, 2, &point, &claim_values).unwrap();
+        assert_eq!(claims.len(), 2);
+        let mut transcript = Sha256Transcript::new("flatten-table-test");
+        let proof = batch_claims(&mosaic.values, &claims, &mut transcript).unwrap();
+        let mut verifier = Sha256Transcript::new("flatten-table-test");
+        verify_batching(&proof, &claims, mosaic.total_bits, &mut verifier).unwrap();
+        assert_eq!(proof.value, mosaic.eval_packed(&proof.point).unwrap());
     }
 }
