@@ -77,12 +77,11 @@ pub fn split_segment_claims(
     Ok(claims)
 }
 
-pub fn verify_segment_claims(
+pub fn reconstruct_segment_claim(
     layout: &WitnessLayout,
     claims: &[SegmentClaim],
     point: &[F2_128],
-    full_value: F2_128,
-) -> Result<(), VirtualSpartanError> {
+) -> Result<F2_128, VirtualSpartanError> {
     if claims.len() != layout.segments.len() {
         return Err(VirtualSpartanError::ClaimShape);
     }
@@ -101,6 +100,16 @@ pub fn verify_segment_claims(
         let suffix = suffix_bits(segment, total_bits);
         reconstructed = reconstructed + eq(&suffix, &point[claim.point.len()..]) * claim.value;
     }
+    Ok(reconstructed)
+}
+
+pub fn verify_segment_claims(
+    layout: &WitnessLayout,
+    claims: &[SegmentClaim],
+    point: &[F2_128],
+    full_value: F2_128,
+) -> Result<(), VirtualSpartanError> {
+    let reconstructed = reconstruct_segment_claim(layout, claims, point)?;
     if reconstructed != full_value {
         return Err(VirtualSpartanError::ClaimMismatch);
     }

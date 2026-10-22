@@ -188,11 +188,11 @@ them:
 
 | width | CPU vars | CPU constraints | proof bytes | prove | verify |
 |---|---|---|---|---|---|
-| 64 | 6,991 | 11,933 | 278,091 | 0.41 s | 0.043 s |
-| 32 | 4,015 | 6,813 | 240,131 | 0.35 s | 0.023 s |
-| 8 | 1,783 | 2,973 | 207,163 | 0.33 s | 0.013 s |
+| 64 | 6,991 | 11,933 | 278,075 | 0.39 s | 0.045 s |
+| 32 | 4,015 | 6,813 | 240,115 | 0.37 s | 0.023 s |
+| 8 | 1,783 | 2,973 | 207,147 | 0.34 s | 0.013 s |
 
-At width 64 the proof splits into access=18,890, cpu=246,064, shout=3,154,
+At width 64 the proof splits into access=18,890, cpu=246,048, shout=3,154,
 shift_router=1, store_router=8,090, rows=1,860 bytes. The changes behind these numbers:
 
 1. **Per-op ALU relations.** `simple_alu_row_relation` allocates only the gates
@@ -204,7 +204,7 @@ shift_router=1, store_router=8,090, rows=1,860 bytes. The changes behind these n
    `P3SharedPcs` plugs this batch into the Spartan proof: the CPU point and the
    BinaryTwist point claims are opened by the same P3 argument. The proof no
    longer pays for a separate CPU opening plus a separate RAM opening; the old
-   separate layout was 593,508 bytes, the shared layout is 278,091 bytes.
+   separate layout was 593,508 bytes, the shared layout is 278,075 bytes.
 3. **Bit-sliced virtual addresses and values.** The address table commits
    `2a+2` cycle-length bit columns (read bits, write bits, and two validity
    bits); full one-hot addresses are reconstructed by the verifier. Booleanity

@@ -8,7 +8,7 @@
 //! deliberately non-succinct. BinarySpartan/Ligerito can replace it later.
 
 use crate::virtual_spartan::{
-    split_segment_claims, verify_segment_claims, SegmentClaim, VirtualSpartanError,
+    reconstruct_segment_claim, split_segment_claims, SegmentClaim, VirtualSpartanError,
 };
 use crate::{
     eq, prove_product2, prove_product4, prove_product6, verify_rounds, Mle, Pcs, ProofError,
@@ -215,10 +215,10 @@ pub fn prove_spartan<P: Pcs>(
     let az = a_matrix.mul_vec(&z)?;
     let bz = b_matrix.mul_vec(&z)?;
     let cz = c_matrix.mul_vec(&z)?;
+    let z_mle = Mle::new(z.clone())?;
     let az_mle = Mle::new(az.clone())?;
     let bz_mle = Mle::new(bz.clone())?;
     let cz_mle = Mle::new(cz.clone())?;
-    let z_mle = Mle::new(z.clone())?;
 
     let row_bits = a_matrix.rows.len().trailing_zeros() as usize;
     let commitment = pcs.commit(&z)?;
@@ -402,7 +402,6 @@ pub struct LockstepProof<C: Clone + std::fmt::Debug, O: Clone + std::fmt::Debug>
     pub v_c1: F2_128,
     pub outer: SumcheckProof<F2_128>,
     pub inner: SumcheckProof<F2_128>,
-    pub vw: F2_128,
     pub ry: Vec<F2_128>,
     pub segments: Vec<SegmentClaim>,
     pub opening: O,
@@ -444,8 +443,6 @@ pub fn prove_lockstep<P: Pcs>(
     let az1_mle = Mle::new(az1.clone())?;
     let bz1_mle = Mle::new(bz1.clone())?;
     let cz1_mle = Mle::new(cz1.clone())?;
-    let z_mle = Mle::new(z.clone())?;
-
     let row_bits = a0.rows.len().trailing_zeros() as usize;
     let commitment = pcs.commit(&z)?;
     let transcript = RefCell::new(Sha256Transcript::new("lockstep-reference-v1"));
@@ -523,7 +520,6 @@ pub fn prove_lockstep<P: Pcs>(
             actual: inner.claimed_sum,
         });
     }
-    let vw = z_mle.eval(&ry)?;
     let segments = split_segment_claims(layout, &z, &ry)?;
     let opening = pcs.open(&z, &ry)?;
     Ok(LockstepProof {
@@ -536,7 +532,6 @@ pub fn prove_lockstep<P: Pcs>(
         v_c1: vc1,
         outer,
         inner,
-        vw,
         ry,
         segments,
         opening,
@@ -610,6 +605,12 @@ pub fn verify_lockstep<P: Pcs>(
         2,
         |round, values| round_challenge(&transcript, "inner-round", round, values),
     )?;
+    if proof.ry != ry {
+        return Err(SpartanError::Verification(
+            "lockstep witness point mismatch",
+        ));
+    }
+    let vw = reconstruct_segment_claim(layout, &proof.segments, &ry)?;
     let a0_at = a0.eval_mle(&rx, &ry)?;
     let b0_at = b0.eval_mle(&rx, &ry)?;
     let c0_at = c0.eval_mle(&rx, &ry)?;
@@ -618,17 +619,11 @@ pub fn verify_lockstep<P: Pcs>(
     let c1_at = c1.eval_mle(&rx, &ry)?;
     let expected_inner =
         (a0_at + r0 * b0_at + r0 * r0 * c0_at + alpha * (a1_at + r1 * b1_at + r1 * r1 * c1_at))
-            * proof.vw;
+            * vw;
     if inner_final != expected_inner {
         return Err(SpartanError::Verification("lockstep inner mismatch"));
     }
-    if proof.ry != ry {
-        return Err(SpartanError::Verification(
-            "lockstep witness point mismatch",
-        ));
-    }
-    verify_segment_claims(layout, &proof.segments, &ry, proof.vw)?;
-    if !pcs.verify(&proof.commitment, &ry, proof.vw, &proof.opening)? {
+    if !pcs.verify(&proof.commitment, &ry, vw, &proof.opening)? {
         return Err(SpartanError::Verification("lockstep PCS opening rejected"));
     }
     Ok(())

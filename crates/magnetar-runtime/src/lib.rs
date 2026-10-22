@@ -3257,7 +3257,7 @@ mod tests {
         assert!(verify_unified_trace_statement(&wrong_state, &trace, &proof, 8).is_err());
 
         let mut tampered = proof.clone();
-        tampered.cpu.vw = tampered.cpu.vw + F2_128::from(1u64);
+        tampered.cpu.segments[0].value = tampered.cpu.segments[0].value + F2_128::from(1u64);
         assert!(verify_unified_trace(&trace, &tampered, 8).is_err());
 
         let mut tampered = proof.clone();
@@ -3419,7 +3419,7 @@ mod tests {
         let unified = prove_unified_trace(&trace, 8).unwrap();
         verify_unified_trace(&trace, &unified, 8).unwrap();
         let mut tampered = unified;
-        tampered.cpu.vw = tampered.cpu.vw + F2_128::from(1u64);
+        tampered.cpu.segments[0].value = tampered.cpu.segments[0].value + F2_128::from(1u64);
         assert!(verify_unified_trace(&trace, &tampered, 8).is_err());
     }
 
