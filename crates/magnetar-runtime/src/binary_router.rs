@@ -1,29 +1,76 @@
-//! Reference BinaryRouter reduction for 64-bit shift routing.
+//! Reference BinaryRouter reduction for 64-bit shifts and sub-word stores.
 //!
-//! Each row supplies one input word and one output word plus a public
-//! `ShiftRoute`. The prover commits to the input bits; the verifier folds the
-//! public routing coefficients and checks the routed output with a sum-check.
-//! Sub-word store routing can use the same coefficient table later.
+//! Each routed row supplies a 128-bit input (64 old/input bits followed by 64
+//! source bits) and a 64-bit output. The public route maps every output bit to
+//! either zero or one/two input bits (the two-bit case is the XOR route of a
+//! sub-word store). The prover commits to the input bits; the verifier folds
+//! the public routing coefficients and checks the output with a sum-check.
 
 use magnetar_constraint::{Field, F2_128};
 use magnetar_pcs::{
     P3BinaryPcs, P3MosaicCommitment, P3MosaicOpening, P3MosaicPoint, P3MosaicTable,
 };
 use magnetar_proof::ProofError;
-use magnetar_routing::{BitSource, ShiftKind, ShiftRoute};
+use magnetar_routing::{BitSource, ShiftKind, ShiftRoute, StoreBitSource, StoreRoute, StoreWidth};
 use magnetar_spec::{Op, Trace};
 use magnetar_transcript::Sha256Transcript;
 use serde::{Deserialize, Serialize};
 
 const WORD_BITS: usize = 64;
+const INPUT_BITS: usize = 128;
+const SOURCE_OFFSET: usize = WORD_BITS;
+
+#[derive(Clone, Copy, Debug)]
+pub enum RouterRoute {
+    Shift(ShiftRoute),
+    Store(StoreRoute),
+}
+
+impl RouterRoute {
+    fn coefficients(&self, output_bit: usize) -> Vec<usize> {
+        match self {
+            RouterRoute::Shift(route) => match route.source_bit(output_bit) {
+                BitSource::Zero => Vec::new(),
+                BitSource::Input(bit) => vec![usize::from(bit)],
+            },
+            RouterRoute::Store(route) => match route.bit_source(output_bit) {
+                StoreBitSource::Old(bit) => vec![usize::from(bit)],
+                StoreBitSource::Xor(old, source) => {
+                    vec![usize::from(old), SOURCE_OFFSET + usize::from(source)]
+                }
+                StoreBitSource::New(_) => Vec::new(),
+            },
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct BinaryRouterWitness {
     pub cycle_bits: usize,
     pub cycles: usize,
-    pub routes: Vec<ShiftRoute>,
+    pub routes: Vec<RouterRoute>,
     pub input: Vec<Vec<F2_128>>,
     pub output: Vec<Vec<F2_128>>,
+}
+
+fn store_word(old: u64, lane: usize, width: usize, value: u64) -> u64 {
+    if width == 8 {
+        return value;
+    }
+    let bits = width * 8;
+    let mask = (1u64 << bits) - 1;
+    let shifted_mask = mask << (lane * 8);
+    (old & !shifted_mask) | ((value & mask) << (lane * 8))
+}
+
+fn read_word(ram: &[u8], word: usize) -> u64 {
+    let start = word * 8;
+    u64::from_le_bytes(ram[start..start + 8].try_into().expect("eight bytes"))
+}
+
+fn write_word(ram: &mut [u8], word: usize, value: u64) {
+    let start = word * 8;
+    ram[start..start + 8].copy_from_slice(&value.to_le_bytes());
 }
 
 impl BinaryRouterWitness {
@@ -31,36 +78,112 @@ impl BinaryRouterWitness {
         let mut routes = Vec::new();
         let mut inputs = Vec::new();
         let mut outputs = Vec::new();
+        let mut ram = trace.initial_ram.clone();
         for row in &trace.rows {
-            let route = match row.instruction.op {
-                Op::Sll => ShiftRoute::new(ShiftKind::LogicalLeft, (row.rs2_val & 0x3f) as u8),
-                Op::Srl => ShiftRoute::new(ShiftKind::LogicalRight, (row.rs2_val & 0x3f) as u8),
-                Op::Sra => ShiftRoute::new(ShiftKind::ArithmeticRight, (row.rs2_val & 0x3f) as u8),
-                Op::Slli => ShiftRoute::new(ShiftKind::LogicalLeft, row.instruction.shamt),
-                Op::Srli => ShiftRoute::new(ShiftKind::LogicalRight, row.instruction.shamt),
-                Op::Srai => ShiftRoute::new(ShiftKind::ArithmeticRight, row.instruction.shamt),
-                _ => continue,
-            };
-            routes.push(route);
-            inputs.push(row.rs1_val);
-            outputs.push(row.rd_val);
+            match row.instruction.op {
+                Op::Sll | Op::Srl | Op::Sra | Op::Slli | Op::Srli | Op::Srai => {
+                    let route = match row.instruction.op {
+                        Op::Sll => {
+                            ShiftRoute::new(ShiftKind::LogicalLeft, (row.rs2_val & 0x3f) as u8)
+                        }
+                        Op::Srl => {
+                            ShiftRoute::new(ShiftKind::LogicalRight, (row.rs2_val & 0x3f) as u8)
+                        }
+                        Op::Sra => {
+                            ShiftRoute::new(ShiftKind::ArithmeticRight, (row.rs2_val & 0x3f) as u8)
+                        }
+                        Op::Slli => ShiftRoute::new(ShiftKind::LogicalLeft, row.instruction.shamt),
+                        Op::Srli => ShiftRoute::new(ShiftKind::LogicalRight, row.instruction.shamt),
+                        Op::Srai => {
+                            ShiftRoute::new(ShiftKind::ArithmeticRight, row.instruction.shamt)
+                        }
+                        _ => unreachable!(),
+                    };
+                    routes.push(RouterRoute::Shift(route));
+                    inputs.push((row.rs1_val, 0u64));
+                    outputs.push(row.rd_val);
+                }
+                Op::Sb | Op::Sh | Op::Sw | Op::Sd => {
+                    let access = row
+                        .mem
+                        .ok_or_else(|| ProofError::Pcs("store row has no memory access".into()))?;
+                    let offset = access
+                        .addr
+                        .checked_sub(trace.config.ram_base)
+                        .ok_or_else(|| ProofError::Pcs("store address below RAM base".into()))?;
+                    let word = usize::try_from(offset / 8)
+                        .map_err(|_| ProofError::Pcs("store word overflows usize".into()))?;
+                    let lane = (offset % 8) as usize;
+                    if lane + usize::from(access.width) > 8 || word * 8 + 8 > ram.len() {
+                        return Err(ProofError::Pcs("store access is outside RAM".into()));
+                    }
+                    let old = read_word(&ram, word);
+                    let source = row.rs2_val;
+                    let width = usize::from(access.width);
+                    let new = store_word(old, lane, width, source);
+                    let store_width = StoreWidth::from_bytes(width)
+                        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+                    let route = StoreRoute::new(store_width, lane)
+                        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+                    routes.push(RouterRoute::Store(route));
+                    inputs.push((old, source));
+                    outputs.push(new);
+                    write_word(&mut ram, word, new);
+                }
+                _ => {
+                    if let Some(access) = row.mem {
+                        if access.is_write {
+                            let offset = access.addr.wrapping_sub(trace.config.ram_base);
+                            let word = usize::try_from(offset / 8)
+                                .map_err(|_| ProofError::Pcs("RAM word overflows usize".into()))?;
+                            let lane = (offset % 8) as usize;
+                            if word * 8 + 8 <= ram.len() {
+                                let old = read_word(&ram, word);
+                                let width = usize::from(access.width);
+                                let source = if row.instruction.op.amo_width().is_some() {
+                                    access.value
+                                } else {
+                                    row.rs2_val
+                                };
+                                write_word(&mut ram, word, store_word(old, lane, width, source));
+                            }
+                        }
+                    }
+                }
+            }
+            for access in &row.extra_mem {
+                let offset = access.addr.wrapping_sub(trace.config.ram_base);
+                let word = usize::try_from(offset / 8)
+                    .map_err(|_| ProofError::Pcs("RAM word overflows usize".into()))?;
+                let lane = (offset % 8) as usize;
+                if word * 8 + 8 <= ram.len() {
+                    let old = read_word(&ram, word);
+                    let width = usize::from(access.width);
+                    write_word(&mut ram, word, store_word(old, lane, width, access.value));
+                }
+            }
         }
         if routes.is_empty() {
             return Err(ProofError::Pcs(
-                "BinaryRouter witness contains no 64-bit shift rows".into(),
+                "BinaryRouter witness contains no shift or store rows".into(),
             ));
         }
         let cycles = routes.len().next_power_of_two().max(2);
         let cycle_bits = cycles.trailing_zeros() as usize;
-        let mut input = vec![vec![F2_128::from(0u64); cycles]; WORD_BITS];
+        let mut input = vec![vec![F2_128::from(0u64); cycles]; INPUT_BITS];
         let mut output = vec![vec![F2_128::from(0u64); cycles]; WORD_BITS];
         for cycle in 0..routes.len() {
+            let (old, source) = inputs[cycle];
             for bit in 0..WORD_BITS {
-                input[bit][cycle] = F2_128::from((inputs[cycle] >> bit) & 1);
+                input[bit][cycle] = F2_128::from((old >> bit) & 1);
+                input[SOURCE_OFFSET + bit][cycle] = F2_128::from((source >> bit) & 1);
                 output[bit][cycle] = F2_128::from((outputs[cycle] >> bit) & 1);
             }
         }
-        routes.resize(cycles, ShiftRoute::new(ShiftKind::LogicalLeft, 0));
+        routes.resize(
+            cycles,
+            RouterRoute::Shift(ShiftRoute::new(ShiftKind::LogicalLeft, 0)),
+        );
         Ok(Self {
             cycle_bits,
             cycles,
@@ -73,7 +196,7 @@ impl BinaryRouterWitness {
     pub fn validate(&self) -> Result<(), ProofError> {
         if self.cycles != 1usize << self.cycle_bits
             || self.routes.len() != self.cycles
-            || self.input.len() != WORD_BITS
+            || self.input.len() != INPUT_BITS
             || self.output.len() != WORD_BITS
             || self.input.iter().any(|column| column.len() != self.cycles)
             || self.output.iter().any(|column| column.len() != self.cycles)
@@ -84,13 +207,12 @@ impl BinaryRouterWitness {
     }
 
     fn route_coefficients(&self, rho_o: &[F2_128]) -> Vec<Vec<F2_128>> {
-        let mut coefficients = vec![vec![F2_128::from(0u64); self.cycles]; WORD_BITS];
+        let mut coefficients = vec![vec![F2_128::from(0u64); self.cycles]; INPUT_BITS];
         for (cycle, route) in self.routes.iter().enumerate() {
             for output_bit in 0..WORD_BITS {
-                if let BitSource::Input(input_bit) = route.source_bit(output_bit) {
-                    coefficients[usize::from(input_bit)][cycle] = coefficients
-                        [usize::from(input_bit)][cycle]
-                        + eq_at_index(rho_o, output_bit);
+                for input_bit in route.coefficients(output_bit) {
+                    coefficients[input_bit][cycle] =
+                        coefficients[input_bit][cycle] + eq_at_index(rho_o, output_bit);
                 }
             }
         }
@@ -275,14 +397,14 @@ pub fn prove_binary_router(witness: &BinaryRouterWitness) -> Result<BinaryRouter
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-router-boolean");
     absorb_commitment(&mut transcript, commitment_ref(&commitment));
-    let col_bits = WORD_BITS.trailing_zeros() as usize;
+    let col_bits = INPUT_BITS.trailing_zeros() as usize;
     let rho_c = sample_point(&mut transcript, col_bits);
     let rho_j = sample_point(&mut transcript, n);
-    let eq_c = eq_vector(&rho_c, WORD_BITS);
+    let eq_c = eq_vector(&rho_c, INPUT_BITS);
     let eq_j = eq_vector(&rho_j, cycles);
-    let boolean_terms = WORD_BITS * cycles;
+    let boolean_terms = INPUT_BITS * cycles;
     let mut factors = vec![vec![F2_128::from(0u64); boolean_terms]; 4];
-    for column in 0..WORD_BITS {
+    for column in 0..INPUT_BITS {
         for cycle in 0..cycles {
             let index = column * cycles + cycle;
             factors[0][index] = eq_c[column];
@@ -294,7 +416,7 @@ pub fn prove_binary_router(witness: &BinaryRouterWitness) -> Result<BinaryRouter
     let degrees = vec![4usize; boolean_terms.trailing_zeros() as usize];
     let (rounds, challenges) = sumcheck_two_terms(&factors, &degrees, &mut transcript)?;
     let r_j = &challenges[..n];
-    let bit_evals = (0..WORD_BITS)
+    let bit_evals = (0..INPUT_BITS)
         .map(|bit| fold_all(&witness.input[bit], r_j))
         .collect::<Vec<_>>();
     let boolean = AddressBooleanClaim {
@@ -319,10 +441,10 @@ pub fn prove_binary_router(witness: &BinaryRouterWitness) -> Result<BinaryRouter
     }
     transcript.absorb("claimed", &left.value().to_le_bytes());
     let coefficients = witness.route_coefficients(&rho_o);
-    let terms = WORD_BITS * cycles;
+    let terms = INPUT_BITS * cycles;
     let mut input_flat = vec![F2_128::from(0u64); terms];
     let mut coefficient_flat = vec![F2_128::from(0u64); terms];
-    for bit in 0..WORD_BITS {
+    for bit in 0..INPUT_BITS {
         for cycle in 0..cycles {
             let index = bit * cycles + cycle;
             input_flat[index] = witness.input[bit][cycle];
@@ -333,7 +455,7 @@ pub fn prove_binary_router(witness: &BinaryRouterWitness) -> Result<BinaryRouter
     let (rounds, challenges) =
         sumcheck_product(&coefficient_flat, &input_flat, &degrees, &mut transcript)?;
     let r_j = &challenges[..n];
-    let input_bit_evals = (0..WORD_BITS)
+    let input_bit_evals = (0..INPUT_BITS)
         .map(|bit| fold_all(&witness.input[bit], r_j))
         .collect::<Vec<_>>();
     let point = if r_j.is_empty() {
@@ -351,13 +473,13 @@ pub fn prove_binary_router(witness: &BinaryRouterWitness) -> Result<BinaryRouter
                 } else {
                     boolean.challenges[..n].to_vec()
                 },
-                columns: (0..WORD_BITS).collect(),
+                columns: (0..INPUT_BITS).collect(),
                 next_columns: Vec::new(),
             },
             P3MosaicPoint {
                 table: 0,
                 point,
-                columns: (0..WORD_BITS).collect(),
+                columns: (0..INPUT_BITS).collect(),
                 next_columns: Vec::new(),
             },
         ],
@@ -431,10 +553,10 @@ pub fn verify_binary_router(
     let n = witness.cycle_bits;
     let cycles = witness.cycles;
     let pcs = P3BinaryPcs::new(100);
-    let col_bits = WORD_BITS.trailing_zeros() as usize;
+    let col_bits = INPUT_BITS.trailing_zeros() as usize;
     if proof.opening.commitment.tables.len() != 1
         || proof.opening.commitment.tables[0].num_variables != n.max(1)
-        || proof.opening.commitment.tables[0].num_columns != WORD_BITS
+        || proof.opening.commitment.tables[0].num_columns != INPUT_BITS
     {
         return Ok(false);
     }
@@ -457,7 +579,7 @@ pub fn verify_binary_router(
     let r_j = &proof.boolean.challenges[..n];
     let r_c = &proof.boolean.challenges[n..];
     let mut b = F2_128::from(0u64);
-    for column in 0..WORD_BITS {
+    for column in 0..INPUT_BITS {
         b = b + eq_at_index(r_c, column) * proof.boolean.bit_evals[column];
     }
     if sum != eq_points(&rho_c, r_c) * eq_points(&rho_j, r_j) * b * (b + F2_128::from(1u64)) {
@@ -494,8 +616,8 @@ pub fn verify_binary_router(
     let r_j = &proof.challenges[..n];
     let r_i = &proof.challenges[n..];
     let coefficients = witness.route_coefficients(&rho_o);
-    let mut coefficient_flat = vec![F2_128::from(0u64); WORD_BITS * cycles];
-    for bit in 0..WORD_BITS {
+    let mut coefficient_flat = vec![F2_128::from(0u64); INPUT_BITS * cycles];
+    for bit in 0..INPUT_BITS {
         for cycle in 0..cycles {
             coefficient_flat[bit * cycles + cycle] = coefficients[bit][cycle] * eq_j[cycle];
         }
@@ -523,13 +645,13 @@ pub fn verify_binary_router(
         P3MosaicPoint {
             table: 0,
             point: boolean_point,
-            columns: (0..WORD_BITS).collect(),
+            columns: (0..INPUT_BITS).collect(),
             next_columns: Vec::new(),
         },
         P3MosaicPoint {
             table: 0,
             point,
-            columns: (0..WORD_BITS).collect(),
+            columns: (0..INPUT_BITS).collect(),
             next_columns: Vec::new(),
         },
     ];
@@ -559,9 +681,11 @@ mod tests {
             0x1000,
             vec![
                 instruction(Op::Addi, 1, 0, 0, 0x123).encode(),
-                instruction(Op::Slli, 2, 1, 0, 12).encode(),
-                instruction(Op::Srli, 3, 1, 0, 4).encode(),
-                instruction(Op::Srai, 4, 1, 0, 3).encode(),
+                instruction(Op::Addi, 2, 0, 0, 0x456).encode(),
+                instruction(Op::Slli, 4, 1, 0, 8).encode(),
+                instruction(Op::Lui, 3, 0, 0, 0x1000_0000).encode(),
+                instruction(Op::Sd, 0, 3, 2, 0).encode(),
+                instruction(Op::Sh, 0, 3, 1, 4).encode(),
                 Instruction::new(Op::Ecall).encode(),
             ],
         );
@@ -583,6 +707,18 @@ mod tests {
     fn binary_router_round_trips() {
         let trace = trace();
         let witness = BinaryRouterWitness::from_trace(&trace).unwrap();
+        assert_eq!(
+            witness.routes.len().count_ones(),
+            witness.routes.len().count_ones()
+        );
+        assert!(witness
+            .routes
+            .iter()
+            .any(|route| matches!(route, RouterRoute::Store(_))));
+        assert!(witness
+            .routes
+            .iter()
+            .any(|route| matches!(route, RouterRoute::Shift(_))));
         let proof = prove_binary_router(&witness).unwrap();
         assert!(verify_binary_router(&witness, &proof).unwrap());
 

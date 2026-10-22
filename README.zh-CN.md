@@ -33,7 +33,7 @@
 显式未实现：
 
 - Dual SIMD R1CS、Virtual Spartan、BinarySpartan；
-- BinaryShout 与 BinaryRouter 已有独立的参考 proof，但尚未接入 unified trace proof；BinaryRouter 目前只覆盖 64-bit shift routing，尚未覆盖 sub-word store routing；BinaryTwist 的 `LT` prover 仍会物化二次表；
+- BinaryShout 与 BinaryRouter 已有独立的参考 proof，但尚未接入 unified trace proof；BinaryRouter 已覆盖 64-bit shift routing 与 sub-word store routing；BinaryTwist 的 `LT` prover 仍会物化二次表；
 - 完整的 MosaicPCS ring switching、与 runtime 集成的 Ligerito（P3 多表堆叠、virtual `Val`/`Inc`、地址虚拟化与 CPU+RAM 共享 opening 已实现）；
 - recursion（只有 chunk 规划、hash-chain 与状态连续性参考聚合器、backend trait）；
 - ZK sum-check 与 private IO（只有 `NoPrivacy` 和随机 hiding hash commitment）；
@@ -55,7 +55,7 @@
 | 5 | 约束 IR / Witness 布局 | `magnetar-constraint` | `GF(2^128)` 上的 R1CS IR、`F61` 参考域、aligned segments 已实现 |
 | 6 | CPU 约束 | `magnetar-cpu` | 行级检查（含 RV64M、A 与 `*W` 语义）、64-bit 20-selector ALU（Add/Sub/AddI/Xor/Lui/And/Or/Slt/Sltu/Slti/Sltiu/Sll/Srl/Sra/Slli/Srli/Srai/Xori/Ori/Andi）、RV64 `*W` relation、PC+4 step、Auipc、Jal、Jalr、全部 6 种条件分支、单步 load/store relation、所有 ALU/控制 relation 的行绑定版本、全部 8 个 RV64M 指令在完整 width 64 下的 R1CS relation、全部 AMO 指令（`swap`/`add`/`xor`/`and`/`or`/`min`/`max`，有符号与无符号，W/D）的 A R1CS，以及 LR 读取 / SC 成功失败行 relation；reservation 状态由 trace 绑定并在 proof 验证时检查；非移位/非比较的专用 ALU relation 把 `addi`/`lui` 从 4,492 个变量降到 449/64 |
 | 7 | 内存一致性 | `magnetar-memory` | replay、Twist log、one-hot 地址/increment witness、load/store、memory/register chain、trace 顺序交错访问 proof、带批量 P3 claim 的参考 BinaryTwist RAM 归约，以及参考 Sv39 page-table walker |
-| 8 | 路由 / 位操作 | `magnetar-routing` | shift/store route 与 witness 已实现；已有独立的 64-bit shift BinaryRouter proof；sub-word store routing 与 unified 集成待做 |
+| 8 | 路由 / 位操作 | `magnetar-routing` | shift/store route 与 witness 已实现；已有独立的 64-bit shift 与 sub-word store BinaryRouter proof；unified 集成待做 |
 | 9 | 证明引擎 | `magnetar-proof` | MLE + sum-check + 参考 Spartan 归约已实现；BinarySpartan 未实现 |
 | 10 | 承诺 / PCS | `magnetar-pcs` | Merkle tree、批量 Merkle vector commitment、naive PCS、`Pcs` trait、基于 `arkworks` 的简洁 BN254 KZG 后端（支持批量 opening）、vendored Ligerito 0.8.0 索引 opening 后端（2^16：118,624 字节 / 99 ms / 3.1 ms），以及带单向量、多列/多点与多表 mosaic API 的 Plonky3 `p3-binary-pcs` 多线性点 PCS，并提供 `P3SharedPcs` 适配器（unified proof 中 CPU+RAM 共享 opening） |
 | 11 | Transcript / 证明格式 | `magnetar-transcript` | SHA-256 与 SHA3-256 Fiat–Shamir transcript 已实现；Spartan 与 unified/chunked trace proof 的规范化 bincode 编解码位于 `magnetar-pcs` / `magnetar-runtime` |
@@ -71,7 +71,7 @@
 | Dual SIMD R1CS over shared witness | `magnetar-constraint` + `magnetar-cpu` | 生成 uniform `s1`/`s2`，替换行级检查 |
 | Virtual Spartan | `magnetar-proof` + `magnetar-runtime` | 双关系 lockstep、per-segment claim、claim router |
 | BinaryTwist / BinaryShout | `magnetar-memory` + `magnetar-runtime` | BinaryTwist 已有 bit-sliced 虚拟地址、紧凑 increment、virtual `Val`、read/write/final-state/address sum-check 与批量 P3 claim；BinaryShout 已有独立的 bit-sliced ROM-read proof；下一步：接入 unified proof 并优化性能 |
-| BinaryRouter | `magnetar-routing` + `magnetar-preprocess` | 已有独立的 64-bit shift routing 参考实现（`binary_router.rs`）；下一步：store routing 与 unified proof 集成 |
+| BinaryRouter | `magnetar-routing` + `magnetar-preprocess` | 已有独立的 64-bit shift 与 sub-word store BinaryRouter 参考实现（`binary_router.rs`）；下一步：unified proof 集成 |
 | MosaicPCS | `magnetar-pcs` | 已有多表 P3 堆叠与 CPU+RAM 共享 opening；下一步：ring switching |
 | Ligerito | `magnetar-pcs` | 线性码 PCS + Merkle + query sampling |
 | Recursion | `magnetar-recursion` | verifier-in-the-VM、chunk state、aggregation |

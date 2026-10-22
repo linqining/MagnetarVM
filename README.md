@@ -33,7 +33,7 @@ Implemented:
 Explicitly not implemented:
 
 - Dual SIMD R1CS, Virtual Spartan, and BinarySpartan;
-- BinaryShout and BinaryRouter have standalone reference proofs but are not yet wired into the unified trace proof; BinaryRouter currently covers 64-bit shift routes, not sub-word store routing; the BinaryTwist `LT` prover still materializes quadratic tables;
+- BinaryShout and BinaryRouter have standalone reference proofs but are not yet wired into the unified trace proof; BinaryRouter covers 64-bit shift routes and sub-word store routes; the BinaryTwist `LT` prover still materializes quadratic tables;
 - Full MosaicPCS ring switching and Ligerito integration with the runtime (P3 multi-table stacking, bit-sliced address virtualization, virtual `Val`/`Inc`, and a shared CPU+RAM opening are implemented);
 - Recursion (only chunk planning, hash-chain and state-continuity reference aggregators, and a backend trait);
 - ZK sum-check and private IO (only `NoPrivacy` and a randomized hiding hash commitment);
@@ -55,7 +55,7 @@ Explicitly not implemented:
 | 5 | Constraint IR / Witness layout | `magnetar-constraint` | R1CS IR over `GF(2^128)`, `F61` reference field, and aligned segments implemented |
 | 6 | CPU constraints | `magnetar-cpu` | Row checks (including RV64M, A, and `*W` semantics), 64-bit 20-selector ALU (Add/Sub/AddI/Xor/Lui/And/Or/Slt/Sltu/Slti/Sltiu/Sll/Srl/Sra/Slli/Srli/Srai/Xori/Ori/Andi), RV64 `*W` relations, PC+4 step, Auipc, Jal, Jalr, all six conditional branches, single-step load/store relations, row-bound variants for every ALU/control relation, R1CS relations for all eight RV64M ops at full width 64, A R1CS for all AMO ops (`swap`/`add`/`xor`/`and`/`or`/`min`/`max`, signed and unsigned, W/D), and LR load / SC success-failure row relations; reservation state is trace-bound and checked during proof verification; specialized non-shift/non-compare ALU relations cut `addi`/`lui` from 4,492 variables to 449/64 |
 | 7 | Memory consistency | `magnetar-memory` | Replay checks, Twist log, one-hot address/increment witness, load/store, memory/register chain, trace-order interleaved access proofs, a reference BinaryTwist RAM witness/reduction with batched P3 claims, and a reference Sv39 page-table walker |
-| 8 | Routing / Bit operations | `magnetar-routing` | Shift/store routes and witnesses implemented; standalone 64-bit shift BinaryRouter proof; sub-word store routing and unified integration pending |
+| 8 | Routing / Bit operations | `magnetar-routing` | Shift/store routes and witnesses implemented; standalone BinaryRouter proof for 64-bit shifts and sub-word stores; unified integration pending |
 | 9 | Proof engine | `magnetar-proof` | MLE + sum-check + reference Spartan reduction implemented; BinarySpartan not implemented |
 | 10 | Commitment / PCS | `magnetar-pcs` | Merkle tree, batched Merkle vector commitment, naive polynomial PCS, `Pcs` trait, a succinct BN254 KZG backend with batch openings via `arkworks`, a vendored Ligerito 0.8.0 index-opening backend (2^16: 118,624 bytes / 99 ms / 3.1 ms), and Plonky3 `p3-binary-pcs` multilinear point PCS with single-vector, multi-column, and multi-table mosaic APIs plus a `P3SharedPcs` adapter (CPU+RAM shared opening in the unified proof) |
 | 11 | Transcript / Proof format | `magnetar-transcript` | SHA-256 and SHA3-256 Fiat–Shamir transcripts implemented; canonical bincode encoding for Spartan and unified/chunked trace proofs lives in `magnetar-pcs` / `magnetar-runtime` |
@@ -71,7 +71,7 @@ Explicitly not implemented:
 | Dual SIMD R1CS over a shared witness | `magnetar-constraint` + `magnetar-cpu` | Generate uniform `s1`/`s2` and replace row-level checks |
 | Virtual Spartan | `magnetar-proof` + `magnetar-runtime` | Dual-relation lockstep, per-segment claims, claim router |
 | BinaryTwist / BinaryShout | `magnetar-memory` + `magnetar-runtime` | BinaryTwist has bit-sliced virtual addresses, compact increments, virtual `Val`, read/write/final-state/address sum-checks, and batched P3 claims; BinaryShout has a standalone bit-sliced ROM-read proof; next: wire BinaryShout into unified proofs and tune performance |
-| BinaryRouter | `magnetar-routing` + `magnetar-preprocess` | Standalone 64-bit shift routing reference exists (`binary_router.rs`); next: store routing and unified-proof integration |
+| BinaryRouter | `magnetar-routing` + `magnetar-preprocess` | Standalone BinaryRouter reference covers 64-bit shifts and sub-word stores (`binary_router.rs`); next: unified-proof integration |
 | MosaicPCS | `magnetar-pcs` | Multi-table P3 stacking and a shared CPU+RAM opening exist; next: ring switching |
 | Ligerito | `magnetar-pcs` | Linear-code PCS + Merkle + query sampling |
 | Recursion | `magnetar-recursion` | Verifier-in-the-VM, chunk state, aggregation |
