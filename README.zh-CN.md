@@ -59,7 +59,7 @@
 | 9 | 证明引擎 | `magnetar-proof` | MLE + sum-check + 参考 Spartan 归约已实现；BinarySpartan 未实现 |
 | 10 | 承诺 / PCS | `magnetar-pcs` | Merkle tree、批量 Merkle vector commitment、naive PCS、`Pcs` trait、基于 `arkworks` 的简洁 BN254 KZG 后端（支持批量 opening）、vendored Ligerito 0.8.0 索引 opening 后端（2^16：118,624 字节 / 99 ms / 3.1 ms），以及带单向量、多列/多点与多表 mosaic API 的 Plonky3 `p3-binary-pcs` 多线性点 PCS，并提供 `P3SharedPcs` 适配器（unified proof 中 CPU+RAM 共享 opening） |
 | 11 | Transcript / 证明格式 | `magnetar-transcript` | SHA-256 与 SHA3-256 Fiat–Shamir transcript 已实现；Spartan 与 unified/chunked trace proof 的规范化 bincode 编解码位于 `magnetar-pcs` / `magnetar-runtime` |
-| 12 | Prover / Verifier 运行时 | `magnetar-runtime` | reference pipeline + Spartan backend + load/store、AMO read-modify-write、LR/SC reservation 检查、syscall read 回写、memory/register chain、trace 顺序交错访问 proof；组合 `TraceProof` 将 CPU 行（ALU/AMO/LR/SC/load/store/branch/jump/Auipc）绑定到访问日志，并支持 lane 级 sub-word load/store；`UnifiedTraceProof` 合并所有行，并让 CPU witness、BinaryTwist RAM 列、BinaryShout ROM 地址与 BinaryRouter input 共享一个 mosaic P3 commitment/opening；`ChunkedTraceProof` 按区间生成并用状态链连接，两者都携带 ROM，并都有绑定规范化 trace digest 与 program hash 的 standalone verifier；access proof 只为寄存器保留 Merkle opening，memory step 绑定到 BinaryTwist claim，public `Statement` 携带初始 RAM；隐藏/简洁 trace commitment 仍待做；BinaryShout 与 BinaryRouter claim 已共享 unified P3 opening |
+| 12 | Prover / Verifier 运行时 | `magnetar-runtime` | reference pipeline + Spartan backend + load/store、AMO read-modify-write、LR/SC reservation 检查、syscall read 回写、memory/register chain、trace 顺序交错访问 proof；组合 `TraceProof` 将 CPU 行（ALU/AMO/LR/SC/load/store/branch/jump/Auipc）绑定到访问日志，并支持 lane 级 sub-word load/store；`UnifiedTraceProof` 合并所有行，并让 CPU witness、BinaryTwist RAM 列、BinaryShout ROM 地址与 BinaryRouter input 共享一个 mosaic P3 commitment/opening；`ChunkedTraceProof` 按区间生成并用状态链连接，并携带一个共享的 BinaryShout/BinaryRouter P3 opening，两者都携带 ROM，并都有绑定规范化 trace digest 与 program hash 的 standalone verifier；access proof 只为寄存器保留 Merkle opening，memory step 绑定到 BinaryTwist claim，public `Statement` 携带初始 RAM；隐藏/简洁 trace commitment 仍待做；BinaryShout 与 BinaryRouter claim 已共享 unified P3 opening |
 | 13 | 递归 / 聚合 | `magnetar-recursion` | chunk plan + hash-chain 与状态连续性参考聚合器已实现，并接入 runtime `ChunkedTraceProof`；zk verifier-in-the-VM backend 未实现 |
 | 14 | 隐私层 | `magnetar-privacy` | `NoPrivacy` + 随机 hiding hash commitment + trait 已实现；ZK sum-check 未实现 |
 | 15 | 安全 / 性能工程 | `magnetar-testkit` | 集成测试、fixtures 与 criterion benchmark 已实现；安全审计未做 |
@@ -120,7 +120,7 @@ cargo fmt --all -- --check
 cargo test --workspace
 ```
 
-当前测试套件包含 **15 个 crate 的 269 个测试，全部通过**；
+当前测试套件包含 **15 个 crate 的 270 个测试，全部通过**；
 `clippy -D warnings` 与 `rustfmt --check` 均无问题。dev profile 将依赖设为
 `opt-level = 3`、workspace crate 设为 `opt-level = 2`，避免 PCS 密集的测试
 在未优化构建里跑到几十秒。

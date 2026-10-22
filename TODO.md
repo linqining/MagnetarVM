@@ -25,7 +25,9 @@
 
 - [ ] Full MosaicPCS: aligned-subcube packing, ring switching, and a single
       commitment that also covers the CPU witness in every proof variant.
-- [ ] Use the P3 mosaic opening in `ChunkedTraceProof` and per-row proofs.
+- [x] Add one shared BinaryShout/BinaryRouter P3 opening to `ChunkedTraceProof`.
+- [ ] Per-row `TraceProof` keeps minimal per-row P3 proofs; adding global aux
+      claims per row is intentionally deferred.
 - [x] Reduce the virtual-address sum-check prover cost by splitting the
       read/write reductions into `(cell, cycle)` initial/base sum-checks and
       `(cycle, previous-cycle)` history sum-checks. This removes the quadratic

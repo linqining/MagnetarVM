@@ -2477,6 +2477,15 @@ fn trace_from_statement(
     })
 }
 
+/// BinaryShout/BinaryRouter claims for a chunked proof, sharing one P3
+/// commitment and opening. Chunk CPU proofs keep their own P3 proofs.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct AuxTraceProof {
+    pub shout: Option<crate::binary_shout::BinaryShoutProof>,
+    pub router: Option<crate::binary_router::BinaryRouterProof>,
+    pub opening: P3MosaicOpening,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ChunkCpuProof {
     pub start: usize,
@@ -2489,6 +2498,7 @@ pub struct ChunkCpuProof {
 pub struct ChunkedTraceProof {
     pub access: TraceAccessProof,
     pub trace_commitment: [u8; 32],
+    pub aux: Option<AuxTraceProof>,
     pub chunks: Vec<ChunkCpuProof>,
     pub chain: ChainedProof,
     pub rom: Vec<u32>,
@@ -2546,6 +2556,136 @@ fn chunk_proof_digest(
     sha256(&bytes)
 }
 
+fn prove_aux_trace(trace: &Trace) -> Result<Option<AuxTraceProof>, RuntimeError> {
+    let shout_witness = BinaryShoutWitness::from_trace(trace).ok();
+    let router_witness = BinaryRouterWitness::from_trace(trace).ok();
+    if shout_witness.is_none() && router_witness.is_none() {
+        return Ok(None);
+    }
+    let pcs = P3BinaryPcs::new(100);
+    let mut tables = Vec::new();
+    let mut shout_index = None;
+    let mut router_index = None;
+    if let Some(witness) = &shout_witness {
+        shout_index = Some(tables.len());
+        tables.push(witness.table());
+    }
+    if let Some(witness) = &router_witness {
+        router_index = Some(tables.len());
+        tables.push(witness.table());
+    }
+    let commitment = pcs
+        .commit_mosaic(&tables)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let mut points = Vec::new();
+    let mut values = Vec::new();
+    let shout = if let (Some(witness), Some(index)) = (&shout_witness, shout_index) {
+        let (claim, claim_points, claim_values) =
+            prove_binary_shout_claims(witness, &commitment, index)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        points.extend(claim_points);
+        values.extend(claim_values);
+        Some(claim)
+    } else {
+        None
+    };
+    let router = if let (Some(witness), Some(index)) = (&router_witness, router_index) {
+        let (claim, claim_points, claim_values) =
+            prove_binary_router_claims(witness, &commitment, index)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        points.extend(claim_points);
+        values.extend(claim_values);
+        Some(claim)
+    } else {
+        None
+    };
+    let opening = pcs
+        .open_mosaic(&tables, &points)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok(Some(AuxTraceProof {
+        shout,
+        router,
+        opening,
+    }))
+}
+
+fn verify_aux_trace(trace: &Trace, aux: Option<&AuxTraceProof>) -> Result<(), RuntimeError> {
+    let shout_witness = BinaryShoutWitness::from_trace(trace).ok();
+    let router_witness = BinaryRouterWitness::from_trace(trace).ok();
+    let expected = shout_witness.is_some() || router_witness.is_some();
+    if !expected {
+        if aux.is_some() {
+            return Err(RuntimeError::Proof(
+                "chunked aux proof present for a trace without routed rows".into(),
+            ));
+        }
+        return Ok(());
+    }
+    let Some(aux) = aux else {
+        return Err(RuntimeError::Proof(
+            "chunked proof is missing its aux claims".into(),
+        ));
+    };
+    match (&shout_witness, &aux.shout) {
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(RuntimeError::Proof(
+                "BinaryShout presence does not match the trace".into(),
+            ));
+        }
+        _ => {}
+    }
+    match (&router_witness, &aux.router) {
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(RuntimeError::Proof(
+                "BinaryRouter presence does not match the trace".into(),
+            ));
+        }
+        _ => {}
+    }
+    let commitment = &aux.opening.commitment;
+    let mut next_table = 0usize;
+    let shout_index = shout_witness.as_ref().map(|_| {
+        let index = next_table;
+        next_table += 1;
+        index
+    });
+    let router_index = router_witness.as_ref().map(|_| {
+        let index = next_table;
+        next_table += 1;
+        index
+    });
+    let mut points = Vec::new();
+    let mut values = Vec::new();
+    if let (Some(witness), Some(claim), Some(index)) = (&shout_witness, &aux.shout, shout_index) {
+        let Some((claim_points, claim_values)) =
+            verify_binary_shout_claims(witness, claim, commitment, index)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        else {
+            return Err(RuntimeError::Proof("BinaryShout proof rejected".into()));
+        };
+        points.extend(claim_points);
+        values.extend(claim_values);
+    }
+    if let (Some(witness), Some(claim), Some(index)) = (&router_witness, &aux.router, router_index)
+    {
+        let Some((claim_points, claim_values)) =
+            verify_binary_router_claims(witness, claim, commitment, index)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        else {
+            return Err(RuntimeError::Proof("BinaryRouter proof rejected".into()));
+        };
+        points.extend(claim_points);
+        values.extend(claim_values);
+    }
+    let verified = P3BinaryPcs::new(100)
+        .verify_mosaic(&aux.opening, &points, &values)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if !verified {
+        return Err(RuntimeError::Proof("chunked aux opening rejected".into()));
+    }
+    Ok(())
+}
+
 pub fn prove_chunked_trace(
     trace: &Trace,
     width: usize,
@@ -2579,9 +2719,11 @@ pub fn prove_chunked_trace(
         start = end;
     }
     let chain = ChainedRecursion.aggregate(&chained)?;
+    let aux = prove_aux_trace(trace)?;
     Ok(ChunkedTraceProof {
         access,
         trace_commitment,
+        aux,
         chunks,
         chain,
         rom: trace.rom.clone(),
@@ -2606,6 +2748,7 @@ pub fn verify_chunked_trace(
         ));
     }
     verify_trace_access(trace, &proof.access)?;
+    verify_aux_trace(trace, proof.aux.as_ref())?;
     if proof.chunks.len() != proof.chain.chunks.len() || proof.chunks.is_empty() {
         return Err(RuntimeError::Proof("chunked proof shape mismatch".into()));
     }
@@ -3765,6 +3908,55 @@ mod tests {
             spartan.vw = spartan.vw + F2_128::from(1u64);
         }
         assert!(verify_trace_proof(&trace, &tampered, 8).is_err());
+    }
+
+    #[test]
+    fn chunked_trace_proof_carries_aux_claims() {
+        use magnetar_spec::{Instruction, Op};
+
+        let instruction = |op: Op, rd: u8, rs1: u8, rs2: u8, imm: i64| Instruction {
+            op,
+            rd,
+            rs1,
+            rs2,
+            imm,
+            shamt: 0,
+        };
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                instruction(Op::Addi, 1, 0, 0, 0x123).encode(),
+                instruction(Op::Slli, 2, 1, 0, 8).encode(),
+                instruction(Op::Lui, 3, 0, 0, 0x1000_0000).encode(),
+                instruction(Op::Sd, 0, 3, 2, 0).encode(),
+                instruction(Op::Sh, 0, 3, 1, 4).encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(&program, config()).unwrap();
+        let proof = prove_chunked_trace(&trace, 8, 2).unwrap();
+        let aux = proof.aux.as_ref().expect("aux claims");
+        assert!(aux.shout.is_some() && aux.router.is_some());
+        verify_chunked_trace(&trace, &proof, 8).unwrap();
+
+        let mut tampered = proof;
+        tampered
+            .aux
+            .as_mut()
+            .unwrap()
+            .router
+            .as_mut()
+            .unwrap()
+            .claimed = tampered
+            .aux
+            .as_ref()
+            .unwrap()
+            .router
+            .as_ref()
+            .unwrap()
+            .claimed
+            + F2_128::from(1u64);
+        assert!(verify_chunked_trace(&trace, &tampered, 8).is_err());
     }
 
     #[test]
