@@ -6,10 +6,10 @@
 
 use std::cell::RefCell;
 
-use magnetar_constraint::F2;
+use magnetar_constraint::{F2, F2_128};
 use magnetar_transcript::Sha256Transcript;
 
-use crate::{Mle, ProofError};
+use crate::{prove_product4, verify_rounds, Mle, ProofError, SumcheckProof};
 
 #[derive(Clone, Debug, Default)]
 pub struct F2Pcs;
@@ -131,6 +131,91 @@ pub fn verify_f2_linear(proof: &F2LinearProof) -> Result<F2, ProofError> {
     Ok(current)
 }
 
+#[derive(Clone, Debug)]
+pub struct F2ProductProof {
+    pub sumcheck: SumcheckProof<F2_128>,
+    pub challenges: Vec<F2_128>,
+    pub final_eval: F2_128,
+}
+
+fn embed(values: &[F2]) -> Vec<F2_128> {
+    values
+        .iter()
+        .map(|value| F2_128::from(u64::from(value.value())))
+        .collect()
+}
+
+fn ext_challenge(transcript: &RefCell<Sha256Transcript>) -> F2_128 {
+    let mut transcript = transcript.borrow_mut();
+    let bytes = transcript.challenge_bytes("f2-ext-bit", 16);
+    F2_128::from(u128::from_le_bytes(bytes.try_into().expect("16 bytes")))
+}
+
+/// F2 product sum-check with F2_128 extension challenges.
+///
+/// Round polynomials have degree three, so their coefficients live in an
+/// extension of F2; the relation values themselves remain F2.
+pub fn prove_f2_product(
+    eq_values: &[F2],
+    a_values: &[F2],
+    b_values: &[F2],
+    c_values: &[F2],
+) -> Result<F2ProductProof, ProofError> {
+    let transcript = RefCell::new(Sha256Transcript::new("f2-product-ext-v1"));
+    let (sumcheck, challenges, final_eval) = prove_product4(
+        embed(eq_values),
+        embed(a_values),
+        embed(b_values),
+        embed(c_values),
+        |_, values| {
+            {
+                let mut guard = transcript.borrow_mut();
+                for value in values {
+                    guard.absorb("round", &value.value().to_le_bytes());
+                }
+            }
+            ext_challenge(&transcript)
+        },
+    )?;
+    Ok(F2ProductProof {
+        sumcheck,
+        challenges,
+        final_eval,
+    })
+}
+
+pub fn verify_f2_product(
+    proof: &F2ProductProof,
+    eq_values: &[F2],
+    a_values: &[F2],
+    b_values: &[F2],
+    c_values: &[F2],
+) -> Result<bool, ProofError> {
+    let transcript = RefCell::new(Sha256Transcript::new("f2-product-ext-v1"));
+    let (challenges, final_eval) = verify_rounds(
+        &proof.sumcheck,
+        eq_values.len().trailing_zeros() as usize,
+        3,
+        |_, values| {
+            {
+                let mut guard = transcript.borrow_mut();
+                for value in values {
+                    guard.absorb("round", &value.value().to_le_bytes());
+                }
+            }
+            ext_challenge(&transcript)
+        },
+    )?;
+    if challenges != proof.challenges || final_eval != proof.final_eval {
+        return Ok(false);
+    }
+    let eq_eval = Mle::new(embed(eq_values))?.eval(&challenges)?;
+    let a_eval = Mle::new(embed(a_values))?.eval(&challenges)?;
+    let b_eval = Mle::new(embed(b_values))?.eval(&challenges)?;
+    let c_eval = Mle::new(embed(c_values))?.eval(&challenges)?;
+    Ok(final_eval == eq_eval * (a_eval * b_eval - c_eval))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,6 +223,21 @@ mod tests {
 
     fn bits(values: &[u64]) -> Vec<F2> {
         values.iter().map(|value| F2::from_u64(*value)).collect()
+    }
+
+    #[test]
+    fn native_f2_product_sumcheck_uses_extension_challenges() {
+        let eq_values = bits(&[1, 0, 1, 1, 0, 1, 0, 1]);
+        let a_values = bits(&[1, 0, 1, 0, 1, 1, 0, 1]);
+        let b_values = bits(&[0, 1, 1, 0, 1, 0, 1, 1]);
+        let c_values = bits(&[0, 0, 1, 0, 1, 0, 0, 1]);
+        let proof = prove_f2_product(&eq_values, &a_values, &b_values, &c_values).unwrap();
+        assert!(verify_f2_product(&proof, &eq_values, &a_values, &b_values, &c_values).unwrap());
+        let mut tampered = proof;
+        tampered.challenges[0] = tampered.challenges[0] + F2_128::from(1u64);
+        assert!(
+            !verify_f2_product(&tampered, &eq_values, &a_values, &b_values, &c_values).unwrap()
+        );
     }
 
     #[test]
