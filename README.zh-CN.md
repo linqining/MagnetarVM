@@ -46,7 +46,7 @@
 | # | 模块 | Crate | 当前状态 |
 |---|---|---|---|
 | 1 | 协议 / ISA 规格 | `magnetar-spec` | RV64I base（含 `*W` 操作）+ RV64M 解码/编码与算术语义 + RV64A AMO/LR/SC 解码/编码 + RV64C 整数解压 + RV64F/D 核心解码器；FP 执行/proof 未实现 |
-| 2 | Guest 工具链 / ABI | `magnetar-guest` | ABI、syscall 解码 + 参考 dispatcher、RV64 ELF loader 与 `run_guest_elf` 执行路径已实现；通用编译器/工具链支持未实现 |
+| 2 | Guest 工具链 / ABI | `magnetar-guest` | ABI、syscall 解码 + 参考 dispatcher、RV64 ELF loader 与 `run_guest_elf` 执行路径已实现；包含基于 zig 的 hello guest 构建脚本与端到端证明 CLI；通用编译器/工具链集成未实现 |
 | 3 | 程序预处理 / ROM | `magnetar-preprocess` | 已实现；当前 1 条指令 = 1 个 micro-op |
 | 4 | 执行器 / Trace | `magnetar-executor` | RV64I（含 `*W`）+ RV64M + RV64A（AMO 与 LR/SC 预留）+ RV64C 整数压缩指令解释器 + trace 已实现，支持 `exit`/`hint`/`write` 与按字节范围 `read`（含短读）的 `ecall`，带输入/输出缓冲与 consumed-input trace 绑定 |
 | 5 | 约束 IR / Witness 布局 | `magnetar-constraint` | `GF(2^128)` 上的 R1CS IR、`F61` 参考域、aligned segments 已实现 |
@@ -117,8 +117,31 @@ cargo fmt --all -- --check
 cargo test --workspace
 ```
 
-当前测试套件包含 **15 个 crate 的 247 个测试，全部通过**；
+当前测试套件包含 **15 个 crate 的 248 个测试，全部通过**；
 `clippy -D warnings` 与 `rustfmt --check` 均无问题。
+
+## 编译并证明一个 Guest 程序
+
+`guests/hello/main.c` 是一个 freestanding RV64 程序：它用 `write` syscall 输出
+`Hello, MagnetarVM!`，然后调用 `exit(0)`。`scripts/build_guest.sh` 调用 zig
+自带的 clang/lld 将其编译为 `target/guest/hello.elf`；
+`scripts/prove_guest.sh` 依次完成加载、执行、证明与验证：
+
+```bash
+./scripts/prove_guest.sh          # 默认 64 位 witness 宽度
+./scripts/prove_guest.sh 32       # 可选更窄宽度
+```
+
+证明 CLI
+（`cargo run -p magnetar-testkit --example prove_guest -- <elf> [width]`）
+会打印行数、退出码、程序输出与编码后证明大小，并且只依赖公开的
+`Statement` 验证证明。`crates/magnetar-testkit/tests/fixtures/hello.elf`
+是签入的测试固件，使
+`cargo test -p magnetar-testkit --test compiled_guest` 不依赖宿主工具链；
+修改 guest 源码后可用构建脚本重新生成。
+
+构建时关闭 RVC 扩展（`-mcpu=generic_rv64-c`），因为当前取指器会拒绝从
+2 字节边界开始的 32 位指令。
 
 ## 成熟依赖
 

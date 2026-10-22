@@ -46,7 +46,7 @@ Explicitly not implemented:
 | # | Module | Crate | Current status |
 |---|---|---|---|
 | 1 | Protocol / ISA specification | `magnetar-spec` | RV64I base (including `*W` operations) + RV64M decode/encode/arithmetic + RV64A AMO/LR/SC decode/encode + RV64C integer decompression + core RV64F/D decoder; FP execution/proofs not implemented |
-| 2 | Guest toolchain / ABI | `magnetar-guest` | ABI, syscall decoding + reference dispatcher, RV64 ELF loader, and `run_guest_elf` execution path implemented; general compiler/toolchain support not implemented |
+| 2 | Guest toolchain / ABI | `magnetar-guest` | ABI, syscall decoding + reference dispatcher, RV64 ELF loader, and `run_guest_elf` execution path implemented; a zig-based hello guest build script and end-to-end proof CLI are included; general compiler/toolchain integration not implemented |
 | 3 | Program preprocessing / ROM | `magnetar-preprocess` | Implemented; currently one instruction = one micro-op |
 | 4 | Executor / Trace | `magnetar-executor` | RV64I (including `*W`) + RV64M + RV64A (AMO and LR/SC reservations) + RV64C integer compressed instructions interpreter + trace implemented, with `ecall` handling for `exit`/`hint`/`write` and byte-range `read` including short reads, buffered input/output, and consumed-input trace binding |
 | 5 | Constraint IR / Witness layout | `magnetar-constraint` | R1CS IR over `GF(2^128)`, `F61` reference field, and aligned segments implemented |
@@ -117,8 +117,32 @@ cargo fmt --all -- --check
 cargo test --workspace
 ```
 
-At the time of writing the suite contains **247 tests across the 15 crates,
+At the time of writing the suite contains **248 tests across the 15 crates,
 all passing**; clippy with `-D warnings` and `rustfmt --check` are clean.
+
+## Compiling and Proving a Guest Program
+
+`guests/hello/main.c` is a freestanding RV64 program: it writes
+`Hello, MagnetarVM!` with the `write` syscall and then calls `exit(0)`.
+`scripts/build_guest.sh` compiles it with zig's bundled clang/lld into
+`target/guest/hello.elf`; `scripts/prove_guest.sh` then loads, executes,
+proves, and verifies it:
+
+```bash
+./scripts/prove_guest.sh          # defaults to a 64-bit witness width
+./scripts/prove_guest.sh 32       # optional narrower width
+```
+
+The proof CLI
+(`cargo run -p magnetar-testkit --example prove_guest -- <elf> [width]`)
+prints the row count, exit code, program output, and encoded proof size, then
+verifies the proof against the public `Statement` only. The checked-in fixture
+`crates/magnetar-testkit/tests/fixtures/hello.elf` keeps
+`cargo test -p magnetar-testkit --test compiled_guest` independent of the host
+toolchain; regenerate it with the build script after changing the guest source.
+
+The build disables the RVC extension (`-mcpu=generic_rv64-c`) because the
+current fetcher rejects a 32-bit instruction that starts at a 2-byte boundary.
 
 ## Mature Dependencies
 
