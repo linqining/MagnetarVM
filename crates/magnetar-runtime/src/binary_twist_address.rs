@@ -15,11 +15,8 @@ use serde::{Deserialize, Serialize};
 pub struct AddressMultiplicityProof {
     pub lambda: F2_128,
     pub rounds: Vec<[F2_128; 4]>,
-    pub a_eval: F2_128,
     pub opening: P3Opening,
     pub collision_rounds: Vec<[F2_128; 5]>,
-    pub a_r_eval: F2_128,
-    pub a_rp_eval: F2_128,
     pub r_opening: P3Opening,
     pub rp_opening: P3Opening,
 }
@@ -44,7 +41,6 @@ pub fn prove_address_multiplicity(
     let target = target_vector(&eq, &expected, cells);
     let (rounds, challenges) =
         sumcheck_boolean_multiplicity(&table, &eq, &target, lambda, &mut transcript)?;
-    let a_eval = fold_all(&table, &challenges);
     let opening = pcs.open(&table, &challenges)?;
 
     let (r, r_prime, c) = sample_collision_point(&mut transcript, address_bits);
@@ -68,11 +64,8 @@ pub fn prove_address_multiplicity(
     Ok(AddressMultiplicityProof {
         lambda,
         rounds,
-        a_eval,
         opening,
         collision_rounds,
-        a_r_eval: fold_all(&table, &r_point),
-        a_rp_eval: fold_all(&table, &rp_point),
         r_opening: pcs.open(&table, &r_point)?,
         rp_opening: pcs.open(&table, &rp_point)?,
     })
@@ -88,7 +81,7 @@ pub fn verify_address_multiplicity(
     let cycles = witness.cycles.next_power_of_two();
     let address_bits = cells.trailing_zeros() as usize;
     let cycle_bits = cycles.trailing_zeros() as usize;
-    let (_, expected) = table_and_flags(witness, write, cells, cycles);
+    let (table, expected) = table_and_flags(witness, write, cells, cycles);
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-address");
     absorb_commitment(&mut transcript, &proof.opening.commitment);
     if challenge(&mut transcript, "lambda") != proof.lambda {
@@ -117,8 +110,9 @@ pub fn verify_address_multiplicity(
     if eq_folded.len() != 1 || target_folded.len() != 1 {
         return Ok(false);
     }
-    let expected_sum = proof.a_eval * (proof.a_eval + F2_128::from(1u64))
-        + proof.lambda * (proof.a_eval * eq_folded[0] + target_folded[0]);
+    let a_eval = fold_all(&table, &challenges);
+    let expected_sum = a_eval * (a_eval + F2_128::from(1u64))
+        + proof.lambda * (a_eval * eq_folded[0] + target_folded[0]);
     if sum != expected_sum {
         return Ok(false);
     }
@@ -143,31 +137,32 @@ pub fn verify_address_multiplicity(
     if cycle_weights.len() != 1 {
         return Ok(false);
     }
-    let final_collision =
-        cycle_weights[0] * (proof.a_r_eval * proof.a_r_eval * proof.a_r_eval + c * proof.a_rp_eval);
-    if collision_sum != final_collision {
-        return Ok(false);
-    }
     let mut r_point = r;
     r_point.extend_from_slice(&collision_challenges);
     let mut rp_point = r_prime;
     rp_point.extend_from_slice(&collision_challenges);
+    let a_r_eval = fold_all(&table, &r_point);
+    let a_rp_eval = fold_all(&table, &rp_point);
+    let final_collision = cycle_weights[0] * (a_r_eval * a_r_eval * a_r_eval + c * a_rp_eval);
+    if collision_sum != final_collision {
+        return Ok(false);
+    }
     let boolean_ok = pcs.verify(
         &proof.opening.commitment,
         &challenges,
-        proof.a_eval,
+        a_eval,
         &proof.opening,
     )?;
     let r_ok = pcs.verify(
         &proof.r_opening.commitment,
         &r_point,
-        proof.a_r_eval,
+        a_r_eval,
         &proof.r_opening,
     )?;
     let rp_ok = pcs.verify(
         &proof.rp_opening.commitment,
         &rp_point,
-        proof.a_rp_eval,
+        a_rp_eval,
         &proof.rp_opening,
     )?;
     Ok(boolean_ok && r_ok && rp_ok)
@@ -473,7 +468,7 @@ mod tests {
             assert!(verify_address_multiplicity(&proof, write, &witness).unwrap());
 
             let mut tampered = proof.clone();
-            tampered.a_eval = tampered.a_eval + F2_128::from(1u64);
+            tampered.rounds[0][0] = tampered.rounds[0][0] + F2_128::from(1u64);
             assert!(!verify_address_multiplicity(&tampered, write, &witness).unwrap());
 
             let mut tampered = proof.clone();

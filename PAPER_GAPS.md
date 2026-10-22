@@ -105,7 +105,8 @@
 - `5c99bf3`：新增 `address_proof_binds_the_lambda_challenge` 测试。
 - `964cbef`：trace commitment 增加 tamper 测试；独立 trace opening 接入 unified 会使 proof 增至 332,111 B，已回退。
 - `23d34aa`：trace 表作为 shared PCS aux table 接入 unified，proof 降至 265,023 B。
-- 本轮：`proof_scaling` 增加 chunked 证明体积；32 rows 时 chunked 1.33 MB，暴露 per-chunk CPU 证明瓶颈。
+- `8169e21`：`proof_scaling` 增加 chunked 体积；32 rows 时 chunked 1.33 MB。
+- 本轮：standalone `AddressMultiplicityProof` 移除 `a_eval`/`a_r_eval`/`a_rp_eval`，verifier 从 table 重算；D4 仍为 standalone。
 
 ## 二、逐项差距
 
