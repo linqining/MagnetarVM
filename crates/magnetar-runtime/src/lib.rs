@@ -5,6 +5,7 @@
 //! explicit rather than returning a misleading "proof".
 
 pub mod binary_twist;
+pub mod binary_twist_address;
 
 use magnetar_constraint::{ConstraintSystem, LayoutError, Witness, WitnessLayout, F2_128};
 use magnetar_cpu::{check_trace, CpuError};
