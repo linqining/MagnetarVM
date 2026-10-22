@@ -6,7 +6,7 @@
 
 use magnetar_constraint::{Field, F2_128};
 use magnetar_memory::BinaryTwistWitness;
-use magnetar_pcs::{P3BinaryPcs, P3Commitment, P3Opening};
+use magnetar_pcs::{P3BatchCommitment, P3BatchPoint, P3BinaryPcs, P3Commitment, P3Opening};
 use magnetar_proof::{Pcs, ProofError};
 use magnetar_transcript::Sha256Transcript;
 use serde::{Deserialize, Serialize};
@@ -27,6 +27,212 @@ pub struct AddressMultiplicityProof {
     pub a_rp_eval: F2_128,
     pub r_opening: P3Opening,
     pub rp_opening: P3Opening,
+}
+
+/// Address Boolean/multiplicity and collision claims without their own PCS
+/// commitment or openings. The batched RAM proof carries one shared opening.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AddressMultiplicityClaim {
+    pub lambda: F2_128,
+    pub rounds: Vec<[F2_128; 4]>,
+    pub challenges: Vec<F2_128>,
+    pub a_eval: F2_128,
+    pub collision_rounds: Vec<[F2_128; 5]>,
+    pub collision_challenges: Vec<F2_128>,
+    pub a_r_eval: F2_128,
+    pub a_rp_eval: F2_128,
+}
+
+/// A batch-local address claim together with the points it opens.
+pub(crate) struct AddressBatchClaim {
+    pub claim: AddressMultiplicityClaim,
+    pub points: Vec<P3BatchPoint>,
+    pub values: Vec<Vec<F2_128>>,
+}
+
+pub(crate) fn prove_address_batch_claim(
+    table: &[F2_128],
+    write: bool,
+    witness: &BinaryTwistWitness,
+    commitment: &P3BatchCommitment,
+    domain: &'static str,
+    column: usize,
+) -> Result<AddressBatchClaim, ProofError> {
+    let cells = witness.initial.len();
+    let cycles = witness.cycles.next_power_of_two();
+    let address_bits = cells.trailing_zeros() as usize;
+    let cycle_bits = cycles.trailing_zeros() as usize;
+    let (_, expected) = table_and_flags(witness, write, cells, cycles);
+
+    let mut transcript = Sha256Transcript::new(domain);
+    absorb_batch_commitment(&mut transcript, commitment);
+    let lambda = challenge(&mut transcript, "lambda");
+    let rho = sample_point(&mut transcript, cycle_bits);
+    let eq = eq_index(&rho, address_bits, cycle_bits);
+    let target = target_vector(&eq, &expected, cells);
+    let (rounds, challenges) =
+        sumcheck_boolean_multiplicity(table, &eq, &target, lambda, &mut transcript)?;
+    let a_eval = fold_all(table, &challenges);
+
+    let (r, r_prime, c) = sample_collision_point(&mut transcript, address_bits);
+    let rho_cycle = sample_point(&mut transcript, cycle_bits);
+    let cycle_weights = eq_table(&rho_cycle, cycles);
+    let mut a_r = vec![F2_128::from(0u64); cycles];
+    let mut a_rp = vec![F2_128::from(0u64); cycles];
+    for cycle in 0..cycles {
+        for cell in 0..cells {
+            let value = table[cell + cells * cycle];
+            a_r[cycle] = a_r[cycle] + eq_at(&r, cell) * value;
+            a_rp[cycle] = a_rp[cycle] + eq_at(&r_prime, cell) * value;
+        }
+    }
+    let (collision_rounds, collision_challenges) =
+        sumcheck_collision(&a_r, &a_rp, &cycle_weights, c, &mut transcript)?;
+    let mut r_point = r;
+    r_point.extend_from_slice(&collision_challenges);
+    let mut rp_point = r_prime;
+    rp_point.extend_from_slice(&collision_challenges);
+    let a_r_eval = fold_all(table, &r_point);
+    let a_rp_eval = fold_all(table, &rp_point);
+
+    let points = vec![
+        P3BatchPoint {
+            point: challenges.clone(),
+            columns: vec![column],
+        },
+        P3BatchPoint {
+            point: r_point,
+            columns: vec![column],
+        },
+        P3BatchPoint {
+            point: rp_point,
+            columns: vec![column],
+        },
+    ];
+    let values = vec![vec![a_eval], vec![a_r_eval], vec![a_rp_eval]];
+    Ok(AddressBatchClaim {
+        claim: AddressMultiplicityClaim {
+            lambda,
+            rounds,
+            challenges,
+            a_eval,
+            collision_rounds,
+            collision_challenges,
+            a_r_eval,
+            a_rp_eval,
+        },
+        points,
+        values,
+    })
+}
+
+pub(crate) fn verify_address_batch_claim(
+    claim: &AddressMultiplicityClaim,
+    write: bool,
+    witness: &BinaryTwistWitness,
+    commitment: &P3BatchCommitment,
+    domain: &'static str,
+    column: usize,
+) -> Result<Option<AddressBatchClaim>, ProofError> {
+    let cells = witness.initial.len();
+    let cycles = witness.cycles.next_power_of_two();
+    let address_bits = cells.trailing_zeros() as usize;
+    let cycle_bits = cycles.trailing_zeros() as usize;
+    let (_, expected) = table_and_flags(witness, write, cells, cycles);
+    let mut transcript = Sha256Transcript::new(domain);
+    absorb_batch_commitment(&mut transcript, commitment);
+    if challenge(&mut transcript, "lambda") != claim.lambda {
+        return Ok(None);
+    }
+    let rho = sample_point(&mut transcript, cycle_bits);
+    let eq = eq_index(&rho, address_bits, cycle_bits);
+    let target = target_vector(&eq, &expected, cells);
+    let mut sum = F2_128::from(0u64);
+    let mut eq_folded = eq;
+    let mut target_folded = target;
+    for (round, &expected_challenge) in claim.rounds.iter().zip(&claim.challenges) {
+        if round[0] + round[1] != sum {
+            return Ok(None);
+        }
+        for value in round {
+            transcript.absorb("round", &value.value().to_le_bytes());
+        }
+        let challenge = challenge(&mut transcript, "sumcheck");
+        if challenge != expected_challenge {
+            return Ok(None);
+        }
+        sum = evaluate_round4(round, challenge);
+        eq_folded = fold(&eq_folded, challenge);
+        target_folded = fold(&target_folded, challenge);
+    }
+    if eq_folded.len() != 1 || target_folded.len() != 1 {
+        return Ok(None);
+    }
+    let expected_sum = claim.a_eval * (claim.a_eval + F2_128::from(1u64))
+        + claim.lambda * (claim.a_eval * eq_folded[0] + target_folded[0]);
+    if sum != expected_sum {
+        return Ok(None);
+    }
+
+    let (r, r_prime, c) = sample_collision_point(&mut transcript, address_bits);
+    let rho_cycle = sample_point(&mut transcript, cycle_bits);
+    let mut cycle_weights = eq_table(&rho_cycle, cycles);
+    let mut collision_sum = F2_128::from(0u64);
+    for (round, &expected_challenge) in claim
+        .collision_rounds
+        .iter()
+        .zip(&claim.collision_challenges)
+    {
+        if round[0] + round[1] != collision_sum {
+            return Ok(None);
+        }
+        for value in round {
+            transcript.absorb("round", &value.value().to_le_bytes());
+        }
+        let challenge = challenge(&mut transcript, "sumcheck");
+        if challenge != expected_challenge {
+            return Ok(None);
+        }
+        collision_sum = evaluate_round5(round, challenge);
+        cycle_weights = fold(&cycle_weights, challenge);
+    }
+    if cycle_weights.len() != 1 {
+        return Ok(None);
+    }
+    let final_collision =
+        cycle_weights[0] * (claim.a_r_eval * claim.a_r_eval * claim.a_r_eval + c * claim.a_rp_eval);
+    if collision_sum != final_collision {
+        return Ok(None);
+    }
+
+    let mut r_point = r;
+    r_point.extend_from_slice(&claim.collision_challenges);
+    let mut rp_point = r_prime;
+    rp_point.extend_from_slice(&claim.collision_challenges);
+    let points = vec![
+        P3BatchPoint {
+            point: claim.challenges.clone(),
+            columns: vec![column],
+        },
+        P3BatchPoint {
+            point: r_point,
+            columns: vec![column],
+        },
+        P3BatchPoint {
+            point: rp_point,
+            columns: vec![column],
+        },
+    ];
+    let values = vec![
+        vec![claim.a_eval],
+        vec![claim.a_r_eval],
+        vec![claim.a_rp_eval],
+    ];
+    Ok(Some(AddressBatchClaim {
+        claim: claim.clone(),
+        points,
+        values,
+    }))
 }
 
 pub fn prove_address_multiplicity(
@@ -192,7 +398,7 @@ pub fn verify_address_multiplicity(
     Ok(boolean_ok && r_ok && rp_ok)
 }
 
-fn sumcheck_boolean_multiplicity(
+pub(crate) fn sumcheck_boolean_multiplicity(
     table: &[F2_128],
     eq: &[F2_128],
     target: &[F2_128],
@@ -234,7 +440,7 @@ fn sumcheck_boolean_multiplicity(
     Ok((polynomials, challenges))
 }
 
-fn sumcheck_collision(
+pub(crate) fn sumcheck_collision(
     a_r: &[F2_128],
     a_rp: &[F2_128],
     eq: &[F2_128],
@@ -275,7 +481,7 @@ fn sumcheck_collision(
     Ok((polynomials, challenges))
 }
 
-fn table_and_flags(
+pub(crate) fn table_and_flags(
     witness: &BinaryTwistWitness,
     write: bool,
     cells: usize,
@@ -297,7 +503,7 @@ fn table_and_flags(
     (table, expected)
 }
 
-fn target_vector(eq: &[F2_128], expected: &[F2_128], cells: usize) -> Vec<F2_128> {
+pub(crate) fn target_vector(eq: &[F2_128], expected: &[F2_128], cells: usize) -> Vec<F2_128> {
     eq.iter()
         .enumerate()
         .map(|(index, weight)| {
@@ -317,24 +523,31 @@ fn absorb_commitment(transcript: &mut Sha256Transcript, commitment: &P3Commitmen
     );
 }
 
-fn sample_point(transcript: &mut Sha256Transcript, length: usize) -> Vec<F2_128> {
+fn absorb_batch_commitment(transcript: &mut Sha256Transcript, commitment: &P3BatchCommitment) {
+    transcript.absorb(
+        "commitment",
+        &bincode::serialize(commitment).unwrap_or_default(),
+    );
+}
+
+pub(crate) fn sample_point(transcript: &mut Sha256Transcript, length: usize) -> Vec<F2_128> {
     (0..length)
         .map(|_| challenge(transcript, "point"))
         .collect()
 }
 
-fn challenge(transcript: &mut Sha256Transcript, label: &str) -> F2_128 {
+pub(crate) fn challenge(transcript: &mut Sha256Transcript, label: &str) -> F2_128 {
     let bytes = transcript.challenge_32(label);
     let mut value = [0u8; 16];
     value.copy_from_slice(&bytes[..16]);
     F2_128::from_bits(u128::from_le_bytes(value))
 }
 
-fn eq_table(point: &[F2_128], cycles: usize) -> Vec<F2_128> {
+pub(crate) fn eq_table(point: &[F2_128], cycles: usize) -> Vec<F2_128> {
     (0..cycles).map(|index| eq_at(point, index)).collect()
 }
 
-fn eq_at(point: &[F2_128], index: usize) -> F2_128 {
+pub(crate) fn eq_at(point: &[F2_128], index: usize) -> F2_128 {
     point
         .iter()
         .enumerate()
@@ -347,7 +560,7 @@ fn eq_at(point: &[F2_128], index: usize) -> F2_128 {
         })
 }
 
-fn eq_index(point: &[F2_128], address_bits: usize, cycle_bits: usize) -> Vec<F2_128> {
+pub(crate) fn eq_index(point: &[F2_128], address_bits: usize, cycle_bits: usize) -> Vec<F2_128> {
     let cycles = 1usize << cycle_bits;
     (0..cycles)
         .flat_map(|index| {
@@ -357,14 +570,14 @@ fn eq_index(point: &[F2_128], address_bits: usize, cycle_bits: usize) -> Vec<F2_
         .collect()
 }
 
-fn fold(values: &[F2_128], r: F2_128) -> Vec<F2_128> {
+pub(crate) fn fold(values: &[F2_128], r: F2_128) -> Vec<F2_128> {
     values
         .chunks_exact(2)
         .map(|pair| pair[0] + r * (pair[0] + pair[1]))
         .collect()
 }
 
-fn fold_all(values: &[F2_128], challenges: &[F2_128]) -> F2_128 {
+pub(crate) fn fold_all(values: &[F2_128], challenges: &[F2_128]) -> F2_128 {
     let mut values = values.to_vec();
     for &challenge in challenges {
         values = fold(&values, challenge);
@@ -395,7 +608,7 @@ fn evaluate_round5(values: &[F2_128; 5], r: F2_128) -> F2_128 {
     interpolate(values, r)
 }
 
-fn sample_collision_point(
+pub(crate) fn sample_collision_point(
     transcript: &mut Sha256Transcript,
     address_bits: usize,
 ) -> (Vec<F2_128>, Vec<F2_128>, F2_128) {

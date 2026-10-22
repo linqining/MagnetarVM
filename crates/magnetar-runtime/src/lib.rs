@@ -7,10 +7,12 @@
 pub mod binary_twist;
 pub mod binary_twist_address;
 
+use crate::binary_twist::{prove_binary_twist_ram, verify_binary_twist_ram, BinaryTwistRamProof};
+
 use magnetar_constraint::{ConstraintSystem, LayoutError, Witness, WitnessLayout, F2_128};
 use magnetar_cpu::{check_trace, CpuError};
 use magnetar_executor::{execute_with_io, ExecError, ExecutionIo};
-use magnetar_memory::{check_memory, check_ram, MemoryError, MemoryReport};
+use magnetar_memory::{check_memory, BinaryTwistWitness, MemoryError, MemoryReport};
 use magnetar_pcs::{
     MerklePath, MerkleTree, NaiveCommitment, NaiveMerklePcs, P3BinaryPcs, P3Commitment, P3Opening,
 };
@@ -27,6 +29,7 @@ pub struct Statement {
     pub trace_commitment: [u8; 32],
     pub config: MachineConfig,
     pub initial_state: MachineState,
+    pub initial_ram: Vec<u8>,
     pub final_state: MachineState,
     pub trace_len: u64,
     pub output: Vec<u8>,
@@ -74,6 +77,7 @@ impl ReferencePipeline {
             trace_commitment: trace_digest(&trace),
             config: trace.config.clone(),
             initial_state: trace.initial_state.clone(),
+            initial_ram: trace.initial_ram.clone(),
             final_state: trace.final_state.clone(),
             trace_len: trace.len() as u64,
             output: trace.io_output.clone(),
@@ -695,20 +699,25 @@ pub enum TraceAccessStep {
     },
     RegisterWrite(StoreProof),
     MemoryRead {
+        event: usize,
         word: u64,
         expected: F2_128,
-        proof: LoadProof,
+        value: F2_128,
     },
-    MemoryWrite(StoreProof),
+    MemoryWrite {
+        event: usize,
+        word: u64,
+        old_value: F2_128,
+        new_value: F2_128,
+    },
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TraceAccessProof {
     pub initial_registers: CommittedMemory,
-    pub initial_memory: CommittedMemory,
     pub steps: Vec<TraceAccessStep>,
     pub final_register_commitment: NaiveCommitment,
-    pub final_memory_commitment: NaiveCommitment,
+    pub ram: BinaryTwistRamProof,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -722,6 +731,7 @@ enum AccessDescriptor {
         value: u64,
     },
     MemoryRead {
+        event: usize,
         word: u64,
         lane: u8,
         width: u8,
@@ -729,6 +739,7 @@ enum AccessDescriptor {
         expected: u64,
     },
     MemoryWrite {
+        event: usize,
         word: u64,
         lane: u8,
         width: u8,
@@ -744,21 +755,6 @@ fn initial_registers(trace: &Trace) -> CommittedMemory {
         .map(|value| F2_128::from(*value))
         .collect();
     CommittedMemory::new(5, values).expect("32-register table")
-}
-
-fn initial_memory(trace: &Trace) -> Result<CommittedMemory, RuntimeError> {
-    let words = trace.config.ram_size / 8;
-    if words == 0 || !words.is_power_of_two() {
-        return Err(RuntimeError::Proof(
-            "RAM size must be a power-of-two number of words".into(),
-        ));
-    }
-    let values = trace
-        .initial_ram
-        .chunks_exact(8)
-        .map(|chunk| F2_128::from(u64::from_le_bytes(chunk.try_into().expect("eight bytes"))))
-        .collect();
-    CommittedMemory::new(words.trailing_zeros() as usize, values)
 }
 
 fn memory_span(
@@ -813,8 +809,34 @@ fn store_word(old_word: u64, lane: u8, width: u8, value: u64) -> u64 {
     (old_word & !shifted_mask) | ((value & mask) << (u32::from(lane) * 8))
 }
 
+fn twist_word(witness: &BinaryTwistWitness, event: usize, word: u64) -> Result<u64, RuntimeError> {
+    witness
+        .value
+        .get(event)
+        .and_then(|values| values.get(word as usize))
+        .map(|value| value.value() as u64)
+        .ok_or_else(|| RuntimeError::Proof("BinaryTwist history is missing an event".into()))
+}
+
+fn twist_read_value(witness: &BinaryTwistWitness, event: usize) -> Result<u64, RuntimeError> {
+    witness
+        .read_value
+        .get(event)
+        .map(|value| value.value() as u64)
+        .ok_or_else(|| RuntimeError::Proof("BinaryTwist read value is missing".into()))
+}
+
+fn twist_write_value(witness: &BinaryTwistWitness, event: usize) -> Result<u64, RuntimeError> {
+    witness
+        .write_value
+        .get(event)
+        .map(|value| value.value() as u64)
+        .ok_or_else(|| RuntimeError::Proof("BinaryTwist write value is missing".into()))
+}
+
 fn trace_access_plan(trace: &Trace) -> Result<Vec<AccessDescriptor>, RuntimeError> {
     let mut plan = Vec::new();
+    let mut event = 0usize;
     for row in &trace.rows {
         if let Some(index) = row.rs1 {
             plan.push(AccessDescriptor::RegisterRead {
@@ -830,12 +852,15 @@ fn trace_access_plan(trace: &Trace) -> Result<Vec<AccessDescriptor>, RuntimeErro
         }
         if let Some(access) = row.mem {
             let (word, lane, width) = memory_span(trace, access)?;
+            let memory_event = event;
+            event += 1;
             if access.is_write {
                 let is_amo = row.instruction.op.amo_width().is_some();
                 let is_read = row.instruction.op == magnetar_spec::Op::Ecall
                     && matches!(row.syscall, Some(syscall) if syscall.number == magnetar_spec::syscall::SYS_READ);
                 if is_amo {
                     plan.push(AccessDescriptor::MemoryRead {
+                        event: memory_event,
                         word,
                         lane,
                         width,
@@ -844,6 +869,7 @@ fn trace_access_plan(trace: &Trace) -> Result<Vec<AccessDescriptor>, RuntimeErro
                     });
                 }
                 plan.push(AccessDescriptor::MemoryWrite {
+                    event: memory_event,
                     word,
                     lane,
                     width,
@@ -862,6 +888,7 @@ fn trace_access_plan(trace: &Trace) -> Result<Vec<AccessDescriptor>, RuntimeErro
                         | magnetar_spec::Op::LrW
                 );
                 plan.push(AccessDescriptor::MemoryRead {
+                    event: memory_event,
                     word,
                     lane,
                     width,
@@ -885,7 +912,10 @@ fn trace_access_plan(trace: &Trace) -> Result<Vec<AccessDescriptor>, RuntimeErro
                 ));
             }
             let (word, lane, width) = memory_span(trace, *access)?;
+            let memory_event = event;
+            event += 1;
             plan.push(AccessDescriptor::MemoryWrite {
+                event: memory_event,
                 word,
                 lane,
                 width,
@@ -897,9 +927,11 @@ fn trace_access_plan(trace: &Trace) -> Result<Vec<AccessDescriptor>, RuntimeErro
 }
 
 pub fn prove_trace_access(trace: &Trace) -> Result<TraceAccessProof, RuntimeError> {
+    let witness = BinaryTwistWitness::from_trace(trace)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let mut registers = initial_registers(trace);
-    let mut memory = initial_memory(trace)?;
     let mut steps = Vec::new();
+    let mut event = 0usize;
 
     for row in &trace.rows {
         if let Some(index) = row.rs1 {
@@ -928,21 +960,23 @@ pub fn prove_trace_access(trace: &Trace) -> Result<TraceAccessProof, RuntimeErro
         }
         if let Some(access) = row.mem {
             let (word, lane, width) = memory_span(trace, access)?;
+            let memory_event = event;
+            event += 1;
+            let old_word = twist_word(&witness, memory_event, word)?;
             if access.is_write {
-                let old_word = memory.values[word as usize].value() as u64;
                 let is_amo = row.instruction.op.amo_width().is_some();
                 let is_read = row.instruction.op == magnetar_spec::Op::Ecall
                     && matches!(row.syscall, Some(syscall) if syscall.number == magnetar_spec::syscall::SYS_READ);
                 if is_amo {
-                    let proof = prove_load(&memory, 0, word)?;
                     let observed = load_result(old_word, lane, width, width == 4);
                     if observed != row.rd_val {
                         return Err(RuntimeError::Proof("atomic read mismatch".into()));
                     }
                     steps.push(TraceAccessStep::MemoryRead {
+                        event: memory_event,
                         word,
                         expected: F2_128::from(row.rd_val),
-                        proof,
+                        value: F2_128::from(old_word),
                     });
                 }
                 let write_value = if is_amo || is_read {
@@ -950,14 +984,20 @@ pub fn prove_trace_access(trace: &Trace) -> Result<TraceAccessProof, RuntimeErro
                 } else {
                     row.rs2_val
                 };
-                let value = F2_128::from(store_word(old_word, lane, width, write_value));
-                let proof = prove_store(&memory, 0, word, value)?;
-                let index =
-                    usize::try_from(word).map_err(|_| RuntimeError::AddressOutOfTable(word))?;
-                memory = memory.updated(index, value)?;
-                steps.push(TraceAccessStep::MemoryWrite(proof));
+                let new_word = store_word(old_word, lane, width, write_value);
+                if twist_write_value(&witness, memory_event)? != new_word {
+                    return Err(RuntimeError::Proof(
+                        "memory write does not match BinaryTwist".into(),
+                    ));
+                }
+                steps.push(TraceAccessStep::MemoryWrite {
+                    event: memory_event,
+                    word,
+                    old_value: F2_128::from(old_word),
+                    new_value: F2_128::from(new_word),
+                });
             } else {
-                let proof = prove_load(&memory, 0, word)?;
+                let read_word = twist_read_value(&witness, memory_event)?;
                 let signed = matches!(
                     row.instruction.op,
                     magnetar_spec::Op::Lb
@@ -965,14 +1005,15 @@ pub fn prove_trace_access(trace: &Trace) -> Result<TraceAccessProof, RuntimeErro
                         | magnetar_spec::Op::Lw
                         | magnetar_spec::Op::LrW
                 );
-                let value = load_result(proof.value.value() as u64, lane, width, signed);
+                let value = load_result(read_word, lane, width, signed);
                 if value != row.rd_val {
                     return Err(RuntimeError::Proof("memory read mismatch".into()));
                 }
                 steps.push(TraceAccessStep::MemoryRead {
+                    event: memory_event,
                     word,
                     expected: F2_128::from(row.rd_val),
-                    proof,
+                    value: F2_128::from(read_word),
                 });
             }
         }
@@ -991,25 +1032,42 @@ pub fn prove_trace_access(trace: &Trace) -> Result<TraceAccessProof, RuntimeErro
                 ));
             }
             let (word, lane, width) = memory_span(trace, *access)?;
-            let old_word = memory.values[word as usize].value() as u64;
-            let value = F2_128::from(store_word(old_word, lane, width, access.value));
-            let proof = prove_store(&memory, 0, word, value)?;
-            let cell = usize::try_from(word).map_err(|_| RuntimeError::AddressOutOfTable(word))?;
-            memory = memory.updated(cell, value)?;
-            steps.push(TraceAccessStep::MemoryWrite(proof));
+            let memory_event = event;
+            event += 1;
+            let old_word = twist_word(&witness, memory_event, word)?;
+            let new_word = store_word(old_word, lane, width, access.value);
+            if twist_write_value(&witness, memory_event)? != new_word {
+                return Err(RuntimeError::Proof(
+                    "syscall write does not match BinaryTwist".into(),
+                ));
+            }
+            steps.push(TraceAccessStep::MemoryWrite {
+                event: memory_event,
+                word,
+                old_value: F2_128::from(old_word),
+                new_value: F2_128::from(new_word),
+            });
         }
     }
 
+    let ram =
+        prove_binary_twist_ram(&witness).map_err(|error| RuntimeError::Proof(error.to_string()))?;
     Ok(TraceAccessProof {
         initial_registers: initial_registers(trace),
-        initial_memory: initial_memory(trace)?,
         steps,
         final_register_commitment: registers.commitment,
-        final_memory_commitment: memory.commitment,
+        ram,
     })
 }
 
 pub fn verify_trace_access(trace: &Trace, proof: &TraceAccessProof) -> Result<(), RuntimeError> {
+    let witness = BinaryTwistWitness::from_trace(trace)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if !verify_binary_twist_ram(&witness, &proof.ram)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+    {
+        return Err(RuntimeError::Proof("BinaryTwist RAM proof rejected".into()));
+    }
     let plan = trace_access_plan(trace)?;
     if plan.len() != proof.steps.len() {
         return Err(RuntimeError::Proof(
@@ -1026,13 +1084,8 @@ pub fn verify_trace_access(trace: &Trace, proof: &TraceAccessProof) -> Result<()
     {
         return Err(RuntimeError::Proof("initial registers mismatch".into()));
     }
-    let expected_initial_memory = initial_memory(trace)?;
-    if proof.initial_memory.values != expected_initial_memory.values {
-        return Err(RuntimeError::Proof("initial memory mismatch".into()));
-    }
 
     let mut registers = proof.initial_registers.clone();
-    let mut memory = proof.initial_memory.clone();
     for (step_index, (step, descriptor)) in proof.steps.iter().zip(plan.iter()).enumerate() {
         match (step, descriptor) {
             (
@@ -1072,11 +1125,13 @@ pub fn verify_trace_access(trace: &Trace, proof: &TraceAccessProof) -> Result<()
             }
             (
                 TraceAccessStep::MemoryRead {
+                    event,
                     word,
                     expected,
-                    proof,
+                    value,
                 },
                 AccessDescriptor::MemoryRead {
+                    event: expected_event,
                     word: expected_word,
                     lane,
                     width,
@@ -1084,41 +1139,60 @@ pub fn verify_trace_access(trace: &Trace, proof: &TraceAccessProof) -> Result<()
                     expected: expected_value,
                 },
             ) => {
-                if word != expected_word || expected.value() as u64 != *expected_value {
+                if event != expected_event
+                    || word != expected_word
+                    || expected.value() as u64 != *expected_value
+                {
                     return Err(RuntimeError::Proof(format!(
                         "memory read metadata mismatch at step {step_index}"
                     )));
                 }
-                verify_load(&memory, proof)?;
-                let value = load_result(proof.value.value() as u64, *lane, *width, *signed);
-                if value != *expected_value {
+                let read_word = twist_read_value(&witness, *event)?;
+                if value.value() as u64 != read_word {
+                    return Err(RuntimeError::Proof(format!(
+                        "memory read is not bound to BinaryTwist at step {step_index}"
+                    )));
+                }
+                let observed = load_result(read_word, *lane, *width, *signed);
+                if observed != *expected_value {
                     return Err(RuntimeError::Proof(format!(
                         "memory read value mismatch at step {step_index}"
                     )));
                 }
             }
             (
-                TraceAccessStep::MemoryWrite(proof),
-                AccessDescriptor::MemoryWrite {
+                TraceAccessStep::MemoryWrite {
+                    event,
                     word,
+                    old_value,
+                    new_value,
+                },
+                AccessDescriptor::MemoryWrite {
+                    event: expected_event,
+                    word: expected_word,
                     lane,
                     width,
                     value,
                 },
             ) => {
-                if proof.addr != *word {
+                if event != expected_event || word != expected_word {
                     return Err(RuntimeError::Proof(format!(
                         "memory write metadata mismatch at step {step_index}"
                     )));
                 }
-                verify_store(&memory, proof)?;
-                let expected = store_word(proof.old_value.value() as u64, *lane, *width, *value);
-                if proof.new_value.value() as u64 != expected {
+                let old_word = twist_word(&witness, *event, *word)?;
+                let written = twist_write_value(&witness, *event)?;
+                if old_value.value() as u64 != old_word || new_value.value() as u64 != written {
+                    return Err(RuntimeError::Proof(format!(
+                        "memory write is not bound to BinaryTwist at step {step_index}"
+                    )));
+                }
+                let expected_word_value = store_word(old_word, *lane, *width, *value);
+                if written != expected_word_value {
                     return Err(RuntimeError::Proof(format!(
                         "memory write value mismatch at step {step_index}"
                     )));
                 }
-                memory.commitment = proof.new_commitment.clone();
             }
             _ => {
                 return Err(RuntimeError::Proof(format!(
@@ -1134,21 +1208,11 @@ pub fn verify_trace_access(trace: &Trace, proof: &TraceAccessProof) -> Result<()
         .iter()
         .map(|value| F2_128::from(*value))
         .collect::<Vec<_>>();
-    let final_ram = check_ram(trace)?;
-    let final_memory = final_ram
-        .chunks_exact(8)
-        .map(|chunk| F2_128::from(u64::from_le_bytes(chunk.try_into().expect("eight bytes"))))
-        .collect::<Vec<_>>();
     let expected_register_commitment =
         <NaiveMerklePcs as Pcs>::commit(&NaiveMerklePcs, &final_registers)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    let expected_memory_commitment =
-        <NaiveMerklePcs as Pcs>::commit(&NaiveMerklePcs, &final_memory)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     if registers.commitment != proof.final_register_commitment
-        || memory.commitment != proof.final_memory_commitment
         || expected_register_commitment != proof.final_register_commitment
-        || expected_memory_commitment != proof.final_memory_commitment
     {
         return Err(RuntimeError::Proof("final trace state mismatch".into()));
     }
@@ -2063,6 +2127,7 @@ pub fn verify_unified_trace_statement(
 ) -> Result<(), RuntimeError> {
     if statement.trace_len != trace.rows.len() as u64
         || statement.initial_state != trace.initial_state
+        || statement.initial_ram != trace.initial_ram
         || statement.final_state != trace.final_state
         || statement.trace_commitment != proof.trace_commitment
         || statement.program_hash != rom_hash(&trace.rom)
@@ -2076,8 +2141,8 @@ pub fn verify_unified_trace_statement(
     verify_unified_trace(trace, proof, width)
 }
 
-/// Verify using only the public statement and the proof; the trace rows and
-/// initial memory are carried by the proof and authenticated by the statement.
+/// Verify using only the public statement and the proof. The statement binds
+/// the initial RAM; the proof carries authenticated trace rows.
 pub fn verify_unified_statement(
     statement: &Statement,
     proof: &UnifiedTraceProof,
@@ -2093,7 +2158,7 @@ pub fn verify_unified_statement(
             "proof ROM does not match the statement program hash".into(),
         ));
     }
-    let trace = trace_from_statement(statement, &proof.rows, &proof.access, &proof.rom)?;
+    let trace = trace_from_statement(statement, &proof.rows, &proof.rom)?;
     if trace_digest(&trace) != statement.trace_commitment {
         return Err(RuntimeError::Proof(
             "proof rows do not match the statement trace commitment".into(),
@@ -2160,7 +2225,6 @@ pub fn decode_chunked_proof(bytes: &[u8]) -> Result<ChunkedTraceProof, RuntimeEr
 fn trace_from_statement(
     statement: &Statement,
     rows: &[magnetar_spec::TraceRow],
-    access: &TraceAccessProof,
     rom: &[u32],
 ) -> Result<Trace, RuntimeError> {
     if !statement.config.ram_size.is_multiple_of(8) {
@@ -2168,15 +2232,12 @@ fn trace_from_statement(
             "standalone verification requires an 8-byte-aligned RAM size".into(),
         ));
     }
-    let mut initial_ram = Vec::with_capacity(statement.config.ram_size);
-    for value in &access.initial_memory.values {
-        initial_ram.extend_from_slice(&(value.value() as u64).to_le_bytes());
-    }
-    if initial_ram.len() != statement.config.ram_size {
+    if statement.initial_ram.len() != statement.config.ram_size {
         return Err(RuntimeError::Proof(
-            "initial memory table does not match the statement config".into(),
+            "statement initial RAM does not match the machine config".into(),
         ));
     }
+    let initial_ram = statement.initial_ram.clone();
     let memory_events = rows
         .iter()
         .flat_map(|row| {
@@ -2394,7 +2455,7 @@ pub fn verify_chunked_statement(
             "chunked proof ROM does not match the statement program hash".into(),
         ));
     }
-    let trace = trace_from_statement(statement, &proof.rows, &proof.access, &proof.rom)?;
+    let trace = trace_from_statement(statement, &proof.rows, &proof.rom)?;
     if trace_digest(&trace) != statement.trace_commitment {
         return Err(RuntimeError::Proof(
             "chunked proof rows do not match the statement".into(),
@@ -2905,6 +2966,7 @@ mod tests {
             trace_commitment: trace_digest(&trace),
             config: config(),
             initial_state: trace.initial_state.clone(),
+            initial_ram: trace.initial_ram.clone(),
             final_state: trace.final_state.clone(),
             trace_len: trace.rows.len() as u64,
             output: trace.io_output.clone(),
@@ -2934,6 +2996,10 @@ mod tests {
         wrong_program.program_hash[0] ^= 1;
         assert!(verify_unified_trace_statement(&wrong_program, &trace, &proof, 8).is_err());
         assert!(verify_unified_statement(&wrong_program, &proof, 8).is_err());
+        let mut wrong_ram = statement.clone();
+        wrong_ram.initial_ram[0] ^= 1;
+        assert!(verify_unified_trace_statement(&wrong_ram, &trace, &proof, 8).is_err());
+        assert!(verify_unified_statement(&wrong_ram, &proof, 8).is_err());
         let mut wrong_state = statement;
         wrong_state.final_state.pc += 4;
         assert!(verify_unified_trace_statement(&wrong_state, &trace, &proof, 8).is_err());
@@ -3543,6 +3609,7 @@ mod tests {
             trace_commitment: trace_digest(&trace),
             config: config(),
             initial_state: trace.initial_state.clone(),
+            initial_ram: trace.initial_ram.clone(),
             final_state: trace.final_state.clone(),
             trace_len: trace.rows.len() as u64,
             output: trace.io_output.clone(),
@@ -4025,12 +4092,22 @@ mod tests {
         verify_trace_access(&trace, &proof).unwrap();
 
         let mut tampered = proof.clone();
-        tampered.final_memory_commitment.root[0] ^= 1;
+        tampered.ram.read.claimed_read = tampered.ram.read.claimed_read + F2_128::from(1u64);
         assert!(verify_trace_access(&trace, &tampered).is_err());
 
         let mut tampered = proof.clone();
         if let TraceAccessStep::RegisterRead { index, .. } = &mut tampered.steps[0] {
             *index += 1;
+        }
+        assert!(verify_trace_access(&trace, &tampered).is_err());
+
+        let mut tampered = proof.clone();
+        if let Some(TraceAccessStep::MemoryWrite { new_value, .. }) = tampered
+            .steps
+            .iter_mut()
+            .find(|step| matches!(step, TraceAccessStep::MemoryWrite { .. }))
+        {
+            *new_value = *new_value + F2_128::from(1u64);
         }
         assert!(verify_trace_access(&trace, &tampered).is_err());
 

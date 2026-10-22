@@ -7,7 +7,9 @@
 
 use magnetar_constraint::{Field, F2_128};
 use magnetar_memory::BinaryTwistWitness;
-use magnetar_pcs::{P3BinaryPcs, P3Commitment, P3Opening};
+use magnetar_pcs::{
+    P3BatchCommitment, P3BatchOpening, P3BatchPoint, P3BinaryPcs, P3Commitment, P3Opening,
+};
 use magnetar_proof::{Pcs, ProofError};
 use magnetar_transcript::Sha256Transcript;
 use serde::{Deserialize, Serialize};
@@ -794,27 +796,255 @@ fn padded_values(values: &[F2_128], cycle_bits: usize) -> Vec<F2_128> {
 }
 
 use crate::binary_twist_address::{
-    prove_address_multiplicity, verify_address_multiplicity, AddressMultiplicityProof,
+    prove_address_batch_claim, verify_address_batch_claim, AddressMultiplicityClaim,
 };
 
+const RA: usize = 0;
+const WA: usize = 1;
+const VAL: usize = 2;
+const INC: usize = 3;
+const NEXT: usize = 4;
+const RAM_COLUMNS: usize = 5;
+
+struct BatchTables {
+    columns: Vec<Vec<F2_128>>,
+    address_bits: usize,
+    cycle_bits: usize,
+}
+
+fn batch_tables(witness: &BinaryTwistWitness) -> Result<BatchTables, ProofError> {
+    let cells = witness.initial.len();
+    if cells == 0 || !cells.is_power_of_two() {
+        return Err(ProofError::Pcs(
+            "BinaryTwist RAM must contain a power-of-two number of words".into(),
+        ));
+    }
+    let cycles = witness.cycles.next_power_of_two();
+    let address_bits = cells.trailing_zeros() as usize;
+    let cycle_bits = cycles.trailing_zeros() as usize;
+    let len = cells
+        .checked_mul(cycles)
+        .ok_or_else(|| ProofError::Pcs("BinaryTwist table overflows".into()))?;
+    let mut columns = vec![vec![F2_128::from(0u64); len]; RAM_COLUMNS];
+    for cycle in 0..witness.cycles {
+        let start = cycle * cells;
+        columns[RA][start..start + cells].copy_from_slice(&witness.read_address[cycle]);
+        columns[WA][start..start + cells].copy_from_slice(&witness.write_address[cycle]);
+        columns[VAL][start..start + cells].copy_from_slice(&witness.value[cycle]);
+        let following = if cycle + 1 < witness.cycles {
+            &witness.value[cycle + 1]
+        } else {
+            &witness.final_value
+        };
+        columns[NEXT][start..start + cells].copy_from_slice(following);
+        for cell in 0..cells {
+            columns[INC][start + cell] = witness.increment[cycle];
+        }
+    }
+    Ok(BatchTables {
+        columns,
+        address_bits,
+        cycle_bits,
+    })
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BinaryTwistReadClaim {
+    pub claimed_read: F2_128,
+    pub cycle_point: Vec<F2_128>,
+    pub rounds: Vec<[F2_128; 4]>,
+    pub challenges: Vec<F2_128>,
+    pub ra_eval: F2_128,
+    pub val_eval: F2_128,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BinaryTwistWriteClaim {
+    pub claimed_write: F2_128,
+    pub cycle_point: Vec<F2_128>,
+    pub rounds: Vec<[F2_128; 4]>,
+    pub challenges: Vec<F2_128>,
+    pub wa_eval: F2_128,
+    pub val_eval: F2_128,
+    pub inc_eval: F2_128,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BinaryTwistUpdateClaim {
+    pub cycle_point: Vec<F2_128>,
+    pub rounds: Vec<[F2_128; 4]>,
+    pub challenges: Vec<F2_128>,
+    pub next_eval: F2_128,
+    pub val_eval: F2_128,
+    pub wa_eval: F2_128,
+    pub inc_eval: F2_128,
+}
+
+/// Batched BinaryTwist RAM proof.
+///
+/// The read addresses, write addresses, value history, increments, and the
+/// successor value history share one P3 commitment. Every identity's terminal
+/// claims are discharged by one P3 opening argument.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BinaryTwistRamProof {
-    pub read: BinaryTwistReadProof,
-    pub write: BinaryTwistWriteProof,
-    pub update: BinaryTwistUpdateProof,
-    pub read_address: AddressMultiplicityProof,
-    pub write_address: AddressMultiplicityProof,
+    pub address_bits: usize,
+    pub cycle_bits: usize,
+    pub read: BinaryTwistReadClaim,
+    pub write: BinaryTwistWriteClaim,
+    pub update: BinaryTwistUpdateClaim,
+    pub read_address: AddressMultiplicityClaim,
+    pub write_address: AddressMultiplicityClaim,
+    pub opening: P3BatchOpening,
+}
+
+fn absorb_batch_commitment(transcript: &mut Sha256Transcript, commitment: &P3BatchCommitment) {
+    transcript.absorb(
+        "commitment",
+        &bincode::serialize(commitment).unwrap_or_default(),
+    );
 }
 
 pub fn prove_binary_twist_ram(
     witness: &BinaryTwistWitness,
 ) -> Result<BinaryTwistRamProof, ProofError> {
+    witness
+        .validate()
+        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    let tables = batch_tables(witness)?;
+    let pcs = P3BinaryPcs::new(100);
+    let commitment = pcs.commit_batch(&tables.columns)?;
+    let mut points = Vec::new();
+    let mut expected = Vec::new();
+
+    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-read");
+    absorb_batch_commitment(&mut transcript, &commitment);
+    let cycle_point = sample_point(&mut transcript, tables.cycle_bits);
+    let eq = eq_index(&cycle_point, tables.address_bits, tables.cycle_bits);
+    let claimed_read = tables.columns[RA]
+        .iter()
+        .zip(&tables.columns[VAL])
+        .zip(&eq)
+        .fold(F2_128::from(0u64), |sum, ((a, b), e)| sum + *e * *a * *b);
+    transcript.absorb("claimed-read", &claimed_read.value().to_le_bytes());
+    let (rounds, challenges) = sumcheck(
+        &tables.columns[RA],
+        &tables.columns[VAL],
+        &eq,
+        &mut transcript,
+    )?;
+    let ra_eval = fold_all(&tables.columns[RA], &challenges);
+    let val_eval = fold_all(&tables.columns[VAL], &challenges);
+    let read = BinaryTwistReadClaim {
+        claimed_read,
+        cycle_point: cycle_point.clone(),
+        rounds,
+        challenges: challenges.clone(),
+        ra_eval,
+        val_eval,
+    };
+    points.push(P3BatchPoint {
+        point: challenges,
+        columns: vec![RA, VAL],
+    });
+    expected.push(vec![ra_eval, val_eval]);
+
+    let payoff: Vec<F2_128> = tables.columns[VAL]
+        .iter()
+        .zip(&tables.columns[INC])
+        .map(|(value, increment)| *value + *increment)
+        .collect();
+    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-write");
+    absorb_batch_commitment(&mut transcript, &commitment);
+    let cycle_point = sample_point(&mut transcript, tables.cycle_bits);
+    let eq = eq_index(&cycle_point, tables.address_bits, tables.cycle_bits);
+    let claimed_write = tables.columns[WA]
+        .iter()
+        .zip(&payoff)
+        .zip(&eq)
+        .fold(F2_128::from(0u64), |sum, ((a, b), e)| sum + *e * *a * *b);
+    transcript.absorb("claimed-write", &claimed_write.value().to_le_bytes());
+    let (rounds, challenges) = sumcheck(&tables.columns[WA], &payoff, &eq, &mut transcript)?;
+    let wa_eval = fold_all(&tables.columns[WA], &challenges);
+    let val_eval = fold_all(&tables.columns[VAL], &challenges);
+    let inc_eval = fold_all(&tables.columns[INC], &challenges);
+    let write = BinaryTwistWriteClaim {
+        claimed_write,
+        cycle_point: cycle_point.clone(),
+        rounds,
+        challenges: challenges.clone(),
+        wa_eval,
+        val_eval,
+        inc_eval,
+    };
+    points.push(P3BatchPoint {
+        point: challenges,
+        columns: vec![WA, VAL, INC],
+    });
+    expected.push(vec![wa_eval, val_eval, inc_eval]);
+
+    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-update");
+    absorb_batch_commitment(&mut transcript, &commitment);
+    let cycle_point = sample_point(&mut transcript, tables.cycle_bits);
+    let eq = eq_index(&cycle_point, tables.address_bits, tables.cycle_bits);
+    let (rounds, challenges) = sumcheck_update(
+        &tables.columns[NEXT],
+        &tables.columns[VAL],
+        &tables.columns[WA],
+        &tables.columns[INC],
+        &eq,
+        &mut transcript,
+    )?;
+    let next_eval = fold_all(&tables.columns[NEXT], &challenges);
+    let val_eval = fold_all(&tables.columns[VAL], &challenges);
+    let wa_eval = fold_all(&tables.columns[WA], &challenges);
+    let inc_eval = fold_all(&tables.columns[INC], &challenges);
+    let update = BinaryTwistUpdateClaim {
+        cycle_point,
+        rounds,
+        challenges: challenges.clone(),
+        next_eval,
+        val_eval,
+        wa_eval,
+        inc_eval,
+    };
+    points.push(P3BatchPoint {
+        point: challenges,
+        columns: vec![NEXT, VAL, WA, INC],
+    });
+    expected.push(vec![next_eval, val_eval, wa_eval, inc_eval]);
+
+    let read_address = prove_address_batch_claim(
+        &tables.columns[RA],
+        false,
+        witness,
+        &commitment,
+        "magnetar-binary-twist-read-address",
+        RA,
+    )?;
+    let write_address = prove_address_batch_claim(
+        &tables.columns[WA],
+        true,
+        witness,
+        &commitment,
+        "magnetar-binary-twist-write-address",
+        WA,
+    )?;
+    points.extend(read_address.points);
+    expected.extend(read_address.values);
+    points.extend(write_address.points);
+    expected.extend(write_address.values);
+
+    let opening = pcs.open_batch(&tables.columns, &points)?;
+    debug_assert!(pcs.verify_batch(&opening, &points, &expected)?);
     Ok(BinaryTwistRamProof {
-        read: prove_read_identity(witness)?,
-        write: prove_write_identity(witness)?,
-        update: prove_update_identity(witness)?,
-        read_address: prove_address_multiplicity(witness, false)?,
-        write_address: prove_address_multiplicity(witness, true)?,
+        address_bits: tables.address_bits,
+        cycle_bits: tables.cycle_bits,
+        read,
+        write,
+        update,
+        read_address: read_address.claim,
+        write_address: write_address.claim,
+        opening,
     })
 }
 
@@ -822,11 +1052,174 @@ pub fn verify_binary_twist_ram(
     witness: &BinaryTwistWitness,
     proof: &BinaryTwistRamProof,
 ) -> Result<bool, ProofError> {
-    Ok(verify_read_identity(&proof.read, witness)?
-        && verify_write_identity(&proof.write, witness)?
-        && verify_update_identity(&proof.update)?
-        && verify_address_multiplicity(&proof.read_address, false, witness)?
-        && verify_address_multiplicity(&proof.write_address, true, witness)?)
+    let cells = witness.initial.len();
+    let cycles = witness.cycles.next_power_of_two();
+    let address_bits = cells.trailing_zeros() as usize;
+    let cycle_bits = cycles.trailing_zeros() as usize;
+    if proof.address_bits != address_bits
+        || proof.cycle_bits != cycle_bits
+        || proof.opening.commitment.num_variables != address_bits + cycle_bits
+        || proof.opening.commitment.num_columns != RAM_COLUMNS
+    {
+        return Ok(false);
+    }
+    let pcs = P3BinaryPcs::new(100);
+    let commitment = &proof.opening.commitment;
+    let mut points = Vec::new();
+    let mut expected = Vec::new();
+
+    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-read");
+    absorb_batch_commitment(&mut transcript, commitment);
+    let cycle_point = sample_point(&mut transcript, cycle_bits);
+    if proof.read.cycle_point != cycle_point {
+        return Ok(false);
+    }
+    let values = padded_values(&witness.read_value, cycle_bits);
+    if fold_all(&values, &cycle_point) != proof.read.claimed_read {
+        return Ok(false);
+    }
+    let mut eq = eq_index(&cycle_point, address_bits, cycle_bits);
+    transcript.absorb(
+        "claimed-read",
+        &proof.read.claimed_read.value().to_le_bytes(),
+    );
+    let mut sum = proof.read.claimed_read;
+    for (round, &expected_challenge) in proof.read.rounds.iter().zip(&proof.read.challenges) {
+        if round[0] + round[1] != sum {
+            return Ok(false);
+        }
+        for coefficient in round {
+            transcript.absorb("round", &coefficient.value().to_le_bytes());
+        }
+        let challenge = challenge(&mut transcript, "sumcheck");
+        if challenge != expected_challenge {
+            return Ok(false);
+        }
+        sum = evaluate_round(round, challenge);
+        eq = fold(&eq, challenge);
+    }
+    if eq.len() != 1 || sum != eq[0] * proof.read.ra_eval * proof.read.val_eval {
+        return Ok(false);
+    }
+    points.push(P3BatchPoint {
+        point: proof.read.challenges.clone(),
+        columns: vec![RA, VAL],
+    });
+    expected.push(vec![proof.read.ra_eval, proof.read.val_eval]);
+
+    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-write");
+    absorb_batch_commitment(&mut transcript, commitment);
+    let cycle_point = sample_point(&mut transcript, cycle_bits);
+    if proof.write.cycle_point != cycle_point {
+        return Ok(false);
+    }
+    let values = padded_values(&witness.write_value, cycle_bits);
+    if fold_all(&values, &cycle_point) != proof.write.claimed_write {
+        return Ok(false);
+    }
+    let mut eq = eq_index(&cycle_point, address_bits, cycle_bits);
+    transcript.absorb(
+        "claimed-write",
+        &proof.write.claimed_write.value().to_le_bytes(),
+    );
+    let mut sum = proof.write.claimed_write;
+    for (round, &expected_challenge) in proof.write.rounds.iter().zip(&proof.write.challenges) {
+        if round[0] + round[1] != sum {
+            return Ok(false);
+        }
+        for coefficient in round {
+            transcript.absorb("round", &coefficient.value().to_le_bytes());
+        }
+        let challenge = challenge(&mut transcript, "sumcheck");
+        if challenge != expected_challenge {
+            return Ok(false);
+        }
+        sum = evaluate_round(round, challenge);
+        eq = fold(&eq, challenge);
+    }
+    if eq.len() != 1
+        || sum != eq[0] * proof.write.wa_eval * (proof.write.val_eval + proof.write.inc_eval)
+    {
+        return Ok(false);
+    }
+    points.push(P3BatchPoint {
+        point: proof.write.challenges.clone(),
+        columns: vec![WA, VAL, INC],
+    });
+    expected.push(vec![
+        proof.write.wa_eval,
+        proof.write.val_eval,
+        proof.write.inc_eval,
+    ]);
+
+    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-update");
+    absorb_batch_commitment(&mut transcript, commitment);
+    let cycle_point = sample_point(&mut transcript, cycle_bits);
+    if proof.update.cycle_point != cycle_point {
+        return Ok(false);
+    }
+    let mut eq = eq_index(&cycle_point, address_bits, cycle_bits);
+    let mut sum = F2_128::from(0u64);
+    for (round, &expected_challenge) in proof.update.rounds.iter().zip(&proof.update.challenges) {
+        if round[0] + round[1] != sum {
+            return Ok(false);
+        }
+        for coefficient in round {
+            transcript.absorb("round", &coefficient.value().to_le_bytes());
+        }
+        let challenge = challenge(&mut transcript, "sumcheck");
+        if challenge != expected_challenge {
+            return Ok(false);
+        }
+        sum = evaluate_round(round, challenge);
+        eq = fold(&eq, challenge);
+    }
+    let combined = proof.update.next_eval
+        + proof.update.val_eval
+        + proof.update.wa_eval * proof.update.inc_eval;
+    if eq.len() != 1 || sum != eq[0] * combined {
+        return Ok(false);
+    }
+    points.push(P3BatchPoint {
+        point: proof.update.challenges.clone(),
+        columns: vec![NEXT, VAL, WA, INC],
+    });
+    expected.push(vec![
+        proof.update.next_eval,
+        proof.update.val_eval,
+        proof.update.wa_eval,
+        proof.update.inc_eval,
+    ]);
+
+    let Some(read_address) = verify_address_batch_claim(
+        &proof.read_address,
+        false,
+        witness,
+        commitment,
+        "magnetar-binary-twist-read-address",
+        RA,
+    )?
+    else {
+        return Ok(false);
+    };
+    points.extend(read_address.points);
+    expected.extend(read_address.values);
+
+    let Some(write_address) = verify_address_batch_claim(
+        &proof.write_address,
+        true,
+        witness,
+        commitment,
+        "magnetar-binary-twist-write-address",
+        WA,
+    )?
+    else {
+        return Ok(false);
+    };
+    points.extend(write_address.points);
+    expected.extend(write_address.values);
+
+    pcs.verify_batch(&proof.opening, &points, &expected)
 }
 
 #[cfg(test)]
@@ -898,8 +1291,25 @@ mod ram_tests {
         let witness = BinaryTwistWitness::from_trace(&trace).unwrap();
         let proof = prove_binary_twist_ram(&witness).unwrap();
         assert!(verify_binary_twist_ram(&witness, &proof).unwrap());
-        let mut tampered = proof;
+
+        let mut tampered = proof.clone();
         tampered.read.claimed_read = tampered.read.claimed_read + F2_128::from(1u64);
+        assert!(!verify_binary_twist_ram(&witness, &tampered).unwrap());
+
+        let mut tampered = proof.clone();
+        tampered.write.inc_eval = tampered.write.inc_eval + F2_128::from(1u64);
+        assert!(!verify_binary_twist_ram(&witness, &tampered).unwrap());
+
+        let mut tampered = proof.clone();
+        tampered.update.next_eval = tampered.update.next_eval + F2_128::from(1u64);
+        assert!(!verify_binary_twist_ram(&witness, &tampered).unwrap());
+
+        let mut tampered = proof.clone();
+        tampered.read_address.a_eval = tampered.read_address.a_eval + F2_128::from(1u64);
+        assert!(!verify_binary_twist_ram(&witness, &tampered).unwrap());
+
+        let mut tampered = proof;
+        tampered.write_address.a_rp_eval = tampered.write_address.a_rp_eval + F2_128::from(1u64);
         assert!(!verify_binary_twist_ram(&witness, &tampered).unwrap());
     }
 }

@@ -40,6 +40,46 @@ pub struct P3Opening {
     pub proof: P3Proof,
 }
 
+/// One commitment to a packed batch of equally sized columns.
+///
+/// The columns are stacked into the PCS layout, so the commitment and its
+/// opening proof are shared by every column. `num_variables` is the local
+/// arity of a column; `stacked_variables` is the arity of the stacked
+/// polynomial after slot selectors are added.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct P3BatchCommitment {
+    pub cap: P3Cap,
+    pub num_variables: usize,
+    pub stacked_variables: usize,
+    pub num_columns: usize,
+}
+
+/// One PCS opening proof covering every column and every point in a batch.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct P3BatchOpening {
+    pub commitment: P3BatchCommitment,
+    pub proof: P3Proof,
+}
+
+impl std::fmt::Debug for P3BatchOpening {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("P3BatchOpening")
+            .field("commitment", &self.commitment)
+            .field(
+                "proof_bytes",
+                &bincode::serialize(&self.proof).map(|b| b.len()),
+            )
+            .finish()
+    }
+}
+
+/// A point and the columns opened there.
+#[derive(Clone, Debug)]
+pub struct P3BatchPoint {
+    pub point: Vec<F2_128>,
+    pub columns: Vec<usize>,
+}
+
 impl std::fmt::Debug for P3Opening {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("P3Opening")
@@ -139,6 +179,183 @@ impl P3BinaryPcs {
         backend
             .commit(witness, challenger)
             .map_err(|error| ProofError::Pcs(error.to_string()))
+    }
+
+    fn batch_table(columns: &[Vec<F2_128>]) -> Result<(Table<F>, usize, usize), ProofError> {
+        if columns.is_empty() {
+            return Err(ProofError::DimensionMismatch);
+        }
+        let len = columns[0].len();
+        if len < 2 || !len.is_power_of_two() {
+            return Err(ProofError::NotPowerOfTwo(len));
+        }
+        if columns.iter().any(|column| column.len() != len) {
+            return Err(ProofError::DimensionMismatch);
+        }
+        let logical = len.trailing_zeros() as usize;
+        let mut converted = Vec::with_capacity(len * columns.len());
+        for column in columns {
+            converted.extend(
+                column
+                    .iter()
+                    .map(|value| F::from_repr(value.value()))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        Ok((
+            Table::new(RowMajorMatrix::new(converted, len)),
+            logical,
+            columns.len(),
+        ))
+    }
+
+    fn stacked_variables(num_variables: usize, num_columns: usize) -> usize {
+        let slots = num_columns.next_power_of_two();
+        num_variables + slots.trailing_zeros() as usize
+    }
+
+    fn batch_protocol(
+        num_variables: usize,
+        num_columns: usize,
+        points: &[P3BatchPoint],
+    ) -> Result<OpeningProtocol, ProofError> {
+        let mut schedule = Vec::with_capacity(points.len());
+        for (index, point) in points.iter().enumerate() {
+            if point.point.len() != num_variables {
+                return Err(ProofError::PointLength {
+                    expected: num_variables,
+                    actual: point.point.len(),
+                });
+            }
+            if point.columns.is_empty() || point.columns.iter().any(|column| *column >= num_columns)
+            {
+                return Err(ProofError::Pcs(format!(
+                    "batch point {index} names an invalid column"
+                )));
+            }
+            let mut seen = point.columns.clone();
+            seen.sort_unstable();
+            seen.dedup();
+            if seen.len() != point.columns.len() {
+                return Err(ProofError::Pcs(format!(
+                    "batch point {index} repeats a column"
+                )));
+            }
+            schedule.push(OpeningBatch::new(point.columns.clone(), Vec::new()));
+        }
+        Ok(OpeningProtocol::new(vec![TableSpec::new(
+            TableShape::new(num_variables, num_columns),
+            schedule,
+        )]))
+    }
+
+    /// Commit to a set of equally sized columns with a single PCS commitment.
+    pub fn commit_batch(&self, columns: &[Vec<F2_128>]) -> Result<P3BatchCommitment, ProofError> {
+        let (table, num_variables, num_columns) = Self::batch_table(columns)?;
+        let stacked_variables = Self::stacked_variables(num_variables, num_columns);
+        let backend = Self::backend(stacked_variables, self.security_level)?;
+        let mut challenger = Self::challenger();
+        let witness = SuffixProver::<F, F>::new_witness(vec![table], 0);
+        let (cap, _) = backend
+            .commit(witness, &mut challenger)
+            .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        Ok(P3BatchCommitment {
+            cap,
+            num_variables,
+            stacked_variables,
+            num_columns,
+        })
+    }
+
+    /// Open every listed column at each point with one PCS opening argument.
+    pub fn open_batch(
+        &self,
+        columns: &[Vec<F2_128>],
+        points: &[P3BatchPoint],
+    ) -> Result<P3BatchOpening, ProofError> {
+        let (table, num_variables, num_columns) = Self::batch_table(columns)?;
+        if columns.len() != num_columns {
+            return Err(ProofError::DimensionMismatch);
+        }
+        let stacked_variables = Self::stacked_variables(num_variables, num_columns);
+        let protocol = Self::batch_protocol(num_variables, num_columns, points)?;
+        let backend = Self::backend(stacked_variables, self.security_level)?;
+        let mut challenger = Self::challenger();
+        let witness = SuffixProver::<F, F>::new_witness(vec![table], 0);
+        let (cap, data) = backend
+            .commit(witness, &mut challenger)
+            .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        let p3_points = points
+            .iter()
+            .map(|point| Self::point(&point.point))
+            .collect::<Vec<_>>();
+        let proof = backend
+            .open_at(data, &protocol, &p3_points, &mut challenger)
+            .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        Ok(P3BatchOpening {
+            commitment: P3BatchCommitment {
+                cap,
+                num_variables,
+                stacked_variables,
+                num_columns,
+            },
+            proof,
+        })
+    }
+
+    /// Verify a batched opening against the values expected at each point.
+    pub fn verify_batch(
+        &self,
+        opening: &P3BatchOpening,
+        points: &[P3BatchPoint],
+        values: &[Vec<F2_128>],
+    ) -> Result<bool, ProofError> {
+        let commitment = &opening.commitment;
+        if points.len() != values.len() {
+            return Ok(false);
+        }
+        let expected_stacked =
+            Self::stacked_variables(commitment.num_variables, commitment.num_columns);
+        if commitment.stacked_variables != expected_stacked {
+            return Ok(false);
+        }
+        let protocol =
+            match Self::batch_protocol(commitment.num_variables, commitment.num_columns, points) {
+                Ok(protocol) => protocol,
+                Err(_) => return Ok(false),
+            };
+        let backend = Self::backend(commitment.stacked_variables, self.security_level)?;
+        let mut challenger = Self::challenger();
+        backend.observe_commitment(&commitment.cap, &mut challenger);
+        let p3_points = points
+            .iter()
+            .map(|point| Self::point(&point.point))
+            .collect::<Vec<_>>();
+        let Ok(evals) = backend.verify_at(
+            &commitment.cap,
+            &opening.proof,
+            &protocol,
+            &p3_points,
+            &mut challenger,
+        ) else {
+            return Ok(false);
+        };
+        if evals.len() != values.len() {
+            return Ok(false);
+        }
+        for ((batch, expected), point) in evals.iter().zip(values).zip(points) {
+            if expected.len() != point.columns.len()
+                || batch.current().len() != expected.len()
+                || batch
+                    .current()
+                    .iter()
+                    .zip(expected)
+                    .any(|(observed, value)| *observed != F::from_repr(value.value()))
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 }
 
@@ -263,5 +480,48 @@ mod tests {
         assert!(!pcs
             .verify(&commitment, &point, value + F2_128::from(1u64), &opening)
             .unwrap());
+    }
+
+    #[test]
+    fn p3_batch_opening_covers_columns_and_points_once() {
+        let pcs = P3BinaryPcs::new(100);
+        let columns = vec![values(1 << 10), values(1 << 10), values(1 << 10)];
+        let points = vec![
+            P3BatchPoint {
+                point: (0..10u64).map(|index| F2_128::from(index & 1)).collect(),
+                columns: vec![0, 2],
+            },
+            P3BatchPoint {
+                point: (0..10u64)
+                    .map(|index| F2_128::from((index + 1) & 1))
+                    .collect(),
+                columns: vec![1],
+            },
+        ];
+        let opening = pcs.open_batch(&columns, &points).unwrap();
+        let expected: Vec<Vec<F2_128>> = points
+            .iter()
+            .map(|batch| {
+                batch
+                    .columns
+                    .iter()
+                    .map(|column| {
+                        magnetar_proof::Mle::new(columns[*column].clone())
+                            .unwrap()
+                            .eval(&batch.point)
+                            .unwrap()
+                    })
+                    .collect()
+            })
+            .collect();
+        assert!(pcs.verify_batch(&opening, &points, &expected).unwrap());
+
+        let mut bad = expected.clone();
+        bad[0][0] = bad[0][0] + F2_128::from(1u64);
+        assert!(!pcs.verify_batch(&opening, &points, &bad).unwrap());
+
+        let mut bad_point = points.clone();
+        bad_point[1].point[0] = bad_point[1].point[0] + F2_128::from(1u64);
+        assert!(!pcs.verify_batch(&opening, &bad_point, &expected).unwrap());
     }
 }

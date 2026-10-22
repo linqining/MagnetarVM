@@ -14,7 +14,9 @@ pub mod ligerito;
 pub use ligerito::{LigeritoCommitment, LigeritoIndexOpening, LigeritoPcs, LigeritoProof};
 
 pub mod p3_pcs;
-pub use p3_pcs::{P3BinaryPcs, P3Commitment, P3Opening};
+pub use p3_pcs::{
+    P3BatchCommitment, P3BatchOpening, P3BatchPoint, P3BinaryPcs, P3Commitment, P3Opening,
+};
 
 use magnetar_constraint::F2_128;
 use magnetar_proof::{Mle, Pcs, ProofError, SpartanProof};
