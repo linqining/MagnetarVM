@@ -58,6 +58,7 @@ impl RouterRoute {
         }
     }
 
+    #[cfg(test)]
     fn coefficients(&self, output_bit: usize) -> Vec<usize> {
         match self {
             RouterRoute::Shift(route) => match route.source_bit(output_bit) {
@@ -329,6 +330,63 @@ impl BinaryRouterWitness {
         Ok(())
     }
 
+    fn route_coefficients_from_selectors(&self, rho_o: &[F2_128]) -> Vec<Vec<F2_128>> {
+        let mut coefficients = vec![vec![F2_128::from(0u64); self.cycles]; INPUT_BITS];
+        for cycle in 0..self.cycles {
+            let is_shift = self.is_shift[cycle].value() == 1;
+            let is_store = self.is_store[cycle].value() == 1;
+            if is_shift {
+                let code = self.shift_code[cycle].value() as u64;
+                let kind = match code / 64 {
+                    0 => ShiftKind::LogicalLeft,
+                    1 => ShiftKind::LogicalRight,
+                    2 => ShiftKind::ArithmeticRight,
+                    _ => continue,
+                };
+                let route = ShiftRoute::new(kind, (code % 64) as u8);
+                for output_bit in 0..WORD_BITS {
+                    if let BitSource::Input(input_bit) = route.source_bit(output_bit) {
+                        coefficients[usize::from(input_bit)][cycle] = coefficients
+                            [usize::from(input_bit)][cycle]
+                            + eq_at_index(rho_o, output_bit);
+                    }
+                }
+            } else if is_store {
+                let mut width = 0usize;
+                for (bit, column) in self.width_bits.iter().enumerate() {
+                    if column[cycle].value() == 1 {
+                        width = [1usize, 2, 4, 8][bit];
+                    }
+                }
+                if width == 0 {
+                    continue;
+                }
+                let offset =
+                    self.offset_bits
+                        .iter()
+                        .enumerate()
+                        .fold(0usize, |value, (bit, column)| {
+                            if column[cycle].value() == 1 {
+                                value | (1 << bit)
+                            } else {
+                                value
+                            }
+                        });
+                let start = offset * 8;
+                for output_bit in start..start + width * 8 {
+                    let source = output_bit - start;
+                    coefficients[SOURCE_OFFSET + source][cycle] = coefficients
+                        [SOURCE_OFFSET + source][cycle]
+                        + eq_at_index(rho_o, output_bit);
+                    coefficients[output_bit][cycle] =
+                        coefficients[output_bit][cycle] + eq_at_index(rho_o, output_bit);
+                }
+            }
+        }
+        coefficients
+    }
+
+    #[cfg(test)]
     fn route_coefficients(&self, rho_o: &[F2_128]) -> Vec<Vec<F2_128>> {
         let mut coefficients = vec![vec![F2_128::from(0u64); self.cycles]; INPUT_BITS];
         for (cycle, route) in self.routes.iter().enumerate() {
@@ -641,7 +699,7 @@ pub(crate) fn prove_binary_router_claims(
         }
     }
     transcript.absorb("claimed", &left.value().to_le_bytes());
-    let coefficients = witness.route_coefficients(&rho_o);
+    let coefficients = witness.route_coefficients_from_selectors(&rho_o);
     let terms = INPUT_BITS * cycles;
     let mut input_flat = vec![F2_128::from(0u64); terms];
     let mut coefficient_flat = vec![F2_128::from(0u64); terms];
@@ -1028,7 +1086,7 @@ pub(crate) fn verify_binary_router_claims(
     };
     let r_j = &proof.challenges[..n];
     let r_i = &proof.challenges[n..];
-    let coefficients = witness.route_coefficients(&rho_o);
+    let coefficients = witness.route_coefficients_from_selectors(&rho_o);
     let mut coefficient_flat = vec![F2_128::from(0u64); INPUT_BITS * cycles];
     for bit in 0..INPUT_BITS {
         for cycle in 0..cycles {
@@ -1355,5 +1413,69 @@ mod tests {
             let proof = prove_binary_router(&witness).unwrap();
             assert!(verify_binary_router(&witness, &proof).unwrap());
         }
+    }
+    #[test]
+    fn selector_coefficients_match_public_routes() {
+        let trace = trace();
+        let witness = BinaryRouterWitness::from_trace(&trace).unwrap();
+        let rho_o = (0..WORD_BITS)
+            .map(|bit| F2_128::from((bit as u64 * 5 + 3) & 1))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            witness.route_coefficients(&rho_o),
+            witness.route_coefficients_from_selectors(&rho_o)
+        );
+        let store_witness =
+            BinaryRouterWitness::from_trace_mode(&trace, RouterMode::Stores).unwrap();
+        assert_eq!(
+            store_witness.route_coefficients(&rho_o),
+            store_witness.route_coefficients_from_selectors(&rho_o)
+        );
+    }
+    #[test]
+    fn store_mode_handles_amo_between_stores() {
+        let instruction = |op: Op, rd: u8, rs1: u8, rs2: u8, imm: i64| Instruction {
+            op,
+            rd,
+            rs1,
+            rs2,
+            imm,
+            shamt: 0,
+        };
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                instruction(Op::Lui, 4, 0, 0, 0x1000_0000).encode(),
+                instruction(Op::Lui, 1, 0, 0, 0x8000_0000).encode(),
+                instruction(Op::Sd, 0, 4, 1, 0).encode(),
+                instruction(Op::Addi, 2, 0, 0, 7).encode(),
+                instruction(Op::AmoswapW, 3, 4, 2, 0).encode(),
+                instruction(Op::Addi, 1, 0, 0, 10).encode(),
+                instruction(Op::Sd, 0, 4, 1, 0).encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let witness = BinaryRouterWitness::from_trace_mode(&trace, RouterMode::Stores).unwrap();
+        let rho_o = (0..WORD_BITS)
+            .map(|bit| F2_128::from((bit as u64 * 7 + 1) & 1))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            witness.route_coefficients(&rho_o),
+            witness.route_coefficients_from_selectors(&rho_o)
+        );
+        let proof = prove_binary_router(&witness).unwrap();
+        assert!(verify_binary_router(&witness, &proof).unwrap());
     }
 }
