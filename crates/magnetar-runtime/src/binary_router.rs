@@ -447,22 +447,16 @@ pub struct BinaryRouterProof {
     pub challenges: Vec<F2_128>,
     pub input_bit_evals: Vec<F2_128>,
     pub offset_rounds: Vec<Vec<F2_128>>,
-    pub offset_challenges: Vec<F2_128>,
     pub offset_evals: Vec<F2_128>,
     pub width_rounds: Vec<Vec<F2_128>>,
-    pub width_challenges: Vec<F2_128>,
     pub width_evals: Vec<F2_128>,
     pub shift_rounds: Vec<Vec<F2_128>>,
-    pub shift_challenges: Vec<F2_128>,
     pub shift_eval: F2_128,
     pub q_rounds: Vec<Vec<F2_128>>,
-    pub q_challenges: Vec<F2_128>,
     pub q_evals: Vec<F2_128>,
     pub hq_rounds: Vec<Vec<F2_128>>,
-    pub hq_challenges: Vec<F2_128>,
     pub hq_evals: Vec<F2_128>,
     pub valid_rounds: Vec<Vec<F2_128>>,
-    pub valid_challenges: Vec<F2_128>,
     pub valid_evals: Vec<F2_128>,
     pub opening: Option<P3MosaicOpening>,
 }
@@ -583,6 +577,26 @@ fn sumcheck_product(
         challenges.push(challenge);
     }
     Ok((polynomials, challenges))
+}
+
+fn replay_terms_derived(
+    rounds: &[Vec<F2_128>],
+    mut sum: F2_128,
+    transcript: &mut Sha256Transcript,
+) -> Option<(F2_128, Vec<F2_128>)> {
+    let mut challenges = Vec::with_capacity(rounds.len());
+    for round in rounds {
+        if round.len() < 2 || round[0] + round[1] != sum {
+            return None;
+        }
+        for coefficient in round {
+            transcript.absorb("round", &coefficient.value().to_le_bytes());
+        }
+        let challenge = challenge(transcript, "sumcheck");
+        challenges.push(challenge);
+        sum = interpolate(round, challenge);
+    }
+    Some((sum, challenges))
 }
 
 fn replay_terms(
@@ -911,12 +925,12 @@ pub(crate) fn prove_binary_router_claims(
     };
     let (
         q_rounds,
-        q_challenges,
+        _q_challenges,
         _q_rho_j,
         q_evals,
         q_point,
         hq_rounds,
-        hq_challenges,
+        _hq_challenges,
         _hq_rho_j,
         hq_evals,
         hq_point,
@@ -1082,22 +1096,16 @@ pub(crate) fn prove_binary_router_claims(
             challenges,
             input_bit_evals,
             offset_rounds,
-            offset_challenges,
             offset_evals,
             width_rounds,
-            width_challenges,
             width_evals,
             shift_rounds,
-            shift_challenges,
             shift_eval,
             q_rounds,
-            q_challenges,
             q_evals,
             hq_rounds,
-            hq_challenges,
             hq_evals,
             valid_rounds,
-            valid_challenges,
             valid_evals,
             opening: None,
         },
@@ -1276,15 +1284,12 @@ pub(crate) fn verify_binary_router_claims(
     let deltas = (0..3)
         .map(|_| challenge(&mut transcript, "delta"))
         .collect::<Vec<_>>();
-    let Some(sum) = replay_terms(
-        &proof.offset_rounds,
-        &proof.offset_challenges,
-        F2_128::from(0u64),
-        &mut transcript,
-    ) else {
+    let Some((sum, offset_challenges)) =
+        replay_terms_derived(&proof.offset_rounds, F2_128::from(0u64), &mut transcript)
+    else {
         return Ok(None);
     };
-    let offset_r_j = &proof.offset_challenges[..n];
+    let offset_r_j = &offset_challenges[..n];
     let mut expected = F2_128::from(0u64);
     for bit in 0..3 {
         let public = (0..cycles)
@@ -1303,15 +1308,12 @@ pub(crate) fn verify_binary_router_claims(
     let width_deltas = (0..4)
         .map(|_| challenge(&mut transcript, "delta"))
         .collect::<Vec<_>>();
-    let Some(sum) = replay_terms(
-        &proof.width_rounds,
-        &proof.width_challenges,
-        F2_128::from(0u64),
-        &mut transcript,
-    ) else {
+    let Some((sum, width_challenges)) =
+        replay_terms_derived(&proof.width_rounds, F2_128::from(0u64), &mut transcript)
+    else {
         return Ok(None);
     };
-    let width_r_j = &proof.width_challenges[..n];
+    let width_r_j = &width_challenges[..n];
     let mut expected = F2_128::from(0u64);
     for bit in 0..4 {
         let public = (0..cycles)
@@ -1340,15 +1342,12 @@ pub(crate) fn verify_binary_router_claims(
     let mut transcript = Sha256Transcript::new("magnetar-binary-router-shift");
     absorb_commitment(&mut transcript, commitment);
     let shift_rho_j = sample_point(&mut transcript, n);
-    let Some(sum) = replay_terms(
-        &proof.shift_rounds,
-        &proof.shift_challenges,
-        F2_128::from(0u64),
-        &mut transcript,
-    ) else {
+    let Some((sum, shift_challenges)) =
+        replay_terms_derived(&proof.shift_rounds, F2_128::from(0u64), &mut transcript)
+    else {
         return Ok(None);
     };
-    let shift_r_j = &proof.shift_challenges[..n];
+    let shift_r_j = &shift_challenges[..n];
     let public = (0..cycles)
         .map(|cycle| F2_128::from(witness.routes[cycle].shift_code()))
         .collect::<Vec<_>>();
@@ -1363,15 +1362,12 @@ pub(crate) fn verify_binary_router_claims(
     let valid_deltas = (0..2)
         .map(|_| challenge(&mut transcript, "delta"))
         .collect::<Vec<_>>();
-    let Some(sum) = replay_terms(
-        &proof.valid_rounds,
-        &proof.valid_challenges,
-        F2_128::from(0u64),
-        &mut transcript,
-    ) else {
+    let Some((sum, valid_challenges)) =
+        replay_terms_derived(&proof.valid_rounds, F2_128::from(0u64), &mut transcript)
+    else {
         return Ok(None);
     };
-    let valid_r_j = &proof.valid_challenges[..n];
+    let valid_r_j = &valid_challenges[..n];
     let mut expected = F2_128::from(0u64);
     for bit in 0..2 {
         let public = (0..cycles)
@@ -1397,16 +1393,15 @@ pub(crate) fn verify_binary_router_claims(
         absorb_commitment(&mut transcript, commitment);
         let q_rho_j = sample_point(&mut transcript, n);
         let _q_rho_h = sample_point(&mut transcript, 8);
-        let Some(sum) = replay_terms(
+        let Some((sum, q_challenges)) = replay_terms_derived(
             &proof.q_rounds,
-            &proof.q_challenges,
             q_eq_claimed(witness, &q_rho_j),
             &mut transcript,
         ) else {
             return Ok(None);
         };
-        let q_r_j = &proof.q_challenges[..n];
-        let q_r_h = &proof.q_challenges[n..];
+        let q_r_j = &q_challenges[..n];
+        let q_r_h = &q_challenges[n..];
         let mut q_eval = F2_128::from(0u64);
         for (h, eval) in proof.q_evals.iter().enumerate() {
             q_eval = q_eval + eq_at_index(q_r_h, h) * *eval;
@@ -1419,16 +1414,15 @@ pub(crate) fn verify_binary_router_claims(
         absorb_commitment(&mut transcript, commitment);
         let hq_rho_j = sample_point(&mut transcript, n);
         let _hq_rho_h = sample_point(&mut transcript, 8);
-        let Some(sum) = replay_terms(
+        let Some((sum, hq_challenges)) = replay_terms_derived(
             &proof.hq_rounds,
-            &proof.hq_challenges,
             hq_eq_claimed(witness, &hq_rho_j),
             &mut transcript,
         ) else {
             return Ok(None);
         };
-        let hq_r_j = &proof.hq_challenges[..n];
-        let hq_r_h = &proof.hq_challenges[n..];
+        let hq_r_j = &hq_challenges[..n];
+        let hq_r_h = &hq_challenges[n..];
         let mut hq_eval = F2_128::from(0u64);
         for (h, eval) in proof.hq_evals.iter().enumerate() {
             hq_eval = hq_eval + eq_at_index(hq_r_h, h) * *eval;
