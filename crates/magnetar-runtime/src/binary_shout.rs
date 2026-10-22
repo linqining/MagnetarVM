@@ -11,7 +11,7 @@ use magnetar_pcs::{
     P3BinaryPcs, P3MosaicCommitment, P3MosaicOpening, P3MosaicPoint, P3MosaicTable,
 };
 use magnetar_proof::ProofError;
-use magnetar_spec::Trace;
+use magnetar_spec::{Op, Trace};
 use magnetar_transcript::Sha256Transcript;
 use serde::{Deserialize, Serialize};
 
@@ -39,7 +39,7 @@ impl BinaryShoutWitness {
         let address_bits = cells.trailing_zeros() as usize;
         let cycles = trace.rows.len().next_power_of_two().max(2);
         let cycle_bits = cycles.trailing_zeros() as usize;
-        let columns = 7usize;
+        let columns = 10usize;
         let mut rom = vec![vec![F2_128::from(0u64); columns]; cells];
         for (index, word) in trace.rom.iter().enumerate() {
             rom[2 * index][0] = F2_128::from(u64::from(*word & 0xffff));
@@ -71,6 +71,23 @@ impl BinaryShoutWitness {
             }
             valid[cycle] = F2_128::from(1u64);
             is_32[cycle] = F2_128::from(u64::from(row.instruction_len == 4));
+            let shift_kind = match row.instruction.op {
+                Op::Sll | Op::Slli => 1u64,
+                Op::Srl | Op::Srli => 2,
+                Op::Sra | Op::Srai => 3,
+                _ => 0,
+            };
+            let shift_shamt = if shift_kind == 0 {
+                0
+            } else if matches!(row.instruction.op, Op::Slli | Op::Srli | Op::Srai) {
+                u64::from(row.instruction.shamt)
+            } else {
+                row.rs2_val & 0x3f
+            };
+            let store_width = row
+                .mem
+                .filter(|access| access.is_write)
+                .map_or(0, |access| u64::from(access.width));
             let metadata = vec![
                 F2_128::from(u64::from(row.instruction_word)),
                 F2_128::from(u64::from(row.instruction_len)),
@@ -79,6 +96,9 @@ impl BinaryShoutWitness {
                 F2_128::from(u64::from(row.instruction.rs1)),
                 F2_128::from(u64::from(row.instruction.rs2)),
                 F2_128::from(row.instruction.imm as u64),
+                F2_128::from(shift_kind),
+                F2_128::from(shift_shamt),
+                F2_128::from(store_width),
             ];
             for column in 1..columns {
                 rom[index][column] = metadata[column];
