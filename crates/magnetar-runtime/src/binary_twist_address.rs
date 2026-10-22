@@ -879,4 +879,23 @@ mod tests {
         let opening = pcs.open_mosaic(&mosaic, &points).unwrap();
         assert!(pcs.verify_mosaic(&opening, &points, &values).unwrap());
     }
+    #[test]
+    fn bit_multiplicity_claim_handles_multi_table_commitment() {
+        let trace = trace();
+        let witness = BinaryTwistWitness::from_trace(&trace).unwrap();
+        let tables = crate::binary_twist::batch_tables(&witness).unwrap();
+        let z = vec![F2_128::from(0u64); witness.cycles.next_power_of_two()];
+        let mosaic = vec![P3MosaicTable { columns: vec![z] }, tables.addr.clone()];
+        let pcs = P3BinaryPcs::new(100);
+        let commitment = pcs.commit_mosaic(&mosaic).unwrap();
+        let (claim, points, values) =
+            prove_address_multiplicity_bits(&witness, true, &commitment, 1).unwrap();
+        let (_, verified_values) =
+            verify_address_multiplicity_bits(&witness, true, &claim, &commitment, 1)
+                .unwrap()
+                .unwrap();
+        assert_eq!(values, verified_values);
+        let opening = pcs.open_mosaic(&mosaic, &points).unwrap();
+        assert!(pcs.verify_mosaic(&opening, &points, &values).unwrap());
+    }
 }
