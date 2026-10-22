@@ -240,3 +240,15 @@
 4. **然后 E1–E4**：MosaicPCS packed `G` + lift + batch + ring switching；与 3 紧耦合。
 5. **最后 D7/D9/D10**：把 bytecode table、`Q` selector、store `Inc` routing 接到 Shout/Router。
 6. D5 线性 `LT` 作为独立研究项，不阻塞上述工程。
+
+## Remaining blockers (as of this checkpoint)
+
+1. **A2 / Virtual Spartan**: trace is now committed inside the shared PCS and routed through segment claims, but the verifier still needs the full trace to rebuild the CPU system. Removing that dependency requires a committed trace/layout and Virtual Spartan instance/column routing for the CPU relation, not just a trace opening.
+2. **B1/B2 / shared-matrix SIMD**: the CPU still uses a block-diagonal constraint system per row; the paper's shared-matrix SIMD representation and its sum-check are not implemented.
+3. **B3 / native dual field**: lockstep and F2 prototypes exist, but the unified CPU proof still runs both relations over `F2_128`; a native F2 relation/PCS integrated with the packed side is missing.
+4. **D2 / D7 / D9 / D10**: exact single-cycle register `p=2`, multi-micro-op bytecode expansion, Shout-authenticated selectors, and full bytecode-driven Router routing remain partial.
+5. **E4 / ring switching**: the reference keeps one field element per bit; 128-bit packed representations and ring switching are not implemented.
+6. **F5/F6**: no ZK masking or private IO.
+7. **G**: no large-trace/100 GiB runs, 15-workload suite, or parallel prover; chunked proofs duplicate per-chunk CPU proofs and grow quickly.
+
+These are architectural or research-level items; the current tree is a verified reference for the implemented components, not a complete Magnetar implementation.
