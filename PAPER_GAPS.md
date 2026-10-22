@@ -33,7 +33,8 @@
 - `6a37129`：BinaryShout 支持 `c=2` value columns（instruction word + instruction length）。
 - `753b59e`：BinaryShout 扩展到 `c=7`（word、length、opcode、rd、rs1、rs2、imm）。
 - `82541ba`：BinaryRouter 提交 3 个 offset bits，并用 sumcheck 与 public offset 链接。
-- 本轮：增加 4 个 one-hot width bits（`Q_st`）并与 public width 链接；routing 仍用 public selector，尚未接 bytecode。
+- `2043741`：增加 4 个 one-hot width bits（`Q_st`）并与 public width 链接。
+- 本轮：新增 `DualSimdR1cs`/`SimdR1cs` 边界与 128-bit binary witness packing（`constraint::simd`），为 B1/B2 打基础；CPU 尚未转换。
 
 ## 二、逐项差距
 
@@ -51,8 +52,8 @@
 
 | # | 论文要求（§） | 当前实现 | 状态 | 剩余工作 |
 |---|---|---|---|---|
-| B1 | 两个 SIMD R1CS 关系共享一个 bit-valued witness：一个 over `F2`，一个 over `F2_128`（§5.1） | 单一 `ConstraintSystem`，域为 `F2_128`；CPU 每行/合并系统 | ❌ | 设计两套矩阵 `A1/B1/C1`、`A2/B2/C2`；共享 witness；cross-step constraints |
-| B2 | BinarySpartan：SIMD Spartan + binary witness packing（128 bits per field element）+ ring switching（§4.3） | `magnetar-proof` 的参考 Spartan；witness bit 直接作为 `F2_128` 元素 | ❌ | 实现 `P` packing、binary-witness evaluation claim、ring switching |
+| B1 | 两个 SIMD R1CS 关系共享一个 bit-valued witness：一个 over `F2`，一个 over `F2_128`（§5.1） | 新增 `constraint::simd::DualSimdR1cs` + `SimdR1cs` 边界（q 个 instance 共享同一 system、共享 witness 检查）；CPU 仍是单一 `ConstraintSystem`，尚未转成统一 SIMD 矩阵 | 🟡 | 设计两套矩阵 `A1/B1/C1`、`A2/B2/C2`；共享 witness；cross-step constraints；CPU 转换 |
+| B2 | BinarySpartan：SIMD Spartan + binary witness packing（128 bits per field element）+ ring switching（§4.3） | `magnetar-proof` 的参考 Spartan；`constraint::simd::pack_binary`/`unpack_binary` 已实现 128-bit packing 与 round-trip 测试；BinarySpartan/ring switching 未实现 | 🟡 | 接入 SIMD reduction；实现 binary-witness evaluation claim、ring switching |
 | B3 | Virtual Spartan：联合两个 SIMD 关系，lockstep outer sum-check，共享 inner sum-check，per-segment claims（§5.3） | 参考 Spartan 对整份 `z` 做一次 reduction；layout 有 `Virtual` 段但没有 claim router | ❌ | lockstep 两关系；per-segment `v_i`；对齐 subcube layout；claim 分发 |
 | B4 | 两个 outer sum-check 共享 instance challenge，inner 只跑一次（§5.3） | 无 | ❌ | 与 B3 一起实现 |
 | B5 | 直接段 claims 进 PCS；虚拟段 claims 分发给 Twist/Shout/Router（§5.3） | 所有段都在 `z` 中提交；没有虚拟段 claim 路由 | ❌ | 需要 segment layout + claim router |

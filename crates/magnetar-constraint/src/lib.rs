@@ -7,6 +7,7 @@
 pub mod field;
 pub mod ir;
 pub mod layout;
+pub mod simd;
 
 pub use field::{Field, F2_128, F61};
 pub use ir::{
@@ -16,3 +17,4 @@ pub use ir::{
 pub use layout::{
     LayoutError, MemoryKind, RoutingKind, Segment, SegmentKind, SegmentOwner, WitnessLayout,
 };
+pub use simd::{DualSimdR1cs, SimdError, SimdR1cs};

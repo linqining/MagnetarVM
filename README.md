@@ -32,7 +32,7 @@ Implemented:
 
 Explicitly not implemented:
 
-- Dual SIMD R1CS, Virtual Spartan, and BinarySpartan;
+- Virtual Spartan and BinarySpartan; the Dual SIMD R1CS boundary and 128-bit packing exist, but the CPU is not yet converted to uniform SIMD matrices;
 - The BinaryShout and BinaryRouter reference reductions are wired into `UnifiedTraceProof` and share the CPU/RAM mosaic commitment and opening; BinaryRouter covers 64-bit shift routes and sub-word store routes; the BinaryTwist `LT` prover still materializes quadratic tables;
 - Full MosaicPCS ring switching and Ligerito integration with the runtime (P3 multi-table stacking, bit-sliced address virtualization, virtual `Val`/`Inc`, and a shared CPU+RAM opening are implemented);
 - Recursion (only chunk planning, hash-chain and state-continuity reference aggregators, and a backend trait);
@@ -54,7 +54,7 @@ Explicitly not implemented:
 | 2 | Guest toolchain / ABI | `magnetar-guest` | ABI, syscall decoding + reference dispatcher, RV64 ELF loader, and `run_guest_elf` execution path implemented; a zig-based hello guest build script and end-to-end proof CLI are included; general compiler/toolchain integration not implemented |
 | 3 | Program preprocessing / ROM | `magnetar-preprocess` | Implemented; currently one instruction = one micro-op |
 | 4 | Executor / Trace | `magnetar-executor` | RV64I (including `*W`) + RV64M + RV64A (AMO and LR/SC reservations) + RV64C integer compressed instructions interpreter + trace implemented, with `ecall` handling for `exit`/`hint`/`write` and byte-range `read` including short reads, buffered input/output, and consumed-input trace binding |
-| 5 | Constraint IR / Witness layout | `magnetar-constraint` | R1CS IR over `GF(2^128)`, `F61` reference field, and aligned segments implemented |
+| 5 | Constraint IR / Witness layout | `magnetar-constraint` | R1CS IR over `GF(2^128)`, `F61` reference field, aligned segments, and a Dual SIMD R1CS boundary with 128-bit witness packing |
 | 6 | CPU constraints | `magnetar-cpu` | Row checks (including RV64M, A, and `*W` semantics), 64-bit 20-selector ALU (Add/Sub/AddI/Xor/Lui/And/Or/Slt/Sltu/Slti/Sltiu/Sll/Srl/Sra/Slli/Srli/Srai/Xori/Ori/Andi), RV64 `*W` relations, PC+4 step, Auipc, Jal, Jalr, all six conditional branches, single-step load/store relations, row-bound variants for every ALU/control relation, R1CS relations for all eight RV64M ops at full width 64, A R1CS for all AMO ops (`swap`/`add`/`xor`/`and`/`or`/`min`/`max`, signed and unsigned, W/D), and LR load / SC success-failure row relations; reservation state is trace-bound and checked during proof verification; specialized non-shift/non-compare ALU relations cut `addi`/`lui` from 4,492 variables to 449/64 |
 | 7 | Memory consistency | `magnetar-memory` | Replay checks, Twist log, one-hot address/increment witness, load/store, memory/register chain, trace-order interleaved access proofs, a reference BinaryTwist RAM witness/reduction with batched P3 claims, and a reference Sv39 page-table walker |
 | 8 | Routing / Bit operations | `magnetar-routing` | Shift/store routes and witnesses implemented; BinaryRouter proof wired into unified proofs for 64-bit shifts and sub-word stores |
@@ -122,7 +122,7 @@ cargo fmt --all -- --check
 cargo test --workspace
 ```
 
-At the time of writing the suite contains **272 tests across the 15 crates,
+At the time of writing the suite contains **274 tests across the 15 crates,
 all passing**; clippy with `-D warnings` and `rustfmt --check` are clean.
 The dev profile optimizes dependencies at `opt-level = 3` and workspace crates
 at `opt-level = 2`, so the PCS-heavy tests stay in the second range instead of

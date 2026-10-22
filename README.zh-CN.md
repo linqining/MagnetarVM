@@ -32,7 +32,7 @@
 
 显式未实现：
 
-- Dual SIMD R1CS、Virtual Spartan、BinarySpartan；
+- Virtual Spartan 与 BinarySpartan；Dual SIMD R1CS 边界与 128-bit packing 已存在，但 CPU 尚未转成统一 SIMD 矩阵；
 - BinaryShout 与 BinaryRouter 参考归约已接入 `UnifiedTraceProof`，并共享 CPU/RAM mosaic commitment 与 opening；BinaryRouter 覆盖 64-bit shift 与 sub-word store routing；BinaryTwist 的 `LT` prover 仍会物化二次表；
 - 完整的 MosaicPCS ring switching、与 runtime 集成的 Ligerito（P3 多表堆叠、virtual `Val`/`Inc`、地址虚拟化与 CPU+RAM 共享 opening 已实现）；
 - recursion（只有 chunk 规划、hash-chain 与状态连续性参考聚合器、backend trait）；
@@ -122,7 +122,7 @@ cargo fmt --all -- --check
 cargo test --workspace
 ```
 
-当前测试套件包含 **15 个 crate 的 272 个测试，全部通过**；
+当前测试套件包含 **15 个 crate 的 274 个测试，全部通过**；
 `clippy -D warnings` 与 `rustfmt --check` 均无问题。dev profile 将依赖设为
 `opt-level = 3`、workspace crate 设为 `opt-level = 2`，避免 PCS 密集的测试
 在未优化构建里跑到几十秒。
