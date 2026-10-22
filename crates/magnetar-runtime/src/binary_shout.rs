@@ -215,10 +215,7 @@ impl BinaryShoutWitness {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AddressBooleanClaim {
-    pub column_point: Vec<F2_128>,
-    pub cycle_point: Vec<F2_128>,
     pub rounds: Vec<Vec<F2_128>>,
-    pub challenges: Vec<F2_128>,
     pub bit_evals: Vec<F2_128>,
 }
 
@@ -376,31 +373,6 @@ fn replay_terms_derived(
     Some((sum, challenges))
 }
 
-fn replay_terms(
-    rounds: &[Vec<F2_128>],
-    challenges: &[F2_128],
-    mut sum: F2_128,
-    transcript: &mut Sha256Transcript,
-) -> Option<F2_128> {
-    if rounds.len() != challenges.len() {
-        return None;
-    }
-    for (round, &expected) in rounds.iter().zip(challenges) {
-        if round.len() < 2 || round[0] + round[1] != sum {
-            return None;
-        }
-        for coefficient in round {
-            transcript.absorb("round", &coefficient.value().to_le_bytes());
-        }
-        let challenge = challenge(transcript, "sumcheck");
-        if challenge != expected {
-            return None;
-        }
-        sum = interpolate(round, challenge);
-    }
-    Some(sum)
-}
-
 fn address_value(bits: &[F2_128], k_point: &[F2_128]) -> F2_128 {
     bits.iter()
         .zip(k_point)
@@ -463,13 +435,8 @@ pub(crate) fn prove_binary_shout_claims(
     bit_evals.extend((0..a).map(|bit| fold_all(&witness.address1[bit], r_j)));
     bit_evals.push(fold_all(&witness.is_32, r_j));
     bit_evals.push(fold_all(&witness.valid, r_j));
-    let boolean = AddressBooleanClaim {
-        column_point: rho_c,
-        cycle_point: rho_j,
-        rounds,
-        challenges,
-        bit_evals,
-    };
+    let boolean_challenges = challenges;
+    let boolean = AddressBooleanClaim { rounds, bit_evals };
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-shout");
     absorb_commitment(&mut transcript, commitment);
@@ -550,10 +517,10 @@ pub(crate) fn prove_binary_shout_claims(
     } else {
         r_j.to_vec()
     };
-    let boolean_point = if boolean.challenges[..n].is_empty() {
+    let boolean_point = if boolean_challenges[..n].is_empty() {
         vec![F2_128::from(0u64)]
     } else {
-        boolean.challenges[..n].to_vec()
+        boolean_challenges[..n].to_vec()
     };
     let points = vec![
         P3MosaicPoint {
@@ -631,19 +598,13 @@ pub(crate) fn verify_binary_shout_claims(
     absorb_commitment(&mut transcript, commitment);
     let rho_c = sample_point(&mut transcript, col_bits);
     let rho_j = sample_point(&mut transcript, n);
-    if proof.boolean.column_point != rho_c || proof.boolean.cycle_point != rho_j {
-        return Ok(None);
-    }
-    let Some(sum) = replay_terms(
-        &proof.boolean.rounds,
-        &proof.boolean.challenges,
-        F2_128::from(0u64),
-        &mut transcript,
-    ) else {
+    let Some((sum, boolean_challenges)) =
+        replay_terms_derived(&proof.boolean.rounds, F2_128::from(0u64), &mut transcript)
+    else {
         return Ok(None);
     };
-    let r_j = &proof.boolean.challenges[..n];
-    let r_c = &proof.boolean.challenges[n..];
+    let r_j = &boolean_challenges[..n];
+    let r_c = &boolean_challenges[n..];
     let mut b = F2_128::from(0u64);
     for column in 0..total_columns {
         b = b + eq_at_index(r_c, column) * proof.boolean.bit_evals[column];
@@ -710,7 +671,7 @@ pub(crate) fn verify_binary_shout_claims(
     } else {
         r_j.to_vec()
     };
-    let boolean_j = &proof.boolean.challenges[..n];
+    let boolean_j = &boolean_challenges[..n];
     let boolean_point = if boolean_j.is_empty() {
         vec![F2_128::from(0u64)]
     } else {
