@@ -230,16 +230,17 @@ SIMD R1CS/BinarySpartan 可把多条 bit-lane 打包进一个 GF(2^128) 元素�
 `cargo run --release -p magnetar-testkit --example proof_scaling` 输出当前
 unified proof 的参考测量：
 
-| rows | proof bytes | prove ms | verify ms |
-|---:|---:|---:|---:|
-| 2 | 145,254 | 12.5 | 5.8 |
-| 4 | 179,646 | 23.3 | 10.6 |
-| 8 | 214,238 | 51.6 | 20.5 |
-| 16 | 251,038 | 128.2 | 41.4 |
-| 32 | 300,510 | 366.7 | 91.6 |
+| rows | unified bytes | chunked bytes | prove ms | verify ms |
+|---:|---:|---:|---:|---:|
+| 2 | 140,478 | 201,455 | 12.9 | 6.1 |
+| 4 | 173,494 | 279,911 | 25.1 | 11.2 |
+| 8 | 207,766 | 444,623 | 50.8 | 20.6 |
+| 16 | 252,598 | 749,319 | 125.9 | 40.9 |
+| 32 | 294,070 | 1,326,655 | 352.5 | 85.2 |
 
-proof 已不再携带 `rows`；剩余增长来自 per-row CPU relation 与 PCS 工作，
-消除该依赖是后续 A2/Virtual Spartan 的工作。
+unified proof 已不再携带 `rows`；剩余增长来自 per-row CPU relation 与 PCS 工作。
+chunked proof 还会按 chunk 复制 CPU 证明，因此增长更快。消除该依赖是后续
+A2/Virtual Spartan 的工作。
 
 ## 覆盖率
 

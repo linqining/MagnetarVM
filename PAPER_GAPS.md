@@ -104,7 +104,8 @@
 - `9e85a2d`：移除 `AddressMultiplicityProof` 中与 opening 重复的 `commitment` 字段。
 - `5c99bf3`：新增 `address_proof_binds_the_lambda_challenge` 测试。
 - `964cbef`：trace commitment 增加 tamper 测试；独立 trace opening 接入 unified 会使 proof 增至 332,111 B，已回退。
-- 本轮：trace 表作为 shared PCS aux table 接入 unified，proof 降至 265,023 B。
+- `23d34aa`：trace 表作为 shared PCS aux table 接入 unified，proof 降至 265,023 B。
+- 本轮：`proof_scaling` 增加 chunked 证明体积；32 rows 时 chunked 1.33 MB，暴露 per-chunk CPU 证明瓶颈。
 
 ## 二、逐项差距
 
@@ -193,7 +194,7 @@
 |---|---|---|---|---|
 | G1 | 2^22–2^28 cycles、100 GiB 内存 | 新增 `proof_scaling` 参考探测（2–32 rows）；未做长 trace/100 GiB | ❌ | 需要线性内存/流式证明、并行、优化 |
 | G2 | 8–12 M cycles/s（Magnetar opt 9.5–12.8 M） | 当前 ~几十 cycles/s（18 行约 0.4 s） | ❌ | 数量级性能工程；不是算法补丁 |
-| G3 | 15 个 workload（fibonacci、sha256、keccak、erc20 等） | 新增 `proof_scaling`（2–32 rows）参考探测；没有 15 个 workload suite | 🟡 | 补完整 benchmark suite 与数据 |
+| G3 | 15 个 workload（fibonacci、sha256、keccak、erc20 等） | `proof_scaling` 现在同时测 unified 与 chunked（2–32 rows）；chunked 在 32 rows 已达 1.33 MB，说明 per-chunk CPU 证明是主要扩展瓶颈；仍没有 15 个 workload suite | 🟡 | 补完整 benchmark suite；优化 chunked 的 per-chunk CPU 证明 |
 | G4 | 与 ZisK/Lineth/Jolt 对比 | 无 | ❌ | 复现实验设置与对比 |
 | G5 | optimized Magnetar（1.15–1.50×） | 无 | ❌ | 优化版本 |
 | G6 | 内存/并行/多线程 | 单线程参考实现 | ❌ | 工程优化 |

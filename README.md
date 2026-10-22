@@ -245,19 +245,20 @@ verifier.
 ### Scaling probe
 
 `cargo run --release -p magnetar-testkit --example proof_scaling` prints the
-following reference measurements on the current unified proof:
+following reference measurements on unified and chunked proofs (chunk size 4):
 
-| rows | proof bytes | prove ms | verify ms |
-|---:|---:|---:|---:|
-| 2 | 145,254 | 12.5 | 5.8 |
-| 4 | 179,646 | 23.3 | 10.6 |
-| 8 | 214,238 | 51.6 | 20.5 |
-| 16 | 251,038 | 128.2 | 41.4 |
-| 32 | 300,510 | 366.7 | 91.6 |
+| rows | unified bytes | chunked bytes | prove ms | verify ms |
+|---:|---:|---:|---:|---:|
+| 2 | 140,478 | 201,455 | 12.9 | 6.1 |
+| 4 | 173,494 | 279,911 | 25.1 | 11.2 |
+| 8 | 207,766 | 444,623 | 50.8 | 20.6 |
+| 16 | 252,598 | 749,319 | 125.9 | 40.9 |
+| 32 | 294,070 | 1,326,655 | 352.5 | 85.2 |
 
-The proof no longer carries `rows`; the remaining growth comes from the
-per-row CPU relation and PCS work. Removing that dependence is the remaining
-A2/Virtual Spartan work.
+The unified proof no longer carries `rows`; the remaining growth comes from the
+per-row CPU relation and PCS work. Chunked proofs additionally duplicate CPU
+proofs per chunk, so they grow much faster. Removing that dependence is the
+remaining A2/Virtual Spartan work.
 
 ## Coverage
 

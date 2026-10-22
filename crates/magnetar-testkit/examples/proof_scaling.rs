@@ -6,7 +6,10 @@
 use std::time::Instant;
 
 use magnetar_executor::execute;
-use magnetar_runtime::{prove_unified_trace, unified_proof_sizes, verify_unified_trace};
+use magnetar_runtime::{
+    chunked_proof_sizes, prove_chunked_trace, prove_unified_trace, unified_proof_sizes,
+    verify_unified_trace,
+};
 use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 
 fn program(rows: usize) -> ProgramImage {
@@ -40,7 +43,7 @@ fn config() -> MachineConfig {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!(" rows  proof_bytes  prove_ms  verify_ms");
+    println!(" rows  unified_bytes  chunked_bytes  prove_ms  verify_ms");
     for rows in [2usize, 4, 8, 16, 32] {
         let trace = execute(&program(rows), config())?;
         let started = Instant::now();
@@ -50,8 +53,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         verify_unified_trace(&trace, &proof, 64)?;
         let verify_ms = started.elapsed().as_secs_f64() * 1000.0;
         let sizes = unified_proof_sizes(&proof)?;
+        let chunked = prove_chunked_trace(&trace, 64, 4)
+            .ok()
+            .and_then(|proof| chunked_proof_sizes(&proof).ok())
+            .map_or(0, |sizes| sizes.total());
         println!(
-            "{rows:5}  {:11}  {prove_ms:8.1}  {verify_ms:9.1}",
+            "{rows:5}  {:13}  {chunked:13}  {prove_ms:8.1}  {verify_ms:9.1}",
             sizes.total()
         );
     }
