@@ -509,7 +509,6 @@ pub struct BinaryTwistUpdateProof {
     pub wa_commitment: P3Commitment,
     pub inc_commitment: P3Commitment,
     pub rounds: Vec<[F2_128; 4]>,
-    pub challenges: Vec<F2_128>,
     pub next_eval: F2_128,
     pub val_eval: F2_128,
     pub wa_eval: F2_128,
@@ -553,7 +552,6 @@ pub fn prove_update_identity(
         wa_commitment,
         inc_commitment,
         rounds,
-        challenges: challenges.clone(),
         next_eval,
         val_eval,
         wa_eval,
@@ -567,9 +565,7 @@ pub fn prove_update_identity(
 
 pub fn verify_update_identity(proof: &BinaryTwistUpdateProof) -> Result<bool, ProofError> {
     let pcs = P3BinaryPcs::new(100);
-    if proof.challenges.len() != proof.address_bits + proof.cycle_bits
-        || proof.rounds.len() != proof.challenges.len()
-    {
+    if proof.rounds.len() != proof.address_bits + proof.cycle_bits {
         return Ok(false);
     }
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-update");
@@ -584,7 +580,8 @@ pub fn verify_update_identity(proof: &BinaryTwistUpdateProof) -> Result<bool, Pr
     let cycle_point = sample_point(&mut transcript, proof.cycle_bits);
     let mut eq = eq_index(&cycle_point, proof.address_bits, proof.cycle_bits);
     let mut sum = F2_128::from(0u64);
-    for (round, &expected) in proof.rounds.iter().zip(&proof.challenges) {
+    let mut challenges = Vec::with_capacity(proof.rounds.len());
+    for round in &proof.rounds {
         if round[0] + round[1] != sum {
             return Ok(false);
         }
@@ -592,9 +589,7 @@ pub fn verify_update_identity(proof: &BinaryTwistUpdateProof) -> Result<bool, Pr
             transcript.absorb("round", &coefficient.value().to_le_bytes());
         }
         let challenge = challenge(&mut transcript, "sumcheck");
-        if challenge != expected {
-            return Ok(false);
-        }
+        challenges.push(challenge);
         sum = evaluate_round(round, challenge);
         eq = fold(&eq, challenge);
     }
@@ -604,25 +599,25 @@ pub fn verify_update_identity(proof: &BinaryTwistUpdateProof) -> Result<bool, Pr
     }
     let next_ok = pcs.verify(
         &proof.next_commitment,
-        &proof.challenges,
+        &challenges,
         proof.next_eval,
         &proof.next_opening,
     )?;
     let val_ok = pcs.verify(
         &proof.val_commitment,
-        &proof.challenges,
+        &challenges,
         proof.val_eval,
         &proof.val_opening,
     )?;
     let wa_ok = pcs.verify(
         &proof.wa_commitment,
-        &proof.challenges,
+        &challenges,
         proof.wa_eval,
         &proof.wa_opening,
     )?;
     let inc_ok = pcs.verify(
         &proof.inc_commitment,
-        &proof.challenges,
+        &challenges,
         proof.inc_eval,
         &proof.inc_opening,
     )?;

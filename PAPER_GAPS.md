@@ -79,7 +79,8 @@
 - `3f48f9e`：segment claim 只保留 `value`，proof 降至 275,215 B。
 - `e010322`：Router proof 移除可重算的 `*_cycle_point`。
 - `37c2c1e`：Router proof 移除可重算的 `*_challenges`。
-- 本轮：BinaryShout proof 移除可重算的 `cycle_point`/`challenges`，proof 降至 274,639 B。
+- `6ee9096`：BinaryShout proof 移除可重算的 `cycle_point`/`challenges`，proof 降至 274,639 B。
+- 本轮：`BinaryTwistUpdateProof` 移除可重算的 `challenges`，verifier 从 transcript 重新派生并用于 P3 opening。
 
 ## 二、逐项差距
 
