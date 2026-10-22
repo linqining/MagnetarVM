@@ -44,33 +44,34 @@ pub enum MosaicError {
     PointArity,
     #[error("batched sumcheck failed")]
     BatchSumcheck,
+    #[error("aux claim shapes disagree")]
+    AuxShape,
 }
 
 impl PackedMosaic {
-    pub fn new(components: &[Vec<F2_128>]) -> Result<Self, MosaicError> {
-        if components.is_empty() {
+    pub fn layout(sizes: &[usize]) -> Result<(usize, Vec<MosaicComponent>), MosaicError> {
+        if sizes.is_empty() {
             return Err(MosaicError::Empty);
         }
-        for component in components {
-            if component.is_empty() || !component.len().is_power_of_two() {
-                return Err(MosaicError::InvalidSize(component.len()));
+        for size in sizes {
+            if *size == 0 || !size.is_power_of_two() {
+                return Err(MosaicError::InvalidSize(*size));
             }
         }
-        let total_size = components
+        let total_size = sizes
             .iter()
-            .try_fold(0usize, |sum, component| sum.checked_add(component.len()))
+            .try_fold(0usize, |sum, size| sum.checked_add(*size))
             .ok_or(MosaicError::Overflow)?;
         let total_bits = total_size.next_power_of_two().trailing_zeros() as usize;
-        let mut values = vec![F2_128::from(0u64); 1usize << total_bits];
-        let mut layout = Vec::with_capacity(components.len());
+        let total = 1usize << total_bits;
+        let mut layout = Vec::with_capacity(sizes.len());
         let mut offset = 0usize;
-        for component in components {
-            let size_bits = component.len().trailing_zeros() as usize;
-            let aligned = (offset + component.len() - 1) & !(component.len() - 1);
-            if aligned + component.len() > values.len() {
+        for size in sizes {
+            let size_bits = size.trailing_zeros() as usize;
+            let aligned = (offset + size - 1) & !(size - 1);
+            if aligned + size > total {
                 return Err(MosaicError::Overflow);
             }
-            values[aligned..aligned + component.len()].copy_from_slice(component);
             let suffix_bits = total_bits - size_bits;
             let suffix_value = aligned >> size_bits;
             let suffix = (0..suffix_bits)
@@ -81,7 +82,17 @@ impl PackedMosaic {
                 offset: aligned,
                 suffix,
             });
-            offset = aligned + component.len();
+            offset = aligned + size;
+        }
+        Ok((total_bits, layout))
+    }
+
+    pub fn new(components: &[Vec<F2_128>]) -> Result<Self, MosaicError> {
+        let sizes = components.iter().map(Vec::len).collect::<Vec<_>>();
+        let (total_bits, layout) = Self::layout(&sizes)?;
+        let mut values = vec![F2_128::from(0u64); 1usize << total_bits];
+        for (component, slot) in components.iter().zip(&layout) {
+            values[slot.offset..slot.offset + component.len()].copy_from_slice(component);
         }
         Ok(Self {
             total_bits,
@@ -259,6 +270,139 @@ impl PackedMosaic {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PackedOpening {
+    pub batch: MosaicBatchingProof,
+    pub pcs: P3Opening,
+}
+
+/// PCS adapter: one primary vector plus single-column aux components are
+/// packed into one `G`, batched to one point, and opened with one P3 proof.
+#[derive(Clone, Debug)]
+pub struct PackedSharedPcs {
+    pub security_level: usize,
+    pub aux_tables: Vec<Vec<F2_128>>,
+    pub aux_points: Vec<Vec<F2_128>>,
+    pub aux_values: Vec<F2_128>,
+}
+
+impl PackedSharedPcs {
+    pub fn new(
+        security_level: usize,
+        aux_tables: Vec<Vec<F2_128>>,
+        aux_points: Vec<Vec<F2_128>>,
+        aux_values: Vec<F2_128>,
+    ) -> Result<Self, MosaicError> {
+        if aux_tables.len() != aux_points.len() || aux_tables.len() != aux_values.len() {
+            return Err(MosaicError::AuxShape);
+        }
+        Ok(Self {
+            security_level,
+            aux_tables,
+            aux_points,
+            aux_values,
+        })
+    }
+
+    fn mosaic(&self, primary: &[F2_128]) -> Result<PackedMosaic, MosaicError> {
+        let mut components = Vec::with_capacity(1 + self.aux_tables.len());
+        components.push(primary.to_vec());
+        components.extend(self.aux_tables.iter().cloned());
+        PackedMosaic::new(&components)
+    }
+
+    fn claims(
+        &self,
+        mosaic: &PackedMosaic,
+        primary_point: &[F2_128],
+        primary_value: F2_128,
+    ) -> Result<Vec<(Vec<F2_128>, F2_128)>, MosaicError> {
+        let mut claims = Vec::with_capacity(1 + self.aux_points.len());
+        claims.push((mosaic.lift(0, primary_point)?, primary_value));
+        for (index, point) in self.aux_points.iter().enumerate() {
+            claims.push((mosaic.lift(index + 1, point)?, self.aux_values[index]));
+        }
+        Ok(claims)
+    }
+}
+
+impl Pcs for PackedSharedPcs {
+    type Commitment = P3Commitment;
+    type Opening = PackedOpening;
+
+    fn commit(&self, values: &[F2_128]) -> Result<Self::Commitment, ProofError> {
+        let mosaic = self
+            .mosaic(values)
+            .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        P3BinaryPcs::new(self.security_level).commit(&mosaic.values)
+    }
+
+    fn open(&self, values: &[F2_128], point: &[F2_128]) -> Result<Self::Opening, ProofError> {
+        let mosaic = self
+            .mosaic(values)
+            .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        let primary_value = Mle::new(values.to_vec())?
+            .eval(point)
+            .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        let claims = self
+            .claims(&mosaic, point, primary_value)
+            .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        let pcs = P3BinaryPcs::new(self.security_level);
+        let commitment = pcs.commit(&mosaic.values)?;
+        let mut transcript = Sha256Transcript::new("packed-shared-pcs");
+        transcript.absorb(
+            "commitment",
+            &bincode::serialize(&commitment).unwrap_or_default(),
+        );
+        let batch = batch_claims(&mosaic.values, &claims, &mut transcript)
+            .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        let pcs_opening = pcs.open(&mosaic.values, &batch.point)?;
+        Ok(PackedOpening {
+            batch,
+            pcs: pcs_opening,
+        })
+    }
+
+    fn verify(
+        &self,
+        commitment: &Self::Commitment,
+        point: &[F2_128],
+        value: F2_128,
+        opening: &Self::Opening,
+    ) -> Result<bool, ProofError> {
+        let mut sizes = Vec::with_capacity(1 + self.aux_tables.len());
+        sizes.push(1usize << point.len());
+        sizes.extend(self.aux_tables.iter().map(Vec::len));
+        let (total_bits, components) =
+            PackedMosaic::layout(&sizes).map_err(|error| ProofError::Pcs(error.to_string()))?;
+        let mosaic = PackedMosaic {
+            total_bits,
+            components,
+            values: Vec::new(),
+        };
+        let claims = self
+            .claims(&mosaic, point, value)
+            .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        let mut transcript = Sha256Transcript::new("packed-shared-pcs");
+        transcript.absorb(
+            "commitment",
+            &bincode::serialize(commitment).unwrap_or_default(),
+        );
+        verify_batching(&opening.batch, &claims, total_bits, &mut transcript)
+            .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        P3BinaryPcs::new(self.security_level).verify(
+            commitment,
+            &opening.batch.point,
+            opening.batch.value,
+            &opening.pcs,
+        )
+    }
+
+    fn commitment_bytes(&self, commitment: &Self::Commitment) -> Vec<u8> {
+        bincode::serialize(commitment).unwrap_or_default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,5 +484,30 @@ mod tests {
                 &opening,
             )
             .unwrap());
+    }
+    #[test]
+    fn packed_shared_pcs_batches_primary_and_aux() {
+        let primary = values(8, 11);
+        let aux_tables = vec![vec![F2_128::from(42u64); 2], vec![F2_128::from(99u64); 4]];
+        let aux_values = vec![F2_128::from(42u64), F2_128::from(99u64)];
+        let aux_points = vec![
+            vec![F2_128::from(3u64)],
+            vec![F2_128::from(5u64), F2_128::from(7u64)],
+        ];
+        let adapter = PackedSharedPcs::new(100, aux_tables, aux_points, aux_values).unwrap();
+        let point = vec![
+            F2_128::from(13u64),
+            F2_128::from(17u64),
+            F2_128::from(19u64),
+        ];
+        let value = Mle::new(primary.clone()).unwrap().eval(&point).unwrap();
+        let commitment = adapter.commit(&primary).unwrap();
+        let opening = adapter.open(&primary, &point).unwrap();
+        assert!(adapter
+            .verify(&commitment, &point, value, &opening)
+            .unwrap());
+        assert!(!adapter
+            .verify(&commitment, &point, value + F2_128::from(1u64), &opening,)
+            .unwrap_or(false));
     }
 }
