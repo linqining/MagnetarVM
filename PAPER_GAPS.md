@@ -277,3 +277,14 @@ Both naive integrations were measured and rejected:
 - appending one-hot columns to the existing addr table: proof 261,695 B → 441,887 B.
 
 The extra depth/columns change P3's table shape and dominate the proof; the claim itself is small. Integrating address multiplicity/collision claims therefore requires packing the one-hot columns into an existing packed PCS component (or a PCS with cheap multi-column aux tables), not adding P3 tables. This is now the concrete blocker for D4 integration.
+
+### Next concrete design: pack aux columns, bind claims to table hash
+
+The P3 table-shape measurements show that adding address/collision columns directly is not viable. The next implementation step is:
+
+1. define `aux_binding(tables) = SHA-256(serialized columns)` and bind claim transcripts to this binding instead of the P3 mosaic commitment;
+2. pack every aux table column into `PackedMosaic`/`PackedSharedPcs`, so the verifier opens one packed component per claim instead of adding P3 tables;
+3. keep the CPU `z` as the packed primary and verify the lockstep/Spartan relation against the packed PCS;
+4. then add address multiplicity/collision claims without changing P3 table depth.
+
+This is a PCS/transcript refactor, not a small compression; it is the prerequisite for D4 integration and for cheaper aux claims in general.
