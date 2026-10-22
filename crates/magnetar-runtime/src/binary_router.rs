@@ -87,6 +87,7 @@ pub struct BinaryRouterWitness {
     pub offset_bits: Vec<Vec<F2_128>>,
     pub width_bits: Vec<Vec<F2_128>>,
     pub shift_code: Vec<F2_128>,
+    pub shift_q: Vec<Vec<F2_128>>,
     pub is_shift: Vec<F2_128>,
     pub is_store: Vec<F2_128>,
     pub output: Vec<Vec<F2_128>>,
@@ -245,6 +246,7 @@ impl BinaryRouterWitness {
         let mut offset_bits = vec![vec![F2_128::from(0u64); cycles]; 3];
         let mut width_bits = vec![vec![F2_128::from(0u64); cycles]; 4];
         let mut shift_code = vec![F2_128::from(0u64); cycles];
+        let mut shift_q = vec![vec![F2_128::from(0u64); cycles]; 192];
         let mut is_shift = vec![F2_128::from(0u64); cycles];
         let mut is_store = vec![F2_128::from(0u64); cycles];
         for cycle in 0..routes.len() {
@@ -262,6 +264,10 @@ impl BinaryRouterWitness {
                 width_bits[width][cycle] = F2_128::from(1u64);
             }
             shift_code[cycle] = F2_128::from(routes[cycle].shift_code());
+            if let RouterRoute::Shift(_) = routes[cycle] {
+                let code = routes[cycle].shift_code() as usize;
+                shift_q[code][cycle] = F2_128::from(1u64);
+            }
             is_shift[cycle] =
                 F2_128::from(u64::from(matches!(routes[cycle], RouterRoute::Shift(_))));
             is_store[cycle] =
@@ -288,6 +294,7 @@ impl BinaryRouterWitness {
             offset_bits,
             width_bits,
             shift_code,
+            shift_q,
             is_shift,
             is_store,
             output,
@@ -300,6 +307,7 @@ impl BinaryRouterWitness {
         columns.extend(self.width_bits.clone());
         columns.push(self.is_shift.clone());
         columns.push(self.is_store.clone());
+        columns.extend(self.shift_q.clone());
         columns.push(self.shift_code.clone());
         P3MosaicTable { columns }
     }
@@ -321,6 +329,11 @@ impl BinaryRouterWitness {
                 .iter()
                 .any(|column| column.len() != self.cycles)
             || self.shift_code.len() != self.cycles
+            || self.shift_q.len() != 192
+            || self
+                .shift_q
+                .iter()
+                .any(|column| column.len() != self.cycles)
             || self.is_shift.len() != self.cycles
             || self.is_store.len() != self.cycles
             || self.output.iter().any(|column| column.len() != self.cycles)
@@ -434,6 +447,10 @@ pub struct BinaryRouterProof {
     pub shift_challenges: Vec<F2_128>,
     pub shift_cycle_point: Vec<F2_128>,
     pub shift_eval: F2_128,
+    pub q_rounds: Vec<Vec<F2_128>>,
+    pub q_challenges: Vec<F2_128>,
+    pub q_cycle_point: Vec<F2_128>,
+    pub q_evals: Vec<F2_128>,
     pub valid_rounds: Vec<Vec<F2_128>>,
     pub valid_challenges: Vec<F2_128>,
     pub valid_cycle_point: Vec<F2_128>,
@@ -634,7 +651,7 @@ pub(crate) fn prove_binary_router_claims(
     witness.validate()?;
     let n = witness.cycle_bits;
     let cycles = witness.cycles;
-    let bit_columns = INPUT_BITS + 9;
+    let bit_columns = INPUT_BITS + 9 + 192;
     let total_columns = bit_columns + 1;
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-router-boolean");
@@ -661,6 +678,8 @@ pub(crate) fn prove_binary_router_claims(
                 witness.is_shift[cycle]
             } else if column == INPUT_BITS + 8 {
                 witness.is_store[cycle]
+            } else if column < bit_columns {
+                witness.shift_q[column - INPUT_BITS - 9][cycle]
             } else {
                 F2_128::from(0u64)
             };
@@ -678,6 +697,7 @@ pub(crate) fn prove_binary_router_claims(
     bit_evals.extend((0..4).map(|bit| fold_all(&witness.width_bits[bit], r_j)));
     bit_evals.push(fold_all(&witness.is_shift, r_j));
     bit_evals.push(fold_all(&witness.is_store, r_j));
+    bit_evals.extend((0..192).map(|bit| fold_all(&witness.shift_q[bit], r_j)));
     let boolean = AddressBooleanClaim {
         column_point: rho_c,
         cycle_point: rho_j.clone(),
@@ -875,6 +895,34 @@ pub(crate) fn prove_binary_router_claims(
     } else {
         valid_r_j.to_vec()
     };
+    let mut transcript = Sha256Transcript::new("magnetar-binary-router-q");
+    absorb_commitment(&mut transcript, commitment);
+    let q_rho_j = sample_point(&mut transcript, n);
+    let _q_rho_h = sample_point(&mut transcript, 8);
+    let q_eq_j = eq_vector(&q_rho_j, cycles);
+    let q_terms = 256 * cycles;
+    let mut q_left = vec![F2_128::from(0u64); q_terms];
+    let mut q_right = vec![F2_128::from(0u64); q_terms];
+    for h in 0..256usize {
+        for cycle in 0..cycles {
+            q_left[h * cycles + cycle] = q_eq_j[cycle];
+            if h < 192 {
+                q_right[h * cycles + cycle] = witness.shift_q[h][cycle];
+            }
+        }
+    }
+    let q_degrees = vec![2usize; q_terms.trailing_zeros() as usize];
+    let (q_rounds, q_challenges) =
+        sumcheck_product(&q_left, &q_right, &q_degrees, &mut transcript)?;
+    let q_r_j = &q_challenges[..n];
+    let q_evals = (0..192)
+        .map(|h| fold_all(&witness.shift_q[h], q_r_j))
+        .collect::<Vec<_>>();
+    let q_point = if q_r_j.is_empty() {
+        vec![F2_128::from(0u64)]
+    } else {
+        q_r_j.to_vec()
+    };
     let boolean_point = if boolean.challenges[..n].is_empty() {
         vec![F2_128::from(0u64)]
     } else {
@@ -914,7 +962,13 @@ pub(crate) fn prove_binary_router_claims(
         P3MosaicPoint {
             table: table_index,
             point: valid_point,
-            columns: (INPUT_BITS + 7..bit_columns).collect(),
+            columns: (INPUT_BITS + 7..INPUT_BITS + 9).collect(),
+            next_columns: Vec::new(),
+        },
+        P3MosaicPoint {
+            table: table_index,
+            point: q_point,
+            columns: (INPUT_BITS + 9..bit_columns).collect(),
             next_columns: Vec::new(),
         },
     ];
@@ -925,6 +979,7 @@ pub(crate) fn prove_binary_router_claims(
         width_evals.clone(),
         vec![shift_eval],
         valid_evals.clone(),
+        q_evals.clone(),
     ];
     Ok((
         BinaryRouterProof {
@@ -947,6 +1002,10 @@ pub(crate) fn prove_binary_router_claims(
             shift_challenges,
             shift_cycle_point: shift_rho_j,
             shift_eval,
+            q_rounds,
+            q_challenges,
+            q_cycle_point: q_rho_j,
+            q_evals,
             valid_rounds,
             valid_challenges,
             valid_cycle_point: valid_rho_j,
@@ -1009,6 +1068,15 @@ fn sumcheck_two_terms(
     Ok((polynomials, challenges))
 }
 
+fn q_eq_claimed(witness: &BinaryRouterWitness, point: &[F2_128]) -> F2_128 {
+    let eq = eq_vector(point, witness.cycles);
+    eq.iter()
+        .zip(&witness.is_shift)
+        .fold(F2_128::from(0u64), |sum, (weight, value)| {
+            sum + *weight * *value
+        })
+}
+
 #[allow(clippy::needless_range_loop)]
 pub(crate) fn verify_binary_router_claims(
     witness: &BinaryRouterWitness,
@@ -1022,7 +1090,7 @@ pub(crate) fn verify_binary_router_claims(
     }
     let n = witness.cycle_bits;
     let cycles = witness.cycles;
-    let bit_columns = INPUT_BITS + 9;
+    let bit_columns = INPUT_BITS + 9 + 192;
     let total_columns = bit_columns + 1;
     let col_bits = bit_columns.next_power_of_two().trailing_zeros() as usize;
     if commitment.tables.len() <= table_index
@@ -1234,6 +1302,31 @@ pub(crate) fn verify_binary_router_claims(
         return Ok(None);
     }
 
+    let mut transcript = Sha256Transcript::new("magnetar-binary-router-q");
+    absorb_commitment(&mut transcript, commitment);
+    let q_rho_j = sample_point(&mut transcript, n);
+    let _q_rho_h = sample_point(&mut transcript, 8);
+    if proof.q_cycle_point != q_rho_j {
+        return Ok(None);
+    }
+    let Some(sum) = replay_terms(
+        &proof.q_rounds,
+        &proof.q_challenges,
+        q_eq_claimed(witness, &q_rho_j),
+        &mut transcript,
+    ) else {
+        return Ok(None);
+    };
+    let q_r_j = &proof.q_challenges[..n];
+    let q_r_h = &proof.q_challenges[n..];
+    let mut q_eval = F2_128::from(0u64);
+    for (h, eval) in proof.q_evals.iter().enumerate() {
+        q_eval = q_eval + eq_at_index(q_r_h, h) * *eval;
+    }
+    if sum != eq_points(&q_rho_j, q_r_j) * q_eval {
+        return Ok(None);
+    }
+
     let point = if r_j.is_empty() {
         vec![F2_128::from(0u64)]
     } else {
@@ -1294,7 +1387,17 @@ pub(crate) fn verify_binary_router_claims(
             } else {
                 valid_r_j.to_vec()
             },
-            columns: (INPUT_BITS + 7..bit_columns).collect(),
+            columns: (INPUT_BITS + 7..INPUT_BITS + 9).collect(),
+            next_columns: Vec::new(),
+        },
+        P3MosaicPoint {
+            table: table_index,
+            point: if q_r_j.is_empty() {
+                vec![F2_128::from(0u64)]
+            } else {
+                q_r_j.to_vec()
+            },
+            columns: (INPUT_BITS + 9..bit_columns).collect(),
             next_columns: Vec::new(),
         },
     ];
@@ -1305,6 +1408,7 @@ pub(crate) fn verify_binary_router_claims(
         proof.width_evals.clone(),
         vec![proof.shift_eval],
         proof.valid_evals.clone(),
+        proof.q_evals.clone(),
     ];
     Ok(Some((points, values)))
 }
