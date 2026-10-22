@@ -80,6 +80,58 @@ pub struct P3BatchPoint {
     pub columns: Vec<usize>,
 }
 
+/// Shape of one source table inside a mosaic commitment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct P3MosaicTableShape {
+    pub num_variables: usize,
+    pub num_columns: usize,
+}
+
+/// A commitment to several source tables of different arities.
+///
+/// The tables are stacked into one PCS polynomial, so one commitment and one
+/// opening argument cover every table and every point. Local table points are
+/// lifted by the P3 stacked layout.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct P3MosaicCommitment {
+    pub cap: P3Cap,
+    pub tables: Vec<P3MosaicTableShape>,
+    pub stacked_variables: usize,
+}
+
+/// One PCS opening proof covering every mosaic table and point.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct P3MosaicOpening {
+    pub commitment: P3MosaicCommitment,
+    pub proof: P3Proof,
+}
+
+impl std::fmt::Debug for P3MosaicOpening {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("P3MosaicOpening")
+            .field("commitment", &self.commitment)
+            .field(
+                "proof_bytes",
+                &bincode::serialize(&self.proof).map(|b| b.len()),
+            )
+            .finish()
+    }
+}
+
+/// Source columns of one table in a mosaic commitment.
+#[derive(Clone, Debug)]
+pub struct P3MosaicTable {
+    pub columns: Vec<Vec<F2_128>>,
+}
+
+/// A local opening point owned by one mosaic table.
+#[derive(Clone, Debug)]
+pub struct P3MosaicPoint {
+    pub table: usize,
+    pub point: Vec<F2_128>,
+    pub columns: Vec<usize>,
+}
+
 impl std::fmt::Debug for P3Opening {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("P3Opening")
@@ -357,6 +409,213 @@ impl P3BinaryPcs {
         }
         Ok(true)
     }
+
+    fn mosaic_table(table: &P3MosaicTable) -> Result<(Table<F>, P3MosaicTableShape), ProofError> {
+        let (p3_table, num_variables, num_columns) = Self::batch_table(&table.columns)?;
+        Ok((
+            p3_table,
+            P3MosaicTableShape {
+                num_variables,
+                num_columns,
+            },
+        ))
+    }
+
+    fn mosaic_stacked_variables(shapes: &[P3MosaicTableShape]) -> Result<usize, ProofError> {
+        if shapes.is_empty() {
+            return Err(ProofError::DimensionMismatch);
+        }
+        let mut total = 0usize;
+        for shape in shapes {
+            let rows = 1usize
+                .checked_shl(shape.num_variables as u32)
+                .ok_or_else(|| ProofError::Pcs("mosaic table arity overflows usize".into()))?;
+            let cells = rows
+                .checked_mul(shape.num_columns)
+                .ok_or_else(|| ProofError::Pcs("mosaic table cells overflow usize".into()))?;
+            total = total
+                .checked_add(cells)
+                .ok_or_else(|| ProofError::Pcs("mosaic cell count overflows usize".into()))?;
+        }
+        if total == 0 {
+            return Err(ProofError::Pcs("mosaic has no cells".into()));
+        }
+        Ok(total.next_power_of_two().trailing_zeros() as usize)
+    }
+
+    fn mosaic_schedule(
+        shapes: &[P3MosaicTableShape],
+        points: &[P3MosaicPoint],
+    ) -> Result<(OpeningProtocol, Vec<Point<F>>), ProofError> {
+        let mut per_table: Vec<Vec<usize>> = vec![Vec::new(); shapes.len()];
+        let mut last_table = 0usize;
+        for (index, point) in points.iter().enumerate() {
+            if point.table >= shapes.len() {
+                return Err(ProofError::Pcs(format!(
+                    "mosaic point {index} names an invalid table"
+                )));
+            }
+            if point.table < last_table {
+                return Err(ProofError::Pcs(
+                    "mosaic points must be grouped by table".into(),
+                ));
+            }
+            last_table = point.table;
+            let shape = shapes[point.table];
+            if point.point.len() != shape.num_variables {
+                return Err(ProofError::PointLength {
+                    expected: shape.num_variables,
+                    actual: point.point.len(),
+                });
+            }
+            if point.columns.is_empty()
+                || point
+                    .columns
+                    .iter()
+                    .any(|column| *column >= shape.num_columns)
+            {
+                return Err(ProofError::Pcs(format!(
+                    "mosaic point {index} names an invalid column"
+                )));
+            }
+            let mut seen = point.columns.clone();
+            seen.sort_unstable();
+            seen.dedup();
+            if seen.len() != point.columns.len() {
+                return Err(ProofError::Pcs(format!(
+                    "mosaic point {index} repeats a column"
+                )));
+            }
+            per_table[point.table].push(index);
+        }
+
+        let mut ordered = Vec::with_capacity(points.len());
+        let mut specs = Vec::with_capacity(shapes.len());
+        for (table, shape) in shapes.iter().enumerate() {
+            let mut schedule = Vec::with_capacity(per_table[table].len());
+            for &index in &per_table[table] {
+                schedule.push(OpeningBatch::new(points[index].columns.clone(), Vec::new()));
+                ordered.push(Self::point(&points[index].point));
+            }
+            specs.push(TableSpec::new(
+                TableShape::new(shape.num_variables, shape.num_columns),
+                schedule,
+            ));
+        }
+        Ok((OpeningProtocol::new(specs), ordered))
+    }
+
+    /// Commit to several tables of different arities with one PCS commitment.
+    pub fn commit_mosaic(
+        &self,
+        tables: &[P3MosaicTable],
+    ) -> Result<P3MosaicCommitment, ProofError> {
+        let mut p3_tables = Vec::with_capacity(tables.len());
+        let mut shapes = Vec::with_capacity(tables.len());
+        for table in tables {
+            let (p3_table, shape) = Self::mosaic_table(table)?;
+            p3_tables.push(p3_table);
+            shapes.push(shape);
+        }
+        let stacked_variables = Self::mosaic_stacked_variables(&shapes)?;
+        let backend = Self::backend(stacked_variables, self.security_level)?;
+        let mut challenger = Self::challenger();
+        let witness = SuffixProver::<F, F>::new_witness(p3_tables, 0);
+        let (cap, _) = backend
+            .commit(witness, &mut challenger)
+            .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        Ok(P3MosaicCommitment {
+            cap,
+            tables: shapes,
+            stacked_variables,
+        })
+    }
+
+    /// Open every mosaic table at its listed local points with one proof.
+    pub fn open_mosaic(
+        &self,
+        tables: &[P3MosaicTable],
+        points: &[P3MosaicPoint],
+    ) -> Result<P3MosaicOpening, ProofError> {
+        let mut p3_tables = Vec::with_capacity(tables.len());
+        let mut shapes = Vec::with_capacity(tables.len());
+        for table in tables {
+            let (p3_table, shape) = Self::mosaic_table(table)?;
+            p3_tables.push(p3_table);
+            shapes.push(shape);
+        }
+        let stacked_variables = Self::mosaic_stacked_variables(&shapes)?;
+        let (protocol, p3_points) = Self::mosaic_schedule(&shapes, points)?;
+        let backend = Self::backend(stacked_variables, self.security_level)?;
+        let mut challenger = Self::challenger();
+        let witness = SuffixProver::<F, F>::new_witness(p3_tables, 0);
+        let (cap, data) = backend
+            .commit(witness, &mut challenger)
+            .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        let proof = backend
+            .open_at(data, &protocol, &p3_points, &mut challenger)
+            .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        Ok(P3MosaicOpening {
+            commitment: P3MosaicCommitment {
+                cap,
+                tables: shapes,
+                stacked_variables,
+            },
+            proof,
+        })
+    }
+
+    /// Verify a mosaic opening against the values expected at each point.
+    pub fn verify_mosaic(
+        &self,
+        opening: &P3MosaicOpening,
+        points: &[P3MosaicPoint],
+        values: &[Vec<F2_128>],
+    ) -> Result<bool, ProofError> {
+        if points.len() != values.len() {
+            return Ok(false);
+        }
+        let commitment = &opening.commitment;
+        let expected_stacked = match Self::mosaic_stacked_variables(&commitment.tables) {
+            Ok(stacked) => stacked,
+            Err(_) => return Ok(false),
+        };
+        if commitment.stacked_variables != expected_stacked {
+            return Ok(false);
+        }
+        let (protocol, p3_points) = match Self::mosaic_schedule(&commitment.tables, points) {
+            Ok(schedule) => schedule,
+            Err(_) => return Ok(false),
+        };
+        let backend = Self::backend(commitment.stacked_variables, self.security_level)?;
+        let mut challenger = Self::challenger();
+        backend.observe_commitment(&commitment.cap, &mut challenger);
+        let Ok(evals) = backend.verify_at(
+            &commitment.cap,
+            &opening.proof,
+            &protocol,
+            &p3_points,
+            &mut challenger,
+        ) else {
+            return Ok(false);
+        };
+        if evals.len() != values.len() {
+            return Ok(false);
+        }
+        for ((batch, expected), point) in evals.iter().zip(values).zip(points) {
+            if expected.len() != point.columns.len()
+                || batch.current().len() != expected.len()
+                || batch
+                    .current()
+                    .iter()
+                    .zip(expected)
+                    .any(|(observed, value)| *observed != F::from_repr(value.value()))
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
 }
 
 impl Pcs for P3BinaryPcs {
@@ -427,6 +686,89 @@ impl Pcs for P3BinaryPcs {
             .first()
             .and_then(|batch| batch.current().first())
             .is_some_and(|observed| *observed == expected))
+    }
+
+    fn commitment_bytes(&self, commitment: &Self::Commitment) -> Vec<u8> {
+        bincode::serialize(commitment).unwrap_or_default()
+    }
+}
+
+/// A PCS adapter that commits a primary vector together with auxiliary tables
+/// and opens all of them in one P3 proof.
+///
+/// The primary vector is mosaic table 0 and opens at the single point of the
+/// `Pcs` interface. Auxiliary points must name their absolute table indices
+/// (`1..`); their expected values are supplied by the verifier.
+#[derive(Clone, Debug)]
+pub struct P3SharedPcs {
+    pub security_level: usize,
+    pub aux_tables: Vec<P3MosaicTable>,
+    pub aux_points: Vec<P3MosaicPoint>,
+    pub aux_values: Vec<Vec<F2_128>>,
+}
+
+impl P3SharedPcs {
+    pub fn new(
+        security_level: usize,
+        aux_tables: Vec<P3MosaicTable>,
+        aux_points: Vec<P3MosaicPoint>,
+        aux_values: Vec<Vec<F2_128>>,
+    ) -> Self {
+        Self {
+            security_level,
+            aux_tables,
+            aux_points,
+            aux_values,
+        }
+    }
+
+    fn tables(&self, values: &[F2_128]) -> Vec<P3MosaicTable> {
+        let mut tables = Vec::with_capacity(1 + self.aux_tables.len());
+        tables.push(P3MosaicTable {
+            columns: vec![values.to_vec()],
+        });
+        tables.extend(self.aux_tables.clone());
+        tables
+    }
+
+    fn points(&self, point: &[F2_128]) -> Vec<P3MosaicPoint> {
+        let mut points = Vec::with_capacity(1 + self.aux_points.len());
+        points.push(P3MosaicPoint {
+            table: 0,
+            point: point.to_vec(),
+            columns: vec![0],
+        });
+        points.extend(self.aux_points.clone());
+        points
+    }
+}
+
+impl Pcs for P3SharedPcs {
+    type Commitment = P3MosaicCommitment;
+    type Opening = P3MosaicOpening;
+
+    fn commit(&self, values: &[F2_128]) -> Result<Self::Commitment, ProofError> {
+        P3BinaryPcs::new(self.security_level).commit_mosaic(&self.tables(values))
+    }
+
+    fn open(&self, values: &[F2_128], point: &[F2_128]) -> Result<Self::Opening, ProofError> {
+        P3BinaryPcs::new(self.security_level).open_mosaic(&self.tables(values), &self.points(point))
+    }
+
+    fn verify(
+        &self,
+        commitment: &Self::Commitment,
+        point: &[F2_128],
+        value: F2_128,
+        opening: &Self::Opening,
+    ) -> Result<bool, ProofError> {
+        if opening.commitment != *commitment {
+            return Ok(false);
+        }
+        let mut values = Vec::with_capacity(1 + self.aux_values.len());
+        values.push(vec![value]);
+        values.extend(self.aux_values.clone());
+        P3BinaryPcs::new(self.security_level).verify_mosaic(opening, &self.points(point), &values)
     }
 
     fn commitment_bytes(&self, commitment: &Self::Commitment) -> Vec<u8> {
@@ -523,5 +865,106 @@ mod tests {
         let mut bad_point = points.clone();
         bad_point[1].point[0] = bad_point[1].point[0] + F2_128::from(1u64);
         assert!(!pcs.verify_batch(&opening, &bad_point, &expected).unwrap());
+    }
+
+    #[test]
+    fn p3_mosaic_stacks_different_arities_into_one_opening() {
+        let pcs = P3BinaryPcs::new(100);
+        let primary = values(1 << 9);
+        let aux = vec![values(1 << 10), values(1 << 10)];
+        let tables = vec![
+            P3MosaicTable {
+                columns: vec![primary.clone()],
+            },
+            P3MosaicTable {
+                columns: aux.clone(),
+            },
+        ];
+        let commitment = pcs.commit_mosaic(&tables).unwrap();
+        assert_eq!(commitment.tables.len(), 2);
+        assert_eq!(commitment.tables[0].num_variables, 9);
+        assert_eq!(commitment.tables[1].num_variables, 10);
+
+        let primary_point = (0..9u64)
+            .map(|index| F2_128::from(index & 1))
+            .collect::<Vec<_>>();
+        let aux_point = (0..10u64)
+            .map(|index| F2_128::from((index + 1) & 1))
+            .collect::<Vec<_>>();
+        let points = vec![
+            P3MosaicPoint {
+                table: 0,
+                point: primary_point.clone(),
+                columns: vec![0],
+            },
+            P3MosaicPoint {
+                table: 1,
+                point: aux_point.clone(),
+                columns: vec![0, 1],
+            },
+        ];
+        let opening = pcs.open_mosaic(&tables, &points).unwrap();
+        let expected = vec![
+            vec![magnetar_proof::Mle::new(primary.clone())
+                .unwrap()
+                .eval(&primary_point)
+                .unwrap()],
+            aux.iter()
+                .map(|column| {
+                    magnetar_proof::Mle::new(column.clone())
+                        .unwrap()
+                        .eval(&aux_point)
+                        .unwrap()
+                })
+                .collect(),
+        ];
+        assert!(pcs.verify_mosaic(&opening, &points, &expected).unwrap());
+
+        let mut bad = expected.clone();
+        bad[1][1] = bad[1][1] + F2_128::from(1u64);
+        assert!(!pcs.verify_mosaic(&opening, &points, &bad).unwrap());
+    }
+
+    #[test]
+    fn p3_shared_pcs_batches_primary_and_auxiliary_claims() {
+        let primary = values(1 << 9);
+        let aux = values(1 << 10);
+        let primary_point: Vec<F2_128> = (0..9u64).map(|index| F2_128::from(index & 1)).collect();
+        let aux_point: Vec<F2_128> = (0..10u64)
+            .map(|index| F2_128::from((index + 1) & 1))
+            .collect();
+        let aux_value = magnetar_proof::Mle::new(aux.clone())
+            .unwrap()
+            .eval(&aux_point)
+            .unwrap();
+        let pcs = P3SharedPcs::new(
+            100,
+            vec![P3MosaicTable {
+                columns: vec![aux.clone()],
+            }],
+            vec![P3MosaicPoint {
+                table: 1,
+                point: aux_point.clone(),
+                columns: vec![0],
+            }],
+            vec![vec![aux_value]],
+        );
+        let primary_value = magnetar_proof::Mle::new(primary.clone())
+            .unwrap()
+            .eval(&primary_point)
+            .unwrap();
+        let commitment = pcs.commit(&primary).unwrap();
+        let opening = pcs.open(&primary, &primary_point).unwrap();
+        assert!(pcs
+            .verify(&commitment, &primary_point, primary_value, &opening)
+            .unwrap());
+        assert!(!pcs
+            .verify(
+                &commitment,
+                &primary_point,
+                primary_value + F2_128::from(1u64),
+                &opening,
+            )
+            .unwrap());
     }
 }

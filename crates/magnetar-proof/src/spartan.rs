@@ -174,7 +174,8 @@ pub enum SpartanError {
     Verification(&'static str),
 }
 
-fn witness_vector(
+/// Build the padded Spartan witness vector `z` from a constraint witness.
+pub fn witness_vector(
     system: &ConstraintSystem,
     witness: &Witness,
 ) -> Result<Vec<F2_128>, SpartanError> {

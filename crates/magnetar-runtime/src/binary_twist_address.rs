@@ -6,7 +6,7 @@
 
 use magnetar_constraint::{Field, F2_128};
 use magnetar_memory::BinaryTwistWitness;
-use magnetar_pcs::{P3BatchCommitment, P3BatchPoint, P3BinaryPcs, P3Commitment, P3Opening};
+use magnetar_pcs::{P3BinaryPcs, P3Commitment, P3MosaicCommitment, P3MosaicPoint, P3Opening};
 use magnetar_proof::{Pcs, ProofError};
 use magnetar_transcript::Sha256Transcript;
 use serde::{Deserialize, Serialize};
@@ -46,7 +46,7 @@ pub struct AddressMultiplicityClaim {
 /// A batch-local address claim together with the points it opens.
 pub(crate) struct AddressBatchClaim {
     pub claim: AddressMultiplicityClaim,
-    pub points: Vec<P3BatchPoint>,
+    pub points: Vec<P3MosaicPoint>,
     pub values: Vec<Vec<F2_128>>,
 }
 
@@ -54,9 +54,10 @@ pub(crate) fn prove_address_batch_claim(
     table: &[F2_128],
     write: bool,
     witness: &BinaryTwistWitness,
-    commitment: &P3BatchCommitment,
+    commitment: &P3MosaicCommitment,
     domain: &'static str,
     column: usize,
+    table_index: usize,
 ) -> Result<AddressBatchClaim, ProofError> {
     let cells = witness.initial.len();
     let cycles = witness.cycles.next_power_of_two();
@@ -96,15 +97,18 @@ pub(crate) fn prove_address_batch_claim(
     let a_rp_eval = fold_all(table, &rp_point);
 
     let points = vec![
-        P3BatchPoint {
+        P3MosaicPoint {
+            table: table_index,
             point: challenges.clone(),
             columns: vec![column],
         },
-        P3BatchPoint {
+        P3MosaicPoint {
+            table: table_index,
             point: r_point,
             columns: vec![column],
         },
-        P3BatchPoint {
+        P3MosaicPoint {
+            table: table_index,
             point: rp_point,
             columns: vec![column],
         },
@@ -130,9 +134,10 @@ pub(crate) fn verify_address_batch_claim(
     claim: &AddressMultiplicityClaim,
     write: bool,
     witness: &BinaryTwistWitness,
-    commitment: &P3BatchCommitment,
+    commitment: &P3MosaicCommitment,
     domain: &'static str,
     column: usize,
+    table_index: usize,
 ) -> Result<Option<AddressBatchClaim>, ProofError> {
     let cells = witness.initial.len();
     let cycles = witness.cycles.next_power_of_two();
@@ -210,15 +215,18 @@ pub(crate) fn verify_address_batch_claim(
     let mut rp_point = r_prime;
     rp_point.extend_from_slice(&claim.collision_challenges);
     let points = vec![
-        P3BatchPoint {
+        P3MosaicPoint {
+            table: table_index,
             point: claim.challenges.clone(),
             columns: vec![column],
         },
-        P3BatchPoint {
+        P3MosaicPoint {
+            table: table_index,
             point: r_point,
             columns: vec![column],
         },
-        P3BatchPoint {
+        P3MosaicPoint {
+            table: table_index,
             point: rp_point,
             columns: vec![column],
         },
@@ -523,7 +531,7 @@ fn absorb_commitment(transcript: &mut Sha256Transcript, commitment: &P3Commitmen
     );
 }
 
-fn absorb_batch_commitment(transcript: &mut Sha256Transcript, commitment: &P3BatchCommitment) {
+fn absorb_batch_commitment(transcript: &mut Sha256Transcript, commitment: &P3MosaicCommitment) {
     transcript.absorb(
         "commitment",
         &bincode::serialize(commitment).unwrap_or_default(),

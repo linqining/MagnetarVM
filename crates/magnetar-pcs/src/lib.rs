@@ -15,7 +15,8 @@ pub use ligerito::{LigeritoCommitment, LigeritoIndexOpening, LigeritoPcs, Ligeri
 
 pub mod p3_pcs;
 pub use p3_pcs::{
-    P3BatchCommitment, P3BatchOpening, P3BatchPoint, P3BinaryPcs, P3Commitment, P3Opening,
+    P3BatchCommitment, P3BatchOpening, P3BatchPoint, P3BinaryPcs, P3Commitment, P3MosaicCommitment,
+    P3MosaicOpening, P3MosaicPoint, P3MosaicTable, P3MosaicTableShape, P3Opening, P3SharedPcs,
 };
 
 use magnetar_constraint::F2_128;

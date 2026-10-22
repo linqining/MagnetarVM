@@ -7,17 +7,23 @@
 pub mod binary_twist;
 pub mod binary_twist_address;
 
-use crate::binary_twist::{prove_binary_twist_ram, verify_binary_twist_ram, BinaryTwistRamProof};
+use crate::binary_twist::{
+    batch_tables, prove_binary_twist_claims, prove_binary_twist_ram, verify_binary_twist_claims,
+    verify_binary_twist_ram, BatchTables, BinaryTwistRamProof, MosaicClaims,
+};
 
 use magnetar_constraint::{ConstraintSystem, LayoutError, Witness, WitnessLayout, F2_128};
 use magnetar_cpu::{check_trace, CpuError};
 use magnetar_executor::{execute_with_io, ExecError, ExecutionIo};
 use magnetar_memory::{check_memory, BinaryTwistWitness, MemoryError, MemoryReport};
 use magnetar_pcs::{
-    MerklePath, MerkleTree, NaiveCommitment, NaiveMerklePcs, P3BinaryPcs, P3Commitment, P3Opening,
+    MerklePath, MerkleTree, NaiveCommitment, NaiveMerklePcs, P3BinaryPcs, P3Commitment,
+    P3MosaicCommitment, P3MosaicOpening, P3MosaicTable, P3Opening, P3SharedPcs,
 };
 use magnetar_preprocess::{preprocess, PreprocessError, PreprocessedProgram};
-use magnetar_proof::{prove_spartan, verify_spartan, Pcs, SpartanError, SpartanProof};
+use magnetar_proof::{
+    prove_spartan, verify_spartan, witness_vector, Pcs, SpartanError, SpartanProof,
+};
 use magnetar_recursion::{ChainedChunk, ChainedProof, ChainedRecursion, ChunkPlan, RecursionError};
 use magnetar_spec::{decode, decode_compressed, MachineConfig, MachineState, ProgramImage, Trace};
 use magnetar_transcript::sha256;
@@ -236,6 +242,9 @@ pub trait Verifier {
 }
 
 pub type CpuSpartanProof = SpartanProof<P3Commitment, P3Opening>;
+
+/// A CPU Spartan proof whose PCS opening also carries auxiliary tables.
+pub type MosaicSpartanProof = SpartanProof<P3MosaicCommitment, P3MosaicOpening>;
 
 /// Reference proof backend: Spartan over the constraint IR with the P3
 /// multilinear binary-field PCS.
@@ -926,9 +935,10 @@ fn trace_access_plan(trace: &Trace) -> Result<Vec<AccessDescriptor>, RuntimeErro
     Ok(plan)
 }
 
-pub fn prove_trace_access(trace: &Trace) -> Result<TraceAccessProof, RuntimeError> {
-    let witness = BinaryTwistWitness::from_trace(trace)
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+fn prove_trace_access_steps(
+    trace: &Trace,
+    witness: &BinaryTwistWitness,
+) -> Result<(Vec<TraceAccessStep>, NaiveCommitment), RuntimeError> {
     let mut registers = initial_registers(trace);
     let mut steps = Vec::new();
     let mut event = 0usize;
@@ -962,7 +972,7 @@ pub fn prove_trace_access(trace: &Trace) -> Result<TraceAccessProof, RuntimeErro
             let (word, lane, width) = memory_span(trace, access)?;
             let memory_event = event;
             event += 1;
-            let old_word = twist_word(&witness, memory_event, word)?;
+            let old_word = twist_word(witness, memory_event, word)?;
             if access.is_write {
                 let is_amo = row.instruction.op.amo_width().is_some();
                 let is_read = row.instruction.op == magnetar_spec::Op::Ecall
@@ -985,7 +995,7 @@ pub fn prove_trace_access(trace: &Trace) -> Result<TraceAccessProof, RuntimeErro
                     row.rs2_val
                 };
                 let new_word = store_word(old_word, lane, width, write_value);
-                if twist_write_value(&witness, memory_event)? != new_word {
+                if twist_write_value(witness, memory_event)? != new_word {
                     return Err(RuntimeError::Proof(
                         "memory write does not match BinaryTwist".into(),
                     ));
@@ -997,7 +1007,7 @@ pub fn prove_trace_access(trace: &Trace) -> Result<TraceAccessProof, RuntimeErro
                     new_value: F2_128::from(new_word),
                 });
             } else {
-                let read_word = twist_read_value(&witness, memory_event)?;
+                let read_word = twist_read_value(witness, memory_event)?;
                 let signed = matches!(
                     row.instruction.op,
                     magnetar_spec::Op::Lb
@@ -1034,9 +1044,9 @@ pub fn prove_trace_access(trace: &Trace) -> Result<TraceAccessProof, RuntimeErro
             let (word, lane, width) = memory_span(trace, *access)?;
             let memory_event = event;
             event += 1;
-            let old_word = twist_word(&witness, memory_event, word)?;
+            let old_word = twist_word(witness, memory_event, word)?;
             let new_word = store_word(old_word, lane, width, access.value);
-            if twist_write_value(&witness, memory_event)? != new_word {
+            if twist_write_value(witness, memory_event)? != new_word {
                 return Err(RuntimeError::Proof(
                     "syscall write does not match BinaryTwist".into(),
                 ));
@@ -1050,24 +1060,48 @@ pub fn prove_trace_access(trace: &Trace) -> Result<TraceAccessProof, RuntimeErro
         }
     }
 
+    Ok((steps, registers.commitment))
+}
+
+pub fn prove_trace_access(trace: &Trace) -> Result<TraceAccessProof, RuntimeError> {
+    let witness = BinaryTwistWitness::from_trace(trace)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let (steps, final_register_commitment) = prove_trace_access_steps(trace, &witness)?;
     let ram =
         prove_binary_twist_ram(&witness).map_err(|error| RuntimeError::Proof(error.to_string()))?;
     Ok(TraceAccessProof {
         initial_registers: initial_registers(trace),
         steps,
-        final_register_commitment: registers.commitment,
+        final_register_commitment,
         ram,
     })
 }
 
-pub fn verify_trace_access(trace: &Trace, proof: &TraceAccessProof) -> Result<(), RuntimeError> {
-    let witness = BinaryTwistWitness::from_trace(trace)
+pub(crate) fn prove_trace_access_shared(
+    trace: &Trace,
+    witness: &BinaryTwistWitness,
+    tables: &BatchTables,
+    commitment: &P3MosaicCommitment,
+) -> Result<(TraceAccessProof, MosaicClaims), RuntimeError> {
+    let (steps, final_register_commitment) = prove_trace_access_steps(trace, witness)?;
+    let (ram, (points, values)) = prove_binary_twist_claims(tables, witness, commitment, 1)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    if !verify_binary_twist_ram(&witness, &proof.ram)
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?
-    {
-        return Err(RuntimeError::Proof("BinaryTwist RAM proof rejected".into()));
-    }
+    Ok((
+        TraceAccessProof {
+            initial_registers: initial_registers(trace),
+            steps,
+            final_register_commitment,
+            ram,
+        },
+        (points, values),
+    ))
+}
+
+fn verify_trace_access_steps(
+    trace: &Trace,
+    proof: &TraceAccessProof,
+    witness: &BinaryTwistWitness,
+) -> Result<(), RuntimeError> {
     let plan = trace_access_plan(trace)?;
     if plan.len() != proof.steps.len() {
         return Err(RuntimeError::Proof(
@@ -1147,7 +1181,7 @@ pub fn verify_trace_access(trace: &Trace, proof: &TraceAccessProof) -> Result<()
                         "memory read metadata mismatch at step {step_index}"
                     )));
                 }
-                let read_word = twist_read_value(&witness, *event)?;
+                let read_word = twist_read_value(witness, *event)?;
                 if value.value() as u64 != read_word {
                     return Err(RuntimeError::Proof(format!(
                         "memory read is not bound to BinaryTwist at step {step_index}"
@@ -1180,8 +1214,8 @@ pub fn verify_trace_access(trace: &Trace, proof: &TraceAccessProof) -> Result<()
                         "memory write metadata mismatch at step {step_index}"
                     )));
                 }
-                let old_word = twist_word(&witness, *event, *word)?;
-                let written = twist_write_value(&witness, *event)?;
+                let old_word = twist_word(witness, *event, *word)?;
+                let written = twist_write_value(witness, *event)?;
                 if old_value.value() as u64 != old_word || new_value.value() as u64 != written {
                     return Err(RuntimeError::Proof(format!(
                         "memory write is not bound to BinaryTwist at step {step_index}"
@@ -1217,6 +1251,39 @@ pub fn verify_trace_access(trace: &Trace, proof: &TraceAccessProof) -> Result<()
         return Err(RuntimeError::Proof("final trace state mismatch".into()));
     }
     Ok(())
+}
+
+pub fn verify_trace_access(trace: &Trace, proof: &TraceAccessProof) -> Result<(), RuntimeError> {
+    let witness = BinaryTwistWitness::from_trace(trace)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if !verify_binary_twist_ram(&witness, &proof.ram)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+    {
+        return Err(RuntimeError::Proof("BinaryTwist RAM proof rejected".into()));
+    }
+    verify_trace_access_steps(trace, proof, &witness)
+}
+
+pub(crate) fn verify_trace_access_shared(
+    trace: &Trace,
+    proof: &TraceAccessProof,
+    witness: &BinaryTwistWitness,
+    commitment: &P3MosaicCommitment,
+) -> Result<MosaicClaims, RuntimeError> {
+    if proof.ram.opening.is_some() {
+        return Err(RuntimeError::Proof(
+            "shared access proof carries a standalone RAM opening".into(),
+        ));
+    }
+    verify_trace_access_steps(trace, proof, witness)?;
+    let Some((points, values)) = verify_binary_twist_claims(witness, &proof.ram, commitment, 1)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+    else {
+        return Err(RuntimeError::Proof(
+            "BinaryTwist claims rejected against the shared commitment".into(),
+        ));
+    };
+    Ok((points, values))
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -1257,7 +1324,7 @@ pub struct TraceProof {
 pub struct UnifiedTraceProof {
     pub access: TraceAccessProof,
     pub trace_commitment: [u8; 32],
-    pub cpu: CpuSpartanProof,
+    pub cpu: MosaicSpartanProof,
     pub rom: Vec<u32>,
     pub rows: Vec<magnetar_spec::TraceRow>,
 }
@@ -2081,10 +2148,28 @@ pub fn verify_trace_proof(
 
 pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTraceProof, RuntimeError> {
     check_trace_linkage(trace)?;
-    let access = prove_trace_access(trace)?;
-    let (system, witness) = merged_cpu_system(trace, width)?;
-    let backend = ConstraintProofBackend::default();
-    let cpu = backend.prove(&system, &witness)?;
+    let witness = BinaryTwistWitness::from_trace(trace)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    witness
+        .validate()
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let tables = batch_tables(&witness).map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let (system, cpu_witness) = merged_cpu_system(trace, width)?;
+    let z = witness_vector(&system, &cpu_witness)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+
+    let pcs = P3BinaryPcs::new(100);
+    let mosaic_tables = vec![P3MosaicTable { columns: vec![z] }, tables.table.clone()];
+    let commitment = pcs
+        .commit_mosaic(&mosaic_tables)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let (access, (points, values)) =
+        prove_trace_access_shared(trace, &witness, &tables, &commitment)?;
+    let shared_pcs = P3SharedPcs::new(100, vec![mosaic_tables[1].clone()], points, values);
+    let cpu = prove_spartan(&system, &cpu_witness, &shared_pcs)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    debug_assert_eq!(cpu.commitment, commitment);
+
     Ok(UnifiedTraceProof {
         access,
         trace_commitment: trace_digest(trace),
@@ -2110,10 +2195,22 @@ pub fn verify_unified_trace(
             "unified proof ROM does not match the supplied trace".into(),
         ));
     }
-    verify_trace_access(trace, &proof.access)?;
+    if proof.cpu.commitment.tables.len() != 2 {
+        return Err(RuntimeError::Proof(
+            "unified proof does not commit the CPU and RAM tables".into(),
+        ));
+    }
+    let witness = BinaryTwistWitness::from_trace(trace)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    witness
+        .validate()
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let (points, values) =
+        verify_trace_access_shared(trace, &proof.access, &witness, &proof.cpu.commitment)?;
     let (system, _) = merged_cpu_system(trace, width)?;
-    let backend = ConstraintProofBackend::default();
-    backend.verify(&system, &proof.cpu)?;
+    let shared_pcs = P3SharedPcs::new(100, Vec::new(), points, values);
+    verify_spartan(&system, &proof.cpu, &shared_pcs)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     Ok(())
 }
 
@@ -2959,6 +3056,8 @@ mod tests {
         assert_eq!(trace.final_state.reg(4), 35);
 
         let proof = prove_unified_trace(&trace, 8).unwrap();
+        assert!(proof.access.ram.opening.is_none());
+        assert_eq!(proof.cpu.commitment.tables.len(), 2);
         verify_unified_trace(&trace, &proof, 8).unwrap();
 
         let statement = Statement {
@@ -3006,6 +3105,11 @@ mod tests {
 
         let mut tampered = proof.clone();
         tampered.cpu.vw = tampered.cpu.vw + F2_128::from(1u64);
+        assert!(verify_unified_trace(&trace, &tampered, 8).is_err());
+
+        let mut tampered = proof.clone();
+        tampered.access.ram.read.claimed_read =
+            tampered.access.ram.read.claimed_read + F2_128::from(1u64);
         assert!(verify_unified_trace(&trace, &tampered, 8).is_err());
 
         let mut broken = trace.clone();

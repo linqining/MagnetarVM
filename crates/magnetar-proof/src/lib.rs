@@ -470,7 +470,7 @@ pub enum ProofError {
 }
 
 pub mod spartan;
-pub use spartan::{prove_spartan, verify_spartan, SpartanError, SpartanProof};
+pub use spartan::{prove_spartan, verify_spartan, witness_vector, SpartanError, SpartanProof};
 
 #[cfg(test)]
 mod tests {
