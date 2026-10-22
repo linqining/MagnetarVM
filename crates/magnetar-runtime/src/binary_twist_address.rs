@@ -47,7 +47,7 @@ fn one_hot_columns(
     cells: usize,
     cycles: usize,
 ) -> Vec<Vec<F2_128>> {
-    let mut columns = vec![vec![F2_128::from(0u64); cycles]; cells];
+    let mut columns = vec![vec![F2_128::from(0u64); cycles.max(2)]; cells];
     for cycle in 0..witness.cycles {
         let addresses = if write {
             &witness.write_address[cycle]
