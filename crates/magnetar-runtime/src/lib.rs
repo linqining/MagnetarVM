@@ -259,7 +259,7 @@ pub trait Verifier {
 pub type CpuSpartanProof = SpartanProof<P3Commitment, P3Opening>;
 
 /// A CPU Spartan proof whose PCS opening also carries auxiliary tables.
-pub type MosaicSpartanProof = SpartanProof<P3MosaicCommitment, P3MosaicOpening>;
+pub type MosaicSpartanProof = LockstepProof<P3MosaicCommitment, P3MosaicOpening>;
 
 /// Reference proof backend: Spartan over the constraint IR with the P3
 /// multilinear binary-field PCS.
@@ -1926,7 +1926,9 @@ pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTracePr
         batch_tables(&register_witness).map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let pcs = P3BinaryPcs::new(100);
     let mut mosaic_tables = vec![
-        P3MosaicTable { columns: vec![z] },
+        P3MosaicTable {
+            columns: vec![z.clone()],
+        },
         tables.addr.clone(),
         tables.inc.clone(),
     ];
@@ -2013,7 +2015,9 @@ pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTracePr
     aux_tables.push(register_tables.addr.clone());
     aux_tables.push(register_tables.inc.clone());
     let shared_pcs = P3SharedPcs::new(100, aux_tables, points, values);
-    let cpu = prove_spartan(&system, &cpu_witness, &shared_pcs)
+    let (system_a, system_b) = split_cpu_relations(&system);
+    let layout = cpu_segment_layout(z.len())?;
+    let cpu = prove_lockstep(&system_a, &system_b, &cpu_witness, &layout, &shared_pcs)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     debug_assert_eq!(cpu.commitment, commitment);
 
@@ -2153,9 +2157,13 @@ pub fn verify_unified_trace(
     let (register_points, register_values) = register_claims;
     points.extend(register_points);
     values.extend(register_values);
-    let (system, _) = merged_cpu_system(trace, width)?;
+    let (system, cpu_witness) = merged_cpu_system(trace, width)?;
+    let (system_a, system_b) = split_cpu_relations(&system);
+    let z = witness_vector(&system, &cpu_witness)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let layout = cpu_segment_layout(z.len())?;
     let shared_pcs = P3SharedPcs::new(100, Vec::new(), points, values);
-    verify_spartan(&system, &proof.cpu, &shared_pcs)
+    verify_lockstep(&system_a, &system_b, &layout, &proof.cpu, &shared_pcs)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     Ok(())
 }
