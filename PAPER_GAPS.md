@@ -41,7 +41,8 @@
 - `9b7a197`：BinaryRouter 提交 `shift_code`（kind+shamt）并与 public shift route 链接。
 - `4cc2f12`：增加 `is_shift`/`is_store` validity bits 并与 public route 链接。
 - `7398439`：`SimdR1cs` 增加 `combined_system`/`combined_witness`。
-- 本轮：`magnetar-proof` 增加 `prove_simd_spartan`/`verify_simd_spartan`，用 block-diagonal combined system 提供参考 SIMD proof 路径与测试。
+- `28d1562`：`magnetar-proof` 增加 `prove_simd_spartan`/`verify_simd_spartan`，用 block-diagonal combined system 提供参考 SIMD proof 路径。
+- 本轮：`magnetar-pcs::mosaic` 增加 aligned-subcube packing + `PackedMosaic::lift`，并测试 `eval_component == eval_packed(lift)`。
 
 ## 二、逐项差距
 
@@ -103,8 +104,8 @@
 
 | # | 论文要求（§） | 当前实现 | 状态 | 剩余工作 |
 |---|---|---|---|---|
-| E1 | 把所有 component 放到一个 packed polynomial `G` 的 aligned subcubes 上（§5.2） | P3 mosaic 多表 commitment；每表独立，不是单个 packed `G` | ❌ | 实现 aligned-subcube packing + `G` |
-| E2 | claim lift：`G(r ‖ s_i) = p_i(r)`，verifier 追加 Boolean suffix（§5.2） | 无 | ❌ | 实现 suffix layout 与 lift |
+| E1 | 把所有 component 放到一个 packed polynomial `G` 的 aligned subcubes 上（§5.2） | `magnetar-pcs::mosaic` 已实现 aligned-subcube packing + `PackedMosaic`（参考原型）；统一 proof 仍用 P3 多表，不是单个 packed `G` | 🟡 | 把 `PackedMosaic` 接入 unified/chunked proof |
+| E2 | claim lift：`G(r ‖ s_i) = p_i(r)`，verifier 追加 Boolean suffix（§5.2） | `PackedMosaic::lift` 已实现 suffix layout + lift，并用 `eval_component == eval_packed(lift)` 测试；尚未接入 proof claims | 🟡 | 把 lift 接到 P3 claim batching |
 | E3 | 多 claim batching 成一个 claim（§5.2） | P3SharedPcs 把多点 claim 放进一个 P3 opening；不是论文的 batching sum-check | 🟡 | 实现 batching sum-check 与统一 claim |
 | E4 | ring switching 到 packed representation `P_G`（§5.2） | 无 | ❌ | 实现 ring switching |
 | E5 | 单个 PCS evaluation argument（§5.5） | unified 一个 P3 opening；但 access register Merkle、chunked/per-row 另有 P3 | 🟡 | 全部 claim 进一个 packed commitment/opening |
