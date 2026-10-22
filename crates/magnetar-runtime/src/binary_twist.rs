@@ -802,9 +802,7 @@ use crate::binary_twist_address::{
 
 const RA: usize = 0;
 const WA: usize = 1;
-const VAL: usize = 2;
-const NEXT: usize = 3;
-const MAIN_COLUMNS: usize = 4;
+const MAIN_COLUMNS: usize = 2;
 
 /// Opening points and expected values a mosaic owner must discharge.
 pub(crate) type MosaicClaims = (Vec<P3MosaicPoint>, Vec<Vec<F2_128>>);
@@ -812,14 +810,16 @@ pub(crate) type ClaimedRam = (BinaryTwistRamProof, MosaicClaims);
 
 /// The committed BinaryTwist RAM tables.
 ///
-/// `main` holds the four cell-by-cycle columns; `inc` is the compact
-/// cycle-only increment table. The value history is still materialized here;
-/// only the increment has been virtualized so far.
+/// `main` holds the cell-by-cycle read and write addresses; `inc` is the
+/// compact cycle-only increment table. `Val` is virtual and reconstructed
+/// from the public initial RAM and the committed write history.
 pub(crate) struct BatchTables {
     pub main: P3MosaicTable,
     pub inc: P3MosaicTable,
     pub address_bits: usize,
     pub cycle_bits: usize,
+    pub actual_cycles: usize,
+    pub final_values: Vec<F2_128>,
 }
 
 impl BatchTables {
@@ -852,13 +852,6 @@ pub(crate) fn batch_tables(witness: &BinaryTwistWitness) -> Result<BatchTables, 
         let start = cycle * cells;
         columns[RA][start..start + cells].copy_from_slice(&witness.read_address[cycle]);
         columns[WA][start..start + cells].copy_from_slice(&witness.write_address[cycle]);
-        columns[VAL][start..start + cells].copy_from_slice(&witness.value[cycle]);
-        let following = if cycle + 1 < witness.cycles {
-            &witness.value[cycle + 1]
-        } else {
-            &witness.final_value
-        };
-        columns[NEXT][start..start + cells].copy_from_slice(following);
     }
     increments[..witness.cycles].copy_from_slice(&witness.increment);
     Ok(BatchTables {
@@ -868,6 +861,8 @@ pub(crate) fn batch_tables(witness: &BinaryTwistWitness) -> Result<BatchTables, 
         },
         address_bits,
         cycle_bits,
+        actual_cycles: witness.cycles,
+        final_values: witness.final_value.clone(),
     })
 }
 
@@ -875,40 +870,34 @@ pub(crate) fn batch_tables(witness: &BinaryTwistWitness) -> Result<BatchTables, 
 pub struct BinaryTwistReadClaim {
     pub claimed_read: F2_128,
     pub cycle_point: Vec<F2_128>,
-    pub rounds: Vec<[F2_128; 4]>,
+    pub rounds: Vec<Vec<F2_128>>,
     pub challenges: Vec<F2_128>,
     pub ra_eval: F2_128,
-    pub val_eval: F2_128,
+    pub wa_successor_eval: F2_128,
+    pub inc_successor_eval: F2_128,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BinaryTwistWriteClaim {
     pub claimed_write: F2_128,
     pub cycle_point: Vec<F2_128>,
-    pub rounds: Vec<[F2_128; 4]>,
+    pub rounds: Vec<Vec<F2_128>>,
     pub challenges: Vec<F2_128>,
-    pub wa_eval: F2_128,
-    pub val_eval: F2_128,
-    pub inc_eval: F2_128,
+    pub wa_current_eval: F2_128,
+    pub wa_successor_eval: F2_128,
+    pub inc_current_eval: F2_128,
+    pub inc_successor_eval: F2_128,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BinaryTwistUpdateClaim {
-    pub cycle_point: Vec<F2_128>,
-    pub rounds: Vec<[F2_128; 4]>,
+    pub cell_point: Vec<F2_128>,
+    pub rounds: Vec<Vec<F2_128>>,
     pub challenges: Vec<F2_128>,
-    pub next_eval: F2_128,
-    pub val_eval: F2_128,
     pub wa_eval: F2_128,
     pub inc_eval: F2_128,
 }
 
-/// Batched BinaryTwist RAM proof.
-///
-/// The read addresses, write addresses, value history, increments, and the
-/// successor value history are one mosaic table. Standalone proofs carry their
-/// own P3 opening; a unified CPU proof leaves `opening` empty and shares the
-/// CPU witness's mosaic commitment instead.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BinaryTwistRamProof {
     pub address_bits: usize,
@@ -921,12 +910,129 @@ pub struct BinaryTwistRamProof {
     pub opening: Option<P3MosaicOpening>,
 }
 
-fn compact_inc_point(challenges: &[F2_128], address_bits: usize) -> Vec<F2_128> {
-    let mut point = challenges[address_bits..].to_vec();
-    if point.is_empty() {
-        point.push(F2_128::from(0u64));
-    }
+fn eq_at_index(point: &[F2_128], index: usize) -> F2_128 {
     point
+        .iter()
+        .enumerate()
+        .fold(F2_128::from(1u64), |acc, (bit, r)| {
+            if (index >> bit) & 1 == 1 {
+                acc * *r
+            } else {
+                acc * (F2_128::from(1u64) + *r)
+            }
+        })
+}
+
+fn eq_points(left: &[F2_128], right: &[F2_128]) -> F2_128 {
+    left.iter()
+        .zip(right)
+        .fold(F2_128::from(1u64), |acc, (a, b)| {
+            acc * (*a * *b + (F2_128::from(1u64) + *a) * (F2_128::from(1u64) + *b))
+        })
+}
+
+fn eq_vector(point: &[F2_128], size: usize) -> Vec<F2_128> {
+    (0..size).map(|index| eq_at_index(point, index)).collect()
+}
+
+fn inc_point(point: &[F2_128]) -> Vec<F2_128> {
+    if point.is_empty() {
+        vec![F2_128::from(0u64)]
+    } else {
+        point.to_vec()
+    }
+}
+
+fn interpolate_values(values: &[F2_128], r: F2_128) -> F2_128 {
+    let points = (0..values.len())
+        .map(|index| F2_128::from(index as u64))
+        .collect::<Vec<_>>();
+    let mut result = F2_128::from(0u64);
+    for (i, &value) in values.iter().enumerate() {
+        let mut basis = F2_128::from(1u64);
+        for (j, &point) in points.iter().enumerate() {
+            if i != j {
+                basis = basis * (r + point) * (points[i] + point).inv().expect("distinct");
+            }
+        }
+        result = result + value * basis;
+    }
+    result
+}
+
+fn lt_mle(jp_point: &[F2_128], j_point: &[F2_128], cycles: usize) -> F2_128 {
+    let mut sum = F2_128::from(0u64);
+    for jp in 0..cycles {
+        let wp = eq_at_index(jp_point, jp);
+        for j in 0..cycles {
+            if jp < j {
+                sum = sum + wp * eq_at_index(j_point, j);
+            }
+        }
+    }
+    sum
+}
+
+fn sumcheck_terms(
+    factors: &[Vec<F2_128>],
+    degree: usize,
+    transcript: &mut Sha256Transcript,
+    mut summand: impl FnMut(&[Vec<F2_128>]) -> F2_128,
+) -> Result<(Vec<Vec<F2_128>>, Vec<F2_128>), ProofError> {
+    let len = factors[0].len();
+    if factors.iter().any(|factor| factor.len() != len) {
+        return Err(ProofError::DimensionMismatch);
+    }
+    let rounds = len.trailing_zeros() as usize;
+    let mut factors = factors.to_vec();
+    let mut polynomials = Vec::with_capacity(rounds);
+    let mut challenges = Vec::with_capacity(rounds);
+    for _ in 0..rounds {
+        let mut polynomial = Vec::with_capacity(degree + 1);
+        for point in 0..=degree {
+            let point = F2_128::from(point as u64);
+            let folded = factors
+                .iter()
+                .map(|factor| fold(factor, point))
+                .collect::<Vec<_>>();
+            polynomial.push(summand(&folded));
+        }
+        for coefficient in &polynomial {
+            transcript.absorb("round", &coefficient.value().to_le_bytes());
+        }
+        let challenge = challenge(transcript, "sumcheck");
+        for factor in &mut factors {
+            *factor = fold(factor, challenge);
+        }
+        polynomials.push(polynomial);
+        challenges.push(challenge);
+    }
+    Ok((polynomials, challenges))
+}
+
+fn replay_terms(
+    rounds: &[Vec<F2_128>],
+    challenges: &[F2_128],
+    mut sum: F2_128,
+    transcript: &mut Sha256Transcript,
+) -> Option<F2_128> {
+    if rounds.len() != challenges.len() {
+        return None;
+    }
+    for (round, &expected_challenge) in rounds.iter().zip(challenges) {
+        if round.len() < 2 || round[0] + round[1] != sum {
+            return None;
+        }
+        for coefficient in round {
+            transcript.absorb("round", &coefficient.value().to_le_bytes());
+        }
+        let challenge = challenge(transcript, "sumcheck");
+        if challenge != expected_challenge {
+            return None;
+        }
+        sum = interpolate_values(round, challenge);
+    }
+    Some(sum)
 }
 
 fn absorb_mosaic_commitment(transcript: &mut Sha256Transcript, commitment: &P3MosaicCommitment) {
@@ -948,14 +1054,14 @@ pub(crate) fn prove_binary_twist_claims(
 ) -> Result<ClaimedRam, ProofError> {
     let columns = tables.columns();
     let increments = tables.increments();
+    let cells = witness.initial.len();
     let cycles = 1usize << tables.cycle_bits;
-    let cells = columns[VAL].len() / cycles;
-    let mut inc_full = vec![F2_128::from(0u64); columns[VAL].len()];
-    for cycle in 0..cycles {
-        for cell in 0..cells {
-            inc_full[cycle * cells + cell] = increments[cycle];
-        }
-    }
+    let address_bits = tables.address_bits;
+    let cycle_bits = tables.cycle_bits;
+    let terms = cells
+        .checked_mul(cycles)
+        .and_then(|value| value.checked_mul(cycles))
+        .ok_or_else(|| ProofError::Pcs("BinaryTwist LT table overflows".into()))?;
     let mut points = Vec::new();
     let mut expected = Vec::new();
     let mut inc_points = Vec::new();
@@ -963,115 +1069,231 @@ pub(crate) fn prove_binary_twist_claims(
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-read");
     absorb_mosaic_commitment(&mut transcript, commitment);
-    let cycle_point = sample_point(&mut transcript, tables.cycle_bits);
-    let eq = eq_index(&cycle_point, tables.address_bits, tables.cycle_bits);
-    let claimed_read = columns[RA]
-        .iter()
-        .zip(&columns[VAL])
-        .zip(&eq)
-        .fold(F2_128::from(0u64), |sum, ((a, b), e)| sum + *e * *a * *b);
+    let rho_j = sample_point(&mut transcript, cycle_bits);
+    let eq_j = eq_vector(&rho_j, cycles);
+    let claimed_read = (0..tables.actual_cycles).fold(F2_128::from(0u64), |sum, cycle| {
+        sum + eq_j[cycle] * witness.read_value[cycle]
+    });
     transcript.absorb("claimed-read", &claimed_read.value().to_le_bytes());
-    let (rounds, challenges) = sumcheck(&columns[RA], &columns[VAL], &eq, &mut transcript)?;
-    let ra_eval = fold_all(&columns[RA], &challenges);
-    let val_eval = fold_all(&columns[VAL], &challenges);
+    let mut factors = vec![vec![F2_128::from(0u64); terms]; 7];
+    for cell in 0..cells {
+        for cycle in 0..cycles {
+            for previous in 0..cycles {
+                let index = (cell * cycles + cycle) * cycles + previous;
+                factors[0][index] = eq_j[cycle];
+                factors[1][index] = columns[RA][cycle * cells + cell];
+                factors[2][index] = if previous == 0 {
+                    F2_128::from(1u64)
+                } else {
+                    F2_128::from(0u64)
+                };
+                factors[3][index] = witness.initial[cell];
+                factors[4][index] = if previous < cycle {
+                    F2_128::from(1u64)
+                } else {
+                    F2_128::from(0u64)
+                };
+                factors[5][index] = columns[WA][previous * cells + cell];
+                factors[6][index] = increments[previous];
+            }
+        }
+    }
+    let (rounds, challenges) = sumcheck_terms(&factors, 5, &mut transcript, |folded| {
+        (0..folded[0].len()).fold(F2_128::from(0u64), |sum, index| {
+            sum + folded[0][index]
+                * folded[1][index]
+                * (folded[2][index] * folded[3][index]
+                    + folded[4][index] * folded[5][index] * folded[6][index])
+        })
+    })?;
+    let r_jp = &challenges[..cycle_bits];
+    let r_j = &challenges[cycle_bits..2 * cycle_bits];
+    let r_k = &challenges[2 * cycle_bits..];
+    let mut ra_point = r_k.to_vec();
+    ra_point.extend_from_slice(r_j);
+    let mut wa_successor_point = r_k.to_vec();
+    wa_successor_point.extend_from_slice(r_jp);
+    let ra_eval = fold_all(&columns[RA], &ra_point);
+    let wa_successor_eval = fold_all(&columns[WA], &wa_successor_point);
+    let inc_successor_eval = fold_all(increments, &inc_point(r_jp));
     let read = BinaryTwistReadClaim {
         claimed_read,
-        cycle_point: cycle_point.clone(),
+        cycle_point: rho_j.clone(),
         rounds,
         challenges: challenges.clone(),
         ra_eval,
-        val_eval,
+        wa_successor_eval,
+        inc_successor_eval,
     };
     points.push(P3MosaicPoint {
         table: table_index,
-        point: challenges,
-        columns: vec![RA, VAL],
+        point: ra_point,
+        columns: vec![RA],
         next_columns: Vec::new(),
     });
-    expected.push(vec![ra_eval, val_eval]);
+    expected.push(vec![ra_eval]);
+    points.push(P3MosaicPoint {
+        table: table_index,
+        point: wa_successor_point,
+        columns: vec![WA],
+        next_columns: Vec::new(),
+    });
+    expected.push(vec![wa_successor_eval]);
+    inc_points.push(P3MosaicPoint {
+        table: table_index + 1,
+        point: inc_point(r_jp),
+        columns: vec![0],
+        next_columns: Vec::new(),
+    });
+    inc_expected.push(vec![inc_successor_eval]);
 
-    let payoff: Vec<F2_128> = columns[VAL]
-        .iter()
-        .zip(&inc_full)
-        .map(|(value, increment)| *value + *increment)
-        .collect();
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-write");
     absorb_mosaic_commitment(&mut transcript, commitment);
-    let cycle_point = sample_point(&mut transcript, tables.cycle_bits);
-    let eq = eq_index(&cycle_point, tables.address_bits, tables.cycle_bits);
-    let claimed_write = columns[WA]
-        .iter()
-        .zip(&payoff)
-        .zip(&eq)
-        .fold(F2_128::from(0u64), |sum, ((a, b), e)| sum + *e * *a * *b);
+    let rho_j = sample_point(&mut transcript, cycle_bits);
+    let eq_j = eq_vector(&rho_j, cycles);
+    let claimed_write = (0..tables.actual_cycles).fold(F2_128::from(0u64), |sum, cycle| {
+        sum + eq_j[cycle] * witness.write_value[cycle]
+    });
     transcript.absorb("claimed-write", &claimed_write.value().to_le_bytes());
-    let (rounds, challenges) = sumcheck(&columns[WA], &payoff, &eq, &mut transcript)?;
-    let wa_eval = fold_all(&columns[WA], &challenges);
-    let val_eval = fold_all(&columns[VAL], &challenges);
-    let inc_eval = fold_all(increments, &challenges[tables.address_bits..]);
+    let mut factors = vec![vec![F2_128::from(0u64); terms]; 8];
+    for cell in 0..cells {
+        for cycle in 0..cycles {
+            for previous in 0..cycles {
+                let index = (cell * cycles + cycle) * cycles + previous;
+                factors[0][index] = eq_j[cycle];
+                factors[1][index] = columns[WA][cycle * cells + cell];
+                factors[2][index] = if previous == 0 {
+                    F2_128::from(1u64)
+                } else {
+                    F2_128::from(0u64)
+                };
+                factors[3][index] = witness.initial[cell];
+                factors[4][index] = increments[cycle];
+                factors[5][index] = if previous < cycle {
+                    F2_128::from(1u64)
+                } else {
+                    F2_128::from(0u64)
+                };
+                factors[6][index] = columns[WA][previous * cells + cell];
+                factors[7][index] = increments[previous];
+            }
+        }
+    }
+    let (rounds, challenges) = sumcheck_terms(&factors, 5, &mut transcript, |folded| {
+        (0..folded[0].len()).fold(F2_128::from(0u64), |sum, index| {
+            sum + folded[0][index]
+                * folded[1][index]
+                * (folded[2][index] * (folded[3][index] + folded[4][index])
+                    + folded[5][index] * folded[6][index] * folded[7][index])
+        })
+    })?;
+    let r_jp = &challenges[..cycle_bits];
+    let r_j = &challenges[cycle_bits..2 * cycle_bits];
+    let r_k = &challenges[2 * cycle_bits..];
+    let mut wa_current_point = r_k.to_vec();
+    wa_current_point.extend_from_slice(r_j);
+    let mut wa_successor_point = r_k.to_vec();
+    wa_successor_point.extend_from_slice(r_jp);
+    let wa_current_eval = fold_all(&columns[WA], &wa_current_point);
+    let wa_successor_eval = fold_all(&columns[WA], &wa_successor_point);
+    let inc_current_eval = fold_all(increments, &inc_point(r_j));
+    let inc_successor_eval = fold_all(increments, &inc_point(r_jp));
     let write = BinaryTwistWriteClaim {
         claimed_write,
-        cycle_point: cycle_point.clone(),
+        cycle_point: rho_j.clone(),
         rounds,
         challenges: challenges.clone(),
-        wa_eval,
-        val_eval,
-        inc_eval,
+        wa_current_eval,
+        wa_successor_eval,
+        inc_current_eval,
+        inc_successor_eval,
     };
+    points.push(P3MosaicPoint {
+        table: table_index,
+        point: wa_current_point,
+        columns: vec![WA],
+        next_columns: Vec::new(),
+    });
+    expected.push(vec![wa_current_eval]);
     inc_points.push(P3MosaicPoint {
         table: table_index + 1,
-        point: compact_inc_point(&challenges, tables.address_bits),
+        point: inc_point(r_j),
         columns: vec![0],
         next_columns: Vec::new(),
     });
-    inc_expected.push(vec![inc_eval]);
+    inc_expected.push(vec![inc_current_eval]);
     points.push(P3MosaicPoint {
         table: table_index,
-        point: challenges,
-        columns: vec![WA, VAL],
+        point: wa_successor_point,
+        columns: vec![WA],
         next_columns: Vec::new(),
     });
-    expected.push(vec![wa_eval, val_eval]);
+    expected.push(vec![wa_successor_eval]);
+    inc_points.push(P3MosaicPoint {
+        table: table_index + 1,
+        point: inc_point(r_jp),
+        columns: vec![0],
+        next_columns: Vec::new(),
+    });
+    inc_expected.push(vec![inc_successor_eval]);
 
-    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-update");
+    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-final");
     absorb_mosaic_commitment(&mut transcript, commitment);
-    let cycle_point = sample_point(&mut transcript, tables.cycle_bits);
-    let eq = eq_index(&cycle_point, tables.address_bits, tables.cycle_bits);
-    let (rounds, challenges) = sumcheck_update(
-        &columns[NEXT],
-        &columns[VAL],
-        &columns[WA],
-        &inc_full,
-        &eq,
-        &mut transcript,
-    )?;
-    let next_eval = fold_all(&columns[NEXT], &challenges);
-    let val_eval = fold_all(&columns[VAL], &challenges);
-    let wa_eval = fold_all(&columns[WA], &challenges);
-    let inc_eval = fold_all(increments, &challenges[tables.address_bits..]);
+    let rho_k = sample_point(&mut transcript, address_bits);
+    let eq_k = eq_vector(&rho_k, cells);
+    let final_terms = cells
+        .checked_mul(cycles)
+        .ok_or_else(|| ProofError::Pcs("BinaryTwist final table overflows".into()))?;
+    let mut factors = vec![vec![F2_128::from(0u64); final_terms]; 6];
+    for cell in 0..cells {
+        for cycle in 0..cycles {
+            let index = cell * cycles + cycle;
+            factors[0][index] = eq_k[cell];
+            factors[1][index] = if cycle == 0 {
+                F2_128::from(1u64)
+            } else {
+                F2_128::from(0u64)
+            };
+            factors[2][index] = tables.final_values[cell];
+            factors[3][index] = witness.initial[cell];
+            factors[4][index] = columns[WA][cycle * cells + cell];
+            factors[5][index] = increments[cycle];
+        }
+    }
+    let (rounds, challenges) = sumcheck_terms(&factors, 3, &mut transcript, |folded| {
+        (0..folded[0].len()).fold(F2_128::from(0u64), |sum, index| {
+            sum + folded[0][index]
+                * (folded[1][index] * (folded[2][index] + folded[3][index])
+                    + folded[4][index] * folded[5][index])
+        })
+    })?;
+    let r_jp = &challenges[..cycle_bits];
+    let r_k = &challenges[cycle_bits..];
+    let mut wa_point = r_k.to_vec();
+    wa_point.extend_from_slice(r_jp);
+    let wa_eval = fold_all(&columns[WA], &wa_point);
+    let inc_eval = fold_all(increments, &inc_point(r_jp));
     let update = BinaryTwistUpdateClaim {
-        cycle_point,
+        cell_point: rho_k,
         rounds,
         challenges: challenges.clone(),
-        next_eval,
-        val_eval,
         wa_eval,
         inc_eval,
     };
+    points.push(P3MosaicPoint {
+        table: table_index,
+        point: wa_point,
+        columns: vec![WA],
+        next_columns: Vec::new(),
+    });
+    expected.push(vec![wa_eval]);
     inc_points.push(P3MosaicPoint {
         table: table_index + 1,
-        point: compact_inc_point(&challenges, tables.address_bits),
+        point: inc_point(r_jp),
         columns: vec![0],
         next_columns: Vec::new(),
     });
     inc_expected.push(vec![inc_eval]);
-    points.push(P3MosaicPoint {
-        table: table_index,
-        point: challenges,
-        columns: vec![NEXT, VAL, WA],
-        next_columns: Vec::new(),
-    });
-    expected.push(vec![next_eval, val_eval, wa_eval]);
 
     let read_address = prove_address_batch_claim(
         &columns[RA],
@@ -1162,141 +1384,184 @@ pub(crate) fn verify_binary_twist_claims(
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-read");
     absorb_mosaic_commitment(&mut transcript, commitment);
-    let cycle_point = sample_point(&mut transcript, cycle_bits);
-    if proof.read.cycle_point != cycle_point {
+    let rho_j = sample_point(&mut transcript, cycle_bits);
+    if proof.read.cycle_point != rho_j {
         return Ok(None);
     }
-    let values = padded_values(&witness.read_value, cycle_bits);
-    if fold_all(&values, &cycle_point) != proof.read.claimed_read {
+    let eq_j = eq_vector(&rho_j, cycles);
+    let mut claimed_read = F2_128::from(0u64);
+    for (weight, value) in eq_j.iter().zip(&witness.read_value) {
+        claimed_read = claimed_read + *weight * *value;
+    }
+    if proof.read.claimed_read != claimed_read {
         return Ok(None);
     }
-    let mut eq = eq_index(&cycle_point, address_bits, cycle_bits);
     transcript.absorb(
         "claimed-read",
         &proof.read.claimed_read.value().to_le_bytes(),
     );
-    let mut sum = proof.read.claimed_read;
-    for (round, &expected_challenge) in proof.read.rounds.iter().zip(&proof.read.challenges) {
-        if round[0] + round[1] != sum {
-            return Ok(None);
-        }
-        for coefficient in round {
-            transcript.absorb("round", &coefficient.value().to_le_bytes());
-        }
-        let challenge = challenge(&mut transcript, "sumcheck");
-        if challenge != expected_challenge {
-            return Ok(None);
-        }
-        sum = evaluate_round(round, challenge);
-        eq = fold(&eq, challenge);
-    }
-    if eq.len() != 1 || sum != eq[0] * proof.read.ra_eval * proof.read.val_eval {
+    let Some(sum) = replay_terms(
+        &proof.read.rounds,
+        &proof.read.challenges,
+        proof.read.claimed_read,
+        &mut transcript,
+    ) else {
+        return Ok(None);
+    };
+    let r_jp = &proof.read.challenges[..cycle_bits];
+    let r_j = &proof.read.challenges[cycle_bits..2 * cycle_bits];
+    let r_k = &proof.read.challenges[2 * cycle_bits..];
+    let eq_eval = eq_points(&rho_j, r_j);
+    let delta_eval = eq_at_index(r_jp, 0);
+    let m0_eval = fold_all(&witness.initial, r_k);
+    let lt_eval = lt_mle(r_jp, r_j, cycles);
+    let read_terminal = eq_eval
+        * proof.read.ra_eval
+        * (delta_eval * m0_eval
+            + lt_eval * proof.read.wa_successor_eval * proof.read.inc_successor_eval);
+    if sum != read_terminal {
         return Ok(None);
     }
+    let mut ra_point = r_k.to_vec();
+    ra_point.extend_from_slice(r_j);
+    let mut wa_successor_point = r_k.to_vec();
+    wa_successor_point.extend_from_slice(r_jp);
     points.push(P3MosaicPoint {
         table: table_index,
-        point: proof.read.challenges.clone(),
-        columns: vec![RA, VAL],
+        point: ra_point,
+        columns: vec![RA],
         next_columns: Vec::new(),
     });
-    expected.push(vec![proof.read.ra_eval, proof.read.val_eval]);
+    expected.push(vec![proof.read.ra_eval]);
+    points.push(P3MosaicPoint {
+        table: table_index,
+        point: wa_successor_point,
+        columns: vec![WA],
+        next_columns: Vec::new(),
+    });
+    expected.push(vec![proof.read.wa_successor_eval]);
+    inc_points.push(P3MosaicPoint {
+        table: table_index + 1,
+        point: inc_point(r_jp),
+        columns: vec![0],
+        next_columns: Vec::new(),
+    });
+    inc_expected.push(vec![proof.read.inc_successor_eval]);
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-write");
     absorb_mosaic_commitment(&mut transcript, commitment);
-    let cycle_point = sample_point(&mut transcript, cycle_bits);
-    if proof.write.cycle_point != cycle_point {
+    let rho_j = sample_point(&mut transcript, cycle_bits);
+    if proof.write.cycle_point != rho_j {
         return Ok(None);
     }
-    let values = padded_values(&witness.write_value, cycle_bits);
-    if fold_all(&values, &cycle_point) != proof.write.claimed_write {
+    let eq_j = eq_vector(&rho_j, cycles);
+    let mut claimed_write = F2_128::from(0u64);
+    for (weight, value) in eq_j.iter().zip(&witness.write_value) {
+        claimed_write = claimed_write + *weight * *value;
+    }
+    if proof.write.claimed_write != claimed_write {
         return Ok(None);
     }
-    let mut eq = eq_index(&cycle_point, address_bits, cycle_bits);
     transcript.absorb(
         "claimed-write",
         &proof.write.claimed_write.value().to_le_bytes(),
     );
-    let mut sum = proof.write.claimed_write;
-    for (round, &expected_challenge) in proof.write.rounds.iter().zip(&proof.write.challenges) {
-        if round[0] + round[1] != sum {
-            return Ok(None);
-        }
-        for coefficient in round {
-            transcript.absorb("round", &coefficient.value().to_le_bytes());
-        }
-        let challenge = challenge(&mut transcript, "sumcheck");
-        if challenge != expected_challenge {
-            return Ok(None);
-        }
-        sum = evaluate_round(round, challenge);
-        eq = fold(&eq, challenge);
-    }
-    if eq.len() != 1
-        || sum != eq[0] * proof.write.wa_eval * (proof.write.val_eval + proof.write.inc_eval)
-    {
+    let Some(sum) = replay_terms(
+        &proof.write.rounds,
+        &proof.write.challenges,
+        proof.write.claimed_write,
+        &mut transcript,
+    ) else {
+        return Ok(None);
+    };
+    let r_jp = &proof.write.challenges[..cycle_bits];
+    let r_j = &proof.write.challenges[cycle_bits..2 * cycle_bits];
+    let r_k = &proof.write.challenges[2 * cycle_bits..];
+    let eq_eval = eq_points(&rho_j, r_j);
+    let delta_eval = eq_at_index(r_jp, 0);
+    let m0_eval = fold_all(&witness.initial, r_k);
+    let lt_eval = lt_mle(r_jp, r_j, cycles);
+    let write_terminal = eq_eval
+        * proof.write.wa_current_eval
+        * (delta_eval * (m0_eval + proof.write.inc_current_eval)
+            + lt_eval * proof.write.wa_successor_eval * proof.write.inc_successor_eval);
+    if sum != write_terminal {
         return Ok(None);
     }
+    let mut wa_current_point = r_k.to_vec();
+    wa_current_point.extend_from_slice(r_j);
+    let mut wa_successor_point = r_k.to_vec();
+    wa_successor_point.extend_from_slice(r_jp);
+    points.push(P3MosaicPoint {
+        table: table_index,
+        point: wa_current_point,
+        columns: vec![WA],
+        next_columns: Vec::new(),
+    });
+    expected.push(vec![proof.write.wa_current_eval]);
     inc_points.push(P3MosaicPoint {
         table: table_index + 1,
-        point: compact_inc_point(&proof.write.challenges, address_bits),
+        point: inc_point(r_j),
         columns: vec![0],
         next_columns: Vec::new(),
     });
-    inc_expected.push(vec![proof.write.inc_eval]);
+    inc_expected.push(vec![proof.write.inc_current_eval]);
     points.push(P3MosaicPoint {
         table: table_index,
-        point: proof.write.challenges.clone(),
-        columns: vec![WA, VAL],
+        point: wa_successor_point,
+        columns: vec![WA],
         next_columns: Vec::new(),
     });
-    expected.push(vec![proof.write.wa_eval, proof.write.val_eval]);
-
-    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-update");
-    absorb_mosaic_commitment(&mut transcript, commitment);
-    let cycle_point = sample_point(&mut transcript, cycle_bits);
-    if proof.update.cycle_point != cycle_point {
-        return Ok(None);
-    }
-    let mut eq = eq_index(&cycle_point, address_bits, cycle_bits);
-    let mut sum = F2_128::from(0u64);
-    for (round, &expected_challenge) in proof.update.rounds.iter().zip(&proof.update.challenges) {
-        if round[0] + round[1] != sum {
-            return Ok(None);
-        }
-        for coefficient in round {
-            transcript.absorb("round", &coefficient.value().to_le_bytes());
-        }
-        let challenge = challenge(&mut transcript, "sumcheck");
-        if challenge != expected_challenge {
-            return Ok(None);
-        }
-        sum = evaluate_round(round, challenge);
-        eq = fold(&eq, challenge);
-    }
-    let combined = proof.update.next_eval
-        + proof.update.val_eval
-        + proof.update.wa_eval * proof.update.inc_eval;
-    if eq.len() != 1 || sum != eq[0] * combined {
-        return Ok(None);
-    }
+    expected.push(vec![proof.write.wa_successor_eval]);
     inc_points.push(P3MosaicPoint {
         table: table_index + 1,
-        point: compact_inc_point(&proof.update.challenges, address_bits),
+        point: inc_point(r_jp),
+        columns: vec![0],
+        next_columns: Vec::new(),
+    });
+    inc_expected.push(vec![proof.write.inc_successor_eval]);
+
+    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-final");
+    absorb_mosaic_commitment(&mut transcript, commitment);
+    let rho_k = sample_point(&mut transcript, address_bits);
+    if proof.update.cell_point != rho_k {
+        return Ok(None);
+    }
+    let Some(sum) = replay_terms(
+        &proof.update.rounds,
+        &proof.update.challenges,
+        F2_128::from(0u64),
+        &mut transcript,
+    ) else {
+        return Ok(None);
+    };
+    let r_jp = &proof.update.challenges[..cycle_bits];
+    let r_k = &proof.update.challenges[cycle_bits..];
+    let eq_eval = eq_points(&rho_k, r_k);
+    let delta_eval = eq_at_index(r_jp, 0);
+    let final_eval = fold_all(&witness.final_value, r_k);
+    let m0_eval = fold_all(&witness.initial, r_k);
+    let final_terminal = eq_eval
+        * (delta_eval * (final_eval + m0_eval) + proof.update.wa_eval * proof.update.inc_eval);
+    if sum != final_terminal {
+        return Ok(None);
+    }
+    let mut wa_point = r_k.to_vec();
+    wa_point.extend_from_slice(r_jp);
+    points.push(P3MosaicPoint {
+        table: table_index,
+        point: wa_point,
+        columns: vec![WA],
+        next_columns: Vec::new(),
+    });
+    expected.push(vec![proof.update.wa_eval]);
+    inc_points.push(P3MosaicPoint {
+        table: table_index + 1,
+        point: inc_point(r_jp),
         columns: vec![0],
         next_columns: Vec::new(),
     });
     inc_expected.push(vec![proof.update.inc_eval]);
-    points.push(P3MosaicPoint {
-        table: table_index,
-        point: proof.update.challenges.clone(),
-        columns: vec![NEXT, VAL, WA],
-        next_columns: Vec::new(),
-    });
-    expected.push(vec![
-        proof.update.next_eval,
-        proof.update.val_eval,
-        proof.update.wa_eval,
-    ]);
 
     let Some(read_address) = verify_address_batch_claim(
         &proof.read_address,
@@ -1426,20 +1691,28 @@ mod ram_tests {
         assert!(!verify_binary_twist_ram(&witness, &tampered).unwrap());
 
         let mut tampered = proof.clone();
-        tampered.write.inc_eval = tampered.write.inc_eval + F2_128::from(1u64);
+        tampered.write.inc_current_eval = tampered.write.inc_current_eval + F2_128::from(1u64);
         assert!(!verify_binary_twist_ram(&witness, &tampered).unwrap());
 
         let mut tampered = proof.clone();
-        tampered.update.next_eval = tampered.update.next_eval + F2_128::from(1u64);
+        tampered.update.wa_eval = tampered.update.wa_eval + F2_128::from(1u64);
         assert!(!verify_binary_twist_ram(&witness, &tampered).unwrap());
 
         let mut tampered = proof.clone();
         tampered.read_address.a_eval = tampered.read_address.a_eval + F2_128::from(1u64);
         assert!(!verify_binary_twist_ram(&witness, &tampered).unwrap());
 
-        let mut tampered = proof;
+        let mut tampered = proof.clone();
         tampered.write_address.a_rp_eval = tampered.write_address.a_rp_eval + F2_128::from(1u64);
         assert!(!verify_binary_twist_ram(&witness, &tampered).unwrap());
+
+        let mut bad_witness = witness.clone();
+        bad_witness.final_value[0] = bad_witness.final_value[0] + F2_128::from(1u64);
+        assert!(!verify_binary_twist_ram(&bad_witness, &proof).unwrap());
+
+        let mut bad_witness = witness;
+        bad_witness.initial[0] = bad_witness.initial[0] + F2_128::from(1u64);
+        assert!(!verify_binary_twist_ram(&bad_witness, &proof).unwrap());
     }
 }
 
