@@ -224,6 +224,23 @@ SIMD R1CS/BinarySpartan 可把多条 bit-lane 打包进一个 GF(2^128) 元素�
 仍会重建 trace 与合并 system，再验证简洁 CPU PCS proof，因此还不是完整的
 简洁 verifier。
 
+
+### 规模探测
+
+`cargo run --release -p magnetar-testkit --example proof_scaling` 输出当前
+unified proof 的参考测量：
+
+| rows | proof bytes | prove ms | verify ms |
+|---:|---:|---:|---:|
+| 2 | 145,226 | 13.5 | 5.3 |
+| 4 | 177,130 | 25.5 | 9.3 |
+| 8 | 216,570 | 58.7 | 18.7 |
+| 16 | 256,954 | 141.0 | 36.0 |
+| 32 | 306,074 | 384.9 | 73.6 |
+
+proof 仍随 row 数线性增长，因为 `rows` 仍由 proof 携带；移除它是后续
+A2/Virtual Spartan 的工作。
+
 ## 覆盖率
 
 `scripts/coverage.sh` 会构建插桩测试、运行每个测试二进制，并把 per-binary

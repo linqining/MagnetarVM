@@ -240,6 +240,23 @@ element. The verifier still reconstructs the trace and merged system before
 checking the succinct CPU PCS proof, so it is not yet a fully succinct
 verifier.
 
+
+### Scaling probe
+
+`cargo run --release -p magnetar-testkit --example proof_scaling` prints the
+following reference measurements on the current unified proof:
+
+| rows | proof bytes | prove ms | verify ms |
+|---:|---:|---:|---:|
+| 2 | 145,226 | 13.5 | 5.3 |
+| 4 | 177,130 | 25.5 | 9.3 |
+| 8 | 216,570 | 58.7 | 18.7 |
+| 16 | 256,954 | 141.0 | 36.0 |
+| 32 | 306,074 | 384.9 | 73.6 |
+
+The proof still grows linearly with the row count because `rows` are carried
+in the proof; removing them is the remaining A2/Virtual Spartan work.
+
 ## Coverage
 
 `scripts/coverage.sh` builds instrumented tests, runs every test binary, and
