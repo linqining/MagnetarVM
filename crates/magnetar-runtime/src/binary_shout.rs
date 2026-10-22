@@ -224,10 +224,7 @@ type ClaimBundle<T> = (T, Vec<P3MosaicPoint>, Vec<Vec<F2_128>>);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BinaryShoutProof {
-    pub address_bits: usize,
-    pub cycle_bits: usize,
     pub boolean: AddressBooleanClaim,
-    pub claimed: F2_128,
     pub rounds: Vec<Vec<F2_128>>,
     pub opening: Option<P3MosaicOpening>,
 }
@@ -541,10 +538,7 @@ pub(crate) fn prove_binary_shout_claims(
     }];
     Ok((
         BinaryShoutProof {
-            address_bits: a,
-            cycle_bits: n,
             boolean,
-            claimed,
             rounds,
             opening: None,
         },
@@ -571,9 +565,6 @@ pub(crate) fn verify_binary_shout_claims(
     table_index: usize,
 ) -> Result<Option<ClaimPoints>, ProofError> {
     witness.validate()?;
-    if proof.address_bits != witness.address_bits || proof.cycle_bits != witness.cycle_bits {
-        return Ok(None);
-    }
     let a = witness.address_bits;
     let n = witness.cycle_bits;
     let cycles = witness.cycles;
@@ -625,12 +616,8 @@ pub(crate) fn verify_binary_shout_claims(
                             acc + *value * *gamma
                         })
             });
-    if proof.claimed != claimed {
-        return Ok(None);
-    }
-    transcript.absorb("claimed", &proof.claimed.value().to_le_bytes());
-    let Some((sum, challenges)) =
-        replay_terms_derived(&proof.rounds, proof.claimed, &mut transcript)
+    transcript.absorb("claimed", &claimed.value().to_le_bytes());
+    let Some((sum, challenges)) = replay_terms_derived(&proof.rounds, claimed, &mut transcript)
     else {
         return Ok(None);
     };
@@ -766,7 +753,7 @@ mod tests {
         assert!(verify_binary_shout(&witness, &proof).unwrap());
 
         let mut tampered = proof.clone();
-        tampered.claimed = tampered.claimed + F2_128::from(1u64);
+        tampered.rounds[0][0] = tampered.rounds[0][0] + F2_128::from(1u64);
         assert!(!verify_binary_shout(&witness, &tampered).unwrap());
 
         let mut tampered = proof;

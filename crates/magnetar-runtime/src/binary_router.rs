@@ -439,9 +439,7 @@ type ClaimBundle<T> = (T, Vec<P3MosaicPoint>, Vec<Vec<F2_128>>);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BinaryRouterProof {
-    pub cycle_bits: usize,
     pub boolean: AddressBooleanClaim,
-    pub claimed: F2_128,
     pub rounds: Vec<Vec<F2_128>>,
     pub offset_rounds: Vec<Vec<F2_128>>,
     pub width_rounds: Vec<Vec<F2_128>>,
@@ -1079,9 +1077,7 @@ pub(crate) fn prove_binary_router_claims(
     }
     Ok((
         BinaryRouterProof {
-            cycle_bits: n,
             boolean,
-            claimed: left,
             rounds,
             offset_rounds,
             width_rounds,
@@ -1173,9 +1169,6 @@ pub(crate) fn verify_binary_router_claims(
     table_index: usize,
 ) -> Result<Option<ClaimPoints>, ProofError> {
     witness.validate()?;
-    if proof.cycle_bits != witness.cycle_bits {
-        return Ok(None);
-    }
     let n = witness.cycle_bits;
     let cycles = witness.cycles;
     let has_q = witness
@@ -1230,13 +1223,8 @@ pub(crate) fn verify_binary_router_claims(
             left = left + eq_o[bit] * eq_j[cycle] * witness.output[bit][cycle];
         }
     }
-    if proof.claimed != left {
-        return Ok(None);
-    }
-    transcript.absorb("claimed", &proof.claimed.value().to_le_bytes());
-    let Some((sum, challenges)) =
-        replay_terms_derived(&proof.rounds, proof.claimed, &mut transcript)
-    else {
+    transcript.absorb("claimed", &left.value().to_le_bytes());
+    let Some((sum, challenges)) = replay_terms_derived(&proof.rounds, left, &mut transcript) else {
         return Ok(None);
     };
     let r_j = &challenges[..n];
@@ -1602,7 +1590,7 @@ mod tests {
         assert!(verify_binary_router(&witness, &proof).unwrap());
 
         let mut tampered = proof.clone();
-        tampered.claimed = tampered.claimed + F2_128::from(1u64);
+        tampered.rounds[0][0] = tampered.rounds[0][0] + F2_128::from(1u64);
         assert!(!verify_binary_router(&witness, &tampered).unwrap());
 
         let mut tampered = proof.clone();

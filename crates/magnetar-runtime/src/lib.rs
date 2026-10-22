@@ -3811,14 +3811,14 @@ mod tests {
             .store_router
             .as_mut()
             .unwrap()
-            .claimed = tampered
+            .rounds[0][0] = tampered
             .aux
             .as_ref()
             .unwrap()
             .store_router
             .as_ref()
             .unwrap()
-            .claimed
+            .rounds[0][0]
             + F2_128::from(1u64);
         assert!(verify_chunked_trace(&trace, &tampered, 8).is_err());
     }
