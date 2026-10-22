@@ -56,7 +56,8 @@
 - `da61b6a`：BinaryRouter routing coefficients 改为从 committed selector bits 重建，并修复 Inc 的 old+source coefficients。
 - `5cccb70`：BinaryRouter 增加 192 列 one-hot `Q`，booleanity + `Σ Q = is_shift`。
 - `4b3d308`：增加 192 列 `hQ` 与 `Σ hQ = shift_code`。
-- 本轮：把 Q/hQ 缩成 64 列（按 shamt 而非 kind+shamt），hQ 目标改为 shamt；体积降至 278,243 B。
+- `123e584`：把 Q/hQ 缩成 64 列（按 shamt 而非 kind+shamt），hQ 目标改为 shamt；体积降至 278,243 B。
+- 本轮：增加 `shift_q_and_hq_are_one_hot` 测试，验证每个 shift cycle 的 Q 恰好一个 1、hQ 等于 shamt。
 
 ## 二、逐项差距
 

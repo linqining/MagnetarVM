@@ -1691,4 +1691,25 @@ mod tests {
         let proof = prove_binary_router(&witness).unwrap();
         assert!(verify_binary_router(&witness, &proof).unwrap());
     }
+    #[test]
+    fn shift_q_and_hq_are_one_hot() {
+        let trace = trace();
+        let witness = BinaryRouterWitness::from_trace(&trace).unwrap();
+        for cycle in 0..witness.cycles {
+            let shift = witness.is_shift[cycle].value() == 1;
+            let q_sum = (0..64)
+                .filter(|h| witness.shift_q[*h][cycle].value() == 1)
+                .count();
+            let hq_sum = (0..64)
+                .map(|h| witness.shift_hq[h][cycle].value())
+                .sum::<u128>();
+            if shift {
+                assert_eq!(q_sum, 1);
+                assert_eq!(hq_sum, witness.shift_code[cycle].value() % 64);
+            } else {
+                assert_eq!(q_sum, 0);
+                assert_eq!(hq_sum, 0);
+            }
+        }
+    }
 }
