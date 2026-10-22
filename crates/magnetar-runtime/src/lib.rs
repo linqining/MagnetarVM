@@ -21,7 +21,10 @@ use crate::binary_twist::{
     verify_binary_twist_ram, BatchTables, BinaryTwistRamProof, MosaicClaims,
 };
 
-use magnetar_constraint::{ConstraintSystem, LayoutError, Witness, WitnessLayout, F2_128};
+use magnetar_constraint::{
+    ConstraintSystem, LayoutError, Segment, SegmentKind, SegmentOwner, Witness, WitnessLayout,
+    F2_128,
+};
 use magnetar_cpu::{check_trace, CpuError};
 use magnetar_executor::{execute_with_io, ExecError, ExecutionIo};
 use magnetar_memory::{check_memory, BinaryTwistWitness, MemoryError, MemoryReport};
@@ -31,7 +34,8 @@ use magnetar_pcs::{
 };
 use magnetar_preprocess::{preprocess, PreprocessError, PreprocessedProgram};
 use magnetar_proof::{
-    prove_spartan, verify_spartan, witness_vector, Pcs, SpartanError, SpartanProof,
+    prove_lockstep, prove_spartan, verify_lockstep, verify_spartan, witness_vector, LockstepProof,
+    Pcs, SpartanError, SpartanProof,
 };
 use magnetar_recursion::{ChainedChunk, ChainedProof, ChainedRecursion, ChunkPlan, RecursionError};
 use magnetar_spec::{decode, decode_compressed, MachineConfig, MachineState, ProgramImage, Trace};
@@ -1816,6 +1820,58 @@ pub fn verify_trace_proof(
         }
     }
     Ok(())
+}
+
+fn cpu_segment_layout(len: usize) -> Result<WitnessLayout, RuntimeError> {
+    let chunk = if len >= 4 { len / 4 } else { len };
+    let mut segments = Vec::new();
+    let mut offset = 0;
+    let mut index = 0;
+    while offset < len {
+        let size = chunk.min(len - offset);
+        segments.push(Segment::new(
+            format!("cpu{index}"),
+            offset,
+            size,
+            SegmentKind::Direct,
+            SegmentOwner::Cpu,
+        ));
+        offset += size;
+        index += 1;
+    }
+    WitnessLayout::new(segments).map_err(|error| RuntimeError::Proof(error.to_string()))
+}
+
+/// Standalone lockstep CPU proof over the merged row system.
+///
+/// The reference has one packed relation, so both sides use the same system;
+/// this exercises the lockstep outer/inner path and segment claim routing on
+/// the real CPU witness.
+pub fn prove_cpu_lockstep(
+    trace: &Trace,
+    width: usize,
+) -> Result<LockstepProof<P3Commitment, P3Opening>, RuntimeError> {
+    let (system, witness) = merged_cpu_system(trace, width)?;
+    let z = witness_vector(&system, &witness)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let layout = cpu_segment_layout(z.len())?;
+    let pcs = P3BinaryPcs::new(100);
+    prove_lockstep(&system, &system, &witness, &layout, &pcs)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))
+}
+
+pub fn verify_cpu_lockstep(
+    trace: &Trace,
+    proof: &LockstepProof<P3Commitment, P3Opening>,
+    width: usize,
+) -> Result<(), RuntimeError> {
+    let (system, witness) = merged_cpu_system(trace, width)?;
+    let z = witness_vector(&system, &witness)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let layout = cpu_segment_layout(z.len())?;
+    let pcs = P3BinaryPcs::new(100);
+    verify_lockstep(&system, &system, &layout, proof, &pcs)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))
 }
 
 pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTraceProof, RuntimeError> {
@@ -4595,5 +4651,34 @@ mod tests {
         let mut tampered = proof.clone();
         tampered.vw = tampered.vw + F2_128::from(1u64);
         assert!(backend.verify(&system, &tampered).is_err());
+    }
+    #[test]
+    fn cpu_lockstep_round_trips() {
+        use magnetar_spec::{Instruction, Op};
+
+        let instruction = |op: Op, rd: u8, rs1: u8, rs2: u8, imm: i64| Instruction {
+            op,
+            rd,
+            rs1,
+            rs2,
+            imm,
+            shamt: 0,
+        };
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                instruction(Op::Addi, 1, 0, 0, 5).encode(),
+                instruction(Op::Addi, 2, 0, 0, 7).encode(),
+                instruction(Op::Add, 3, 1, 2, 0).encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(&program, config()).unwrap();
+        let proof = prove_cpu_lockstep(&trace, 16).unwrap();
+        verify_cpu_lockstep(&trace, &proof, 16).unwrap();
+
+        let mut tampered = proof;
+        tampered.segments[0].value = tampered.segments[0].value + F2_128::from(1u64);
+        assert!(verify_cpu_lockstep(&trace, &tampered, 16).is_err());
     }
 }

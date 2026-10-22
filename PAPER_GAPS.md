@@ -64,7 +64,8 @@
 - `9d82902`：新增 `virtual_spartan` 模块，实现 per-segment claim 拆分/重建与 tamper 测试。
 - `26dbff4`：增加真实 SIMD Spartan `z` 的 segment claim 重建测试，修正 `total_bits` 语义。
 - `54b990c`：新增 `prove_product6` 与 `prove_lockstep`/`verify_lockstep`。
-- 本轮：lockstep proof 携带 `ry` 与 per-segment claims，verifier 用 `Σ eq(suffix)·v_i = vw` 校验 segment 重建；增加 segment tamper 测试。
+- `39637cc`：lockstep proof 携带 `ry` 与 segment claims。
+- 本轮：runtime 新增 `prove_cpu_lockstep`/`verify_cpu_lockstep`，用真实 merged CPU system 跑 lockstep + segment claim 校验；测试通过。
 
 ## 二、逐项差距
 
@@ -84,7 +85,7 @@
 |---|---|---|---|---|
 | B1 | 两个 SIMD R1CS 关系共享一个 bit-valued witness：一个 over `F2`，一个 over `F2_128`（§5.1） | `constraint::simd` 现有 `SimdR1cs`/`DualSimdR1cs`，并支持 `combined_system` + `combined_witness`（q 个 instance 的 block-diagonal 编码）；CPU 仍是单一 `ConstraintSystem`，尚未转成统一 SIMD 矩阵 | 🟡 | 设计两套矩阵 `A1/B1/C1`、`A2/B2/C2`；共享 witness；cross-step constraints；CPU 转换 |
 | B2 | BinarySpartan：SIMD Spartan + binary witness packing（128 bits per field element）+ ring switching（§4.3） | `magnetar-proof` 的参考 Spartan；`constraint::simd::pack_binary`/`unpack_binary` 已实现 128-bit packing；`prove_simd_spartan`/`verify_simd_spartan` 提供 block-diagonal SIMD proof 路径；共享矩阵优化、binary-witness evaluation claim、ring switching 未实现 | 🟡 | 实现共享矩阵 SIMD reduction、binary-witness evaluation claim、ring switching |
-| B3 | Virtual Spartan：联合两个 SIMD 关系，lockstep outer sum-check，共享 inner sum-check，per-segment claims（§5.3） | `prove_lockstep`/`verify_lockstep`：两个关系共享 `z`，α 批次 outer + shared inner；proof 现在携带 witness point `ry` 与 per-segment claims，verifier 检查 `Σ eq(suffix)·v_i = vw`；round-trip/segment-tamper 测试通过；尚未接 unified proof | 🟡 | 接进 unified CPU proof；把 segment claims 作为 claim router |
+| B3 | Virtual Spartan：联合两个 SIMD 关系，lockstep outer sum-check，共享 inner sum-check，per-segment claims（§5.3） | lockstep proof 携带 `ry`/segment claims；runtime 新增 `prove_cpu_lockstep`/`verify_cpu_lockstep`，把真实 merged CPU system 接进 lockstep（当前两侧同一 relation，因为 reference 还没有独立 F2 relation）；round-trip/segment-tamper 测试通过；unified proof 仍用单 Spartan | 🟡 | 构造独立 F2/F2_128 两关系；把 lockstep 接进 unified proof |
 | B4 | 两个 outer sum-check 共享 instance challenge，inner 只跑一次（§5.3） | 无 | ❌ | 与 B3 一起实现 |
 | B5 | 直接段 claims 进 PCS；虚拟段 claims 分发给 Twist/Shout/Router（§5.3） | 所有段都在 `z` 中提交；没有虚拟段 claim 路由 | ❌ | 需要 segment layout + claim router |
 | B6 | sum-check 优化：univariate skip、Frobenius one-hot check、degree reduction 等（§4.2–4.4） | 参考实现，逐轮朴素 sum-check | ❌ | 性能优化项；不影响语义 |
