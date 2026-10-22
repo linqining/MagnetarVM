@@ -710,12 +710,6 @@ pub fn verify_trace_registers(
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum TraceAccessStep {
-    RegisterRead {
-        index: u64,
-        expected: F2_128,
-        proof: LoadProof,
-    },
-    RegisterWrite(StoreProof),
     MemoryRead {
         event: usize,
         word: u64,
@@ -732,23 +726,13 @@ pub enum TraceAccessStep {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TraceAccessProof {
-    pub initial_registers: CommittedMemory,
     pub steps: Vec<TraceAccessStep>,
-    pub final_register_commitment: NaiveCommitment,
     pub registers: BinaryTwistRamProof,
     pub ram: BinaryTwistRamProof,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AccessDescriptor {
-    RegisterRead {
-        index: u64,
-        expected: u64,
-    },
-    RegisterWrite {
-        index: u64,
-        value: u64,
-    },
     MemoryRead {
         event: usize,
         word: u64,
@@ -764,16 +748,6 @@ enum AccessDescriptor {
         width: u8,
         value: u64,
     },
-}
-
-fn initial_registers(trace: &Trace) -> CommittedMemory {
-    let values = trace
-        .initial_state
-        .regs
-        .iter()
-        .map(|value| F2_128::from(*value))
-        .collect();
-    CommittedMemory::new(5, values).expect("32-register table")
 }
 
 fn memory_span(
@@ -857,18 +831,6 @@ fn trace_access_plan(trace: &Trace) -> Result<Vec<AccessDescriptor>, RuntimeErro
     let mut plan = Vec::new();
     let mut event = 0usize;
     for row in &trace.rows {
-        if let Some(index) = row.rs1 {
-            plan.push(AccessDescriptor::RegisterRead {
-                index: index as u64,
-                expected: row.rs1_val,
-            });
-        }
-        if let Some(index) = row.rs2 {
-            plan.push(AccessDescriptor::RegisterRead {
-                index: index as u64,
-                expected: row.rs2_val,
-            });
-        }
         if let Some(access) = row.mem {
             let (word, lane, width) = memory_span(trace, access)?;
             let memory_event = event;
@@ -916,14 +878,6 @@ fn trace_access_plan(trace: &Trace) -> Result<Vec<AccessDescriptor>, RuntimeErro
                 });
             }
         }
-        if let Some(index) = row.rd {
-            if index != 0 {
-                plan.push(AccessDescriptor::RegisterWrite {
-                    index: index as u64,
-                    value: row.rd_val,
-                });
-            }
-        }
         for access in &row.extra_mem {
             if !access.is_write {
                 return Err(RuntimeError::Proof(
@@ -948,36 +902,11 @@ fn trace_access_plan(trace: &Trace) -> Result<Vec<AccessDescriptor>, RuntimeErro
 fn prove_trace_access_steps(
     trace: &Trace,
     witness: &BinaryTwistWitness,
-) -> Result<(Vec<TraceAccessStep>, NaiveCommitment), RuntimeError> {
-    let mut registers = initial_registers(trace);
+) -> Result<Vec<TraceAccessStep>, RuntimeError> {
     let mut steps = Vec::new();
     let mut event = 0usize;
 
     for row in &trace.rows {
-        if let Some(index) = row.rs1 {
-            let proof = prove_load(&registers, 0, index as u64)?;
-            let expected = F2_128::from(row.rs1_val);
-            if proof.value != expected {
-                return Err(RuntimeError::Proof("register read mismatch".into()));
-            }
-            steps.push(TraceAccessStep::RegisterRead {
-                index: index as u64,
-                expected,
-                proof,
-            });
-        }
-        if let Some(index) = row.rs2 {
-            let proof = prove_load(&registers, 0, index as u64)?;
-            let expected = F2_128::from(row.rs2_val);
-            if proof.value != expected {
-                return Err(RuntimeError::Proof("register read mismatch".into()));
-            }
-            steps.push(TraceAccessStep::RegisterRead {
-                index: index as u64,
-                expected,
-                proof,
-            });
-        }
         if let Some(access) = row.mem {
             let (word, lane, width) = memory_span(trace, access)?;
             let memory_event = event;
@@ -1037,14 +966,6 @@ fn prove_trace_access_steps(
                 });
             }
         }
-        if let Some(index) = row.rd {
-            if index != 0 {
-                let value = F2_128::from(row.rd_val);
-                let proof = prove_store(&registers, 0, index as u64, value)?;
-                registers = registers.updated(index, value)?;
-                steps.push(TraceAccessStep::RegisterWrite(proof));
-            }
-        }
         for access in &row.extra_mem {
             if !access.is_write {
                 return Err(RuntimeError::Proof(
@@ -1070,13 +991,13 @@ fn prove_trace_access_steps(
         }
     }
 
-    Ok((steps, registers.commitment))
+    Ok(steps)
 }
 
 pub fn prove_trace_access(trace: &Trace) -> Result<TraceAccessProof, RuntimeError> {
     let witness = BinaryTwistWitness::from_trace(trace)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    let (steps, final_register_commitment) = prove_trace_access_steps(trace, &witness)?;
+    let steps = prove_trace_access_steps(trace, &witness)?;
     let ram =
         prove_binary_twist_ram(&witness).map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let register_witness = crate::register_twist::register_twist_witness(trace)
@@ -1084,9 +1005,7 @@ pub fn prove_trace_access(trace: &Trace) -> Result<TraceAccessProof, RuntimeErro
     let registers = prove_binary_twist_ram(&register_witness)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     Ok(TraceAccessProof {
-        initial_registers: initial_registers(trace),
         steps,
-        final_register_commitment,
         registers,
         ram,
     })
@@ -1101,7 +1020,7 @@ pub(crate) fn prove_trace_access_shared(
     register_tables: &BatchTables,
     register_index: usize,
 ) -> Result<(TraceAccessProof, MosaicClaims, MosaicClaims), RuntimeError> {
-    let (steps, final_register_commitment) = prove_trace_access_steps(trace, witness)?;
+    let steps = prove_trace_access_steps(trace, witness)?;
     let (ram, ram_claims) = prove_binary_twist_claims(tables, witness, commitment, 1)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let (registers, register_claims) = prove_binary_twist_claims(
@@ -1113,9 +1032,7 @@ pub(crate) fn prove_trace_access_shared(
     .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     Ok((
         TraceAccessProof {
-            initial_registers: initial_registers(trace),
             steps,
-            final_register_commitment,
             registers,
             ram,
         },
@@ -1135,55 +1052,8 @@ fn verify_trace_access_steps(
             "trace access step count mismatch".into(),
         ));
     }
-    if proof.initial_registers.values
-        != trace
-            .initial_state
-            .regs
-            .iter()
-            .map(|value| F2_128::from(*value))
-            .collect::<Vec<_>>()
-    {
-        return Err(RuntimeError::Proof("initial registers mismatch".into()));
-    }
-
-    let mut registers = proof.initial_registers.clone();
     for (step_index, (step, descriptor)) in proof.steps.iter().zip(plan.iter()).enumerate() {
         match (step, descriptor) {
-            (
-                TraceAccessStep::RegisterRead {
-                    index,
-                    expected,
-                    proof,
-                },
-                AccessDescriptor::RegisterRead {
-                    index: expected_index,
-                    expected: expected_value,
-                },
-            ) => {
-                if index != expected_index || expected.value() as u64 != *expected_value {
-                    return Err(RuntimeError::Proof(format!(
-                        "register read metadata mismatch at step {step_index}"
-                    )));
-                }
-                verify_load(&registers, proof)?;
-                if proof.value != *expected {
-                    return Err(RuntimeError::Proof(format!(
-                        "register read value mismatch at step {step_index}"
-                    )));
-                }
-            }
-            (
-                TraceAccessStep::RegisterWrite(proof),
-                AccessDescriptor::RegisterWrite { index, value },
-            ) => {
-                if proof.addr != *index || proof.new_value.value() as u64 != *value {
-                    return Err(RuntimeError::Proof(format!(
-                        "register write metadata mismatch at step {step_index}"
-                    )));
-                }
-                verify_store(&registers, proof)?;
-                registers.commitment = proof.new_commitment.clone();
-            }
             (
                 TraceAccessStep::MemoryRead {
                     event,
@@ -1261,21 +1131,6 @@ fn verify_trace_access_steps(
                 )));
             }
         }
-    }
-
-    let final_registers = trace
-        .final_state
-        .regs
-        .iter()
-        .map(|value| F2_128::from(*value))
-        .collect::<Vec<_>>();
-    let expected_register_commitment =
-        <NaiveMerklePcs as Pcs>::commit(&NaiveMerklePcs, &final_registers)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    if registers.commitment != proof.final_register_commitment
-        || expected_register_commitment != proof.final_register_commitment
-    {
-        return Err(RuntimeError::Proof("final trace state mismatch".into()));
     }
     Ok(())
 }
@@ -4590,9 +4445,8 @@ mod tests {
         assert!(verify_trace_access(&trace, &tampered).is_err());
 
         let mut tampered = proof.clone();
-        if let TraceAccessStep::RegisterRead { index, .. } = &mut tampered.steps[0] {
-            *index += 1;
-        }
+        tampered.registers.read.claimed_read =
+            tampered.registers.read.claimed_read + F2_128::from(1u64);
         assert!(verify_trace_access(&trace, &tampered).is_err());
 
         let mut tampered = proof.clone();
