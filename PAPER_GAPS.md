@@ -71,7 +71,8 @@
 - `8a748bc`：移除 lockstep proof 的 `vw`，verifier 由 segment claims 重建 witness claim。
 - `1739187`：新增 `dual_field::BitRelation`，显式 F2 R1CS + 嵌入 `F2_128`。
 - `72053d1`：新增 `F2` 字段、`F2Pcs`、原生 F2 linear sum-check。
-- 本轮：F2 product sum-check 通过 F2_128 extension challenges 实现（degree 3 可插值），并加 tamper 测试。
+- `8828a2f`：F2 product sum-check 通过 F2_128 extension challenges 实现。
+- 本轮：新增 `F2Pcs`，把 F2 bits 嵌入 P3 `F2_128` 做 succinct commitment/opening；测试通过。
 
 ## 二、逐项差距
 
@@ -91,7 +92,7 @@
 |---|---|---|---|---|
 | B1 | 两个 SIMD R1CS 关系共享一个 bit-valued witness：一个 over `F2`，一个 over `F2_128`（§5.1） | `constraint::simd` 现有 `SimdR1cs`/`DualSimdR1cs`，并支持 `combined_system` + `combined_witness`（q 个 instance 的 block-diagonal 编码）；CPU 仍是单一 `ConstraintSystem`，尚未转成统一 SIMD 矩阵 | 🟡 | 设计两套矩阵 `A1/B1/C1`、`A2/B2/C2`；共享 witness；cross-step constraints；CPU 转换 |
 | B2 | BinarySpartan：SIMD Spartan + binary witness packing（128 bits per field element）+ ring switching（§4.3） | `magnetar-proof` 的参考 Spartan；`constraint::simd::pack_binary`/`unpack_binary` 已实现 128-bit packing；`prove_simd_spartan`/`verify_simd_spartan` 提供 block-diagonal SIMD proof 路径；共享矩阵优化、binary-witness evaluation claim、ring switching 未实现 | 🟡 | 实现共享矩阵 SIMD reduction、binary-witness evaluation claim、ring switching |
-| B3 | Virtual Spartan：联合两个 SIMD 关系，lockstep outer sum-check，共享 inner sum-check，per-segment claims（§5.3） | unified CPU 使用 `LockstepProof`，segment claims 重建 claim；`dual_field::BitRelation` 显式 F2 R1CS；`F2` 字段 + `F2Pcs` + 原生 linear sum-check；新增 **F2 product sum-check（F2_128 extension challenges）** 与 tamper 测试；尚未接 CPU | 🟡 | 把 F2 relation 接进 CPU；F2 PCS 仍 non-succinct |
+| B3 | Virtual Spartan：联合两个 SIMD 关系，lockstep outer sum-check，共享 inner sum-check，per-segment claims（§5.3） | unified CPU 使用 `LockstepProof`，segment claims 重建 claim；`BitRelation`/F2 product（extension challenges）；新增 `magnetar-pcs::f2::F2Pcs`：把 F2 bits 嵌入 P3 `F2_128` 做 succinct opening；尚未接 CPU、不是原生 F2 Ligerito | 🟡 | 把 F2 relation 接进 CPU；原生 F2 PCS |
 | B4 | 两个 outer sum-check 共享 instance challenge，inner 只跑一次（§5.3） | 无 | ❌ | 与 B3 一起实现 |
 | B5 | 直接段 claims 进 PCS；虚拟段 claims 分发给 Twist/Shout/Router（§5.3） | 所有段都在 `z` 中提交；没有虚拟段 claim 路由 | ❌ | 需要 segment layout + claim router |
 | B6 | sum-check 优化：univariate skip、Frobenius one-hot check、degree reduction 等（§4.2–4.4） | 参考实现，逐轮朴素 sum-check | ❌ | 性能优化项；不影响语义 |

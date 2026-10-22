@@ -6,6 +6,7 @@
 //! replacement for Ligerito.
 
 pub mod bn254;
+pub mod f2;
 pub mod mosaic;
 pub use bn254::{
     Bn254Kzg, Bn254KzgBatchOpening, Bn254KzgCommitment, Bn254KzgError, Bn254KzgOpening,
