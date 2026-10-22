@@ -48,7 +48,8 @@
 - `c2dbfba`：新增 `PackedSharedPcs` adapter（primary + aux components → packed `G` → batching → 单 P3 opening）。
 - `4bee0e4`：新增 `flatten_table_claims`，把多列 P3 claim 转成 per-column packed claims。
 - `bab9cfd`：`PackedSharedPcs` 通过 `prove_spartan`/`verify_spartan` 端到端测试。
-- 本轮：删除 `TraceAccessProof.steps`，memory bindings 改为从 trace + BinaryTwist witness 重新检查；`rom` 已在 public `Statement`。
+- `c88ea15`：删除 `TraceAccessProof.steps`，memory bindings 改为从 trace + BinaryTwist witness 重新检查。
+- 本轮：新增 `PackedSharedPcs::from_mosaic`，把现有 P3 多列 points/values 自动拆成单列 aux components；测试通过。
 
 ## 二、逐项差距
 
@@ -114,7 +115,7 @@
 | E2 | claim lift：`G(r ‖ s_i) = p_i(r)`，verifier 追加 Boolean suffix（§5.2） | `PackedMosaic::lift` 已实现 suffix layout + lift，并用 `eval_component == eval_packed(lift)` 测试；尚未接入 proof claims | 🟡 | 把 lift 接到 P3 claim batching |
 | E3 | 多 claim batching 成一个 claim（§5.2） | `mosaic.rs` 已实现 `batch_claims`/`verify_batching`：随机 α 合并多个 `G(r_i)=v_i`，sum-check 归约到单点 `G(r)=v`；测试通过；尚未接入 P3 proof | 🟡 | 把 batching 接入 P3 claim 流程 |
 | E4 | ring switching 到 packed representation `P_G`（§5.2） | 无 | ❌ | 实现 ring switching；当前 reference 是 1 field element/bit，尚未采用 128-bit packed representation |
-| E5 | 单个 PCS evaluation argument（§5.5） | `mosaic.rs` 现有 `PackedSharedPcs` adapter + `flatten_table_claims`（多列 claim → per-column packed claims with lift）；测试通过；unified proof 仍用多表 P3，尚未迁移 | 🟡 | 把 unified/chunked 多列表拆成单列 component 并切到 `PackedSharedPcs` |
+| E5 | 单个 PCS evaluation argument（§5.5） | `mosaic.rs` 现有 `PackedSharedPcs` adapter + `flatten_table_claims` + `from_mosaic`（P3 多列 points/values → 单列 packed components）；测试通过；unified proof 仍用多表 P3，尚未迁移 | 🟡 | 把 unified/chunked 的 P3 路径切到 `PackedSharedPcs` |
 | E6 | Ligerito/hash PCS 集成到 runtime（§6） | `ligerito` vendored backend 存在；runtime 默认用 P3 binary PCS | 🟡 | 把 Ligerito 接进 unified/chunked 路径并对比 |
 | E7 | 多表/多点 opening API | P3 mosaic 支持 multi-table/multi-point、`next_columns` | ✅ | 可作为 MosaicPCS 的实现基础 |
 | E8 | 证明大小随 trace 对数增长（§6.5） | `rows`/`steps` 线性；18 行 proof 270,713 B | ❌ | 与 A2 一起解决 |

@@ -5,7 +5,7 @@
 //! `G` at `r || suffix_i` without an adapter sum-check. Batching and ring
 //! switching are not yet implemented.
 
-use crate::p3_pcs::{P3BinaryPcs, P3Commitment, P3Opening};
+use crate::p3_pcs::{P3BinaryPcs, P3Commitment, P3MosaicPoint, P3MosaicTable, P3Opening};
 use magnetar_constraint::F2_128;
 use magnetar_proof::{eq, prove, verify_rounds, Mle, Pcs, ProofError, SumcheckProof};
 use magnetar_transcript::Sha256Transcript;
@@ -46,6 +46,8 @@ pub enum MosaicError {
     BatchSumcheck,
     #[error("aux claim shapes disagree")]
     AuxShape,
+    #[error("successor columns are not supported by the packed adapter")]
+    SuccessorColumns,
 }
 
 impl PackedMosaic {
@@ -322,6 +324,42 @@ impl PackedSharedPcs {
         })
     }
 
+    /// Build the adapter from existing multi-column mosaic points/values.
+    ///
+    /// Each selected column becomes a single-column component. Successor
+    /// columns are not supported yet.
+    pub fn from_mosaic(
+        security_level: usize,
+        tables: Vec<P3MosaicTable>,
+        points: Vec<P3MosaicPoint>,
+        values: Vec<Vec<F2_128>>,
+    ) -> Result<Self, MosaicError> {
+        if points.len() != values.len() {
+            return Err(MosaicError::AuxShape);
+        }
+        let mut aux_tables = Vec::new();
+        let mut aux_points = Vec::new();
+        let mut aux_values = Vec::new();
+        for (point, expected) in points.iter().zip(&values) {
+            if !point.next_columns.is_empty() || point.columns.len() != expected.len() {
+                return Err(MosaicError::AuxShape);
+            }
+            let table = tables.get(point.table).ok_or(MosaicError::AuxShape)?;
+            for (column, value) in point.columns.iter().zip(expected) {
+                aux_tables.push(
+                    table
+                        .columns
+                        .get(*column)
+                        .cloned()
+                        .ok_or(MosaicError::AuxShape)?,
+                );
+                aux_points.push(point.point.clone());
+                aux_values.push(*value);
+            }
+        }
+        Self::new(security_level, aux_tables, aux_points, aux_values)
+    }
+
     fn mosaic(&self, primary: &[F2_128]) -> Result<PackedMosaic, MosaicError> {
         let mut components = Vec::with_capacity(1 + self.aux_tables.len());
         components.push(primary.to_vec());
@@ -571,5 +609,40 @@ mod tests {
         .unwrap();
         let proof = prove_spartan(&system, &witness, &adapter).unwrap();
         verify_spartan(&system, &proof, &adapter).unwrap();
+    }
+    #[test]
+    fn packed_adapter_accepts_mosaic_columns() {
+        let primary = values(4, 31);
+        let table = P3MosaicTable {
+            columns: vec![values(4, 32), values(4, 33)],
+        };
+        let point = P3MosaicPoint {
+            table: 0,
+            point: vec![F2_128::from(5u64), F2_128::from(9u64)],
+            columns: vec![0, 1],
+            next_columns: Vec::new(),
+        };
+        let expected = table
+            .columns
+            .iter()
+            .map(|column| {
+                Mle::new(column.clone())
+                    .unwrap()
+                    .eval(&point.point)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let adapter =
+            PackedSharedPcs::from_mosaic(100, vec![table], vec![point.clone()], vec![expected])
+                .unwrap();
+        let value = Mle::new(primary.clone())
+            .unwrap()
+            .eval(&point.point)
+            .unwrap();
+        let commitment = adapter.commit(&primary).unwrap();
+        let opening = adapter.open(&primary, &point.point).unwrap();
+        assert!(adapter
+            .verify(&commitment, &point.point, value, &opening)
+            .unwrap());
     }
 }
