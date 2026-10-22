@@ -9,7 +9,7 @@ pub mod ir;
 pub mod layout;
 pub mod simd;
 
-pub use field::{Field, F2_128, F61};
+pub use field::{Field, F2, F2_128, F61};
 pub use ir::{
     Constraint, ConstraintError, ConstraintSystem, EvalError, Expr, LinearCombination,
     LinearizationError, VarId, Witness,

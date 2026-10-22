@@ -40,6 +40,75 @@ pub trait Field:
     }
 }
 
+/// The two-element field, used by the native F2 relation prototype.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct F2(u8);
+
+impl F2 {
+    pub const ZERO: Self = Self(0);
+    pub const ONE: Self = Self(1);
+
+    pub fn new(bit: bool) -> Self {
+        Self(u8::from(bit))
+    }
+
+    pub fn value(self) -> u8 {
+        self.0 & 1
+    }
+}
+
+impl fmt::Debug for F2 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "F2({})", self.value())
+    }
+}
+
+#[allow(clippy::suspicious_arithmetic_impl)]
+impl Add for F2 {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self {
+        Self(self.0 ^ rhs.0)
+    }
+}
+
+#[allow(clippy::suspicious_arithmetic_impl)]
+impl Sub for F2 {
+    type Output = Self;
+    fn sub(self, rhs: Self) -> Self {
+        self + rhs
+    }
+}
+
+impl Neg for F2 {
+    type Output = Self;
+    fn neg(self) -> Self {
+        self
+    }
+}
+
+#[allow(clippy::suspicious_arithmetic_impl)]
+impl Mul for F2 {
+    type Output = Self;
+    fn mul(self, rhs: Self) -> Self {
+        Self(self.0 & rhs.0)
+    }
+}
+
+impl Field for F2 {
+    fn zero() -> Self {
+        Self::ZERO
+    }
+    fn one() -> Self {
+        Self::ONE
+    }
+    fn from_u64(value: u64) -> Self {
+        Self((value & 1) as u8)
+    }
+    fn inv(self) -> Option<Self> {
+        (self.value() == 1).then_some(Self::ONE)
+    }
+}
+
 /// `GF(2^128)` as a seven-level binary tower.
 ///
 /// The wrapper pins every element to tower level 7. `from_u64` embeds the

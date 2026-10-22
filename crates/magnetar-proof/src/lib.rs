@@ -470,6 +470,7 @@ pub enum ProofError {
 }
 
 pub mod dual_field;
+pub mod f2_protocol;
 pub mod spartan;
 pub mod virtual_spartan;
 pub use spartan::{
