@@ -41,6 +41,7 @@ use thiserror::Error;
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Statement {
     pub program_hash: [u8; 32],
+    pub rom: Vec<u32>,
     pub trace_commitment: [u8; 32],
     pub config: MachineConfig,
     pub initial_state: MachineState,
@@ -89,6 +90,7 @@ impl ReferencePipeline {
         let chunk_plan = ChunkPlan::new(trace.len(), chunk_size)?;
         let statement = Statement {
             program_hash: program_hash(image),
+            rom: trace.rom.clone(),
             trace_commitment: trace_digest(&trace),
             config: trace.config.clone(),
             initial_state: trace.initial_state.clone(),
@@ -1222,7 +1224,6 @@ pub enum RowCpuProof {
 pub struct TraceProof {
     pub access: TraceAccessProof,
     pub trace_commitment: [u8; 32],
-    pub rom: Vec<u32>,
     pub rows: Vec<RowCpuProof>,
 }
 
@@ -1237,7 +1238,6 @@ pub struct UnifiedTraceProof {
     pub cpu: MosaicSpartanProof,
     pub shout: Option<crate::binary_shout::BinaryShoutProof>,
     pub router: Option<crate::binary_router::BinaryRouterProof>,
-    pub rom: Vec<u32>,
     pub rows: Vec<magnetar_spec::TraceRow>,
 }
 
@@ -1950,7 +1950,6 @@ pub fn prove_trace_proof(trace: &Trace, width: usize) -> Result<TraceProof, Runt
     Ok(TraceProof {
         access,
         trace_commitment: trace_digest(trace),
-        rom: trace.rom.clone(),
         rows,
     })
 }
@@ -1964,11 +1963,6 @@ pub fn verify_trace_proof(
     if proof.trace_commitment != trace_digest(trace) {
         return Err(RuntimeError::Proof(
             "trace proof does not match the supplied trace".into(),
-        ));
-    }
-    if proof.rom != trace.rom {
-        return Err(RuntimeError::Proof(
-            "trace proof ROM does not match the supplied trace".into(),
         ));
     }
     verify_trace_access(trace, &proof.access)?;
@@ -2154,7 +2148,6 @@ pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTracePr
         cpu,
         shout,
         router,
-        rom: trace.rom.clone(),
         rows: trace.rows.clone(),
     })
 }
@@ -2168,11 +2161,6 @@ pub fn verify_unified_trace(
     if proof.trace_commitment != trace_digest(trace) {
         return Err(RuntimeError::Proof(
             "unified proof does not match the supplied trace".into(),
-        ));
-    }
-    if proof.rom != trace.rom {
-        return Err(RuntimeError::Proof(
-            "unified proof ROM does not match the supplied trace".into(),
         ));
     }
     let shout_witness = BinaryShoutWitness::from_trace(trace).ok();
@@ -2273,7 +2261,8 @@ pub fn verify_unified_trace_statement(
         || statement.initial_ram != trace.initial_ram
         || statement.final_state != trace.final_state
         || statement.trace_commitment != proof.trace_commitment
-        || statement.program_hash != rom_hash(&trace.rom)
+        || statement.rom != trace.rom
+        || statement.program_hash != rom_hash(&statement.rom)
         || statement.output != trace.io_output
         || statement.input != trace.io_input
     {
@@ -2296,12 +2285,12 @@ pub fn verify_unified_statement(
             "proof commitment does not match the statement".into(),
         ));
     }
-    if rom_hash(&proof.rom) != statement.program_hash {
+    if rom_hash(&statement.rom) != statement.program_hash {
         return Err(RuntimeError::Proof(
-            "proof ROM does not match the statement program hash".into(),
+            "statement ROM does not match the statement program hash".into(),
         ));
     }
-    let trace = trace_from_statement(statement, &proof.rows, &proof.rom)?;
+    let trace = trace_from_statement(statement, &proof.rows, &statement.rom)?;
     if trace_digest(&trace) != statement.trace_commitment {
         return Err(RuntimeError::Proof(
             "proof rows do not match the statement trace commitment".into(),
@@ -2332,12 +2321,11 @@ pub struct UnifiedProofSizes {
     pub shout: usize,
     pub router: usize,
     pub rows: usize,
-    pub rom: usize,
 }
 
 impl UnifiedProofSizes {
     pub fn total(&self) -> usize {
-        self.access + self.cpu + self.shout + self.router + self.rows + self.rom
+        self.access + self.cpu + self.shout + self.router + self.rows
     }
 }
 
@@ -2353,7 +2341,6 @@ pub fn unified_proof_sizes(proof: &UnifiedTraceProof) -> Result<UnifiedProofSize
         shout: size(bincode::serialize(&proof.shout))?,
         router: size(bincode::serialize(&proof.router))?,
         rows: size(bincode::serialize(&proof.rows))?,
-        rom: size(bincode::serialize(&proof.rom))?,
     })
 }
 
@@ -2436,7 +2423,6 @@ pub struct ChunkedTraceProof {
     pub aux: Option<AuxTraceProof>,
     pub chunks: Vec<ChunkCpuProof>,
     pub chain: ChainedProof,
-    pub rom: Vec<u32>,
     pub rows: Vec<magnetar_spec::TraceRow>,
 }
 
@@ -2661,7 +2647,6 @@ pub fn prove_chunked_trace(
         aux,
         chunks,
         chain,
-        rom: trace.rom.clone(),
         rows: trace.rows.clone(),
     })
 }
@@ -2675,11 +2660,6 @@ pub fn verify_chunked_trace(
     if proof.trace_commitment != trace_digest(trace) {
         return Err(RuntimeError::Proof(
             "chunked proof does not match the supplied trace".into(),
-        ));
-    }
-    if proof.rom != trace.rom {
-        return Err(RuntimeError::Proof(
-            "chunked proof ROM does not match the supplied trace".into(),
         ));
     }
     verify_trace_access(trace, &proof.access)?;
@@ -2740,12 +2720,12 @@ pub fn verify_chunked_statement(
             "chunked proof does not match the statement".into(),
         ));
     }
-    if rom_hash(&proof.rom) != statement.program_hash {
+    if rom_hash(&statement.rom) != statement.program_hash {
         return Err(RuntimeError::Proof(
-            "chunked proof ROM does not match the statement program hash".into(),
+            "statement ROM does not match the statement program hash".into(),
         ));
     }
-    let trace = trace_from_statement(statement, &proof.rows, &proof.rom)?;
+    let trace = trace_from_statement(statement, &proof.rows, &statement.rom)?;
     if trace_digest(&trace) != statement.trace_commitment {
         return Err(RuntimeError::Proof(
             "chunked proof rows do not match the statement".into(),
@@ -3258,6 +3238,7 @@ mod tests {
 
         let statement = Statement {
             program_hash: program_hash(&program),
+            rom: trace.rom.clone(),
             trace_commitment: trace_digest(&trace),
             config: config(),
             initial_state: trace.initial_state.clone(),
@@ -3391,9 +3372,9 @@ mod tests {
         verify_trace_proof(&trace, &decoded, 8).unwrap();
         assert!(decode_trace_proof(&bytes[..bytes.len() / 2]).is_err());
 
-        let mut wrong_rom = proof.clone();
+        let mut wrong_rom = trace.clone();
         wrong_rom.rom[0] ^= 1;
-        assert!(verify_trace_proof(&trace, &wrong_rom, 8).is_err());
+        assert!(verify_trace_proof(&wrong_rom, &proof, 8).is_err());
 
         let mut tampered = proof;
         if let RowCpuProof::Mulh(spartan) = &mut tampered.rows[2] {
@@ -3955,6 +3936,7 @@ mod tests {
 
         let statement = Statement {
             program_hash: program_hash(&program),
+            rom: trace.rom.clone(),
             trace_commitment: trace_digest(&trace),
             config: config(),
             initial_state: trace.initial_state.clone(),
@@ -3982,9 +3964,9 @@ mod tests {
         tampered.chunks[1].cpu.vw = tampered.chunks[1].cpu.vw + F2_128::from(1u64);
         assert!(verify_chunked_trace(&trace, &tampered, 8).is_err());
 
-        let mut wrong_rom = proof.clone();
+        let mut wrong_rom = statement.clone();
         wrong_rom.rom[0] ^= 1;
-        assert!(verify_chunked_statement(&statement, &wrong_rom, 8).is_err());
+        assert!(verify_chunked_statement(&wrong_rom, &proof, 8).is_err());
 
         let mut tampered = proof;
         tampered.chain.chunks[1].state_after[0] ^= 1;

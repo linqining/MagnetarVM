@@ -60,14 +60,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let encoded = encode_unified_proof(&proof)?;
     let sizes = unified_proof_sizes(&proof)?;
     println!(
-        "proof: {} bytes (access={}, cpu={}, shout={}, router={}, rows={}, rom={}), verified in {:?}",
+        "proof: {} bytes (access={}, cpu={}, shout={}, router={}, rows={}), verified in {:?}",
         encoded.len(),
         sizes.access,
         sizes.cpu,
         sizes.shout,
         sizes.router,
         sizes.rows,
-        sizes.rom,
         verify_time
     );
     println!("prove: {prove_time:?}");

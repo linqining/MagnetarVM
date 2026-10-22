@@ -18,7 +18,7 @@ Implemented:
 - R1CS relations for the supported RV64A AMO subset (`swap`/`add`/`xor`/`and`/`or`/signed and unsigned `min`/`max` in `.W` and `.D`), plus LR load and SC success/failure row relations, with 64-bit address generation, old-value read then new-value write in the access log, reservation state recorded per row, and both per-row and unified trace proofs;
 - Row-bound CPU relations that pin opcode, operands, result, and both PCs to statement constants, plus a combined `TraceProof` that verifies an interleaved register/memory access log alongside per-row CPU proofs (ALU, AMO, load/store, branch, jump, Auipc);
 - `UnifiedTraceProof`: every row relation is merged into one constraint system and proven once, with a statement-bound verifier and a standalone verifier that reconstructs the authenticated trace from proof rows plus the statement; `ChunkedTraceProof` has the same standalone verification path;
-- A canonical SHA-256 trace commitment (`trace_digest`) over every row field, the ROM image, machine config, buffered syscall output, and consumed read input, bound into both trace-proof variants and the public `Statement`; statement-bound verification checks the program hash against the proof ROM, rejects output/input tampering, and checks write output against the RAM image at the syscall point;
+- A canonical SHA-256 trace commitment (`trace_digest`) over every row field, the ROM image, machine config, buffered syscall output, and consumed read input, bound into both trace-proof variants and the public `Statement`; statement-bound verification checks the program hash against the public `Statement` ROM, rejects output/input tampering, and checks write output against the RAM image at the syscall point;
 - `ChunkedTraceProof`: per-row-range merged CPU proofs linked through the recursion crate's register/PC state chain, with the same access log and trace commitment;
 - Lane-level sub-word load/store support in the access log (`lb/lbu/lh/lhu/lw/lwu/sb/sh/sw` within an aligned 8-byte word, with sign extension and read-modify-write checks);
 - Register/RAM replay, Twist one-hot address/increment witnesses, shift/store routing witnesses, and a reference Sv39 page-table walker with permission and superpage checks;
@@ -61,7 +61,7 @@ Explicitly not implemented:
 | 9 | Proof engine | `magnetar-proof` | MLE + sum-check + reference Spartan reduction implemented; BinarySpartan not implemented |
 | 10 | Commitment / PCS | `magnetar-pcs` | Merkle tree, batched Merkle vector commitment, naive polynomial PCS, `Pcs` trait, a succinct BN254 KZG backend with batch openings via `arkworks`, a vendored Ligerito 0.8.0 index-opening backend (2^16: 118,624 bytes / 99 ms / 3.1 ms), and Plonky3 `p3-binary-pcs` multilinear point PCS with single-vector, multi-column, and multi-table mosaic APIs plus a `P3SharedPcs` adapter (CPU+RAM shared opening in the unified proof) |
 | 11 | Transcript / Proof format | `magnetar-transcript` | SHA-256 and SHA3-256 Fiat–Shamir transcripts implemented; canonical bincode encoding for Spartan and unified/chunked trace proofs lives in `magnetar-pcs` / `magnetar-runtime` |
-| 12 | Prover / Verifier runtime | `magnetar-runtime` | Reference pipeline + Spartan backend + load/store, AMO read-modify-write, LR/SC reservation checks, syscall read write-back, memory/register chains, and trace-order interleaved access proofs; combined `TraceProof` binds CPU rows (ALU/AMO/LR/SC/load/store/branch/jump/Auipc) to the access log, including lane-level sub-word loads/stores; `UnifiedTraceProof` merges all rows into one proof and shares one mosaic P3 commitment/opening across the CPU witness, BinaryTwist RAM/register columns, BinaryShout ROM addresses, and BinaryRouter inputs, `ChunkedTraceProof` produces per-range proofs linked by state digests and carries one shared BinaryShout/BinaryRouter P3 opening, and both carry the ROM and have standalone verifiers bound to a canonical trace digest and program hash; the access proof keeps no register Merkle paths; register consistency is proved by BinaryTwist and memory steps are bound to the BinaryTwist claims, and the public `Statement` carries the initial RAM; a hiding/succinct trace commitment remains; BinaryShout and BinaryRouter claims share the unified P3 opening |
+| 12 | Prover / Verifier runtime | `magnetar-runtime` | Reference pipeline + Spartan backend + load/store, AMO read-modify-write, LR/SC reservation checks, syscall read write-back, memory/register chains, and trace-order interleaved access proofs; combined `TraceProof` binds CPU rows (ALU/AMO/LR/SC/load/store/branch/jump/Auipc) to the access log, including lane-level sub-word loads/stores; `UnifiedTraceProof` merges all rows into one proof and shares one mosaic P3 commitment/opening across the CPU witness, BinaryTwist RAM/register columns, BinaryShout ROM addresses, and BinaryRouter inputs, `ChunkedTraceProof` produces per-range proofs linked by state digests and carries one shared BinaryShout/BinaryRouter P3 opening, and both rely on the public `Statement` ROM and have standalone verifiers bound to a canonical trace digest and program hash; the access proof keeps no register Merkle paths; register consistency is proved by BinaryTwist and memory steps are bound to the BinaryTwist claims, and the public `Statement` carries the initial RAM; a hiding/succinct trace commitment remains; BinaryShout and BinaryRouter claims share the unified P3 opening |
 | 13 | Recursion / Aggregation | `magnetar-recursion` | Chunk plan + hash-chain and state-continuity reference aggregators implemented, wired to runtime `ChunkedTraceProof`; zk verifier-in-the-VM backend not implemented |
 | 14 | Privacy layer | `magnetar-privacy` | `NoPrivacy` + randomized hiding hash commitment + trait implemented; ZK sum-check not implemented |
 | 15 | Security / Performance engineering | `magnetar-testkit` | Integration tests, fixtures, and criterion benchmarks implemented; security audit not performed |
@@ -188,12 +188,12 @@ them:
 
 | width | CPU vars | CPU constraints | proof bytes | prove | verify |
 |---|---|---|---|---|---|
-| 64 | 6,991 | 11,933 | 277,618 | 0.42 s | 0.037 s |
-| 32 | 4,015 | 6,813 | 235,002 | 0.37 s | 0.020 s |
-| 8 | 1,783 | 2,973 | 199,522 | 0.37 s | 0.013 s |
+| 64 | 6,991 | 11,933 | 277,522 | 0.44 s | 0.039 s |
+| 32 | 4,015 | 6,813 | 234,906 | 0.41 s | 0.032 s |
+| 8 | 1,783 | 2,973 | 199,426 | 0.40 s | 0.013 s |
 
 At width 64 the proof splits into access=19,002, cpu=246,856, shout=3,154,
-router=6,618, rows=1,860, and rom=96 bytes. The changes behind these numbers:
+and router=6,618, rows=1,860 bytes. The changes behind these numbers:
 
 1. **Per-op ALU relations.** `simple_alu_row_relation` allocates only the gates
    an operation needs: `addi` is 449 variables and `lui` is 64, down from 4,492
@@ -204,7 +204,7 @@ router=6,618, rows=1,860, and rom=96 bytes. The changes behind these numbers:
    `P3SharedPcs` plugs this batch into the Spartan proof: the CPU point and the
    BinaryTwist point claims are opened by the same P3 argument. The proof no
    longer pays for a separate CPU opening plus a separate RAM opening; the old
-   separate layout was 593,508 bytes, the shared layout is 277,618 bytes.
+   separate layout was 593,508 bytes, the shared layout is 277,522 bytes.
 3. **Bit-sliced virtual addresses and values.** The address table commits
    `2a+2` cycle-length bit columns (read bits, write bits, and two validity
    bits); full one-hot addresses are reconstructed by the verifier. Booleanity

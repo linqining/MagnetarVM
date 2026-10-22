@@ -35,7 +35,8 @@
 - `82541ba`：BinaryRouter 提交 3 个 offset bits，并用 sumcheck 与 public offset 链接。
 - `2043741`：增加 4 个 one-hot width bits（`Q_st`）并与 public width 链接。
 - `9b7adeb`：新增 `DualSimdR1cs`/`SimdR1cs` 边界与 128-bit binary witness packing（`constraint::simd`）。
-- 本轮：BinaryShout 扩展到 `c=10`，加入 shift kind/shamt 与 store width selector columns，为 Router `Q` 链接做准备。
+- `6001e72`：BinaryShout 扩展到 `c=10`，加入 shift kind/shamt 与 store width selector columns。
+- 本轮：ROM 改为 public `Statement` 输入，三个 proof 结构移除 `rom` 字段；D13 完成。
 
 ## 二、逐项差距
 
@@ -91,7 +92,7 @@
 | D10 | BinaryRouter for stores：输出是 `Inc`（old XOR new），`R_st` 带 3 个 offset bits，`Q_st` 4 个 width selector（§5.4） | 路由 `Inc`；3 个 offset bits + 4 个 one-hot width bits 已提交，并分别通过 sumcheck 链接到 public offset/width；routing 仍用 public offset/width；未接 bytecode selector | 🟡 | 让 routing 直接使用 offset/width 的 MLE；接 bytecode width selector `Q_st` |
 | D11 | 两个 BinaryRouter 实例（shift、store） | 一个通用 router claim 覆盖两类 route | 🟡 | 拆成两个实例，各自 claim/selector |
 | D12 | bytecode 预处理：instruction expansion、public ROM/bytecode table（§2、§5.5） | 一 instruction = 一 micro-op；ROM 由 trace 携带 | ❌ | 实现 expansion + bytecode table + micro-PC |
-| D13 | ROM/bytecode 是 public input，不由 proof 携带 | proof 携带 `rom: Vec<u32>`；statement 有 program_hash | 🟡 | 由 statement/预处理提供 ROM；proof 只带 commitment/claims |
+| D13 | ROM/bytecode 是 public input，不由 proof 携带 | `Statement` 现在携带 `rom`；`TraceProof`/`UnifiedTraceProof`/`ChunkedTraceProof` 已移除 `rom` 字段；verifier 从 statement 使用 ROM | ✅ | bytecode table/micro-PC 仍需按 D7/D12 完成 |
 
 ### E. PCS / MosaicPCS
 
