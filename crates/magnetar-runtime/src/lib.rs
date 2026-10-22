@@ -735,6 +735,7 @@ pub struct TraceAccessProof {
     pub initial_registers: CommittedMemory,
     pub steps: Vec<TraceAccessStep>,
     pub final_register_commitment: NaiveCommitment,
+    pub registers: BinaryTwistRamProof,
     pub ram: BinaryTwistRamProof,
 }
 
@@ -1078,10 +1079,15 @@ pub fn prove_trace_access(trace: &Trace) -> Result<TraceAccessProof, RuntimeErro
     let (steps, final_register_commitment) = prove_trace_access_steps(trace, &witness)?;
     let ram =
         prove_binary_twist_ram(&witness).map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let register_witness = crate::register_twist::register_twist_witness(trace)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let registers = prove_binary_twist_ram(&register_witness)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     Ok(TraceAccessProof {
         initial_registers: initial_registers(trace),
         steps,
         final_register_commitment,
+        registers,
         ram,
     })
 }
@@ -1091,18 +1097,30 @@ pub(crate) fn prove_trace_access_shared(
     witness: &BinaryTwistWitness,
     tables: &BatchTables,
     commitment: &P3MosaicCommitment,
-) -> Result<(TraceAccessProof, MosaicClaims), RuntimeError> {
+    register_witness: &BinaryTwistWitness,
+    register_tables: &BatchTables,
+    register_index: usize,
+) -> Result<(TraceAccessProof, MosaicClaims, MosaicClaims), RuntimeError> {
     let (steps, final_register_commitment) = prove_trace_access_steps(trace, witness)?;
-    let (ram, (points, values)) = prove_binary_twist_claims(tables, witness, commitment, 1)
+    let (ram, ram_claims) = prove_binary_twist_claims(tables, witness, commitment, 1)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let (registers, register_claims) = prove_binary_twist_claims(
+        register_tables,
+        register_witness,
+        commitment,
+        register_index,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     Ok((
         TraceAccessProof {
             initial_registers: initial_registers(trace),
             steps,
             final_register_commitment,
+            registers,
             ram,
         },
-        (points, values),
+        ram_claims,
+        register_claims,
     ))
 }
 
@@ -1270,6 +1288,15 @@ pub fn verify_trace_access(trace: &Trace, proof: &TraceAccessProof) -> Result<()
     {
         return Err(RuntimeError::Proof("BinaryTwist RAM proof rejected".into()));
     }
+    let register_witness = crate::register_twist::register_twist_witness(trace)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if !verify_binary_twist_ram(&register_witness, &proof.registers)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+    {
+        return Err(RuntimeError::Proof(
+            "BinaryTwist register proof rejected".into(),
+        ));
+    }
     verify_trace_access_steps(trace, proof, &witness)
 }
 
@@ -1278,21 +1305,40 @@ pub(crate) fn verify_trace_access_shared(
     proof: &TraceAccessProof,
     witness: &BinaryTwistWitness,
     commitment: &P3MosaicCommitment,
-) -> Result<MosaicClaims, RuntimeError> {
+    register_witness: &BinaryTwistWitness,
+    register_index: usize,
+) -> Result<(MosaicClaims, MosaicClaims), RuntimeError> {
     if proof.ram.opening.is_some() {
         return Err(RuntimeError::Proof(
             "shared access proof carries a standalone RAM opening".into(),
         ));
     }
+    if proof.registers.opening.is_some() {
+        return Err(RuntimeError::Proof(
+            "shared access proof carries a standalone register opening".into(),
+        ));
+    }
     verify_trace_access_steps(trace, proof, witness)?;
-    let Some((points, values)) = verify_binary_twist_claims(witness, &proof.ram, commitment, 1)
+    let Some(ram_claims) = verify_binary_twist_claims(witness, &proof.ram, commitment, 1)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?
     else {
         return Err(RuntimeError::Proof(
-            "BinaryTwist claims rejected against the shared commitment".into(),
+            "BinaryTwist RAM claims rejected against the shared commitment".into(),
         ));
     };
-    Ok((points, values))
+    let Some(register_claims) = verify_binary_twist_claims(
+        register_witness,
+        &proof.registers,
+        commitment,
+        register_index,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?
+    else {
+        return Err(RuntimeError::Proof(
+            "BinaryTwist register claims rejected against the shared commitment".into(),
+        ));
+    };
+    Ok((ram_claims, register_claims))
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -2171,6 +2217,10 @@ pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTracePr
 
     let shout_witness = BinaryShoutWitness::from_trace(trace).ok();
     let router_witness = BinaryRouterWitness::from_trace(trace).ok();
+    let register_witness = crate::register_twist::register_twist_witness(trace)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let register_tables =
+        batch_tables(&register_witness).map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let pcs = P3BinaryPcs::new(100);
     let mut mosaic_tables = vec![
         P3MosaicTable { columns: vec![z] },
@@ -2194,11 +2244,22 @@ pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTracePr
     if let Some((_, table)) = &router_table {
         mosaic_tables.push(table.clone());
     }
+    let register_index = mosaic_tables.len();
+    mosaic_tables.push(register_tables.addr.clone());
+    mosaic_tables.push(register_tables.inc.clone());
     let commitment = pcs
         .commit_mosaic(&mosaic_tables)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    let (access, (mut points, mut values)) =
-        prove_trace_access_shared(trace, &witness, &tables, &commitment)?;
+    let (access, ram_claims, register_claims) = prove_trace_access_shared(
+        trace,
+        &witness,
+        &tables,
+        &commitment,
+        &register_witness,
+        &register_tables,
+        register_index,
+    )?;
+    let (mut points, mut values) = ram_claims;
     let mut aux_tables = vec![mosaic_tables[1].clone(), mosaic_tables[2].clone()];
     let shout = if let (Some(witness), Some((index, _))) = (&shout_witness, &shout_table) {
         let (claim, claim_points, claim_values) =
@@ -2222,6 +2283,11 @@ pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTracePr
     } else {
         None
     };
+    let (register_points, register_values) = register_claims;
+    points.extend(register_points);
+    values.extend(register_values);
+    aux_tables.push(register_tables.addr.clone());
+    aux_tables.push(register_tables.inc.clone());
     let shared_pcs = P3SharedPcs::new(100, aux_tables, points, values);
     let cpu = prove_spartan(&system, &cpu_witness, &shared_pcs)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
@@ -2273,7 +2339,7 @@ pub fn verify_unified_trace(
         _ => {}
     }
     let expected_tables =
-        3 + usize::from(shout_witness.is_some()) + usize::from(router_witness.is_some());
+        5 + usize::from(shout_witness.is_some()) + usize::from(router_witness.is_some());
     if proof.cpu.commitment.tables.len() != expected_tables {
         return Err(RuntimeError::Proof(
             "unified proof does not commit the expected CPU/RAM/aux tables".into(),
@@ -2290,13 +2356,23 @@ pub fn verify_unified_trace(
         next_table += 1;
         index
     });
+    let register_index = next_table;
+    let register_witness = crate::register_twist::register_twist_witness(trace)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let witness = BinaryTwistWitness::from_trace(trace)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     witness
         .validate()
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    let (mut points, mut values) =
-        verify_trace_access_shared(trace, &proof.access, &witness, &proof.cpu.commitment)?;
+    let (ram_claims, register_claims) = verify_trace_access_shared(
+        trace,
+        &proof.access,
+        &witness,
+        &proof.cpu.commitment,
+        &register_witness,
+        register_index,
+    )?;
+    let (mut points, mut values) = ram_claims;
     if let (Some(witness), Some(claim), Some(index)) = (&shout_witness, &proof.shout, shout_index) {
         let Some((claim_points, claim_values)) =
             verify_binary_shout_claims(witness, claim, &proof.cpu.commitment, index)
@@ -2319,6 +2395,9 @@ pub fn verify_unified_trace(
         points.extend(claim_points);
         values.extend(claim_values);
     }
+    let (register_points, register_values) = register_claims;
+    points.extend(register_points);
+    values.extend(register_values);
     let (system, _) = merged_cpu_system(trace, width)?;
     let shared_pcs = P3SharedPcs::new(100, Vec::new(), points, values);
     verify_spartan(&system, &proof.cpu, &shared_pcs)
@@ -3318,7 +3397,7 @@ mod tests {
         assert!(proof.access.ram.opening.is_none());
         assert_eq!(
             proof.cpu.commitment.tables.len(),
-            3 + usize::from(proof.shout.is_some()) + usize::from(proof.router.is_some())
+            5 + usize::from(proof.shout.is_some()) + usize::from(proof.router.is_some())
         );
         verify_unified_trace(&trace, &proof, 8).unwrap();
 

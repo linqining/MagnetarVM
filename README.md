@@ -61,7 +61,7 @@ Explicitly not implemented:
 | 9 | Proof engine | `magnetar-proof` | MLE + sum-check + reference Spartan reduction implemented; BinarySpartan not implemented |
 | 10 | Commitment / PCS | `magnetar-pcs` | Merkle tree, batched Merkle vector commitment, naive polynomial PCS, `Pcs` trait, a succinct BN254 KZG backend with batch openings via `arkworks`, a vendored Ligerito 0.8.0 index-opening backend (2^16: 118,624 bytes / 99 ms / 3.1 ms), and Plonky3 `p3-binary-pcs` multilinear point PCS with single-vector, multi-column, and multi-table mosaic APIs plus a `P3SharedPcs` adapter (CPU+RAM shared opening in the unified proof) |
 | 11 | Transcript / Proof format | `magnetar-transcript` | SHA-256 and SHA3-256 Fiat–Shamir transcripts implemented; canonical bincode encoding for Spartan and unified/chunked trace proofs lives in `magnetar-pcs` / `magnetar-runtime` |
-| 12 | Prover / Verifier runtime | `magnetar-runtime` | Reference pipeline + Spartan backend + load/store, AMO read-modify-write, LR/SC reservation checks, syscall read write-back, memory/register chains, and trace-order interleaved access proofs; combined `TraceProof` binds CPU rows (ALU/AMO/LR/SC/load/store/branch/jump/Auipc) to the access log, including lane-level sub-word loads/stores; `UnifiedTraceProof` merges all rows into one proof and shares one mosaic P3 commitment/opening across the CPU witness, BinaryTwist RAM columns, BinaryShout ROM addresses, and BinaryRouter inputs, `ChunkedTraceProof` produces per-range proofs linked by state digests and carries one shared BinaryShout/BinaryRouter P3 opening, and both carry the ROM and have standalone verifiers bound to a canonical trace digest and program hash; the access proof keeps Merkle openings only for registers, memory steps are bound to the BinaryTwist claims, and the public `Statement` carries the initial RAM; a hiding/succinct trace commitment remains; BinaryShout and BinaryRouter claims share the unified P3 opening |
+| 12 | Prover / Verifier runtime | `magnetar-runtime` | Reference pipeline + Spartan backend + load/store, AMO read-modify-write, LR/SC reservation checks, syscall read write-back, memory/register chains, and trace-order interleaved access proofs; combined `TraceProof` binds CPU rows (ALU/AMO/LR/SC/load/store/branch/jump/Auipc) to the access log, including lane-level sub-word loads/stores; `UnifiedTraceProof` merges all rows into one proof and shares one mosaic P3 commitment/opening across the CPU witness, BinaryTwist RAM/register columns, BinaryShout ROM addresses, and BinaryRouter inputs, `ChunkedTraceProof` produces per-range proofs linked by state digests and carries one shared BinaryShout/BinaryRouter P3 opening, and both carry the ROM and have standalone verifiers bound to a canonical trace digest and program hash; the access proof keeps Merkle openings only for registers, memory steps are bound to the BinaryTwist claims, and the public `Statement` carries the initial RAM; a hiding/succinct trace commitment remains; BinaryShout and BinaryRouter claims share the unified P3 opening |
 | 13 | Recursion / Aggregation | `magnetar-recursion` | Chunk plan + hash-chain and state-continuity reference aggregators implemented, wired to runtime `ChunkedTraceProof`; zk verifier-in-the-VM backend not implemented |
 | 14 | Privacy layer | `magnetar-privacy` | `NoPrivacy` + randomized hiding hash commitment + trait implemented; ZK sum-check not implemented |
 | 15 | Security / Performance engineering | `magnetar-testkit` | Integration tests, fixtures, and criterion benchmarks implemented; security audit not performed |
@@ -188,11 +188,11 @@ them:
 
 | width | CPU vars | CPU constraints | proof bytes | prove | verify |
 |---|---|---|---|---|---|
-| 64 | 6,991 | 11,933 | 270,713 | 0.39 s | 0.038 s |
-| 32 | 4,015 | 6,813 | 238,433 | 0.36 s | 0.023 s |
-| 8 | 1,783 | 2,973 | 200,105 | 0.33 s | 0.012 s |
+| 64 | 6,991 | 11,933 | 285,578 | 0.41 s | 0.038 s |
+| 32 | 4,015 | 6,813 | 248,178 | 0.38 s | 0.021 s |
+| 8 | 1,783 | 2,973 | 211,226 | 0.38 s | 0.014 s |
 
-At width 64 the proof splits into access=19,033, cpu=240,872, shout=3,074,
+At width 64 the proof splits into access=29,706, cpu=245,064, shout=3,074,
 router=5,746, rows=1,860, and rom=96 bytes. The changes behind these numbers:
 
 1. **Per-op ALU relations.** `simple_alu_row_relation` allocates only the gates
@@ -204,7 +204,7 @@ router=5,746, rows=1,860, and rom=96 bytes. The changes behind these numbers:
    `P3SharedPcs` plugs this batch into the Spartan proof: the CPU point and the
    BinaryTwist point claims are opened by the same P3 argument. The proof no
    longer pays for a separate CPU opening plus a separate RAM opening; the old
-   separate layout was 593,508 bytes, the shared layout is 270,713 bytes.
+   separate layout was 593,508 bytes, the shared layout is 285,578 bytes.
 3. **Bit-sliced virtual addresses and values.** The address table commits
    `2a+2` cycle-length bit columns (read bits, write bits, and two validity
    bits); full one-hot addresses are reconstructed by the verifier. Booleanity
