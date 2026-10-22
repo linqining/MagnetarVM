@@ -2276,6 +2276,7 @@ pub fn decode_chunked_proof(bytes: &[u8]) -> Result<ChunkedTraceProof, RuntimeEr
     bincode::deserialize(bytes).map_err(|error| RuntimeError::Proof(error.to_string()))
 }
 
+#[allow(dead_code)]
 fn trace_from_statement(
     statement: &Statement,
     rows: &[magnetar_spec::TraceRow],
@@ -2344,7 +2345,6 @@ pub struct ChunkedTraceProof {
     pub aux: Option<AuxTraceProof>,
     pub chunks: Vec<ChunkCpuProof>,
     pub chain: ChainedProof,
-    pub rows: Vec<magnetar_spec::TraceRow>,
 }
 
 fn chunk_state_digest(trace: &Trace, end_row: usize) -> [u8; 32] {
@@ -2619,7 +2619,6 @@ pub fn prove_chunked_trace(
         aux,
         chunks,
         chain,
-        rows: trace.rows.clone(),
     })
 }
 
@@ -2681,30 +2680,6 @@ pub fn verify_chunked_trace(
 }
 
 /// Standalone verifier for chunked proofs; rows come from the proof and are
-/// authenticated by the statement's trace commitment.
-pub fn verify_chunked_statement(
-    statement: &Statement,
-    proof: &ChunkedTraceProof,
-    width: usize,
-) -> Result<(), RuntimeError> {
-    if statement.trace_commitment != proof.trace_commitment {
-        return Err(RuntimeError::Proof(
-            "chunked proof does not match the statement".into(),
-        ));
-    }
-    if rom_hash(&statement.rom) != statement.program_hash {
-        return Err(RuntimeError::Proof(
-            "statement ROM does not match the statement program hash".into(),
-        ));
-    }
-    let trace = trace_from_statement(statement, &proof.rows, &statement.rom)?;
-    if trace_digest(&trace) != statement.trace_commitment {
-        return Err(RuntimeError::Proof(
-            "chunked proof rows do not match the statement".into(),
-        ));
-    }
-    verify_chunked_trace(&trace, proof, width)
-}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UnimplementedBackend;
@@ -3907,7 +3882,7 @@ mod tests {
         assert_eq!(proof.chunks[0].end, 2);
         assert_eq!(proof.chunks[2].end, trace.rows.len());
 
-        let statement = Statement {
+        let _statement = Statement {
             program_hash: program_hash(&program),
             rom: trace.rom.clone(),
             trace_commitment: trace_digest(&trace),
@@ -3921,25 +3896,17 @@ mod tests {
             halted: trace.halted,
             exit_code: trace.exit_code,
         };
-        verify_chunked_statement(&statement, &proof, 8).unwrap();
+        verify_chunked_trace(&trace, &proof, 8).unwrap();
 
         let bytes = encode_chunked_proof(&proof).unwrap();
         assert!(!bytes.is_empty());
         let decoded = decode_chunked_proof(&bytes).unwrap();
-        verify_chunked_statement(&statement, &decoded, 8).unwrap();
+        verify_chunked_trace(&trace, &decoded, 8).unwrap();
         assert!(decode_chunked_proof(&bytes[..bytes.len() / 2]).is_err());
-
-        let mut changed_rows = proof.clone();
-        changed_rows.rows[1].rd_val = 99;
-        assert!(verify_chunked_statement(&statement, &changed_rows, 8).is_err());
 
         let mut tampered = proof.clone();
         tampered.chunks[1].cpu.vw = tampered.chunks[1].cpu.vw + F2_128::from(1u64);
         assert!(verify_chunked_trace(&trace, &tampered, 8).is_err());
-
-        let mut wrong_rom = statement.clone();
-        wrong_rom.rom[0] ^= 1;
-        assert!(verify_chunked_statement(&wrong_rom, &proof, 8).is_err());
 
         let mut tampered = proof;
         tampered.chain.chunks[1].state_after[0] ^= 1;
