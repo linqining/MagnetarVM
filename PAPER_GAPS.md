@@ -26,7 +26,8 @@
 ## 进度记录
 
 - `00818e8`：BinaryShout 支持 16/32-bit instruction。
-- 本轮：BinaryRouter store 路由改为 `Inc`（old XOR new），与 BinaryTwist 的 committed `Inc` 对齐；offset-bit claims 与 `Q_st` 尚未实现。
+- `4c36a8d`：BinaryRouter store 路由改为 `Inc`（old XOR new），与 BinaryTwist 的 committed `Inc` 对齐；offset-bit claims 与 `Q_st` 尚未实现。
+- 本轮：新增 register BinaryTwist witness（`register_twist.rs`），用两相编码实现 p=2 reads + 1 write；standalone proof 已验证，尚未接入 access proof。
 
 ## 二、逐项差距
 
@@ -71,7 +72,7 @@
 | # | 论文要求（§） | 当前实现 | 状态 | 剩余工作 |
 |---|---|---|---|---|
 | D1 | BinaryTwist for RAM（p=1 read + 1 write） | `binary_twist.rs`：bit-sliced 虚拟地址、虚拟 `Val`/`Next`、紧凑 `Inc`、read/write/final/booleanity sum-check、P3 claims | ✅ | 语义已具备；性能/LT 见 D5 |
-| D2 | BinaryTwist for registers（p=2 reads + 1 write） | register file 仍用 Merkle opening 的 access proof，不是 Twist | ❌ | 增加 register BinaryTwist，去掉 Merkle paths |
+| D2 | BinaryTwist for registers（p=2 reads + 1 write） | 新增 `register_twist.rs`：把 rs1/rs2/rd 编码为两个 Twist 子 cycle（读 rs1；读 rs2 后写 rd），复用 BinaryTwist 并已通过 standalone proof；尚未接入 `TraceAccessProof`，register Merkle 仍在；不是论文的单周期 p=2 布局 | 🟡 | 接入 access proof、移除 Merkle、把两相编码改成单周期 p=2（或明确说明等价编码） |
 | D3 | 地址虚拟化：`d` 个 component polynomials，每个 `K^(1/d) × T`（§4.4） | bit-sliced：`a` 个地址 bit + valid，等价于 `d=a` 的 2-entry components | 🟡 | 若严格按论文，需支持任意 `d` 的 component packing；当前是合法特化但形式不同 |
 | D4 | one-hot/collision polynomial，Frobenius 优化（§4.4） | 只做 booleanity；one-hot 由 bit 构造保证 | 🟡 | 论文的 collision sum-check 未实现；当前 bit-sliced 下不需要，但不是论文原样 |
 | D5 | `LT` 线性时间处理（§4.4） | `LT` 物化 `T × T`，prover 二次；已记录 TODO | ❌ | 线性时间 `LT` 是研究项；当前不能扩展到大 T |
