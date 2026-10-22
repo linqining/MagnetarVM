@@ -4,7 +4,7 @@ use std::time::Instant;
 use magnetar_executor::ExecutionIo;
 use magnetar_runtime::{
     encode_unified_proof, prove_unified_trace, run_guest_elf, trace_cpu_stats, unified_proof_sizes,
-    verify_unified_statement,
+    verify_unified_trace_statement,
 };
 use magnetar_spec::MachineConfig;
 
@@ -54,20 +54,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     let prove_time = started.elapsed();
 
     let started = Instant::now();
-    verify_unified_statement(&outcome.statement, &proof, width)?;
+    verify_unified_trace_statement(&outcome.statement, &outcome.trace, &proof, width)?;
     let verify_time = started.elapsed();
 
     let encoded = encode_unified_proof(&proof)?;
     let sizes = unified_proof_sizes(&proof)?;
     println!(
-        "proof: {} bytes (access={}, cpu={}, shout={}, shift_router={}, store_router={}, rows={}), verified in {:?}",
+        "proof: {} bytes (access={}, cpu={}, shout={}, shift_router={}, store_router={}), verified in {:?}",
         encoded.len(),
         sizes.access,
         sizes.cpu,
         sizes.shout,
         sizes.shift_router,
         sizes.store_router,
-        sizes.rows,
         verify_time
     );
     println!("prove: {prove_time:?}");

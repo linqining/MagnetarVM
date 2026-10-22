@@ -188,12 +188,13 @@ them:
 
 | width | CPU vars | CPU constraints | proof bytes | prove | verify |
 |---|---|---|---|---|---|
-| 64 | 6,991 | 11,933 | 278,075 | 0.39 s | 0.045 s |
-| 32 | 4,015 | 6,813 | 240,115 | 0.37 s | 0.023 s |
-| 8 | 1,783 | 2,973 | 207,147 | 0.34 s | 0.013 s |
+| 64 | 6,991 | 11,933 | 276,215 | 0.46 s | 0.052 s |
+| 32 | 4,015 | 6,813 | 238,255 | 0.46 s | 0.024 s |
+| 8 | 1,783 | 2,973 | 205,287 | 0.39 s | 0.014 s |
 
 At width 64 the proof splits into access=18,890, cpu=246,048, shout=3,154,
-shift_router=1, store_router=8,090, rows=1,860 bytes. The changes behind these numbers:
+shift_router=1, store_router=8,090 bytes. Unified proofs no longer carry the
+redundant trace rows; the verifier takes the trace alongside the proof. The changes behind these numbers:
 
 1. **Per-op ALU relations.** `simple_alu_row_relation` allocates only the gates
    an operation needs: `addi` is 449 variables and `lui` is 64, down from 4,492
@@ -204,7 +205,7 @@ shift_router=1, store_router=8,090, rows=1,860 bytes. The changes behind these n
    `P3SharedPcs` plugs this batch into the Spartan proof: the CPU point and the
    BinaryTwist point claims are opened by the same P3 argument. The proof no
    longer pays for a separate CPU opening plus a separate RAM opening; the old
-   separate layout was 593,508 bytes, the shared layout is 278,075 bytes.
+   separate layout was 593,508 bytes, the shared layout is 276,215 bytes.
 3. **Bit-sliced virtual addresses and values.** The address table commits
    `2a+2` cycle-length bit columns (read bits, write bits, and two validity
    bits); full one-hot addresses are reconstructed by the verifier. Booleanity
@@ -248,14 +249,15 @@ following reference measurements on the current unified proof:
 
 | rows | proof bytes | prove ms | verify ms |
 |---:|---:|---:|---:|
-| 2 | 145,226 | 13.5 | 5.3 |
-| 4 | 177,130 | 25.5 | 9.3 |
-| 8 | 216,570 | 58.7 | 18.7 |
-| 16 | 256,954 | 141.0 | 36.0 |
-| 32 | 306,074 | 384.9 | 73.6 |
+| 2 | 146,014 | 13.4 | 8.0 |
+| 4 | 180,486 | 32.1 | 11.1 |
+| 8 | 215,158 | 54.9 | 21.4 |
+| 16 | 252,038 | 133.7 | 42.7 |
+| 32 | 301,590 | 365.3 | 92.2 |
 
-The proof still grows linearly with the row count because `rows` are carried
-in the proof; removing them is the remaining A2/Virtual Spartan work.
+The proof no longer carries `rows`; the remaining growth comes from the
+per-row CPU relation and PCS work. Removing that dependence is the remaining
+A2/Virtual Spartan work.
 
 ## Coverage
 

@@ -1008,7 +1008,6 @@ pub struct UnifiedTraceProof {
     pub shout: Option<crate::binary_shout::BinaryShoutProof>,
     pub shift_router: Option<crate::binary_router::BinaryRouterProof>,
     pub store_router: Option<crate::binary_router::BinaryRouterProof>,
-    pub rows: Vec<magnetar_spec::TraceRow>,
 }
 
 fn step_op_for(op: magnetar_spec::Op) -> Option<magnetar_cpu::StepOp> {
@@ -2028,7 +2027,6 @@ pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTracePr
         shout,
         shift_router,
         store_router,
-        rows: trace.rows.clone(),
     })
 }
 
@@ -2193,32 +2191,6 @@ pub fn verify_unified_trace_statement(
     verify_unified_trace(trace, proof, width)
 }
 
-/// Verify using only the public statement and the proof. The statement binds
-/// the initial RAM; the proof carries authenticated trace rows.
-pub fn verify_unified_statement(
-    statement: &Statement,
-    proof: &UnifiedTraceProof,
-    width: usize,
-) -> Result<(), RuntimeError> {
-    if statement.trace_commitment != proof.trace_commitment {
-        return Err(RuntimeError::Proof(
-            "proof commitment does not match the statement".into(),
-        ));
-    }
-    if rom_hash(&statement.rom) != statement.program_hash {
-        return Err(RuntimeError::Proof(
-            "statement ROM does not match the statement program hash".into(),
-        ));
-    }
-    let trace = trace_from_statement(statement, &proof.rows, &statement.rom)?;
-    if trace_digest(&trace) != statement.trace_commitment {
-        return Err(RuntimeError::Proof(
-            "proof rows do not match the statement trace commitment".into(),
-        ));
-    }
-    verify_unified_trace(&trace, proof, width)
-}
-
 /// Canonical proof-format encoding for the per-row trace proof.
 pub fn encode_trace_proof(proof: &TraceProof) -> Result<Vec<u8>, RuntimeError> {
     bincode::serialize(proof).map_err(|error| RuntimeError::Proof(error.to_string()))
@@ -2241,12 +2213,11 @@ pub struct UnifiedProofSizes {
     pub shout: usize,
     pub shift_router: usize,
     pub store_router: usize,
-    pub rows: usize,
 }
 
 impl UnifiedProofSizes {
     pub fn total(&self) -> usize {
-        self.access + self.cpu + self.shout + self.shift_router + self.store_router + self.rows
+        self.access + self.cpu + self.shout + self.shift_router + self.store_router
     }
 }
 
@@ -2262,7 +2233,6 @@ pub fn unified_proof_sizes(proof: &UnifiedTraceProof) -> Result<UnifiedProofSize
         shout: size(bincode::serialize(&proof.shout))?,
         shift_router: size(bincode::serialize(&proof.shift_router))?,
         store_router: size(bincode::serialize(&proof.store_router))?,
-        rows: size(bincode::serialize(&proof.rows))?,
     })
 }
 
@@ -3227,17 +3197,14 @@ mod tests {
             exit_code: trace.exit_code,
         };
         verify_unified_trace_statement(&statement, &trace, &proof, 8).unwrap();
-        verify_unified_statement(&statement, &proof, 8).unwrap();
+        verify_unified_trace_statement(&statement, &trace, &proof, 8).unwrap();
 
         let bytes = encode_unified_proof(&proof).unwrap();
         assert!(!bytes.is_empty());
         let decoded = decode_unified_proof(&bytes).unwrap();
-        verify_unified_statement(&statement, &decoded, 8).unwrap();
+        verify_unified_trace_statement(&statement, &trace, &decoded, 8).unwrap();
         assert!(decode_unified_proof(&bytes[..bytes.len() / 2]).is_err());
 
-        let mut changed_rows = proof.clone();
-        changed_rows.rows[2].rd_val = 99;
-        assert!(verify_unified_statement(&statement, &changed_rows, 8).is_err());
         let mut wrong_length = statement.clone();
         wrong_length.trace_len += 1;
         assert!(verify_unified_trace_statement(&wrong_length, &trace, &proof, 8).is_err());
@@ -3247,11 +3214,11 @@ mod tests {
         let mut wrong_program = statement.clone();
         wrong_program.program_hash[0] ^= 1;
         assert!(verify_unified_trace_statement(&wrong_program, &trace, &proof, 8).is_err());
-        assert!(verify_unified_statement(&wrong_program, &proof, 8).is_err());
+        assert!(verify_unified_trace_statement(&wrong_program, &trace, &proof, 8).is_err());
         let mut wrong_ram = statement.clone();
         wrong_ram.initial_ram[0] ^= 1;
         assert!(verify_unified_trace_statement(&wrong_ram, &trace, &proof, 8).is_err());
-        assert!(verify_unified_statement(&wrong_ram, &proof, 8).is_err());
+        assert!(verify_unified_trace_statement(&wrong_ram, &trace, &proof, 8).is_err());
         let mut wrong_state = statement;
         wrong_state.final_state.pc += 4;
         assert!(verify_unified_trace_statement(&wrong_state, &trace, &proof, 8).is_err());

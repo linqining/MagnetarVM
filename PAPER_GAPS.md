@@ -72,7 +72,8 @@
 - `1739187`：新增 `dual_field::BitRelation`，显式 F2 R1CS + 嵌入 `F2_128`。
 - `72053d1`：新增 `F2` 字段、`F2Pcs`、原生 F2 linear sum-check。
 - `8828a2f`：F2 product sum-check 通过 F2_128 extension challenges 实现。
-- 本轮：新增 `F2Pcs`，把 F2 bits 嵌入 P3 `F2_128` 做 succinct commitment/opening；测试通过。
+- `23ddcee`：新增 `F2Pcs`，把 F2 bits 嵌入 P3 `F2_128` 做 succinct opening。
+- 本轮：unified proof 删除冗余 `rows`（verifier 已持有 trace），proof 降至 276,215 B；A2 从 ❌ 升为 🟡。
 
 ## 二、逐项差距
 
@@ -81,7 +82,7 @@
 | # | 论文要求（§） | 当前实现 | 状态 | 剩余工作 |
 |---|---|---|---|---|
 | A1 | 协议只发送一个 commitment，所有 claims 由一个 PCS evaluation 证明（§5.5） | unified proof 中 CPU/RAM/Shout/Router 共享一个 P3 commitment/opening；但 chunked/per-row 仍有独立 P3 proof，register access 仍有 Merkle | 🟡 | 把 register、chunk、per-row 也并入同一 packed commitment；去掉额外 opening |
-| A2 | 证明大小不随 trace 行数线性增长；verifier 不重建 trace（§2、§5.5） | `rom` 已移入 public `Statement`；`access.steps` 已删除，memory bindings 从 trace+Twist witness 重新检查；但 `rows: Vec<TraceRow>` 仍由 proof 携带，verifier 仍重建 trace | ❌ | 仍需 committed trace/segment layout + Virtual Spartan claims，删除 rows |
+| A2 | 证明大小不随 trace 行数线性增长；verifier 不重建 trace（§2、§5.5） | `rom` 在 public `Statement`；`access.steps` 已删除；**unified proof 不再携带 `rows`**（verifier 与 trace 一起接收 proof），proof 降至 276,215 B；但 verifier 仍需要完整 trace 并重建 CPU system，per-row CPU 证明仍随行数增长；`TraceProof`/`ChunkedTraceProof` 仍带 rows | 🟡 | committed trace/segment layout + Virtual Spartan 消除 verifier 对完整 trace 的依赖 |
 | A3 | verifier 只做 hash 和 binary-field 运算（§2.1） | P3/hash-based PCS，无 trusted setup；但 verifier 还重建约束系统/trace | 🟡 | 去掉 verifier 的 trace/系统重建；预计算 public layout |
 | A4 | 透明、无 trusted setup、标准 hash、post-quantum（§1） | P3 binary-field PCS + SHA-256 transcript；默认路径无 trusted setup | ✅ | 保持；KZG 后端只是可选 |
 | A5 | 一个 commitment 在 challenge 前发送（§5.5） | unified 路径满足；standalone Shout/Router/Chunked 仍各自 commit | 🟡 | 统一所有 proof 变体的 commit 顺序与 commitment 数量 |

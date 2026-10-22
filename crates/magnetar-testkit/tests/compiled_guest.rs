@@ -1,7 +1,7 @@
 use magnetar_executor::ExecutionIo;
 use magnetar_runtime::{
     decode_unified_proof, encode_unified_proof, prove_unified_trace, run_guest_elf,
-    verify_unified_statement,
+    verify_unified_trace_statement,
 };
 use magnetar_spec::MachineConfig;
 
@@ -30,13 +30,13 @@ fn compiled_guest_elf_runs_and_proves() {
     assert!(outcome.trace.halted);
 
     let proof = prove_unified_trace(&outcome.trace, 64).unwrap();
-    verify_unified_statement(&outcome.statement, &proof, 64).unwrap();
+    verify_unified_trace_statement(&outcome.statement, &outcome.trace, &proof, 64).unwrap();
 
     let encoded = encode_unified_proof(&proof).unwrap();
     let decoded = decode_unified_proof(&encoded).unwrap();
-    verify_unified_statement(&outcome.statement, &decoded, 64).unwrap();
+    verify_unified_trace_statement(&outcome.statement, &outcome.trace, &decoded, 64).unwrap();
 
     let mut tampered = outcome.statement.clone();
     tampered.output[0] ^= 1;
-    assert!(verify_unified_statement(&tampered, &proof, 64).is_err());
+    assert!(verify_unified_trace_statement(&tampered, &outcome.trace, &proof, 64).is_err());
 }
