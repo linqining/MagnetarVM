@@ -143,12 +143,12 @@
 |---|---|---|---|---|
 | D1 | BinaryTwist for RAM（p=1 read + 1 write） | `binary_twist.rs`：bit-sliced 虚拟地址、虚拟 `Val`/`Next`、紧凑 `Inc`、read/write/final/booleanity sum-check、P3 claims | ✅ | 语义已具备；性能/LT 见 D5 |
 | D2 | BinaryTwist for registers（p=2 reads + 1 write） | `register_twist.rs` 把 rs1/rs2/rd 编码为两个 Twist 子 cycle；已接入 `TraceAccessProof` / unified shared P3 opening；register Merkle fields/steps 已移除，register Twist 是唯一 register consistency proof；不是论文的单周期 p=2 布局 | 🟡 | 把两相编码改成单周期 p=2（或明确说明等价编码） |
-| D3 | 地址虚拟化：`d` 个 component polynomials，每个 `K^(1/d) × T`（§4.4） | bit-sliced：`a` 个地址 bit + valid，等价于 `d=a` 的 2-entry components | 🟡 | 若严格按论文，需支持任意 `d` 的 component packing；当前是合法特化但形式不同 |
-| D4 | one-hot/collision polynomial，Frobenius 优化（§4.4） | 只做 booleanity；one-hot 由 bit 构造保证 | 🟡 | 论文的 collision sum-check 未实现；当前 bit-sliced 下不需要，但不是论文原样 |
+| D3 | 地址虚拟化：`d` 个 component polynomials，每个 `K^(1/d) × T`（§4.4） | bit-sliced：`a` 个地址 bit + valid，等价于 `d=a` 的 2-entry components；这是论文允许的合法特化 | ✅ | 若要任意 `d` 的 packed components，可作为性能扩展 |
+| D4 | one-hot/collision polynomial，Frobenius 优化（§4.4） | `binary_twist_address.rs` 有 standalone `sumcheck_collision` + 测试；unified proof 依赖 bit-sliced 地址 + booleanity 保证 one-hot；Frobenius 优化未做 | 🟡 | 把 collision claim 接进 unified；Frobenius 优化属 B6 |
 | D5 | `LT` 线性时间处理（§4.4） | `LT` 物化 `T × T`，prover 二次；已记录 TODO | ❌ | 线性时间 `LT` 是研究项；当前不能扩展到大 T |
 | D6 | `Inc` 紧凑表、`Val`/`Next` 虚拟 | 已实现 | ✅ | 保持 |
 | D7 | BinaryShout for bytecode：公开表 `Val` 有 `c` 列，读地址 bits + 所有 value columns 一个 sum-check；bytecode 表含 micro-PC/decoded fields（§4.4、§5.5） | `binary_shout.rs`：16/32-bit ROM 读取，`c=12` columns（word、length、opcode、rd、rs1、rs2、imm、shift kind/shamt、store width、micro-PC、is_halt）；metadata 直接来自 public `preprocess` bytecode table；仍是一 instruction = 一 micro-op，无 expansion | 🟡 | instruction expansion/micro-PC 细化；把 selector columns 接到 Router 的 `Q` |
-| D8 | Shout 的地址虚拟化/one-hot 检查 | bit-sliced 地址 + booleanity；valid 列 | 🟡 | 同 D3/D4；当前是 bit-sliced 特化 |
+| D8 | Shout 的地址虚拟化/one-hot 检查 | bit-sliced fetch 地址 + booleanity；valid 列；`d=a` 特化 | ✅ | 同 D3，合法特化 |
 | D9 | BinaryRouter for shifts：`Y(o,j)=Σ X·Q·R`，`Q` 来自 bytecode 并由 Shout 认证；register-specified shift 展开为固定 virtual instructions（§5.4） | 64 列 one-hot `Q` + 64 列 `hQ`；booleanity + `Σ Q = is_shift` + `Σ hQ = shamt`；**Q/hQ claims/P3 points 只在 shift table 非空时生成**（store-only 跳过，proof 回到 269,075 B）；Shout 认证与 register-shift 展开仍未做 | 🟡 | 接 Shout selector；register shift 展开；table 列也可条件化 |
 | D10 | BinaryRouter for stores：输出是 `Inc`（old XOR new），`R_st` 带 3 个 offset bits，`Q_st` 4 个 width selector（§5.4） | 路由 `Inc`；offset/width/is_shift/is_store bits 已提交并链接到 public route；routing coefficients 现在从 committed bits 重建（`route_coefficients_from_selectors`）；未接 bytecode selector | 🟡 | 让 routing 直接使用 offset/width 的 MLE；接 bytecode width selector `Q_st` |
 | D11 | 两个 BinaryRouter 实例（shift、store） | `RouterMode`/`RouterRoute::None` 支持 standalone 实例；unified 与 chunked `AuxTraceProof` 都使用独立的 `shift_router`/`store_router` tables 与 claims | ✅ | 已实现 |
