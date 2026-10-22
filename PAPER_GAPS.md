@@ -288,3 +288,7 @@ The P3 table-shape measurements show that adding address/collision columns direc
 4. then add address multiplicity/collision claims without changing P3 table depth.
 
 This is a PCS/transcript refactor, not a small compression; it is the prerequisite for D4 integration and for cheaper aux claims in general.
+
+### CPU proof dominates
+
+Measured a CPU-only lockstep proof for an 18-row trace: **233,488 B**, versus the unified CPU component **241,240 B** for the hello guest. Aux/trace claims therefore add only a small fraction of the proof; the CPU `z` P3/lockstep proof is the dominant term. Splitting aux into a separate PCS would not help and would add a second opening. Reducing the CPU proof requires the shared-matrix SIMD CPU representation (B1/B2), not aux packing.
