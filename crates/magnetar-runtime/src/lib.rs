@@ -31,12 +31,12 @@ use magnetar_executor::{execute_with_io, ExecError, ExecutionIo};
 use magnetar_memory::{check_memory, BinaryTwistWitness, MemoryError, MemoryReport};
 use magnetar_pcs::{
     MerklePath, MerkleTree, NaiveCommitment, NaiveMerklePcs, P3BinaryPcs, P3Commitment,
-    P3MosaicCommitment, P3MosaicOpening, P3MosaicTable, P3Opening, P3SharedPcs,
+    P3MosaicCommitment, P3MosaicOpening, P3MosaicPoint, P3MosaicTable, P3Opening, P3SharedPcs,
 };
 use magnetar_preprocess::{preprocess, PreprocessError, PreprocessedProgram};
 use magnetar_proof::{
     prove_lockstep, prove_spartan, verify_lockstep, verify_spartan, witness_vector, LockstepProof,
-    Pcs, SpartanError, SpartanProof,
+    Mle, Pcs, SpartanError, SpartanProof,
 };
 use magnetar_recursion::{ChainedChunk, ChainedProof, ChainedRecursion, ChunkPlan, RecursionError};
 use magnetar_spec::{decode, decode_compressed, MachineConfig, MachineState, ProgramImage, Trace};
@@ -1960,6 +1960,12 @@ pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTracePr
     let register_index = mosaic_tables.len();
     mosaic_tables.push(register_tables.addr.clone());
     mosaic_tables.push(register_tables.inc.clone());
+    let trace_witness = crate::trace_commitment::trace_witness(trace)?;
+    let trace_index = mosaic_tables.len();
+    let trace_table = P3MosaicTable {
+        columns: vec![trace_witness.values.clone()],
+    };
+    mosaic_tables.push(trace_table.clone());
     let commitment = pcs
         .commit_mosaic(&mosaic_tables)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
@@ -2014,6 +2020,18 @@ pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTracePr
     values.extend(register_values);
     aux_tables.push(register_tables.addr.clone());
     aux_tables.push(register_tables.inc.clone());
+    aux_tables.push(trace_table);
+    let trace_value = Mle::new(trace_witness.values.clone())
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .eval(&trace_witness.point)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    points.push(P3MosaicPoint {
+        table: trace_index,
+        point: trace_witness.point.clone(),
+        columns: vec![0],
+        next_columns: Vec::new(),
+    });
+    values.push(vec![trace_value]);
     let shared_pcs = P3SharedPcs::new(100, aux_tables, points, values);
     let (system_a, system_b) = split_cpu_relations(&system);
     let layout = cpu_segment_layout(z.len())?;
@@ -2069,7 +2087,7 @@ pub fn verify_unified_trace(
         }
         _ => {}
     }
-    let expected_tables = 5
+    let expected_tables = 6
         + usize::from(shout_witness.is_some())
         + usize::from(shift_router_witness.is_some())
         + usize::from(store_router_witness.is_some());
@@ -2156,6 +2174,19 @@ pub fn verify_unified_trace(
     let (register_points, register_values) = register_claims;
     points.extend(register_points);
     values.extend(register_values);
+    let trace_witness = crate::trace_commitment::trace_witness(trace)?;
+    let trace_index = register_index + 2;
+    let trace_value = Mle::new(trace_witness.values.clone())
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .eval(&trace_witness.point)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    points.push(P3MosaicPoint {
+        table: trace_index,
+        point: trace_witness.point.clone(),
+        columns: vec![0],
+        next_columns: Vec::new(),
+    });
+    values.push(vec![trace_value]);
     let (system, cpu_witness) = merged_cpu_system(trace, width)?;
     let (system_a, system_b) = split_cpu_relations(&system);
     let z = witness_vector(&system, &cpu_witness)
@@ -3180,7 +3211,7 @@ mod tests {
         assert!(proof.access.ram.opening.is_none());
         assert_eq!(
             proof.cpu.commitment.tables.len(),
-            5 + usize::from(proof.shout.is_some())
+            6 + usize::from(proof.shout.is_some())
                 + usize::from(proof.shift_router.is_some())
                 + usize::from(proof.store_router.is_some())
         );
