@@ -26,6 +26,23 @@ pub struct PackedMosaic {
     pub values: Vec<F2_128>,
 }
 
+/// Stable binding of the committed table columns, independent of the PCS
+/// commitment format. Claim transcripts can absorb this instead of a
+/// `P3MosaicCommitment` so the same claim can be verified by a packed PCS.
+pub fn table_binding(tables: &[P3MosaicTable]) -> [u8; 32] {
+    let mut bytes = Vec::new();
+    for table in tables {
+        bytes.extend_from_slice(&(table.columns.len() as u64).to_le_bytes());
+        for column in &table.columns {
+            bytes.extend_from_slice(&(column.len() as u64).to_le_bytes());
+            for value in column {
+                bytes.extend_from_slice(&value.value().to_le_bytes());
+            }
+        }
+    }
+    magnetar_transcript::sha256(&bytes)
+}
+
 #[derive(Debug, Error)]
 pub enum MosaicError {
     #[error("mosaic needs at least one component")]
@@ -644,5 +661,18 @@ mod tests {
         assert!(adapter
             .verify(&commitment, &point.point, value, &opening)
             .unwrap());
+    }
+    #[test]
+    fn table_binding_is_stable_and_content_addressed() {
+        let table = P3MosaicTable {
+            columns: vec![values(4, 7), values(4, 9)],
+        };
+        let first = table_binding(std::slice::from_ref(&table));
+        let second = table_binding(std::slice::from_ref(&table));
+        assert_eq!(first, second);
+
+        let mut changed = table.clone();
+        changed.columns[0][0] = changed.columns[0][0] + F2_128::from(1u64);
+        assert_ne!(first, table_binding(&[changed]));
     }
 }
