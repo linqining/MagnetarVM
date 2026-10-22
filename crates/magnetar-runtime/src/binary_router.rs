@@ -443,7 +443,6 @@ pub struct BinaryRouterProof {
     pub boolean: AddressBooleanClaim,
     pub claimed: F2_128,
     pub rounds: Vec<Vec<F2_128>>,
-    pub input_bit_evals: Vec<F2_128>,
     pub offset_rounds: Vec<Vec<F2_128>>,
     pub offset_evals: Vec<F2_128>,
     pub width_rounds: Vec<Vec<F2_128>>,
@@ -1090,7 +1089,6 @@ pub(crate) fn prove_binary_router_claims(
             boolean,
             claimed: left,
             rounds,
-            input_bit_evals,
             offset_rounds,
             offset_evals,
             width_rounds,
@@ -1252,6 +1250,9 @@ pub(crate) fn verify_binary_router_claims(
     };
     let r_j = &challenges[..n];
     let r_i = &challenges[n..];
+    let input_bit_evals = (0..INPUT_BITS)
+        .map(|bit| fold_all(&witness.input[bit], r_j))
+        .collect::<Vec<_>>();
     let coefficients = witness.route_coefficients_from_selectors(&rho_o);
     let mut coefficient_flat = vec![F2_128::from(0u64); INPUT_BITS * cycles];
     for bit in 0..INPUT_BITS {
@@ -1261,7 +1262,7 @@ pub(crate) fn verify_binary_router_claims(
     }
     let coefficient_eval = fold_all(&coefficient_flat, &challenges);
     let mut input_eval = F2_128::from(0u64);
-    for (bit, eval) in proof.input_bit_evals.iter().enumerate() {
+    for (bit, eval) in input_bit_evals.iter().enumerate() {
         input_eval = input_eval + eq_at_index(r_i, bit) * *eval;
     }
     if sum != coefficient_eval * input_eval {
@@ -1511,7 +1512,7 @@ pub(crate) fn verify_binary_router_claims(
     points.extend(extra_points);
     let mut values = vec![
         proof.boolean.bit_evals.clone(),
-        proof.input_bit_evals.clone(),
+        input_bit_evals.clone(),
         proof.offset_evals.clone(),
         proof.width_evals.clone(),
         vec![proof.shift_eval],
@@ -1609,7 +1610,7 @@ mod tests {
         assert!(!verify_binary_router(&witness, &tampered).unwrap());
 
         let mut tampered = proof;
-        tampered.input_bit_evals[0] = tampered.input_bit_evals[0] + F2_128::from(1u64);
+        tampered.rounds[0][0] = tampered.rounds[0][0] + F2_128::from(1u64);
         assert!(!verify_binary_router(&witness, &tampered).unwrap());
     }
     #[test]
