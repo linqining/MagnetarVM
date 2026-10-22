@@ -268,3 +268,12 @@ A standalone diagnostic using the unified commitment on an unaligned-read trace 
 ### Correction: bit-column one-hot shortcut is invalid
 
 The attempted shortcut of reconstructing the one-hot address table from opened bit columns is not sound in general. `A(cell,cycle) = valid(cycle) · Π_i (1 + bit_i(cycle) + cell_i)`; the factors share the cycle variables, so the MLE of the product is not the product of the individual MLEs. The earlier simple tests passed only because the evaluated point/table happened to satisfy the identity. The bit-column claim was therefore removed; `AddressMultiplicityProof` and the shared multiplicity claim based on a committed one-hot table remain the reference path.
+
+### P3 table-shape bottleneck for one-hot/collision claims
+
+Both naive integrations were measured and rejected:
+
+- adding a separate cell-column one-hot table: proof 261,695 B → 437,727 B;
+- appending one-hot columns to the existing addr table: proof 261,695 B → 441,887 B.
+
+The extra depth/columns change P3's table shape and dominate the proof; the claim itself is small. Integrating address multiplicity/collision claims therefore requires packing the one-hot columns into an existing packed PCS component (or a PCS with cheap multi-column aux tables), not adding P3 tables. This is now the concrete blocker for D4 integration.
