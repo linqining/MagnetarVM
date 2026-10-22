@@ -37,7 +37,7 @@ pub fn trace_witness(trace: &Trace) -> Result<TraceWitness, RuntimeError> {
     }
     let len = values.len().next_power_of_two().max(1);
     values.resize(len, F2_128::from(0u64));
-    let chunk = if len >= 4 { len / 4 } else { len };
+    let chunk = if len >= 2 { len / 2 } else { len };
     let mut segments = Vec::new();
     let mut offset = 0;
     let mut index = 0;
