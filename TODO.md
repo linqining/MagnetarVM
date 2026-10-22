@@ -12,8 +12,9 @@
 - [x] Address virtualization: commit bit-sliced address components and prove
       full-address evaluations with sum-checks instead of committing `K × T`
       one-hot address tables.
-- [x] Add a bit-sliced `BinaryShout` ROM-read reduction and wire its claim
-      into `UnifiedTraceProof` through the shared P3 opening.
+- [x] Add a bit-sliced `BinaryShout` ROM-read reduction (16-bit and 32-bit
+      instructions) and wire its claim into `UnifiedTraceProof` through the
+      shared P3 opening.
 - [x] Add a `BinaryRouter` reference proof for 64-bit shifts and sub-word store
       routing, and wire its claim into `UnifiedTraceProof`.
 - [x] Wire `BinaryShout` and `BinaryRouter` claims into `UnifiedTraceProof`

@@ -120,7 +120,7 @@ cargo fmt --all -- --check
 cargo test --workspace
 ```
 
-当前测试套件包含 **15 个 crate 的 270 个测试，全部通过**；
+当前测试套件包含 **15 个 crate 的 271 个测试，全部通过**；
 `clippy -D warnings` 与 `rustfmt --check` 均无问题。dev profile 将依赖设为
 `opt-level = 3`、workspace crate 设为 `opt-level = 2`，避免 PCS 密集的测试
 在未优化构建里跑到几十秒。
@@ -179,11 +179,11 @@ hello guest 上以 release 模式实测（Apple arm64，单线程）；
 
 | 宽度 | CPU 变量 | CPU 约束 | 证明字节 | prove | verify |
 |---|---|---|---|---|---|
-| 64 | 6,991 | 11,933 | 268,913 | 0.40 s | 0.039 s |
-| 32 | 4,015 | 6,813 | 233,337 | 0.32 s | 0.019 s |
-| 8 | 1,783 | 2,973 | 196,865 | 0.30 s | 0.012 s |
+| 64 | 6,991 | 11,933 | 270,713 | 0.39 s | 0.038 s |
+| 32 | 4,015 | 6,813 | 238,433 | 0.36 s | 0.023 s |
+| 8 | 1,783 | 2,973 | 200,105 | 0.33 s | 0.012 s |
 
-width=64 时证明体积分解为 access=19,033、cpu=239,688、shout=2,458、
+width=64 时证明体积分解为 access=19,033、cpu=240,872、shout=3,074、
 router=5,746、rows=1,860、rom=96 字节。产生这些数字的改动：
 
 1. **按操作裁剪 ALU 约束。** `simple_alu_row_relation` 只分配操作真正需要的
@@ -193,7 +193,7 @@ router=5,746、rows=1,860、rom=96 字节。产生这些数字的改动：
    witness 与 cycle-length 地址/increment 表堆叠；width 64 为 2^14，width 32 为 2^13，width 8 为 2^12。`P3SharedPcs` 把这个
    批量接入 Spartan proof：CPU 点与 BinaryTwist 点 claim 由同一个 P3 参数打开。
    不再同时支付独立的 CPU opening 和 RAM opening；旧的分离布局是 593,508 字节，
-   共享布局是 268,913 字节。
+   共享布局是 270,713 字节。
 3. **bit-sliced 虚拟地址与 value history。** 地址表只提交 `2a+2` 列
    cycle-length bit（read bits、write bits、两个 validity bit）；完整 one-hot
    地址由 verifier 重建。booleanity 由覆盖全部地址列的批量 sum-check 检查。

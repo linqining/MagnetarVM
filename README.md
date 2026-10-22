@@ -120,7 +120,7 @@ cargo fmt --all -- --check
 cargo test --workspace
 ```
 
-At the time of writing the suite contains **270 tests across the 15 crates,
+At the time of writing the suite contains **271 tests across the 15 crates,
 all passing**; clippy with `-D warnings` and `rustfmt --check` are clean.
 The dev profile optimizes dependencies at `opt-level = 3` and workspace crates
 at `opt-level = 2`, so the PCS-heavy tests stay in the second range instead of
@@ -186,11 +186,11 @@ them:
 
 | width | CPU vars | CPU constraints | proof bytes | prove | verify |
 |---|---|---|---|---|---|
-| 64 | 6,991 | 11,933 | 268,913 | 0.40 s | 0.039 s |
-| 32 | 4,015 | 6,813 | 233,337 | 0.32 s | 0.019 s |
-| 8 | 1,783 | 2,973 | 196,865 | 0.30 s | 0.012 s |
+| 64 | 6,991 | 11,933 | 270,713 | 0.39 s | 0.038 s |
+| 32 | 4,015 | 6,813 | 238,433 | 0.36 s | 0.023 s |
+| 8 | 1,783 | 2,973 | 200,105 | 0.33 s | 0.012 s |
 
-At width 64 the proof splits into access=19,033, cpu=239,688, shout=2,458,
+At width 64 the proof splits into access=19,033, cpu=240,872, shout=3,074,
 router=5,746, rows=1,860, and rom=96 bytes. The changes behind these numbers:
 
 1. **Per-op ALU relations.** `simple_alu_row_relation` allocates only the gates
@@ -202,7 +202,7 @@ router=5,746, rows=1,860, and rom=96 bytes. The changes behind these numbers:
    `P3SharedPcs` plugs this batch into the Spartan proof: the CPU point and the
    BinaryTwist point claims are opened by the same P3 argument. The proof no
    longer pays for a separate CPU opening plus a separate RAM opening; the old
-   separate layout was 593,508 bytes, the shared layout is 268,913 bytes.
+   separate layout was 593,508 bytes, the shared layout is 270,713 bytes.
 3. **Bit-sliced virtual addresses and values.** The address table commits
    `2a+2` cycle-length bit columns (read bits, write bits, and two validity
    bits); full one-hot addresses are reconstructed by the verifier. Booleanity
