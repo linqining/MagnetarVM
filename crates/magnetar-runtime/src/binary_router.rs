@@ -247,8 +247,8 @@ impl BinaryRouterWitness {
         let mut offset_bits = vec![vec![F2_128::from(0u64); cycles]; 3];
         let mut width_bits = vec![vec![F2_128::from(0u64); cycles]; 4];
         let mut shift_code = vec![F2_128::from(0u64); cycles];
-        let mut shift_q = vec![vec![F2_128::from(0u64); cycles]; 192];
-        let mut shift_hq = vec![vec![F2_128::from(0u64); cycles]; 192];
+        let mut shift_q = vec![vec![F2_128::from(0u64); cycles]; 64];
+        let mut shift_hq = vec![vec![F2_128::from(0u64); cycles]; 64];
         let mut is_shift = vec![F2_128::from(0u64); cycles];
         let mut is_store = vec![F2_128::from(0u64); cycles];
         for cycle in 0..routes.len() {
@@ -268,8 +268,9 @@ impl BinaryRouterWitness {
             shift_code[cycle] = F2_128::from(routes[cycle].shift_code());
             if let RouterRoute::Shift(_) = routes[cycle] {
                 let code = routes[cycle].shift_code() as usize;
-                shift_q[code][cycle] = F2_128::from(1u64);
-                shift_hq[code][cycle] = F2_128::from(code as u64);
+                let shamt = code % 64;
+                shift_q[shamt][cycle] = F2_128::from(1u64);
+                shift_hq[shamt][cycle] = F2_128::from(shamt as u64);
             }
             is_shift[cycle] =
                 F2_128::from(u64::from(matches!(routes[cycle], RouterRoute::Shift(_))));
@@ -334,12 +335,12 @@ impl BinaryRouterWitness {
                 .iter()
                 .any(|column| column.len() != self.cycles)
             || self.shift_code.len() != self.cycles
-            || self.shift_q.len() != 192
+            || self.shift_q.len() != 64
             || self
                 .shift_q
                 .iter()
                 .any(|column| column.len() != self.cycles)
-            || self.shift_hq.len() != 192
+            || self.shift_hq.len() != 64
             || self
                 .shift_hq
                 .iter()
@@ -665,8 +666,8 @@ pub(crate) fn prove_binary_router_claims(
     witness.validate()?;
     let n = witness.cycle_bits;
     let cycles = witness.cycles;
-    let bit_columns = INPUT_BITS + 9 + 192;
-    let hq_columns = bit_columns + 192;
+    let bit_columns = INPUT_BITS + 9 + 64;
+    let hq_columns = bit_columns + 64;
     let total_columns = hq_columns + 1;
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-router-boolean");
@@ -712,7 +713,7 @@ pub(crate) fn prove_binary_router_claims(
     bit_evals.extend((0..4).map(|bit| fold_all(&witness.width_bits[bit], r_j)));
     bit_evals.push(fold_all(&witness.is_shift, r_j));
     bit_evals.push(fold_all(&witness.is_store, r_j));
-    bit_evals.extend((0..192).map(|bit| fold_all(&witness.shift_q[bit], r_j)));
+    bit_evals.extend((0..64).map(|bit| fold_all(&witness.shift_q[bit], r_j)));
     let boolean = AddressBooleanClaim {
         column_point: rho_c,
         cycle_point: rho_j.clone(),
@@ -915,13 +916,13 @@ pub(crate) fn prove_binary_router_claims(
     let q_rho_j = sample_point(&mut transcript, n);
     let _q_rho_h = sample_point(&mut transcript, 8);
     let q_eq_j = eq_vector(&q_rho_j, cycles);
-    let q_terms = 256 * cycles;
+    let q_terms = 64 * cycles;
     let mut q_left = vec![F2_128::from(0u64); q_terms];
     let mut q_right = vec![F2_128::from(0u64); q_terms];
-    for h in 0..256usize {
+    for h in 0..64usize {
         for cycle in 0..cycles {
             q_left[h * cycles + cycle] = q_eq_j[cycle];
-            if h < 192 {
+            if h < 64 {
                 q_right[h * cycles + cycle] = witness.shift_q[h][cycle];
             }
         }
@@ -930,7 +931,7 @@ pub(crate) fn prove_binary_router_claims(
     let (q_rounds, q_challenges) =
         sumcheck_product(&q_left, &q_right, &q_degrees, &mut transcript)?;
     let q_r_j = &q_challenges[..n];
-    let q_evals = (0..192)
+    let q_evals = (0..64)
         .map(|h| fold_all(&witness.shift_q[h], q_r_j))
         .collect::<Vec<_>>();
     let q_point = if q_r_j.is_empty() {
@@ -943,13 +944,13 @@ pub(crate) fn prove_binary_router_claims(
     let hq_rho_j = sample_point(&mut transcript, n);
     let _hq_rho_h = sample_point(&mut transcript, 8);
     let hq_eq_j = eq_vector(&hq_rho_j, cycles);
-    let hq_terms = 256 * cycles;
+    let hq_terms = 64 * cycles;
     let mut hq_left = vec![F2_128::from(0u64); hq_terms];
     let mut hq_right = vec![F2_128::from(0u64); hq_terms];
-    for h in 0..256usize {
+    for h in 0..64usize {
         for cycle in 0..cycles {
             hq_left[h * cycles + cycle] = hq_eq_j[cycle];
-            if h < 192 {
+            if h < 64 {
                 hq_right[h * cycles + cycle] = witness.shift_hq[h][cycle];
             }
         }
@@ -958,7 +959,7 @@ pub(crate) fn prove_binary_router_claims(
     let (hq_rounds, hq_challenges) =
         sumcheck_product(&hq_left, &hq_right, &hq_degrees, &mut transcript)?;
     let hq_r_j = &hq_challenges[..n];
-    let hq_evals = (0..192)
+    let hq_evals = (0..64)
         .map(|h| fold_all(&witness.shift_hq[h], hq_r_j))
         .collect::<Vec<_>>();
     let hq_point = if hq_r_j.is_empty() {
@@ -1127,7 +1128,7 @@ fn hq_eq_claimed(witness: &BinaryRouterWitness, point: &[F2_128]) -> F2_128 {
     eq.iter()
         .zip(&witness.shift_code)
         .fold(F2_128::from(0u64), |sum, (weight, value)| {
-            sum + *weight * *value
+            sum + *weight * F2_128::from(value.value() as u64 % 64)
         })
 }
 
@@ -1153,8 +1154,8 @@ pub(crate) fn verify_binary_router_claims(
     }
     let n = witness.cycle_bits;
     let cycles = witness.cycles;
-    let bit_columns = INPUT_BITS + 9 + 192;
-    let hq_columns = bit_columns + 192;
+    let bit_columns = INPUT_BITS + 9 + 64;
+    let hq_columns = bit_columns + 64;
     let total_columns = hq_columns + 1;
     let col_bits = bit_columns.next_power_of_two().trailing_zeros() as usize;
     if commitment.tables.len() <= table_index
@@ -1590,6 +1591,14 @@ mod tests {
 
         let mut tampered = proof.clone();
         tampered.claimed = tampered.claimed + F2_128::from(1u64);
+        assert!(!verify_binary_router(&witness, &tampered).unwrap());
+
+        let mut tampered = proof.clone();
+        tampered.q_evals[0] = tampered.q_evals[0] + F2_128::from(1u64);
+        assert!(!verify_binary_router(&witness, &tampered).unwrap());
+
+        let mut tampered = proof.clone();
+        tampered.hq_evals[0] = tampered.hq_evals[0] + F2_128::from(1u64);
         assert!(!verify_binary_router(&witness, &tampered).unwrap());
 
         let mut tampered = proof;
