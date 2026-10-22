@@ -900,9 +900,18 @@ pub struct AddressBooleanClaim {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BinaryTwistReadClaim {
-    pub claimed_read: F2_128,
+pub struct ReadInitialClaim {
+    pub claimed: F2_128,
     pub cycle_point: Vec<F2_128>,
+    pub rounds: Vec<Vec<F2_128>>,
+    pub challenges: Vec<F2_128>,
+    pub ra_bit_evals: Vec<F2_128>,
+    pub ra_valid_eval: F2_128,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReadHistoryClaim {
+    pub claimed: F2_128,
     pub rounds: Vec<Vec<F2_128>>,
     pub challenges: Vec<F2_128>,
     pub ra_bit_evals: Vec<F2_128>,
@@ -913,9 +922,26 @@ pub struct BinaryTwistReadClaim {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BinaryTwistWriteClaim {
-    pub claimed_write: F2_128,
+pub struct BinaryTwistReadClaim {
+    pub claimed_read: F2_128,
+    pub initial: ReadInitialClaim,
+    pub history: ReadHistoryClaim,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WriteBaseClaim {
+    pub claimed: F2_128,
     pub cycle_point: Vec<F2_128>,
+    pub rounds: Vec<Vec<F2_128>>,
+    pub challenges: Vec<F2_128>,
+    pub wa_bit_evals: Vec<F2_128>,
+    pub wa_valid_eval: F2_128,
+    pub inc_eval: F2_128,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WriteHistoryClaim {
+    pub claimed: F2_128,
     pub rounds: Vec<Vec<F2_128>>,
     pub challenges: Vec<F2_128>,
     pub wa_current_bits: Vec<F2_128>,
@@ -924,6 +950,13 @@ pub struct BinaryTwistWriteClaim {
     pub wa_successor_bits: Vec<F2_128>,
     pub wa_successor_valid: F2_128,
     pub inc_successor: F2_128,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BinaryTwistWriteClaim {
+    pub claimed_write: F2_128,
+    pub base: WriteBaseClaim,
+    pub history: WriteHistoryClaim,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1090,6 +1123,12 @@ fn replay_terms(
     Some(sum)
 }
 
+fn absorb_point(transcript: &mut Sha256Transcript, label: &str, point: &[F2_128]) {
+    for value in point {
+        transcript.absorb(label, &value.value().to_le_bytes());
+    }
+}
+
 fn absorb_mosaic_commitment(transcript: &mut Sha256Transcript, commitment: &P3MosaicCommitment) {
     transcript.absorb(
         "commitment",
@@ -1116,10 +1155,8 @@ pub(crate) fn prove_binary_twist_claims(
     let n = tables.cycle_bits;
     let addr_columns = tables.column_count();
     let col_bits = tables.column_bits();
-    let terms = cells
-        .checked_mul(cycles)
-        .and_then(|value| value.checked_mul(cycles))
-        .ok_or_else(|| ProofError::Pcs("BinaryTwist LT table overflows".into()))?;
+    let ra_valid = 2 * a;
+    let wa_valid = 2 * a + 1;
     let mut addr_points = Vec::new();
     let mut addr_expected = Vec::new();
     let mut inc_points = Vec::new();
@@ -1176,7 +1213,7 @@ pub(crate) fn prove_binary_twist_claims(
     });
     addr_expected.push(bit_evals);
 
-    // Read value: eq * RA * (delta*M0 + LT*WA*Inc).
+    // Read initial part: eq * RA * M0.
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-read");
     absorb_mosaic_commitment(&mut transcript, commitment);
     let rho_j = sample_point(&mut transcript, n);
@@ -1188,79 +1225,156 @@ pub(crate) fn prove_binary_twist_claims(
             sum + *weight * *value
         });
     transcript.absorb("claimed-read", &claimed_read.value().to_le_bytes());
-    let factor_count = 2 * a + 7;
-    let mut factors = vec![vec![F2_128::from(0u64); terms]; factor_count];
-    let ra_valid = 2 * a;
-    let wa_valid = 2 * a + 1;
+
+    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-read-initial");
+    absorb_mosaic_commitment(&mut transcript, commitment);
+    absorb_point(&mut transcript, "cycle", &rho_j);
+    let initial_terms = cells * cycles;
+    let mut factors = vec![vec![F2_128::from(0u64); initial_terms]; a + 3];
     for cell in 0..cells {
         for cycle in 0..cycles {
-            for previous in 0..cycles {
-                let index = (cell * cycles + cycle) * cycles + previous;
-                factors[0][index] = eq_j[cycle];
-                factors[1][index] = if previous == 0 {
-                    F2_128::from(1u64)
-                } else {
-                    F2_128::from(0u64)
-                };
-                factors[2][index] = addr[ra_valid][cycle];
-                factors[3][index] = witness.initial[cell];
-                for bit in 0..a {
-                    let k = F2_128::from(((cell >> bit) & 1) as u64);
-                    factors[4 + bit][index] = F2_128::from(1u64) + addr[bit][cycle] + k;
-                }
-                factors[4 + a][index] = if previous < cycle {
-                    F2_128::from(1u64)
-                } else {
-                    F2_128::from(0u64)
-                };
-                factors[5 + a][index] = increments[previous];
-                factors[6 + a][index] = addr[wa_valid][previous];
-                for bit in 0..a {
-                    let k = F2_128::from(((cell >> bit) & 1) as u64);
-                    factors[7 + a + bit][index] = F2_128::from(1u64) + addr[a + bit][previous] + k;
-                }
+            let index = cell * cycles + cycle;
+            factors[0][index] = eq_j[cycle];
+            factors[1][index] = addr[ra_valid][cycle];
+            factors[2][index] = witness.initial[cell];
+            for bit in 0..a {
+                let k = F2_128::from(((cell >> bit) & 1) as u64);
+                factors[3 + bit][index] = F2_128::from(1u64) + addr[bit][cycle] + k;
             }
         }
     }
-    let read_rounds = terms.trailing_zeros() as usize;
-    let mut read_degrees = vec![a + 3; read_rounds];
-    for degree in read_degrees.iter_mut().skip(2 * n) {
+    let mut initial_degrees = vec![a + 2; initial_terms.trailing_zeros() as usize];
+    for degree in initial_degrees.iter_mut().skip(n) {
         *degree = 2;
     }
     let (rounds, challenges) =
-        sumcheck_terms(&factors, &read_degrees, &mut transcript, |folded| {
+        sumcheck_terms(&factors, &initial_degrees, &mut transcript, |folded| {
             (0..folded[0].len()).fold(F2_128::from(0u64), |sum, index| {
-                let mut read_address = folded[2][index];
+                let mut address = folded[1][index];
                 for bit in 0..a {
-                    read_address = read_address * folded[4 + bit][index];
+                    address = address * folded[3 + bit][index];
                 }
-                let mut write_address = folded[6 + a][index];
-                for bit in 0..a {
-                    write_address = write_address * folded[7 + a + bit][index];
-                }
-                sum + folded[0][index]
-                    * (folded[1][index] * folded[3][index] * read_address
-                        + folded[4 + a][index]
-                            * folded[5 + a][index]
-                            * read_address
-                            * write_address)
+                sum + folded[0][index] * folded[2][index] * address
             })
         })?;
-    let r_jp = &challenges[..n];
-    let r_j = &challenges[n..2 * n];
-    let _r_k = &challenges[2 * n..];
+    let r_j = &challenges[..n];
+    let _r_k = &challenges[n..];
+    let ra_bit_evals = (0..a)
+        .map(|bit| fold_all(&addr[bit], r_j))
+        .collect::<Vec<_>>();
+    let ra_valid_eval = fold_all(&addr[ra_valid], r_j);
+    let initial_claim = ReadInitialClaim {
+        claimed: {
+            let mut total = F2_128::from(0u64);
+            for cell in 0..cells {
+                for cycle in 0..cycles {
+                    let mut address = addr[ra_valid][cycle];
+                    for bit in 0..a {
+                        let k = F2_128::from(((cell >> bit) & 1) as u64);
+                        address = address * (F2_128::from(1u64) + addr[bit][cycle] + k);
+                    }
+                    total = total + eq_j[cycle] * witness.initial[cell] * address;
+                }
+            }
+            total
+        },
+        cycle_point: rho_j.clone(),
+        rounds,
+        challenges: challenges.clone(),
+        ra_bit_evals: ra_bit_evals.clone(),
+        ra_valid_eval,
+    };
+    let mut read_columns = (0..a).collect::<Vec<_>>();
+    read_columns.push(ra_valid);
+    addr_points.push(P3MosaicPoint {
+        table: table_index,
+        point: inc_point(r_j),
+        columns: read_columns.clone(),
+        next_columns: Vec::new(),
+    });
+    let mut read_values = ra_bit_evals.clone();
+    read_values.push(ra_valid_eval);
+    addr_expected.push(read_values);
+
+    // Read history part: eq * LT * Inc * RA * WA.
+    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-read-history");
+    absorb_mosaic_commitment(&mut transcript, commitment);
+    absorb_point(&mut transcript, "cycle", &rho_j);
+    let history_terms = cycles * cycles;
+    let mut factors = vec![vec![F2_128::from(0u64); history_terms]; a + 5];
+    for cycle in 0..cycles {
+        for previous in 0..cycles {
+            let index = cycle * cycles + previous;
+            factors[0][index] = eq_j[cycle];
+            factors[1][index] = if previous < cycle {
+                F2_128::from(1u64)
+            } else {
+                F2_128::from(0u64)
+            };
+            factors[2][index] = increments[previous];
+            factors[3][index] = addr[ra_valid][cycle];
+            factors[4][index] = addr[wa_valid][previous];
+            for bit in 0..a {
+                factors[5 + bit][index] =
+                    F2_128::from(1u64) + addr[bit][cycle] + addr[a + bit][previous];
+            }
+        }
+    }
+    let mut history_degrees = vec![a + 3; history_terms.trailing_zeros() as usize];
+    if history_degrees.len() >= 2 * n {
+        for degree in history_degrees.iter_mut().skip(n).take(n) {
+            *degree = a + 3;
+        }
+    }
+    let (rounds, challenges) =
+        sumcheck_terms(&factors, &history_degrees, &mut transcript, |folded| {
+            (0..folded[0].len()).fold(F2_128::from(0u64), |sum, index| {
+                let mut equality = F2_128::from(1u64);
+                for bit in 0..a {
+                    equality = equality * folded[5 + bit][index];
+                }
+                sum + folded[0][index]
+                    * folded[1][index]
+                    * folded[2][index]
+                    * folded[3][index]
+                    * folded[4][index]
+                    * equality
+            })
+        })?;
+    let r_previous = &challenges[..n];
+    let r_j = &challenges[n..];
     let ra_bit_evals = (0..a)
         .map(|bit| fold_all(&addr[bit], r_j))
         .collect::<Vec<_>>();
     let ra_valid_eval = fold_all(&addr[ra_valid], r_j);
     let wa_bit_evals = (0..a)
-        .map(|bit| fold_all(&addr[a + bit], r_jp))
+        .map(|bit| fold_all(&addr[a + bit], r_previous))
         .collect::<Vec<_>>();
-    let wa_valid_eval = fold_all(&addr[wa_valid], r_jp);
-    let inc_eval = fold_all(increments, &inc_point(r_jp));
-    let read = BinaryTwistReadClaim {
-        claimed_read,
-        cycle_point: rho_j,
+    let wa_valid_eval = fold_all(&addr[wa_valid], r_previous);
+    let inc_eval = fold_all(increments, &inc_point(r_previous));
+    let history_claim = ReadHistoryClaim {
+        claimed: {
+            let mut total = F2_128::from(0u64);
+            for cycle in 0..cycles {
+                for previous in 0..cycles {
+                    if previous >= cycle {
+                        continue;
+                    }
+                    let mut equality = F2_128::from(1u64);
+                    for bit in 0..a {
+                        equality = equality
+                            * (F2_128::from(1u64) + addr[bit][cycle] + addr[a + bit][previous]);
+                    }
+                    total = total
+                        + eq_j[cycle]
+                            * increments[previous]
+                            * addr[ra_valid][cycle]
+                            * addr[wa_valid][previous]
+                            * equality;
+                }
+            }
+            total
+        },
         rounds,
         challenges: challenges.clone(),
         ra_bit_evals: ra_bit_evals.clone(),
@@ -1269,12 +1383,10 @@ pub(crate) fn prove_binary_twist_claims(
         wa_valid_eval,
         inc_eval,
     };
-    let mut read_columns = (0..a).collect::<Vec<_>>();
-    read_columns.push(ra_valid);
     addr_points.push(P3MosaicPoint {
         table: table_index,
         point: inc_point(r_j),
-        columns: read_columns,
+        columns: read_columns.clone(),
         next_columns: Vec::new(),
     });
     let mut read_values = ra_bit_evals;
@@ -1284,7 +1396,7 @@ pub(crate) fn prove_binary_twist_claims(
     write_columns.push(wa_valid);
     addr_points.push(P3MosaicPoint {
         table: table_index,
-        point: inc_point(r_jp),
+        point: inc_point(r_previous),
         columns: write_columns,
         next_columns: Vec::new(),
     });
@@ -1293,13 +1405,18 @@ pub(crate) fn prove_binary_twist_claims(
     addr_expected.push(write_values);
     inc_points.push(P3MosaicPoint {
         table: table_index + 1,
-        point: inc_point(r_jp),
+        point: inc_point(r_previous),
         columns: vec![0],
         next_columns: Vec::new(),
     });
     inc_expected.push(vec![inc_eval]);
+    let read = BinaryTwistReadClaim {
+        claimed_read,
+        initial: initial_claim,
+        history: history_claim,
+    };
 
-    // Write value: eq * WA * (delta*(M0+Inc) + LT*WA*Inc).
+    // Write base part: eq * WA * (M0 + Inc).
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-write");
     absorb_mosaic_commitment(&mut transcript, commitment);
     let rho_j = sample_point(&mut transcript, n);
@@ -1311,96 +1428,180 @@ pub(crate) fn prove_binary_twist_claims(
             sum + *weight * *value
         });
     transcript.absorb("claimed-write", &claimed_write.value().to_le_bytes());
-    let factor_count = 2 * a + 8;
-    let mut factors = vec![vec![F2_128::from(0u64); terms]; factor_count];
+
+    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-write-base");
+    absorb_mosaic_commitment(&mut transcript, commitment);
+    absorb_point(&mut transcript, "cycle", &rho_j);
+    let base_terms = cells * cycles;
+    let mut factors = vec![vec![F2_128::from(0u64); base_terms]; a + 4];
     for cell in 0..cells {
         for cycle in 0..cycles {
-            for previous in 0..cycles {
-                let index = (cell * cycles + cycle) * cycles + previous;
-                factors[0][index] = eq_j[cycle];
-                factors[1][index] = addr[wa_valid][cycle];
-                for bit in 0..a {
-                    let k = F2_128::from(((cell >> bit) & 1) as u64);
-                    factors[2 + bit][index] = F2_128::from(1u64) + addr[a + bit][cycle] + k;
-                }
-                factors[2 + a][index] = if previous == 0 {
-                    F2_128::from(1u64)
-                } else {
-                    F2_128::from(0u64)
-                };
-                factors[3 + a][index] = witness.initial[cell];
-                factors[4 + a][index] = increments[cycle];
-                factors[5 + a][index] = if previous < cycle {
-                    F2_128::from(1u64)
-                } else {
-                    F2_128::from(0u64)
-                };
-                factors[6 + a][index] = addr[wa_valid][previous];
-                for bit in 0..a {
-                    let k = F2_128::from(((cell >> bit) & 1) as u64);
-                    factors[7 + a + bit][index] = F2_128::from(1u64) + addr[a + bit][previous] + k;
-                }
-                factors[7 + 2 * a][index] = increments[previous];
+            let index = cell * cycles + cycle;
+            factors[0][index] = eq_j[cycle];
+            factors[1][index] = addr[wa_valid][cycle];
+            factors[2][index] = witness.initial[cell];
+            factors[3][index] = increments[cycle];
+            for bit in 0..a {
+                let k = F2_128::from(((cell >> bit) & 1) as u64);
+                factors[4 + bit][index] = F2_128::from(1u64) + addr[a + bit][cycle] + k;
             }
         }
     }
-    let write_rounds = terms.trailing_zeros() as usize;
-    let mut write_degrees = vec![a + 3; write_rounds];
-    for degree in write_degrees.iter_mut().skip(2 * n) {
+    let mut base_degrees = vec![a + 3; base_terms.trailing_zeros() as usize];
+    for degree in base_degrees.iter_mut().skip(n) {
         *degree = 2;
     }
     let (rounds, challenges) =
-        sumcheck_terms(&factors, &write_degrees, &mut transcript, |folded| {
+        sumcheck_terms(&factors, &base_degrees, &mut transcript, |folded| {
             (0..folded[0].len()).fold(F2_128::from(0u64), |sum, index| {
-                let mut current_address = folded[1][index];
+                let mut address = folded[1][index];
                 for bit in 0..a {
-                    current_address = current_address * folded[2 + bit][index];
+                    address = address * folded[4 + bit][index];
                 }
-                let mut successor_address = folded[6 + a][index];
-                for bit in 0..a {
-                    successor_address = successor_address * folded[7 + a + bit][index];
-                }
-                sum + folded[0][index]
-                    * current_address
-                    * (folded[2 + a][index] * (folded[3 + a][index] + folded[4 + a][index])
-                        + folded[5 + a][index] * successor_address * folded[7 + 2 * a][index])
+                sum + folded[0][index] * address * (folded[2][index] + folded[3][index])
             })
         })?;
-    let r_jp = &challenges[..n];
-    let r_j = &challenges[n..2 * n];
-    let _r_k = &challenges[2 * n..];
-    let wa_current_bits = (0..a)
+    let r_j = &challenges[..n];
+    let _r_k = &challenges[n..];
+    let wa_bit_evals = (0..a)
         .map(|bit| fold_all(&addr[a + bit], r_j))
         .collect::<Vec<_>>();
-    let wa_current_valid = fold_all(&addr[wa_valid], r_j);
-    let inc_current = fold_all(increments, &inc_point(r_j));
-    let wa_successor_bits = (0..a)
-        .map(|bit| fold_all(&addr[a + bit], r_jp))
-        .collect::<Vec<_>>();
-    let wa_successor_valid = fold_all(&addr[wa_valid], r_jp);
-    let inc_successor = fold_all(increments, &inc_point(r_jp));
-    let write = BinaryTwistWriteClaim {
-        claimed_write,
-        cycle_point: rho_j,
+    let wa_valid_eval = fold_all(&addr[wa_valid], r_j);
+    let inc_eval = fold_all(increments, &inc_point(r_j));
+    let base_claim = WriteBaseClaim {
+        claimed: {
+            let mut total = F2_128::from(0u64);
+            for cell in 0..cells {
+                for cycle in 0..cycles {
+                    let mut address = addr[wa_valid][cycle];
+                    for bit in 0..a {
+                        let k = F2_128::from(((cell >> bit) & 1) as u64);
+                        address = address * (F2_128::from(1u64) + addr[a + bit][cycle] + k);
+                    }
+                    total =
+                        total + eq_j[cycle] * address * (witness.initial[cell] + increments[cycle]);
+                }
+            }
+            total
+        },
+        cycle_point: rho_j.clone(),
         rounds,
         challenges: challenges.clone(),
-        wa_current_bits: wa_current_bits.clone(),
-        wa_current_valid,
-        inc_current,
-        wa_successor_bits: wa_successor_bits.clone(),
-        wa_successor_valid,
-        inc_successor,
+        wa_bit_evals: wa_bit_evals.clone(),
+        wa_valid_eval,
+        inc_eval,
     };
-    let mut current_columns = (a..2 * a).collect::<Vec<_>>();
-    current_columns.push(wa_valid);
+    let mut write_columns = (a..2 * a).collect::<Vec<_>>();
+    write_columns.push(wa_valid);
     addr_points.push(P3MosaicPoint {
         table: table_index,
         point: inc_point(r_j),
-        columns: current_columns.clone(),
+        columns: write_columns.clone(),
         next_columns: Vec::new(),
     });
-    let mut current_values = wa_current_bits;
-    current_values.push(wa_current_valid);
+    let mut base_values = wa_bit_evals;
+    base_values.push(wa_valid_eval);
+    addr_expected.push(base_values);
+    inc_points.push(P3MosaicPoint {
+        table: table_index + 1,
+        point: inc_point(r_j),
+        columns: vec![0],
+        next_columns: Vec::new(),
+    });
+    inc_expected.push(vec![inc_eval]);
+
+    // Write history part: eq * LT * Inc * WA * WA.
+    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-write-history");
+    absorb_mosaic_commitment(&mut transcript, commitment);
+    absorb_point(&mut transcript, "cycle", &rho_j);
+    let history_terms = cycles * cycles;
+    let mut factors = vec![vec![F2_128::from(0u64); history_terms]; a + 5];
+    for cycle in 0..cycles {
+        for previous in 0..cycles {
+            let index = cycle * cycles + previous;
+            factors[0][index] = eq_j[cycle];
+            factors[1][index] = if previous < cycle {
+                F2_128::from(1u64)
+            } else {
+                F2_128::from(0u64)
+            };
+            factors[2][index] = increments[previous];
+            factors[3][index] = addr[wa_valid][cycle];
+            factors[4][index] = addr[wa_valid][previous];
+            for bit in 0..a {
+                factors[5 + bit][index] =
+                    F2_128::from(1u64) + addr[a + bit][cycle] + addr[a + bit][previous];
+            }
+        }
+    }
+    let history_degrees = vec![a + 3; history_terms.trailing_zeros() as usize];
+    let (rounds, challenges) =
+        sumcheck_terms(&factors, &history_degrees, &mut transcript, |folded| {
+            (0..folded[0].len()).fold(F2_128::from(0u64), |sum, index| {
+                let mut equality = F2_128::from(1u64);
+                for bit in 0..a {
+                    equality = equality * folded[5 + bit][index];
+                }
+                sum + folded[0][index]
+                    * folded[1][index]
+                    * folded[2][index]
+                    * folded[3][index]
+                    * folded[4][index]
+                    * equality
+            })
+        })?;
+    let r_previous = &challenges[..n];
+    let r_j = &challenges[n..];
+    let current_bits = (0..a)
+        .map(|bit| fold_all(&addr[a + bit], r_j))
+        .collect::<Vec<_>>();
+    let current_valid = fold_all(&addr[wa_valid], r_j);
+    let current_inc = fold_all(increments, &inc_point(r_j));
+    let successor_bits = (0..a)
+        .map(|bit| fold_all(&addr[a + bit], r_previous))
+        .collect::<Vec<_>>();
+    let successor_valid = fold_all(&addr[wa_valid], r_previous);
+    let successor_inc = fold_all(increments, &inc_point(r_previous));
+    let history_claim = WriteHistoryClaim {
+        claimed: {
+            let mut total = F2_128::from(0u64);
+            for cycle in 0..cycles {
+                for previous in 0..cycles {
+                    if previous >= cycle {
+                        continue;
+                    }
+                    let mut equality = F2_128::from(1u64);
+                    for bit in 0..a {
+                        equality = equality
+                            * (F2_128::from(1u64) + addr[a + bit][cycle] + addr[a + bit][previous]);
+                    }
+                    total = total
+                        + eq_j[cycle]
+                            * increments[previous]
+                            * addr[wa_valid][cycle]
+                            * addr[wa_valid][previous]
+                            * equality;
+                }
+            }
+            total
+        },
+        rounds,
+        challenges: challenges.clone(),
+        wa_current_bits: current_bits.clone(),
+        wa_current_valid: current_valid,
+        inc_current: current_inc,
+        wa_successor_bits: successor_bits.clone(),
+        wa_successor_valid: successor_valid,
+        inc_successor: successor_inc,
+    };
+    addr_points.push(P3MosaicPoint {
+        table: table_index,
+        point: inc_point(r_j),
+        columns: write_columns.clone(),
+        next_columns: Vec::new(),
+    });
+    let mut current_values = current_bits;
+    current_values.push(current_valid);
     addr_expected.push(current_values);
     inc_points.push(P3MosaicPoint {
         table: table_index + 1,
@@ -1408,23 +1609,28 @@ pub(crate) fn prove_binary_twist_claims(
         columns: vec![0],
         next_columns: Vec::new(),
     });
-    inc_expected.push(vec![inc_current]);
+    inc_expected.push(vec![current_inc]);
     addr_points.push(P3MosaicPoint {
         table: table_index,
-        point: inc_point(r_jp),
-        columns: current_columns,
+        point: inc_point(r_previous),
+        columns: write_columns,
         next_columns: Vec::new(),
     });
-    let mut successor_values = wa_successor_bits;
-    successor_values.push(wa_successor_valid);
+    let mut successor_values = successor_bits;
+    successor_values.push(successor_valid);
     addr_expected.push(successor_values);
     inc_points.push(P3MosaicPoint {
         table: table_index + 1,
-        point: inc_point(r_jp),
+        point: inc_point(r_previous),
         columns: vec![0],
         next_columns: Vec::new(),
     });
-    inc_expected.push(vec![inc_successor]);
+    inc_expected.push(vec![successor_inc]);
+    let write = BinaryTwistWriteClaim {
+        claimed_write,
+        base: base_claim,
+        history: history_claim,
+    };
 
     // Final state: final(k) = M0(k) + sum_j WA(k,j) Inc(j).
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-final");
@@ -1603,7 +1809,7 @@ pub(crate) fn verify_binary_twist_claims(
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-read");
     absorb_mosaic_commitment(&mut transcript, commitment);
     let rho_j = sample_point(&mut transcript, cycle_bits);
-    if proof.read.cycle_point != rho_j {
+    if proof.read.initial.cycle_point != rho_j {
         return Ok(None);
     }
     let eq_j = eq_vector(&rho_j, cycles);
@@ -1616,30 +1822,28 @@ pub(crate) fn verify_binary_twist_claims(
     if proof.read.claimed_read != claimed_read {
         return Ok(None);
     }
-    transcript.absorb(
-        "claimed-read",
-        &proof.read.claimed_read.value().to_le_bytes(),
-    );
+
+    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-read-initial");
+    absorb_mosaic_commitment(&mut transcript, commitment);
+    absorb_point(&mut transcript, "cycle", &rho_j);
     let Some(sum) = replay_terms(
-        &proof.read.rounds,
-        &proof.read.challenges,
-        proof.read.claimed_read,
+        &proof.read.initial.rounds,
+        &proof.read.initial.challenges,
+        proof.read.initial.claimed,
         &mut transcript,
     ) else {
         return Ok(None);
     };
-    let r_jp = &proof.read.challenges[..cycle_bits];
-    let r_j = &proof.read.challenges[cycle_bits..2 * cycle_bits];
-    let r_k = &proof.read.challenges[2 * cycle_bits..];
+    let r_j = &proof.read.initial.challenges[..cycle_bits];
+    let r_k = &proof.read.initial.challenges[cycle_bits..];
     let eq_eval = eq_points(&rho_j, r_j);
-    let delta_eval = eq_at_index(r_jp, 0);
     let m0_eval = fold_all(&witness.initial, r_k);
-    let lt_eval = lt_mle(r_jp, r_j, cycles);
-    let ra_eval = address_value(&proof.read.ra_bit_evals, proof.read.ra_valid_eval, r_k);
-    let wa_eval = address_value(&proof.read.wa_bit_evals, proof.read.wa_valid_eval, r_k);
-    let read_terminal = eq_eval
-        * (delta_eval * m0_eval * ra_eval + lt_eval * proof.read.inc_eval * ra_eval * wa_eval);
-    if sum != read_terminal {
+    let ra_eval = address_value(
+        &proof.read.initial.ra_bit_evals,
+        proof.read.initial.ra_valid_eval,
+        r_k,
+    );
+    if sum != eq_eval * m0_eval * ra_eval {
         return Ok(None);
     }
     let mut read_columns = (0..address_bits).collect::<Vec<_>>();
@@ -1647,35 +1851,82 @@ pub(crate) fn verify_binary_twist_claims(
     addr_points.push(P3MosaicPoint {
         table: table_index,
         point: inc_point(r_j),
+        columns: read_columns.clone(),
+        next_columns: Vec::new(),
+    });
+    let mut read_values = proof.read.initial.ra_bit_evals.clone();
+    read_values.push(proof.read.initial.ra_valid_eval);
+    addr_expected.push(read_values);
+
+    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-read-history");
+    absorb_mosaic_commitment(&mut transcript, commitment);
+    absorb_point(&mut transcript, "cycle", &rho_j);
+    let Some(sum) = replay_terms(
+        &proof.read.history.rounds,
+        &proof.read.history.challenges,
+        proof.read.history.claimed,
+        &mut transcript,
+    ) else {
+        return Ok(None);
+    };
+    if proof.read.initial.claimed + proof.read.history.claimed != claimed_read {
+        return Ok(None);
+    }
+    let r_previous = &proof.read.history.challenges[..cycle_bits];
+    let r_j = &proof.read.history.challenges[cycle_bits..];
+    let eq_eval = eq_points(&rho_j, r_j);
+    let lt_eval = lt_mle(r_previous, r_j, cycles);
+    let mut equality = F2_128::from(1u64);
+    for (ra, wa) in proof
+        .read
+        .history
+        .ra_bit_evals
+        .iter()
+        .zip(&proof.read.history.wa_bit_evals)
+    {
+        equality = equality * (F2_128::from(1u64) + *ra + *wa);
+    }
+    let read_history_terminal = eq_eval
+        * lt_eval
+        * proof.read.history.inc_eval
+        * proof.read.history.ra_valid_eval
+        * proof.read.history.wa_valid_eval
+        * equality;
+    if sum != read_history_terminal {
+        return Ok(None);
+    }
+    addr_points.push(P3MosaicPoint {
+        table: table_index,
+        point: inc_point(r_j),
         columns: read_columns,
         next_columns: Vec::new(),
     });
-    let mut read_values = proof.read.ra_bit_evals.clone();
-    read_values.push(proof.read.ra_valid_eval);
+    let mut read_values = proof.read.history.ra_bit_evals.clone();
+    read_values.push(proof.read.history.ra_valid_eval);
     addr_expected.push(read_values);
+    let mut write_columns = (address_bits..2 * address_bits).collect::<Vec<_>>();
+    write_columns.push(2 * address_bits + 1);
     addr_points.push(P3MosaicPoint {
         table: table_index,
-        point: inc_point(r_jp),
-        columns: (address_bits..2 * address_bits)
-            .chain(std::iter::once(wa_valid))
-            .collect(),
+        point: inc_point(r_previous),
+        columns: write_columns.clone(),
         next_columns: Vec::new(),
     });
-    let mut write_values = proof.read.wa_bit_evals.clone();
-    write_values.push(proof.read.wa_valid_eval);
+    let mut write_values = proof.read.history.wa_bit_evals.clone();
+    write_values.push(proof.read.history.wa_valid_eval);
     addr_expected.push(write_values);
     inc_points.push(P3MosaicPoint {
         table: table_index + 1,
-        point: inc_point(r_jp),
+        point: inc_point(r_previous),
         columns: vec![0],
         next_columns: Vec::new(),
     });
-    inc_expected.push(vec![proof.read.inc_eval]);
+    inc_expected.push(vec![proof.read.history.inc_eval]);
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-write");
     absorb_mosaic_commitment(&mut transcript, commitment);
     let rho_j = sample_point(&mut transcript, cycle_bits);
-    if proof.write.cycle_point != rho_j {
+    if proof.write.base.cycle_point != rho_j {
         return Ok(None);
     }
     let eq_j = eq_vector(&rho_j, cycles);
@@ -1688,53 +1939,94 @@ pub(crate) fn verify_binary_twist_claims(
     if proof.write.claimed_write != claimed_write {
         return Ok(None);
     }
-    transcript.absorb(
-        "claimed-write",
-        &proof.write.claimed_write.value().to_le_bytes(),
-    );
+
+    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-write-base");
+    absorb_mosaic_commitment(&mut transcript, commitment);
+    absorb_point(&mut transcript, "cycle", &rho_j);
     let Some(sum) = replay_terms(
-        &proof.write.rounds,
-        &proof.write.challenges,
-        proof.write.claimed_write,
+        &proof.write.base.rounds,
+        &proof.write.base.challenges,
+        proof.write.base.claimed,
         &mut transcript,
     ) else {
         return Ok(None);
     };
-    let r_jp = &proof.write.challenges[..cycle_bits];
-    let r_j = &proof.write.challenges[cycle_bits..2 * cycle_bits];
-    let r_k = &proof.write.challenges[2 * cycle_bits..];
+    let r_j = &proof.write.base.challenges[..cycle_bits];
+    let r_k = &proof.write.base.challenges[cycle_bits..];
     let eq_eval = eq_points(&rho_j, r_j);
-    let delta_eval = eq_at_index(r_jp, 0);
     let m0_eval = fold_all(&witness.initial, r_k);
-    let lt_eval = lt_mle(r_jp, r_j, cycles);
-    let wa_current = address_value(
-        &proof.write.wa_current_bits,
-        proof.write.wa_current_valid,
+    let wa_eval = address_value(
+        &proof.write.base.wa_bit_evals,
+        proof.write.base.wa_valid_eval,
         r_k,
     );
-    let wa_successor = address_value(
-        &proof.write.wa_successor_bits,
-        proof.write.wa_successor_valid,
-        r_k,
-    );
-    let write_terminal = eq_eval
-        * wa_current
-        * (delta_eval * (m0_eval + proof.write.inc_current)
-            + lt_eval * wa_successor * proof.write.inc_successor);
-    if sum != write_terminal {
+    if sum != eq_eval * wa_eval * (m0_eval + proof.write.base.inc_eval) {
         return Ok(None);
     }
-    let current_columns = (address_bits..2 * address_bits)
-        .chain(std::iter::once(wa_valid))
-        .collect::<Vec<_>>();
-    let mut current_values = proof.write.wa_current_bits.clone();
-    current_values.push(proof.write.wa_current_valid);
+    let mut write_columns = (address_bits..2 * address_bits).collect::<Vec<_>>();
+    write_columns.push(2 * address_bits + 1);
     addr_points.push(P3MosaicPoint {
         table: table_index,
         point: inc_point(r_j),
-        columns: current_columns.clone(),
+        columns: write_columns.clone(),
         next_columns: Vec::new(),
     });
+    let mut base_values = proof.write.base.wa_bit_evals.clone();
+    base_values.push(proof.write.base.wa_valid_eval);
+    addr_expected.push(base_values);
+    inc_points.push(P3MosaicPoint {
+        table: table_index + 1,
+        point: inc_point(r_j),
+        columns: vec![0],
+        next_columns: Vec::new(),
+    });
+    inc_expected.push(vec![proof.write.base.inc_eval]);
+
+    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-write-history");
+    absorb_mosaic_commitment(&mut transcript, commitment);
+    absorb_point(&mut transcript, "cycle", &rho_j);
+    let Some(sum) = replay_terms(
+        &proof.write.history.rounds,
+        &proof.write.history.challenges,
+        proof.write.history.claimed,
+        &mut transcript,
+    ) else {
+        return Ok(None);
+    };
+    if proof.write.base.claimed + proof.write.history.claimed != claimed_write {
+        return Ok(None);
+    }
+    let r_previous = &proof.write.history.challenges[..cycle_bits];
+    let r_j = &proof.write.history.challenges[cycle_bits..];
+    let eq_eval = eq_points(&rho_j, r_j);
+    let lt_eval = lt_mle(r_previous, r_j, cycles);
+    let mut equality = F2_128::from(1u64);
+    for (current, successor) in proof
+        .write
+        .history
+        .wa_current_bits
+        .iter()
+        .zip(&proof.write.history.wa_successor_bits)
+    {
+        equality = equality * (F2_128::from(1u64) + *current + *successor);
+    }
+    let write_history_terminal = eq_eval
+        * lt_eval
+        * proof.write.history.inc_successor
+        * proof.write.history.wa_current_valid
+        * proof.write.history.wa_successor_valid
+        * equality;
+    if sum != write_history_terminal {
+        return Ok(None);
+    }
+    addr_points.push(P3MosaicPoint {
+        table: table_index,
+        point: inc_point(r_j),
+        columns: write_columns.clone(),
+        next_columns: Vec::new(),
+    });
+    let mut current_values = proof.write.history.wa_current_bits.clone();
+    current_values.push(proof.write.history.wa_current_valid);
     addr_expected.push(current_values);
     inc_points.push(P3MosaicPoint {
         table: table_index + 1,
@@ -1742,23 +2034,23 @@ pub(crate) fn verify_binary_twist_claims(
         columns: vec![0],
         next_columns: Vec::new(),
     });
-    inc_expected.push(vec![proof.write.inc_current]);
-    let mut successor_values = proof.write.wa_successor_bits.clone();
-    successor_values.push(proof.write.wa_successor_valid);
+    inc_expected.push(vec![proof.write.history.inc_current]);
     addr_points.push(P3MosaicPoint {
         table: table_index,
-        point: inc_point(r_jp),
-        columns: current_columns,
+        point: inc_point(r_previous),
+        columns: write_columns,
         next_columns: Vec::new(),
     });
+    let mut successor_values = proof.write.history.wa_successor_bits.clone();
+    successor_values.push(proof.write.history.wa_successor_valid);
     addr_expected.push(successor_values);
     inc_points.push(P3MosaicPoint {
         table: table_index + 1,
-        point: inc_point(r_jp),
+        point: inc_point(r_previous),
         columns: vec![0],
         next_columns: Vec::new(),
     });
-    inc_expected.push(vec![proof.write.inc_successor]);
+    inc_expected.push(vec![proof.write.history.inc_successor]);
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-final");
     absorb_mosaic_commitment(&mut transcript, commitment);
@@ -1903,7 +2195,7 @@ mod ram_tests {
         assert!(!verify_binary_twist_ram(&witness, &tampered).unwrap());
 
         let mut tampered = proof.clone();
-        tampered.write.inc_current = tampered.write.inc_current + F2_128::from(1u64);
+        tampered.write.base.inc_eval = tampered.write.base.inc_eval + F2_128::from(1u64);
         assert!(!verify_binary_twist_ram(&witness, &tampered).unwrap());
 
         let mut tampered = proof.clone();
@@ -1911,12 +2203,13 @@ mod ram_tests {
         assert!(!verify_binary_twist_ram(&witness, &tampered).unwrap());
 
         let mut tampered = proof.clone();
-        tampered.read.ra_bit_evals[0] = tampered.read.ra_bit_evals[0] + F2_128::from(1u64);
+        tampered.read.initial.ra_bit_evals[0] =
+            tampered.read.initial.ra_bit_evals[0] + F2_128::from(1u64);
         assert!(!verify_binary_twist_ram(&witness, &tampered).unwrap());
 
         let mut tampered = proof.clone();
-        tampered.write.wa_successor_bits[0] =
-            tampered.write.wa_successor_bits[0] + F2_128::from(1u64);
+        tampered.write.history.wa_successor_bits[0] =
+            tampered.write.history.wa_successor_bits[0] + F2_128::from(1u64);
         assert!(!verify_binary_twist_ram(&witness, &tampered).unwrap());
 
         let mut tampered = proof.clone();

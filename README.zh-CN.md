@@ -179,11 +179,11 @@ hello guest 上以 release 模式实测（Apple arm64，单线程）；
 
 | 宽度 | CPU 变量 | CPU 约束 | 证明字节 | prove | verify |
 |---|---|---|---|---|---|
-| 64 | 6,991 | 11,933 | 254,213 | 1.19 s | 0.036 s |
-| 32 | 4,015 | 6,813 | 212,013 | 1.20 s | 0.020 s |
-| 8 | 1,783 | 2,973 | 186,549 | 1.10 s | 0.012 s |
+| 64 | 6,991 | 11,933 | 259,397 | 0.38 s | 0.037 s |
+| 32 | 4,015 | 6,813 | 218,477 | 0.32 s | 0.019 s |
+| 8 | 1,783 | 2,973 | 186,421 | 0.29 s | 0.011 s |
 
-width=64 时证明体积分解为 access=17,881、cpu=234,344、rows=1,860、rom=96
+width=64 时证明体积分解为 access=19,033、cpu=238,376、rows=1,860、rom=96
 字节。产生这些数字的改动：
 
 1. **按操作裁剪 ALU 约束。** `simple_alu_row_relation` 只分配操作真正需要的
@@ -193,7 +193,7 @@ width=64 时证明体积分解为 access=17,881、cpu=234,344、rows=1,860、rom
    witness 与 cycle-length 地址/increment 表堆叠；width 64 为 2^14，width 32 为 2^13，width 8 为 2^12。`P3SharedPcs` 把这个
    批量接入 Spartan proof：CPU 点与 BinaryTwist 点 claim 由同一个 P3 参数打开。
    不再同时支付独立的 CPU opening 和 RAM opening；旧的分离布局是 593,508 字节，
-   共享布局是 254,213 字节。
+   共享布局是 259,397 字节。
 3. **bit-sliced 虚拟地址与 value history。** 地址表只提交 `2a+2` 列
    cycle-length bit（read bits、write bits、两个 validity bit）；完整 one-hot
    地址由 verifier 重建。booleanity 由覆盖全部地址列的批量 sum-check 检查。
@@ -212,14 +212,14 @@ width=64 时证明体积分解为 access=17,881、cpu=234,344、rows=1,860、rom
 会打印某个 trace 的 standalone 批量 BinaryTwist proof 大小、prove 与 verify
 时间；`prove_unified_trace` 使用共享 mosaic 路径。
 
-参考 `LT` 归约会物化 `j × j'` 表，bit-sliced 地址 sum-check 也会在每轮折叠
-多个 bit factor。两者都是正确性优先的参考实现：`LT` 对 cycle 数二次，地址
-sum-check 主导 prove 时间（这里约 1.2 s）。论文的线性时间处理与专用 bit-product
-sum-check 是下一步性能工作。共享 P3 的 arity 现在由 CPU witness 决定，RAM 表
-都是 cycle-length。BinaryShout 与 BinaryRouter 仍待实现；SIMD
-R1CS/BinarySpartan 可把多条 bit-lane 打包进一个 GF(2^128) 元素。verifier 仍会
-重建 trace 与合并 system，再验证简洁 CPU PCS proof，因此还不是完整的简洁
-verifier。
+参考 `LT` 归约仍会物化 `j × j'` 表，因此 history 部分对 cycle 数仍是二次的；
+论文的线性时间处理留作后续。地址 sum-check 已拆成 `(cell, cycle)` 上的
+initial/base 部分和 `(cycle, previous-cycle)` 上的 history 部分，消除了
+`K × T²` 的 prover 放大，prove 时间回到几百毫秒。共享 P3 的 arity 由 CPU
+witness 决定，RAM 表都是 cycle-length。BinaryShout 与 BinaryRouter 仍待实现；
+SIMD R1CS/BinarySpartan 可把多条 bit-lane 打包进一个 GF(2^128) 元素。verifier
+仍会重建 trace 与合并 system，再验证简洁 CPU PCS proof，因此还不是完整的
+简洁 verifier。
 
 ## 覆盖率
 

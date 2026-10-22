@@ -21,9 +21,10 @@
 - [ ] Full MosaicPCS: aligned-subcube packing, ring switching, and a single
       commitment that also covers the CPU witness in every proof variant.
 - [ ] Use the P3 mosaic opening in `ChunkedTraceProof` and per-row proofs.
-- [ ] Reduce the virtual-address sum-check prover cost (currently many bit
-      factors are folded per round; a specialized bit-product sum-check should
-      be several times faster).
+- [x] Reduce the virtual-address sum-check prover cost by splitting the
+      read/write reductions into `(cell, cycle)` initial/base sum-checks and
+      `(cycle, previous-cycle)` history sum-checks. This removes the quadratic
+      `K × T²` factor-folding blow-up.
 - [ ] Reduce the quadratic LT prover work (streamed `LT` folding or the
       paper's linear-time recurrence).
 

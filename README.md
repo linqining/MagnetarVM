@@ -185,11 +185,11 @@ them:
 
 | width | CPU vars | CPU constraints | proof bytes | prove | verify |
 |---|---|---|---|---|---|
-| 64 | 6,991 | 11,933 | 254,213 | 1.19 s | 0.036 s |
-| 32 | 4,015 | 6,813 | 212,013 | 1.20 s | 0.020 s |
-| 8 | 1,783 | 2,973 | 186,549 | 1.10 s | 0.012 s |
+| 64 | 6,991 | 11,933 | 259,397 | 0.38 s | 0.037 s |
+| 32 | 4,015 | 6,813 | 218,477 | 0.32 s | 0.019 s |
+| 8 | 1,783 | 2,973 | 186,421 | 0.29 s | 0.011 s |
 
-At width 64 the proof splits into access=17,881, cpu=234,344, rows=1,860, and
+At width 64 the proof splits into access=19,033, cpu=238,376, rows=1,860, and
 rom=96 bytes. The changes behind these numbers:
 
 1. **Per-op ALU relations.** `simple_alu_row_relation` allocates only the gates
@@ -201,7 +201,7 @@ rom=96 bytes. The changes behind these numbers:
    `P3SharedPcs` plugs this batch into the Spartan proof: the CPU point and the
    BinaryTwist point claims are opened by the same P3 argument. The proof no
    longer pays for a separate CPU opening plus a separate RAM opening; the old
-   separate layout was 593,508 bytes, the shared layout is 254,213 bytes.
+   separate layout was 593,508 bytes, the shared layout is 259,397 bytes.
 3. **Bit-sliced virtual addresses and values.** The address table commits
    `2a+2` cycle-length bit columns (read bits, write bits, and two validity
    bits); full one-hot addresses are reconstructed by the verifier. Booleanity
@@ -225,16 +225,17 @@ rom=96 bytes. The changes behind these numbers:
 prints the standalone batched BinaryTwist proof size, prove time, and verify
 time for a trace; `prove_unified_trace` uses the shared mosaic path.
 
-The reference `LT` reductions materialize the `j × j'` table, and the
-bit-sliced address sum-check folds many bit factors per round. Both are
-correctness-first reference code: `LT` is quadratic in the cycle count and the
-address sum-check dominates prove time (~1.2 s here). The paper's linear-time
-treatment and a specialized bit-product sum-check are the next performance
-work. The shared P3 arity is now driven by the CPU witness; the RAM tables are
-cycle-length. BinaryShout and BinaryRouter remain, and SIMD
-R1CS/BinarySpartan would pack many bit-lanes into one GF(2^128) element. The
-verifier still reconstructs the trace and merged system before checking the
-succinct CPU PCS proof, so it is not yet a fully succinct verifier.
+The reference `LT` reductions still materialize the `j × j'` table, so the
+history terms remain quadratic in the cycle count; the paper's linear-time
+treatment is future work. The address sum-check was split into an initial/base
+part over `(cell, cycle)` and a history part over `(cycle, previous-cycle)`,
+which removes the quadratic `K × T²` prover blow-up and brings prove time back
+to a few hundred milliseconds. The shared P3 arity is driven by the CPU
+witness; the RAM tables are cycle-length. BinaryShout and BinaryRouter remain,
+and SIMD R1CS/BinarySpartan would pack many bit-lanes into one GF(2^128)
+element. The verifier still reconstructs the trace and merged system before
+checking the succinct CPU PCS proof, so it is not yet a fully succinct
+verifier.
 
 ## Coverage
 
