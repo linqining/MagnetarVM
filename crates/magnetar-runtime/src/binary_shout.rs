@@ -229,10 +229,6 @@ pub struct BinaryShoutProof {
     pub boolean: AddressBooleanClaim,
     pub claimed: F2_128,
     pub rounds: Vec<Vec<F2_128>>,
-    pub ra0_bit_evals: Vec<F2_128>,
-    pub ra1_bit_evals: Vec<F2_128>,
-    pub is_32_eval: F2_128,
-    pub valid_eval: F2_128,
     pub opening: Option<P3MosaicOpening>,
 }
 
@@ -550,10 +546,6 @@ pub(crate) fn prove_binary_shout_claims(
             boolean,
             claimed,
             rounds,
-            ra0_bit_evals,
-            ra1_bit_evals,
-            is_32_eval,
-            valid_eval,
             opening: None,
         },
         points,
@@ -644,6 +636,14 @@ pub(crate) fn verify_binary_shout_claims(
     };
     let r_j = &challenges[..n];
     let r_k = &challenges[n..];
+    let ra0_bit_evals = (0..a)
+        .map(|bit| fold_all(&witness.address0[bit], r_j))
+        .collect::<Vec<_>>();
+    let ra1_bit_evals = (0..a)
+        .map(|bit| fold_all(&witness.address1[bit], r_j))
+        .collect::<Vec<_>>();
+    let is_32_eval = fold_all(&witness.is_32, r_j);
+    let valid_eval = fold_all(&witness.valid, r_j);
     let mut column_evals = Vec::with_capacity(columns);
     for column in 0..columns {
         let values = witness
@@ -653,16 +653,15 @@ pub(crate) fn verify_binary_shout_claims(
             .collect::<Vec<_>>();
         column_evals.push(fold_all(&values, r_k));
     }
-    let ra0_eval = address_value(&proof.ra0_bit_evals, r_k);
-    let ra1_eval = address_value(&proof.ra1_bit_evals, r_k);
-    let word_eval = gammas[0]
-        * column_evals[0]
-        * (ra0_eval + proof.is_32_eval * ra1_eval * F2_128::from(HIGH_SCALE));
+    let ra0_eval = address_value(&ra0_bit_evals, r_k);
+    let ra1_eval = address_value(&ra1_bit_evals, r_k);
+    let word_eval =
+        gammas[0] * column_evals[0] * (ra0_eval + is_32_eval * ra1_eval * F2_128::from(HIGH_SCALE));
     let mut metadata_eval = F2_128::from(0u64);
     for column in 1..columns {
         metadata_eval = metadata_eval + gammas[column] * ra0_eval * column_evals[column];
     }
-    if sum != eq_points(&rho_j, r_j) * proof.valid_eval * (word_eval + metadata_eval) {
+    if sum != eq_points(&rho_j, r_j) * valid_eval * (word_eval + metadata_eval) {
         return Ok(None);
     }
 
@@ -691,10 +690,10 @@ pub(crate) fn verify_binary_shout_claims(
             next_columns: Vec::new(),
         },
     ];
-    let mut read_values = proof.ra0_bit_evals.clone();
-    read_values.extend(proof.ra1_bit_evals.clone());
-    read_values.push(proof.is_32_eval);
-    read_values.push(proof.valid_eval);
+    let mut read_values = ra0_bit_evals.clone();
+    read_values.extend(ra1_bit_evals.clone());
+    read_values.push(is_32_eval);
+    read_values.push(valid_eval);
     let values = vec![proof.boolean.bit_evals.clone(), read_values];
     Ok(Some((points, values)))
 }
@@ -771,7 +770,7 @@ mod tests {
         assert!(!verify_binary_shout(&witness, &tampered).unwrap());
 
         let mut tampered = proof;
-        tampered.ra0_bit_evals[0] = tampered.ra0_bit_evals[0] + F2_128::from(1u64);
+        tampered.rounds[0][0] = tampered.rounds[0][0] + F2_128::from(1u64);
         assert!(!verify_binary_shout(&witness, &tampered).unwrap());
     }
 
