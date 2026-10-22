@@ -172,6 +172,8 @@ pub enum SpartanError {
     ClaimMismatch { expected: F2_128, actual: F2_128 },
     #[error("verification failed: {0}")]
     Verification(&'static str),
+    #[error("SIMD instance count must be nonzero")]
+    EmptySimd,
 }
 
 /// Build the padded Spartan witness vector `z` from a constraint witness.
@@ -279,6 +281,43 @@ pub fn prove_spartan<P: Pcs>(
         vw,
         opening,
     })
+}
+
+/// Prove `q` instances of one base constraint system with a reference
+/// block-diagonal SIMD encoding. The verifier rebuilds the same system.
+pub fn prove_simd_spartan<P: Pcs>(
+    base: &ConstraintSystem,
+    witnesses: &[Witness],
+    pcs: &P,
+) -> Result<SpartanProof<P::Commitment, P::Opening>, SpartanError> {
+    if witnesses.is_empty() {
+        return Err(SpartanError::EmptySimd);
+    }
+    let mut combined = ConstraintSystem::new(0);
+    for _ in 0..witnesses.len() {
+        combined.merge(base.clone());
+    }
+    let mut values = Vec::new();
+    for witness in witnesses {
+        values.extend_from_slice(witness.values());
+    }
+    prove_spartan(&combined, &Witness::new(values), pcs)
+}
+
+pub fn verify_simd_spartan<P: Pcs>(
+    base: &ConstraintSystem,
+    instances: usize,
+    proof: &SpartanProof<P::Commitment, P::Opening>,
+    pcs: &P,
+) -> Result<(), SpartanError> {
+    if instances == 0 {
+        return Err(SpartanError::EmptySimd);
+    }
+    let mut combined = ConstraintSystem::new(0);
+    for _ in 0..instances {
+        combined.merge(base.clone());
+    }
+    verify_spartan(&combined, proof, pcs)
 }
 
 pub fn verify_spartan<P: Pcs>(
@@ -498,5 +537,30 @@ mod tests {
         let witness = Witness::new(Vec::new());
         let proof = prove_spartan(&system, &witness, &TestPcs).unwrap();
         verify_spartan(&system, &proof, &TestPcs).unwrap();
+    }
+    #[test]
+    fn simd_spartan_round_trips() {
+        let mut base = ConstraintSystem::new(3);
+        base.add_constraint(
+            Expr::var(0).add(Expr::var(1)),
+            Expr::constant(1u64),
+            Expr::var(2),
+        );
+        let pcs = TestPcs;
+        let witnesses = vec![
+            Witness::new(vec![
+                F2_128::from(1u64),
+                F2_128::from(2u64),
+                F2_128::from(3u64),
+            ]),
+            Witness::new(vec![
+                F2_128::from(0u64),
+                F2_128::from(0u64),
+                F2_128::from(0u64),
+            ]),
+        ];
+        let proof = prove_simd_spartan(&base, &witnesses, &pcs).unwrap();
+        verify_simd_spartan(&base, witnesses.len(), &proof, &pcs).unwrap();
+        assert!(verify_simd_spartan(&base, 3, &proof, &pcs).is_err());
     }
 }
