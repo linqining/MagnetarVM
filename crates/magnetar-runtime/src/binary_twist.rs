@@ -887,7 +887,6 @@ pub struct ReadInitialClaim {
 pub struct ReadHistoryClaim {
     pub claimed: F2_128,
     pub rounds: Vec<Vec<F2_128>>,
-    pub challenges: Vec<F2_128>,
     pub ra_bit_evals: Vec<F2_128>,
     pub ra_valid_eval: F2_128,
     pub wa_bit_evals: Vec<F2_128>,
@@ -905,9 +904,7 @@ pub struct BinaryTwistReadClaim {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WriteBaseClaim {
     pub claimed: F2_128,
-    pub cycle_point: Vec<F2_128>,
     pub rounds: Vec<Vec<F2_128>>,
-    pub challenges: Vec<F2_128>,
     pub wa_bit_evals: Vec<F2_128>,
     pub wa_valid_eval: F2_128,
     pub inc_eval: F2_128,
@@ -917,7 +914,6 @@ pub struct WriteBaseClaim {
 pub struct WriteHistoryClaim {
     pub claimed: F2_128,
     pub rounds: Vec<Vec<F2_128>>,
-    pub challenges: Vec<F2_128>,
     pub wa_current_bits: Vec<F2_128>,
     pub wa_current_valid: F2_128,
     pub inc_current: F2_128,
@@ -1368,7 +1364,6 @@ pub(crate) fn prove_binary_twist_claims(
             total
         },
         rounds,
-        challenges: challenges.clone(),
         ra_bit_evals: ra_bit_evals.clone(),
         ra_valid_eval,
         wa_bit_evals: wa_bit_evals.clone(),
@@ -1476,9 +1471,7 @@ pub(crate) fn prove_binary_twist_claims(
             }
             total
         },
-        cycle_point: rho_j.clone(),
         rounds,
-        challenges: challenges.clone(),
         wa_bit_evals: wa_bit_evals.clone(),
         wa_valid_eval,
         inc_eval,
@@ -1578,7 +1571,6 @@ pub(crate) fn prove_binary_twist_claims(
             total
         },
         rounds,
-        challenges: challenges.clone(),
         wa_current_bits: current_bits.clone(),
         wa_current_valid: current_valid,
         inc_current: current_inc,
@@ -1851,9 +1843,8 @@ pub(crate) fn verify_binary_twist_claims(
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-read-history");
     absorb_mosaic_commitment(&mut transcript, commitment);
     absorb_point(&mut transcript, "cycle", &rho_j);
-    let Some(sum) = replay_terms(
+    let Some((sum, history_challenges)) = replay_terms_derived(
         &proof.read.history.rounds,
-        &proof.read.history.challenges,
         proof.read.history.claimed,
         &mut transcript,
     ) else {
@@ -1862,8 +1853,8 @@ pub(crate) fn verify_binary_twist_claims(
     if proof.read.initial.claimed + proof.read.history.claimed != claimed_read {
         return Ok(None);
     }
-    let r_previous = &proof.read.history.challenges[..cycle_bits];
-    let r_j = &proof.read.history.challenges[cycle_bits..];
+    let r_previous = &history_challenges[..cycle_bits];
+    let r_j = &history_challenges[cycle_bits..];
     let eq_eval = eq_points(&rho_j, r_j);
     let lt_eval = lt_mle(r_previous, r_j, cycles);
     let mut equality = F2_128::from(1u64);
@@ -1916,9 +1907,6 @@ pub(crate) fn verify_binary_twist_claims(
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-write");
     absorb_mosaic_commitment(&mut transcript, commitment);
     let rho_j = sample_point(&mut transcript, cycle_bits);
-    if proof.write.base.cycle_point != rho_j {
-        return Ok(None);
-    }
     let eq_j = eq_vector(&rho_j, cycles);
     let claimed_write = eq_j
         .iter()
@@ -1933,16 +1921,15 @@ pub(crate) fn verify_binary_twist_claims(
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-write-base");
     absorb_mosaic_commitment(&mut transcript, commitment);
     absorb_point(&mut transcript, "cycle", &rho_j);
-    let Some(sum) = replay_terms(
+    let Some((sum, base_challenges)) = replay_terms_derived(
         &proof.write.base.rounds,
-        &proof.write.base.challenges,
         proof.write.base.claimed,
         &mut transcript,
     ) else {
         return Ok(None);
     };
-    let r_j = &proof.write.base.challenges[..cycle_bits];
-    let r_k = &proof.write.base.challenges[cycle_bits..];
+    let r_j = &base_challenges[..cycle_bits];
+    let r_k = &base_challenges[cycle_bits..];
     let eq_eval = eq_points(&rho_j, r_j);
     let m0_eval = fold_all(&witness.initial, r_k);
     let wa_eval = address_value(
@@ -1975,9 +1962,8 @@ pub(crate) fn verify_binary_twist_claims(
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-write-history");
     absorb_mosaic_commitment(&mut transcript, commitment);
     absorb_point(&mut transcript, "cycle", &rho_j);
-    let Some(sum) = replay_terms(
+    let Some((sum, history_challenges)) = replay_terms_derived(
         &proof.write.history.rounds,
-        &proof.write.history.challenges,
         proof.write.history.claimed,
         &mut transcript,
     ) else {
@@ -1986,8 +1972,8 @@ pub(crate) fn verify_binary_twist_claims(
     if proof.write.base.claimed + proof.write.history.claimed != claimed_write {
         return Ok(None);
     }
-    let r_previous = &proof.write.history.challenges[..cycle_bits];
-    let r_j = &proof.write.history.challenges[cycle_bits..];
+    let r_previous = &history_challenges[..cycle_bits];
+    let r_j = &history_challenges[cycle_bits..];
     let eq_eval = eq_points(&rho_j, r_j);
     let lt_eval = lt_mle(r_previous, r_j, cycles);
     let mut equality = F2_128::from(1u64);

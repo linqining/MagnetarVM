@@ -188,11 +188,11 @@ them:
 
 | width | CPU vars | CPU constraints | proof bytes | prove | verify |
 |---|---|---|---|---|---|
-| 64 | 6,991 | 11,933 | 273,807 | 0.40 s | 0.043 s |
-| 32 | 4,015 | 6,813 | 235,927 | 0.39 s | 0.023 s |
-| 8 | 1,783 | 2,973 | 203,039 | 0.34 s | 0.013 s |
+| 64 | 6,991 | 11,933 | 272,783 | 0.41 s | 0.043 s |
+| 32 | 4,015 | 6,813 | 234,903 | 0.39 s | 0.031 s |
+| 8 | 1,783 | 2,973 | 202,015 | 0.41 s | 0.020 s |
 
-At width 64 the proof splits into access=18,058, cpu=245,048, shout=2,882,
+At width 64 the proof splits into access=17,034, cpu=245,048, shout=2,882,
 shift_router=1, store_router=7,786 bytes. Unified proofs no longer carry the
 redundant trace rows; the verifier takes the trace alongside the proof. The changes behind these numbers:
 
@@ -205,7 +205,7 @@ redundant trace rows; the verifier takes the trace alongside the proof. The chan
    `P3SharedPcs` plugs this batch into the Spartan proof: the CPU point and the
    BinaryTwist point claims are opened by the same P3 argument. The proof no
    longer pays for a separate CPU opening plus a separate RAM opening; the old
-   separate layout was 593,508 bytes, the shared layout is 273,807 bytes.
+   separate layout was 593,508 bytes, the shared layout is 272,783 bytes.
 3. **Bit-sliced virtual addresses and values.** The address table commits
    `2a+2` cycle-length bit columns (read bits, write bits, and two validity
    bits); full one-hot addresses are reconstructed by the verifier. Booleanity
