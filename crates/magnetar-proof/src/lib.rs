@@ -471,7 +471,97 @@ pub enum ProofError {
 
 pub mod spartan;
 pub mod virtual_spartan;
-pub use spartan::{prove_spartan, verify_spartan, witness_vector, SpartanError, SpartanProof};
+pub use spartan::{
+    prove_lockstep, prove_spartan, verify_lockstep, verify_spartan, witness_vector, LockstepProof,
+    SpartanError, SpartanProof,
+};
+
+/// Sum-check for `eq(x) * (a0*b0 - c0 + alpha * (a1*b1 - c1))`, degree three.
+#[allow(clippy::too_many_arguments)]
+pub fn prove_product6<F, C>(
+    eq_values: Vec<F>,
+    a0_values: Vec<F>,
+    b0_values: Vec<F>,
+    c0_values: Vec<F>,
+    a1_values: Vec<F>,
+    b1_values: Vec<F>,
+    c1_values: Vec<F>,
+    alpha: F,
+    mut challenge: C,
+) -> Result<(SumcheckProof<F>, Vec<F>, F), ProofError>
+where
+    F: Field,
+    C: FnMut(usize, &[F]) -> F,
+{
+    let len = eq_values.len();
+    let all = [
+        a0_values.len(),
+        b0_values.len(),
+        c0_values.len(),
+        a1_values.len(),
+        b1_values.len(),
+        c1_values.len(),
+    ];
+    if len == 0 || !len.is_power_of_two() || all.iter().any(|length| *length != len) {
+        return Err(ProofError::DimensionMismatch);
+    }
+    let mut eq_values = eq_values;
+    let mut a0_values = a0_values;
+    let mut b0_values = b0_values;
+    let mut c0_values = c0_values;
+    let mut a1_values = a1_values;
+    let mut b1_values = b1_values;
+    let mut c1_values = c1_values;
+    let claimed_sum = (0..len).fold(F::zero(), |sum, index| {
+        sum + eq_values[index]
+            * (a0_values[index] * b0_values[index] - c0_values[index]
+                + alpha * (a1_values[index] * b1_values[index] - c1_values[index]))
+    });
+    let rounds = len.trailing_zeros() as usize;
+    let mut challenges = Vec::with_capacity(rounds);
+    let mut round_polys = Vec::with_capacity(rounds);
+
+    for round in 0..rounds {
+        let mut polynomial = Vec::with_capacity(4);
+        for t in 0..=3 {
+            let t = F::from_u64(t as u64);
+            let eq_t = fold_vector(&eq_values, t);
+            let a0_t = fold_vector(&a0_values, t);
+            let b0_t = fold_vector(&b0_values, t);
+            let c0_t = fold_vector(&c0_values, t);
+            let a1_t = fold_vector(&a1_values, t);
+            let b1_t = fold_vector(&b1_values, t);
+            let c1_t = fold_vector(&c1_values, t);
+            polynomial.push((0..eq_t.len()).fold(F::zero(), |sum, index| {
+                sum + eq_t[index]
+                    * (a0_t[index] * b0_t[index] - c0_t[index]
+                        + alpha * (a1_t[index] * b1_t[index] - c1_t[index]))
+            }));
+        }
+        let r = challenge(round, &polynomial);
+        challenges.push(r);
+        eq_values = fold_vector(&eq_values, r);
+        a0_values = fold_vector(&a0_values, r);
+        b0_values = fold_vector(&b0_values, r);
+        c0_values = fold_vector(&c0_values, r);
+        a1_values = fold_vector(&a1_values, r);
+        b1_values = fold_vector(&b1_values, r);
+        c1_values = fold_vector(&c1_values, r);
+        round_polys.push(polynomial);
+    }
+
+    let final_eval = eq_values[0]
+        * (a0_values[0] * b0_values[0] - c0_values[0]
+            + alpha * (a1_values[0] * b1_values[0] - c1_values[0]));
+    Ok((
+        SumcheckProof {
+            claimed_sum,
+            round_polys,
+        },
+        challenges,
+        final_eval,
+    ))
+}
 
 #[cfg(test)]
 mod tests {
