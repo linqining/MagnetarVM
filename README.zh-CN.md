@@ -22,8 +22,8 @@
 - `ChunkedTraceProof`：按行区间生成合并 CPU proof，并通过 recursion crate 的寄存器/PC 状态链连接，共享同一访问日志与 trace commitment；
 - access log 支持 lane 级 sub-word load/store（`lb/lbu/lh/lhu/lw/lwu/sb/sh/sw`，限定在同一 8 字节 word 内，含符号扩展与 read-modify-write 检查）；
 - 寄存器/RAM 重放、Twist one-hot 地址/increment witness、shift/store routing witness，以及带权限与 superpage 检查的参考 Sv39 page-table walker；
-- 参考 BinaryTwist RAM 归约（`d = 1`，完整 one-hot 地址表、虚拟 value history）：read-value、write-value、update，以及 read/write 地址的 Boolean-multiplicity/collision 恒等式；两列地址数据与紧凑 increment 表共享一个 Plonky3 P3 commitment，value history 通过 `LT` 恒等式虚拟化，所有终值 claim 由同一个批量 P3 opening 参数证明；
-- 多表 P3 mosaic 层：`P3SharedPcs` 把 unified CPU Spartan witness、两列 RAM 地址数据与紧凑 increment 表堆进同一个 commitment，并用同一个 P3 proof 打开 CPU 点与 RAM claim；
+- 参考 BinaryTwist RAM 归约：地址采用 bit-sliced 虚拟化，value history 通过 `LT` 恒等式虚拟化。地址表只提交 `2a+2` 列 cycle-length bit，increment 表提交每 cycle 的 delta，所有终值 claim 由同一个批量 P3 opening 参数证明；
+- 多表 P3 mosaic 层：`P3SharedPcs` 把 unified CPU Spartan witness、bit-sliced 地址表与紧凑 increment 表堆进同一个 commitment，并用同一个 P3 proof 打开 CPU 点与 RAM claim；
 - access proof 只为 32 项寄存器文件保留 Merkle opening；memory step 记录 event 索引与完整 word 值，并与同一个 BinaryTwist witness 交叉检查；初始 RAM 改由 public `Statement` 绑定，不再放入 proof；
 - 参考 sum-check、SHA-256 与 SHA3-256 transcript、带批量向量 opening 的 Merkle tree、naive PCS，以及基于 `arkworks` 的简洁 BN254 KZG 后端（支持单点与批量 opening）；Spartan proof 与逐行/unified/chunked trace proof 的规范化 bincode 编解码；
 - 基于现有约束 IR 与 Merkle PCS 的参考 Spartan 归约（含 Fiat–Shamir）；
@@ -33,8 +33,8 @@
 显式未实现：
 
 - Dual SIMD R1CS、Virtual Spartan、BinarySpartan；
-- BinaryShout 与 BinaryRouter 的 sum-check 论证；BinaryTwist 参考归约目前仍物化完整 one-hot read/write 地址表；virtual `Val`/`Inc` 已实现，地址虚拟化尚未实现；
-- 完整的 MosaicPCS ring switching、virtual `Val`/`Inc`、地址虚拟化，以及与 runtime 集成的 Ligerito（P3 多表堆叠与 CPU+RAM 共享 opening 已实现）；
+- BinaryShout 与 BinaryRouter 的 sum-check 论证；BinaryTwist 的 `LT` 与 bit-sliced 地址 sum-check 仍是性能未优化的参考实现；
+- 完整的 MosaicPCS ring switching、与 runtime 集成的 Ligerito（P3 多表堆叠、virtual `Val`/`Inc`、地址虚拟化与 CPU+RAM 共享 opening 已实现）；
 - recursion（只有 chunk 规划、hash-chain 与状态连续性参考聚合器、backend trait）；
 - ZK sum-check 与 private IO（只有 `NoPrivacy` 和随机 hiding hash commitment）；
 - R1CS 内部的 RV64A reservation 语义（reservation 链写入 trace，并在 proof 验证时检查）、RV64F/D 执行与 proof（当前实现核心 FP 解码子集）、Sv39 walker 的 executor/proof 集成，以及 `exit`/`hint`/`write`/`read` 之外的更完整 syscall runtime；
@@ -70,9 +70,9 @@
 |---|---|---|
 | Dual SIMD R1CS over shared witness | `magnetar-constraint` + `magnetar-cpu` | 生成 uniform `s1`/`s2`，替换行级检查 |
 | Virtual Spartan | `magnetar-proof` + `magnetar-runtime` | 双关系 lockstep、per-segment claim、claim router |
-| BinaryTwist / BinaryShout | `magnetar-memory` + `magnetar-runtime` | BinaryTwist 已有 one-hot 地址、紧凑 increment、virtual `Val`、read/write/final-state/address sum-check 与批量 P3 claim；下一步：地址虚拟化，然后 BinaryShout |
+| BinaryTwist / BinaryShout | `magnetar-memory` + `magnetar-runtime` | BinaryTwist 已有 bit-sliced 虚拟地址、紧凑 increment、virtual `Val`、read/write/final-state/address sum-check 与批量 P3 claim；下一步：BinaryShout 与性能优化 |
 | BinaryRouter | `magnetar-routing` + `magnetar-preprocess` | routing identity + selector/offset claims |
-| MosaicPCS | `magnetar-pcs` | 已有多表 P3 堆叠与 CPU+RAM 共享 opening；下一步：地址虚拟化、ring switching |
+| MosaicPCS | `magnetar-pcs` | 已有多表 P3 堆叠与 CPU+RAM 共享 opening；下一步：ring switching |
 | Ligerito | `magnetar-pcs` | 线性码 PCS + Merkle + query sampling |
 | Recursion | `magnetar-recursion` | verifier-in-the-VM、chunk state、aggregation |
 | ZK / hiding | `magnetar-privacy` | blinded witness、ZK sum-check、private IO |
@@ -166,7 +166,7 @@ cargo test --workspace
 ## 证明路径与性能说明
 
 当前 prover 是**参考实现**，基于 GF(2^128) 上的通用 Spartan 归约。unified CPU
-proof 把 Spartan witness 与两列 BinaryTwist 地址数据及紧凑 increment 表放进**同一个 mosaic P3
+proof 把 Spartan witness 与 bit-sliced BinaryTwist 地址表及紧凑 increment 表放进**同一个 mosaic P3
 commitment**，并用**同一个 P3 opening proof** 打开 CPU 点和 RAM claim；value history 是虚拟的，由公开初始 RAM 与已承诺的 write history 重建。
 只有寄存器文件仍使用 Merkle path。BinarySpartan、SIMD R1CS、BinaryShout 与
 BinaryRouter 仍未实现。仓库内 vendored Ligerito 0.8.0 继续提供按索引 claim 的
@@ -179,26 +179,27 @@ hello guest 上以 release 模式实测（Apple arm64，单线程）；
 
 | 宽度 | CPU 变量 | CPU 约束 | 证明字节 | prove | verify |
 |---|---|---|---|---|---|
-| 64 | 6,991 | 11,933 | 347,605 | 0.36 s | 0.042 s |
-| 32 | 4,015 | 6,813 | 352,085 | 0.35 s | 0.025 s |
-| 8 | 1,783 | 2,973 | 352,181 | 0.31 s | 0.014 s |
+| 64 | 6,991 | 11,933 | 254,213 | 1.19 s | 0.036 s |
+| 32 | 4,015 | 6,813 | 212,013 | 1.20 s | 0.020 s |
+| 8 | 1,783 | 2,973 | 186,549 | 1.10 s | 0.012 s |
 
-width=64 时证明体积分解为 access=18,777、cpu=326,840、rows=1,860、rom=96
+width=64 时证明体积分解为 access=17,881、cpu=234,344、rows=1,860、rom=96
 字节。产生这些数字的改动：
 
 1. **按操作裁剪 ALU 约束。** `simple_alu_row_relation` 只分配操作真正需要的
    gate：`addi` 449 个变量、`lui` 64 个，而统一 shifter+comparator 电路每行
    需要 4,492 个变量/5,264 条约束。
 2. **CPU 与 RAM 共用一个 mosaic PCS。** `P3MosaicCommitment` 把 CPU witness
-   (2^13)、两列 RAM 地址 (2 × 2^14) 与紧凑 increment 表堆叠成一个 2^16 多项式。`P3SharedPcs` 把这个
+   witness 与 cycle-length 地址/increment 表堆叠；width 64 为 2^14，width 32 为 2^13，width 8 为 2^12。`P3SharedPcs` 把这个
    批量接入 Spartan proof：CPU 点与 BinaryTwist 点 claim 由同一个 P3 参数打开。
    不再同时支付独立的 CPU opening 和 RAM opening；旧的分离布局是 593,508 字节，
-   共享布局是 347,605 字节。
-3. **批量 BinaryTwist 归约。** 只有 `ra` 和 `wa` 仍作为完整 one-hot 表提交；
-   `Inc` 是紧凑的 cycle 表，`Val` 与后继历史是虚拟的：由公开初始 RAM 和已承诺
-   的 write history 通过 `LT` 恒等式重建。read、write、final-state 与两个
-   address 归约提供点 claim。proof 与 trace 的 read/write word 绑定，sub-word
-   访问只更新所在 lane。
+   共享布局是 254,213 字节。
+3. **bit-sliced 虚拟地址与 value history。** 地址表只提交 `2a+2` 列
+   cycle-length bit（read bits、write bits、两个 validity bit）；完整 one-hot
+   地址由 verifier 重建。booleanity 由覆盖全部地址列的批量 sum-check 检查。
+   `Inc` 是紧凑 cycle 表，`Val` 与后继历史通过 `LT` 恒等式虚拟化。read、write、
+   final-state 与 address claim 都归约到小型地址/increment 表的 opening。proof
+   与 trace 的 read/write word 绑定，sub-word 访问只更新所在 lane。
 4. **access log 只为寄存器保留 Merkle。** memory step 不再携带 Merkle 链或
    131 KiB initial-memory 表；每一步只记录 event 索引与完整 word 值，并与
    BinaryTwist witness 交叉检查。初始 RAM 作为 public input 放入 `Statement`。
@@ -211,14 +212,14 @@ width=64 时证明体积分解为 access=18,777、cpu=326,840、rows=1,860、rom
 会打印某个 trace 的 standalone 批量 BinaryTwist proof 大小、prove 与 verify
 时间；`prove_unified_trace` 使用共享 mosaic 路径。
 
-参考 `LT` 归约会物化 `j × j'` 表，因此 prover 成本对 cycle 数是二次的；论文的
-线性时间处理留作后续优化。剩余的结构性差距在表大小：2^16 堆叠多项式仍主要被
-完整 one-hot `ra`/`wa` 地址表占据。下一步是地址虚拟化：把每个 one-hot 地址拆成更小的
-component table，可把被承诺的 RAM 列缩到约 2^10，使共享 P3 proof 回到 CPU
-witness 的 arity。BinaryRouter 可替代剩余的 shift/compare 电路；SIMD
-R1CS/BinarySpartan 可把多条 bit-lane 打包进
-一个 GF(2^128) 元素。verifier 仍会重建 trace 与合并 system，再验证简洁 CPU
-PCS proof，因此还不是完整的简洁 verifier。
+参考 `LT` 归约会物化 `j × j'` 表，bit-sliced 地址 sum-check 也会在每轮折叠
+多个 bit factor。两者都是正确性优先的参考实现：`LT` 对 cycle 数二次，地址
+sum-check 主导 prove 时间（这里约 1.2 s）。论文的线性时间处理与专用 bit-product
+sum-check 是下一步性能工作。共享 P3 的 arity 现在由 CPU witness 决定，RAM 表
+都是 cycle-length。BinaryShout 与 BinaryRouter 仍待实现；SIMD
+R1CS/BinarySpartan 可把多条 bit-lane 打包进一个 GF(2^128) 元素。verifier 仍会
+重建 trace 与合并 system，再验证简洁 CPU PCS proof，因此还不是完整的简洁
+verifier。
 
 ## 覆盖率
 

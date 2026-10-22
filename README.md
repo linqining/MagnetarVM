@@ -22,8 +22,8 @@ Implemented:
 - `ChunkedTraceProof`: per-row-range merged CPU proofs linked through the recursion crate's register/PC state chain, with the same access log and trace commitment;
 - Lane-level sub-word load/store support in the access log (`lb/lbu/lh/lhu/lw/lwu/sb/sh/sw` within an aligned 8-byte word, with sign extension and read-modify-write checks);
 - Register/RAM replay, Twist one-hot address/increment witnesses, shift/store routing witnesses, and a reference Sv39 page-table walker with permission and superpage checks;
-- A reference BinaryTwist RAM reduction (`d = 1`, full one-hot address tables and a virtual value history) covering read-value, write-value, update, and read/write address Boolean-multiplicity/collision identities. The two address columns and the compact increment table share one Plonky3 P3 commitment, the value history is virtual via the `LT` identity, and every terminal claim is discharged by one batched P3 opening argument;
-- A multi-table P3 mosaic layer: `P3SharedPcs` stacks the unified CPU Spartan witness, the two RAM address columns, and the compact increment table into one commitment, and opens the CPU point plus the RAM claims with one P3 proof;
+- A reference BinaryTwist RAM reduction with bit-sliced virtual addresses and a virtual value history. The address table commits only `2a+2` cycle-length bit columns, the compact increment table commits the cycle deltas, `Val`/`Next` are reconstructed through the `LT` identity, and every terminal claim is discharged by one batched P3 opening argument;
+- A multi-table P3 mosaic layer: `P3SharedPcs` stacks the unified CPU Spartan witness, the bit-sliced address table, and the compact increment table into one commitment, and opens the CPU point plus the RAM claims with one P3 proof;
 - The access proof keeps Merkle openings only for the 32-register file. Memory steps carry their event index and full-word values, are checked against the same BinaryTwist witness, and the initial RAM is bound by the public `Statement` instead of being serialized into the proof;
 - Reference sum-check, SHA-256 and SHA3-256 transcripts, Merkle tree with batched vector openings, naive PCS, and a succinct BN254 KZG backend with single and batch openings from `arkworks`, with canonical bincode encode/decode for Spartan proofs and per-row/unified/chunked trace proofs;
 - Reference Spartan reduction with Fiat–Shamir, over the existing constraint IR and Merkle PCS;
@@ -33,8 +33,8 @@ Implemented:
 Explicitly not implemented:
 
 - Dual SIMD R1CS, Virtual Spartan, and BinarySpartan;
-- BinaryShout and BinaryRouter sum-check arguments; the BinaryTwist reference reduction still materializes the full one-hot read/write address tables; virtual `Val`/`Inc` are implemented, address virtualization is not;
-- Full MosaicPCS ring switching, virtual `Val`/`Inc`, address virtualization, and Ligerito integration with the runtime (P3 multi-table stacking and a shared CPU+RAM opening are implemented);
+- BinaryShout and BinaryRouter sum-check arguments; the BinaryTwist reference reduction materializes quadratic `LT` factor tables for its prover, and the virtual-address multi-factor sum-checks are not yet performance-tuned;
+- Full MosaicPCS ring switching and Ligerito integration with the runtime (P3 multi-table stacking, bit-sliced address virtualization, virtual `Val`/`Inc`, and a shared CPU+RAM opening are implemented);
 - Recursion (only chunk planning, hash-chain and state-continuity reference aggregators, and a backend trait);
 - ZK sum-check and private IO (only `NoPrivacy` and a randomized hiding hash commitment);
 - RV64A reservation semantics inside R1CS (the reservation chain is recorded in the trace and checked during proof verification), RV64F/D execution and proof support (the decoder covers the core FP subset), executor/proof integration of the Sv39 walker, and a richer syscall runtime beyond `exit`/`hint`/`write`/`read`;
@@ -70,9 +70,9 @@ Explicitly not implemented:
 |---|---|---|
 | Dual SIMD R1CS over a shared witness | `magnetar-constraint` + `magnetar-cpu` | Generate uniform `s1`/`s2` and replace row-level checks |
 | Virtual Spartan | `magnetar-proof` + `magnetar-runtime` | Dual-relation lockstep, per-segment claims, claim router |
-| BinaryTwist / BinaryShout | `magnetar-memory` + `magnetar-runtime` | BinaryTwist has one-hot addresses, compact increments, virtual `Val`, read/write/final-state/address sum-checks, and batched P3 claims; next: address virtualization, then BinaryShout |
+| BinaryTwist / BinaryShout | `magnetar-memory` + `magnetar-runtime` | BinaryTwist has bit-sliced virtual addresses, compact increments, virtual `Val`, read/write/final-state/address sum-checks, and batched P3 claims; next: BinaryShout and performance tuning |
 | BinaryRouter | `magnetar-routing` + `magnetar-preprocess` | Routing identity + selector/offset claims |
-| MosaicPCS | `magnetar-pcs` | Multi-table P3 stacking and a shared CPU+RAM opening exist; next: address virtualization, ring switching |
+| MosaicPCS | `magnetar-pcs` | Multi-table P3 stacking and a shared CPU+RAM opening exist; next: ring switching |
 | Ligerito | `magnetar-pcs` | Linear-code PCS + Merkle + query sampling |
 | Recursion | `magnetar-recursion` | Verifier-in-the-VM, chunk state, aggregation |
 | ZK / hiding | `magnetar-privacy` | Blinded witness, ZK sum-check, private IO |
@@ -185,11 +185,11 @@ them:
 
 | width | CPU vars | CPU constraints | proof bytes | prove | verify |
 |---|---|---|---|---|---|
-| 64 | 6,991 | 11,933 | 347,605 | 0.36 s | 0.042 s |
-| 32 | 4,015 | 6,813 | 352,085 | 0.35 s | 0.025 s |
-| 8 | 1,783 | 2,973 | 352,181 | 0.31 s | 0.014 s |
+| 64 | 6,991 | 11,933 | 254,213 | 1.19 s | 0.036 s |
+| 32 | 4,015 | 6,813 | 212,013 | 1.20 s | 0.020 s |
+| 8 | 1,783 | 2,973 | 186,549 | 1.10 s | 0.012 s |
 
-At width 64 the proof splits into access=18,777, cpu=326,840, rows=1,860, and
+At width 64 the proof splits into access=17,881, cpu=234,344, rows=1,860, and
 rom=96 bytes. The changes behind these numbers:
 
 1. **Per-op ALU relations.** `simple_alu_row_relation` allocates only the gates
@@ -197,18 +197,19 @@ rom=96 bytes. The changes behind these numbers:
    variables/5,264 constraints per row under the uniform shifter+comparator
    circuit.
 2. **One mosaic PCS for CPU and RAM.** `P3MosaicCommitment` stacks the CPU
-   witness (2^13), the two RAM address columns (2 × 2^14), and the compact increment table into one 2^16 polynomial.
+   witness and the cycle-length address/increment tables into one polynomial; at width 64 this is 2^14, at width 32 2^13, and at width 8 2^12.
    `P3SharedPcs` plugs this batch into the Spartan proof: the CPU point and the
    BinaryTwist point claims are opened by the same P3 argument. The proof no
    longer pays for a separate CPU opening plus a separate RAM opening; the old
-   separate layout was 593,508 bytes, the shared layout is 347,605 bytes.
-3. **Batched BinaryTwist reductions.** Only `ra` and `wa` are committed as
-   full one-hot tables. `Inc` is a compact cycle-only table, and `Val` plus the
-   successor history are virtual: they are reconstructed from public initial
-   RAM and the committed write history through the `LT` identity. Read, write,
-   final-state, and the two address reductions contribute point claims. The
-   proof is bound to the trace's read/write words, and sub-word accesses update
-   only their lane.
+   separate layout was 593,508 bytes, the shared layout is 254,213 bytes.
+3. **Bit-sliced virtual addresses and values.** The address table commits
+   `2a+2` cycle-length bit columns (read bits, write bits, and two validity
+   bits); full one-hot addresses are reconstructed by the verifier. Booleanity
+   is checked by a batched sum-check over all address columns. `Inc` is a
+   compact cycle-only table, and `Val` plus the successor history are virtual
+   through the `LT` identity. Read, write, final-state, and address claims all
+   reduce to openings of the small address/increment tables. The proof is bound
+   to the trace's read/write words, and sub-word accesses update only their lane.
 4. **Register-only Merkle access log.** Memory steps no longer carry a Merkle
    chain or a 131 KiB initial-memory table: each step stores its event index
    and full-word values and is checked against the BinaryTwist witness. The
@@ -224,17 +225,15 @@ rom=96 bytes. The changes behind these numbers:
 prints the standalone batched BinaryTwist proof size, prove time, and verify
 time for a trace; `prove_unified_trace` uses the shared mosaic path.
 
-The reference `LT` reductions materialize the `j × j'` table, so their prover
-cost is quadratic in the cycle count; the paper's linear-time treatment is
-future work. The remaining structural gap is table size: the 2^16 stacked
-polynomial is dominated by the full one-hot `ra`/`wa` address tables. The next
-step is
-address virtualization: splitting each one-hot address into smaller component
-tables would shrink the committed RAM columns to roughly 2^10 and bring the
-shared P3 proof down to the CPU-witness arity. BinaryRouter would replace the
-remaining shift and compare circuits, and
-SIMD R1CS/BinarySpartan would pack many bit-lanes into one GF(2^128) element.
-The verifier still reconstructs the trace and merged system before checking the
+The reference `LT` reductions materialize the `j × j'` table, and the
+bit-sliced address sum-check folds many bit factors per round. Both are
+correctness-first reference code: `LT` is quadratic in the cycle count and the
+address sum-check dominates prove time (~1.2 s here). The paper's linear-time
+treatment and a specialized bit-product sum-check are the next performance
+work. The shared P3 arity is now driven by the CPU witness; the RAM tables are
+cycle-length. BinaryShout and BinaryRouter remain, and SIMD
+R1CS/BinarySpartan would pack many bit-lanes into one GF(2^128) element. The
+verifier still reconstructs the trace and merged system before checking the
 succinct CPU PCS proof, so it is not yet a fully succinct verifier.
 
 ## Coverage

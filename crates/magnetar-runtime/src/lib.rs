@@ -2161,7 +2161,7 @@ pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTracePr
     let pcs = P3BinaryPcs::new(100);
     let mosaic_tables = vec![
         P3MosaicTable { columns: vec![z] },
-        tables.main.clone(),
+        tables.addr.clone(),
         tables.inc.clone(),
     ];
     let commitment = pcs
