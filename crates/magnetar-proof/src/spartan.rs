@@ -7,11 +7,16 @@
 //! The reduction is real, but the PCS is pluggable and the bundled test PCS is
 //! deliberately non-succinct. BinarySpartan/Ligerito can replace it later.
 
+use crate::virtual_spartan::{
+    split_segment_claims, verify_segment_claims, SegmentClaim, VirtualSpartanError,
+};
 use crate::{
     eq, prove_product2, prove_product4, prove_product6, verify_rounds, Mle, Pcs, ProofError,
     SumcheckProof,
 };
-use magnetar_constraint::{Constraint, ConstraintError, ConstraintSystem, Expr, Witness, F2_128};
+use magnetar_constraint::{
+    Constraint, ConstraintError, ConstraintSystem, Expr, Witness, WitnessLayout, F2_128,
+};
 use magnetar_transcript::Sha256Transcript;
 use std::cell::RefCell;
 use thiserror::Error;
@@ -175,6 +180,8 @@ pub enum SpartanError {
     Verification(&'static str),
     #[error("SIMD instance count must be nonzero")]
     EmptySimd,
+    #[error(transparent)]
+    Virtual(#[from] VirtualSpartanError),
 }
 
 /// Build the padded Spartan witness vector `z` from a constraint witness.
@@ -396,6 +403,8 @@ pub struct LockstepProof<C: Clone + std::fmt::Debug, O: Clone + std::fmt::Debug>
     pub outer: SumcheckProof<F2_128>,
     pub inner: SumcheckProof<F2_128>,
     pub vw: F2_128,
+    pub ry: Vec<F2_128>,
+    pub segments: Vec<SegmentClaim>,
     pub opening: O,
 }
 
@@ -405,6 +414,7 @@ pub fn prove_lockstep<P: Pcs>(
     system_a: &ConstraintSystem,
     system_b: &ConstraintSystem,
     witness: &Witness,
+    layout: &WitnessLayout,
     pcs: &P,
 ) -> Result<LockstepProof<P::Commitment, P::Opening>, SpartanError> {
     system_a.check(witness)?;
@@ -514,6 +524,7 @@ pub fn prove_lockstep<P: Pcs>(
         });
     }
     let vw = z_mle.eval(&ry)?;
+    let segments = split_segment_claims(layout, &z, &ry)?;
     let opening = pcs.open(&z, &ry)?;
     Ok(LockstepProof {
         commitment,
@@ -526,6 +537,8 @@ pub fn prove_lockstep<P: Pcs>(
         outer,
         inner,
         vw,
+        ry,
+        segments,
         opening,
     })
 }
@@ -533,6 +546,7 @@ pub fn prove_lockstep<P: Pcs>(
 pub fn verify_lockstep<P: Pcs>(
     system_a: &ConstraintSystem,
     system_b: &ConstraintSystem,
+    layout: &WitnessLayout,
     proof: &LockstepProof<P::Commitment, P::Opening>,
     pcs: &P,
 ) -> Result<(), SpartanError> {
@@ -608,6 +622,12 @@ pub fn verify_lockstep<P: Pcs>(
     if inner_final != expected_inner {
         return Err(SpartanError::Verification("lockstep inner mismatch"));
     }
+    if proof.ry != ry {
+        return Err(SpartanError::Verification(
+            "lockstep witness point mismatch",
+        ));
+    }
+    verify_segment_claims(layout, &proof.segments, &ry, proof.vw)?;
     if !pcs.verify(&proof.commitment, &ry, proof.vw, &proof.opening)? {
         return Err(SpartanError::Verification("lockstep PCS opening rejected"));
     }
@@ -617,6 +637,7 @@ pub fn verify_lockstep<P: Pcs>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use magnetar_constraint::{Segment, SegmentKind, SegmentOwner};
     use magnetar_transcript::sha256;
 
     #[derive(Clone, Debug)]
@@ -814,11 +835,20 @@ mod tests {
             F2_128::from(3u64),
         ]);
         let pcs = TestPcs;
-        let proof = prove_lockstep(&system_a, &system_b, &witness, &pcs).unwrap();
-        verify_lockstep(&system_a, &system_b, &proof, &pcs).unwrap();
+        let layout = WitnessLayout::new(vec![
+            Segment::new("a", 0, 2, SegmentKind::Direct, SegmentOwner::Cpu),
+            Segment::new("b", 2, 2, SegmentKind::Direct, SegmentOwner::Cpu),
+        ])
+        .unwrap();
+        let proof = prove_lockstep(&system_a, &system_b, &witness, &layout, &pcs).unwrap();
+        verify_lockstep(&system_a, &system_b, &layout, &proof, &pcs).unwrap();
+
+        let mut tampered = proof.clone();
+        tampered.v_a0 = tampered.v_a0 + F2_128::from(1u64);
+        assert!(verify_lockstep(&system_a, &system_b, &layout, &tampered, &pcs).is_err());
 
         let mut tampered = proof;
-        tampered.v_a0 = tampered.v_a0 + F2_128::from(1u64);
-        assert!(verify_lockstep(&system_a, &system_b, &tampered, &pcs).is_err());
+        tampered.segments[0].value = tampered.segments[0].value + F2_128::from(1u64);
+        assert!(verify_lockstep(&system_a, &system_b, &layout, &tampered, &pcs).is_err());
     }
 }

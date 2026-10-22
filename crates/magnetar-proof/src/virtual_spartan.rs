@@ -10,7 +10,7 @@ use thiserror::Error;
 
 use crate::{eq, Mle, ProofError};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SegmentClaim {
     pub name: String,
     pub point: Vec<F2_128>,
