@@ -13,16 +13,12 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AddressMultiplicityProof {
-    pub address_bits: usize,
-    pub cycle_bits: usize,
     pub commitment: P3Commitment,
     pub lambda: F2_128,
     pub rounds: Vec<[F2_128; 4]>,
-    pub challenges: Vec<F2_128>,
     pub a_eval: F2_128,
     pub opening: P3Opening,
     pub collision_rounds: Vec<[F2_128; 5]>,
-    pub collision_challenges: Vec<F2_128>,
     pub a_r_eval: F2_128,
     pub a_rp_eval: F2_128,
     pub r_opening: P3Opening,
@@ -71,16 +67,12 @@ pub fn prove_address_multiplicity(
     let mut rp_point = r_prime;
     rp_point.extend_from_slice(&collision_challenges);
     Ok(AddressMultiplicityProof {
-        address_bits,
-        cycle_bits,
         commitment,
         lambda,
         rounds,
-        challenges: challenges.clone(),
         a_eval,
         opening,
         collision_rounds,
-        collision_challenges,
         a_r_eval: fold_all(&table, &r_point),
         a_rp_eval: fold_all(&table, &rp_point),
         r_opening: pcs.open(&table, &r_point)?,
@@ -96,24 +88,22 @@ pub fn verify_address_multiplicity(
     let pcs = P3BinaryPcs::new(100);
     let cells = witness.initial.len();
     let cycles = witness.cycles.next_power_of_two();
-    if proof.address_bits != cells.trailing_zeros() as usize
-        || proof.cycle_bits != cycles.trailing_zeros() as usize
-    {
-        return Ok(false);
-    }
+    let address_bits = cells.trailing_zeros() as usize;
+    let cycle_bits = cycles.trailing_zeros() as usize;
     let (_, expected) = table_and_flags(witness, write, cells, cycles);
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-address");
     absorb_commitment(&mut transcript, &proof.commitment);
     if challenge(&mut transcript, "lambda") != proof.lambda {
         return Ok(false);
     }
-    let rho = sample_point(&mut transcript, proof.cycle_bits);
-    let eq = eq_index(&rho, proof.address_bits, proof.cycle_bits);
+    let rho = sample_point(&mut transcript, cycle_bits);
+    let eq = eq_index(&rho, address_bits, cycle_bits);
     let target = target_vector(&eq, &expected, cells);
     let mut sum = F2_128::from(0u64);
     let mut eq_folded = eq;
     let mut target_folded = target;
-    for (round, &expected_challenge) in proof.rounds.iter().zip(&proof.challenges) {
+    let mut challenges = Vec::with_capacity(proof.rounds.len());
+    for round in &proof.rounds {
         if round[0] + round[1] != sum {
             return Ok(false);
         }
@@ -121,9 +111,7 @@ pub fn verify_address_multiplicity(
             transcript.absorb("round", &value.value().to_le_bytes());
         }
         let challenge = challenge(&mut transcript, "sumcheck");
-        if challenge != expected_challenge {
-            return Ok(false);
-        }
+        challenges.push(challenge);
         sum = evaluate_round4(round, challenge);
         eq_folded = fold(&eq_folded, challenge);
         target_folded = fold(&target_folded, challenge);
@@ -137,15 +125,12 @@ pub fn verify_address_multiplicity(
         return Ok(false);
     }
 
-    let (r, r_prime, c) = sample_collision_point(&mut transcript, proof.address_bits);
-    let rho_cycle = sample_point(&mut transcript, proof.cycle_bits);
+    let (r, r_prime, c) = sample_collision_point(&mut transcript, address_bits);
+    let rho_cycle = sample_point(&mut transcript, cycle_bits);
     let mut cycle_weights = eq_table(&rho_cycle, cycles);
     let mut collision_sum = F2_128::from(0u64);
-    for (round, &expected_challenge) in proof
-        .collision_rounds
-        .iter()
-        .zip(&proof.collision_challenges)
-    {
+    let mut collision_challenges = Vec::with_capacity(proof.collision_rounds.len());
+    for round in &proof.collision_rounds {
         if round[0] + round[1] != collision_sum {
             return Ok(false);
         }
@@ -153,9 +138,7 @@ pub fn verify_address_multiplicity(
             transcript.absorb("round", &value.value().to_le_bytes());
         }
         let challenge = challenge(&mut transcript, "sumcheck");
-        if challenge != expected_challenge {
-            return Ok(false);
-        }
+        collision_challenges.push(challenge);
         collision_sum = evaluate_round5(round, challenge);
         cycle_weights = fold(&cycle_weights, challenge);
     }
@@ -168,15 +151,10 @@ pub fn verify_address_multiplicity(
         return Ok(false);
     }
     let mut r_point = r;
-    r_point.extend_from_slice(&proof.collision_challenges);
+    r_point.extend_from_slice(&collision_challenges);
     let mut rp_point = r_prime;
-    rp_point.extend_from_slice(&proof.collision_challenges);
-    let boolean_ok = pcs.verify(
-        &proof.commitment,
-        &proof.challenges,
-        proof.a_eval,
-        &proof.opening,
-    )?;
+    rp_point.extend_from_slice(&collision_challenges);
+    let boolean_ok = pcs.verify(&proof.commitment, &challenges, proof.a_eval, &proof.opening)?;
     let r_ok = pcs.verify(
         &proof.commitment,
         &r_point,

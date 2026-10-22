@@ -99,7 +99,8 @@
 - `940f47b`：Router/Shout proof 移除 `address_bits`/`cycle_bits`/`claimed`，shout 2,298 B、store_router 5,346 B。
 - `e89225e`：standalone read/write proof 移除 `address_bits`/`cycle_bits`。
 - `395630f`：新增 `trace_commitment` 原型，把 trace 展平为 P3 多项式并验证 commitment/opening。
-- 本轮：trace commitment 改为 4 个 aligned segments，并用 `split_segment_claims`/`verify_segment_claims` 校验重建；A2 仍为 🟡，尚未接入 unified。
+- `20f27d9`：trace commitment 改为 4 个 aligned segments，并校验 segment 重建。
+- 本轮：standalone `AddressMultiplicityProof` 移除可重算的 `address_bits`/`cycle_bits`/`challenges`/`collision_challenges`，verifier 从 transcript 派生；D4 仍为 standalone，未接入 unified。
 
 ## 二、逐项差距
 
