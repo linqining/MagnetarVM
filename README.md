@@ -122,7 +122,7 @@ cargo fmt --all -- --check
 cargo test --workspace
 ```
 
-At the time of writing the suite contains **282 tests across the 15 crates,
+At the time of writing the suite contains **283 tests across the 15 crates,
 all passing**; clippy with `-D warnings` and `rustfmt --check` are clean.
 The dev profile optimizes dependencies at `opt-level = 3` and workspace crates
 at `opt-level = 2`, so the PCS-heavy tests stay in the second range instead of

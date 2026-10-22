@@ -424,6 +424,8 @@ impl Pcs for PackedSharedPcs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use magnetar_constraint::{ConstraintSystem, Expr, Witness};
+    use magnetar_proof::{prove_spartan, verify_spartan};
 
     fn values(size: usize, seed: u64) -> Vec<F2_128> {
         (0..size)
@@ -544,5 +546,30 @@ mod tests {
         let mut verifier = Sha256Transcript::new("flatten-table-test");
         verify_batching(&proof, &claims, mosaic.total_bits, &mut verifier).unwrap();
         assert_eq!(proof.value, mosaic.eval_packed(&proof.point).unwrap());
+    }
+    #[test]
+    fn packed_shared_pcs_drives_spartan() {
+        let mut system = ConstraintSystem::new(3);
+        system.add_constraint(
+            Expr::var(0).add(Expr::var(1)),
+            Expr::constant(1u64),
+            Expr::var(2),
+        );
+        let witness = Witness::new(vec![
+            F2_128::from(1u64),
+            F2_128::from(2u64),
+            F2_128::from(3u64),
+        ]);
+        let aux_value = F2_128::from(77u64);
+        let aux_point = vec![F2_128::from(5u64), F2_128::from(9u64)];
+        let adapter = PackedSharedPcs::new(
+            100,
+            vec![vec![aux_value; 4]],
+            vec![aux_point],
+            vec![aux_value],
+        )
+        .unwrap();
+        let proof = prove_spartan(&system, &witness, &adapter).unwrap();
+        verify_spartan(&system, &proof, &adapter).unwrap();
     }
 }

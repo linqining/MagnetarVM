@@ -46,7 +46,8 @@
 - `d88d2e7`：增加 `batch_claims`/`verify_batching`，把多个 packed claims 归约成一个 `G(r)=v` claim。
 - `fc53a87`：`PackedMosaic::commit/open/verify` 用单个 P3 commitment/opening 验证 packed `G`。
 - `c2dbfba`：新增 `PackedSharedPcs` adapter（primary + aux components → packed `G` → batching → 单 P3 opening）。
-- 本轮：新增 `flatten_table_claims`，把多列 P3 claim 转成 per-column packed claims（带 lift），并用测试验证 multi-column → packed G → batching。
+- `4bee0e4`：新增 `flatten_table_claims`，把多列 P3 claim 转成 per-column packed claims。
+- 本轮：`PackedSharedPcs` 通过 `prove_spartan`/`verify_spartan` 的端到端测试，验证 packed `G` + batching + 单 P3 opening 可以驱动 CPU Spartan proof。
 
 ## 二、逐项差距
 
