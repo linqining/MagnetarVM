@@ -9,6 +9,7 @@ pub mod binary_shout;
 pub mod binary_twist;
 pub mod binary_twist_address;
 pub mod register_twist;
+pub mod trace_commitment;
 
 use crate::binary_router::{
     prove_binary_router_claims, verify_binary_router_claims, BinaryRouterWitness, RouterMode,
