@@ -36,7 +36,8 @@
 - `2043741`：增加 4 个 one-hot width bits（`Q_st`）并与 public width 链接。
 - `9b7adeb`：新增 `DualSimdR1cs`/`SimdR1cs` 边界与 128-bit binary witness packing（`constraint::simd`）。
 - `6001e72`：BinaryShout 扩展到 `c=10`，加入 shift kind/shamt 与 store width selector columns。
-- 本轮：ROM 改为 public `Statement` 输入，三个 proof 结构移除 `rom` 字段；D13 完成。
+- `b04fb23`：ROM 改为 public `Statement` 输入，三个 proof 结构移除 `rom` 字段；D13 完成。
+- 本轮：BinaryShout metadata 改为来自 public `preprocess` bytecode table，扩到 `c=12`（micro-PC、is_halt）；D12 进入 🟡。
 
 ## 二、逐项差距
 
@@ -86,12 +87,12 @@
 | D4 | one-hot/collision polynomial，Frobenius 优化（§4.4） | 只做 booleanity；one-hot 由 bit 构造保证 | 🟡 | 论文的 collision sum-check 未实现；当前 bit-sliced 下不需要，但不是论文原样 |
 | D5 | `LT` 线性时间处理（§4.4） | `LT` 物化 `T × T`，prover 二次；已记录 TODO | ❌ | 线性时间 `LT` 是研究项；当前不能扩展到大 T |
 | D6 | `Inc` 紧凑表、`Val`/`Next` 虚拟 | 已实现 | ✅ | 保持 |
-| D7 | BinaryShout for bytecode：公开表 `Val` 有 `c` 列，读地址 bits + 所有 value columns 一个 sum-check；bytecode 表含 micro-PC/decoded fields（§4.4、§5.5） | `binary_shout.rs`：16/32-bit ROM 读取，支持 `c=10` 个 value columns（word、length、opcode、rd、rs1、rs2、imm、shift kind、shift shamt、store width），用随机 `γ` 合并成一个 read claim；地址 bit + valid；仍不含 micro-PC/完整 bytecode table | 🟡 | 增加 micro-PC/bytecode table；把 selector columns 接到 Router 的 `Q` |
+| D7 | BinaryShout for bytecode：公开表 `Val` 有 `c` 列，读地址 bits + 所有 value columns 一个 sum-check；bytecode 表含 micro-PC/decoded fields（§4.4、§5.5） | `binary_shout.rs`：16/32-bit ROM 读取，`c=12` columns（word、length、opcode、rd、rs1、rs2、imm、shift kind/shamt、store width、micro-PC、is_halt）；metadata 直接来自 public `preprocess` bytecode table；仍是一 instruction = 一 micro-op，无 expansion | 🟡 | instruction expansion/micro-PC 细化；把 selector columns 接到 Router 的 `Q` |
 | D8 | Shout 的地址虚拟化/one-hot 检查 | bit-sliced 地址 + booleanity；valid 列 | 🟡 | 同 D3/D4；当前是 bit-sliced 特化 |
 | D9 | BinaryRouter for shifts：`Y(o,j)=Σ X·Q·R`，`Q` 来自 bytecode 并由 Shout 认证；register-specified shift 展开为固定 virtual instructions（§5.4） | `binary_router.rs`：64-bit shift，按 public `ShiftRoute` 计算系数；`Q` 不存在，直接按 row 的 route 求值；register shamt 直接动态使用 | 🟡 | 引入 one-hot `Q`；由 Shout 认证 `Q`；register shift 展开；`X` 用 direct copy segment |
 | D10 | BinaryRouter for stores：输出是 `Inc`（old XOR new），`R_st` 带 3 个 offset bits，`Q_st` 4 个 width selector（§5.4） | 路由 `Inc`；3 个 offset bits + 4 个 one-hot width bits 已提交，并分别通过 sumcheck 链接到 public offset/width；routing 仍用 public offset/width；未接 bytecode selector | 🟡 | 让 routing 直接使用 offset/width 的 MLE；接 bytecode width selector `Q_st` |
 | D11 | 两个 BinaryRouter 实例（shift、store） | 一个通用 router claim 覆盖两类 route | 🟡 | 拆成两个实例，各自 claim/selector |
-| D12 | bytecode 预处理：instruction expansion、public ROM/bytecode table（§2、§5.5） | 一 instruction = 一 micro-op；ROM 由 trace 携带 | ❌ | 实现 expansion + bytecode table + micro-PC |
+| D12 | bytecode 预处理：instruction expansion、public ROM/bytecode table（§2、§5.5） | public `preprocess` bytecode table 已存在并被 Shout 使用（含 selectors/micro-PC）；仍是一 instruction = 一 micro-op，没有 instruction expansion | 🟡 | 实现 expansion（尤其 register-shift 的固定 virtual instruction sequence）与多 micro-op 表 |
 | D13 | ROM/bytecode 是 public input，不由 proof 携带 | `Statement` 现在携带 `rom`；`TraceProof`/`UnifiedTraceProof`/`ChunkedTraceProof` 已移除 `rom` 字段；verifier 从 statement 使用 ROM | ✅ | bytecode table/micro-PC 仍需按 D7/D12 完成 |
 
 ### E. PCS / MosaicPCS

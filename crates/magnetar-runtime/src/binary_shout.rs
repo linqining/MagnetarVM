@@ -10,10 +10,13 @@ use magnetar_constraint::{Field, F2_128};
 use magnetar_pcs::{
     P3BinaryPcs, P3MosaicCommitment, P3MosaicOpening, P3MosaicPoint, P3MosaicTable,
 };
+use magnetar_preprocess::preprocess;
 use magnetar_proof::ProofError;
-use magnetar_spec::{Op, Trace};
+use magnetar_routing::ShiftKind;
+use magnetar_spec::{MachineConfig, Op, ProgramImage, Trace};
 use magnetar_transcript::Sha256Transcript;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 const HIGH_SCALE: u64 = 1 << 16;
 
@@ -39,7 +42,7 @@ impl BinaryShoutWitness {
         let address_bits = cells.trailing_zeros() as usize;
         let cycles = trace.rows.len().next_power_of_two().max(2);
         let cycle_bits = cycles.trailing_zeros() as usize;
-        let columns = 10usize;
+        let columns = 12usize;
         let mut rom = vec![vec![F2_128::from(0u64); columns]; cells];
         for (index, word) in trace.rom.iter().enumerate() {
             rom[2 * index][0] = F2_128::from(u64::from(*word & 0xffff));
@@ -50,6 +53,25 @@ impl BinaryShoutWitness {
         let mut is_32 = vec![F2_128::from(0u64); cycles];
         let mut valid = vec![F2_128::from(0u64); cycles];
         let mut read_value = vec![vec![F2_128::from(0u64); columns]; cycles];
+        let preprocessed = preprocess(
+            &ProgramImage::new(trace.initial_state.pc, trace.rom.clone()),
+            MachineConfig {
+                entry: trace.config.entry,
+                rom_base: trace.config.rom_base,
+                ram_base: trace.config.ram_base,
+                ram_size: trace.config.ram_size,
+                stack_top: trace.config.stack_top,
+                max_cycles: trace.config.max_cycles,
+            },
+        )
+        .ok();
+        let bytecode = preprocessed.as_ref().map(|program| {
+            program
+                .bytecode
+                .iter()
+                .map(|row| (row.micro_pc, row))
+                .collect::<HashMap<_, _>>()
+        });
         for (cycle, row) in trace.rows.iter().enumerate() {
             if row.instruction_len != 2 && row.instruction_len != 4 {
                 return Err(ProofError::Pcs(
@@ -71,23 +93,54 @@ impl BinaryShoutWitness {
             }
             valid[cycle] = F2_128::from(1u64);
             is_32[cycle] = F2_128::from(u64::from(row.instruction_len == 4));
-            let shift_kind = match row.instruction.op {
-                Op::Sll | Op::Slli => 1u64,
-                Op::Srl | Op::Srli => 2,
-                Op::Sra | Op::Srai => 3,
-                _ => 0,
-            };
-            let shift_shamt = if shift_kind == 0 {
-                0
-            } else if matches!(row.instruction.op, Op::Slli | Op::Srli | Op::Srai) {
-                u64::from(row.instruction.shamt)
+            let bytecode_row = bytecode
+                .as_ref()
+                .and_then(|rows| rows.get(&row.pc).copied());
+            let (shift_kind, shift_shamt, store_width, is_halt) = if let Some(bytecode_row) =
+                bytecode_row
+            {
+                let shift_kind = bytecode_row
+                    .selectors
+                    .shift
+                    .map_or(0, |route| match route.kind {
+                        ShiftKind::LogicalLeft => 1,
+                        ShiftKind::LogicalRight => 2,
+                        ShiftKind::ArithmeticRight => 3,
+                    });
+                let shift_shamt = bytecode_row
+                    .selectors
+                    .shift
+                    .map_or(0, |route| u64::from(route.shamt));
+                let store_width = bytecode_row
+                    .selectors
+                    .store_width
+                    .map_or(0, |width| u64::from(width.bytes() as u8));
+                (
+                    shift_kind,
+                    shift_shamt,
+                    store_width,
+                    u64::from(bytecode_row.selectors.is_halt),
+                )
             } else {
-                row.rs2_val & 0x3f
+                let shift_kind = match row.instruction.op {
+                    Op::Sll | Op::Slli => 1u64,
+                    Op::Srl | Op::Srli => 2,
+                    Op::Sra | Op::Srai => 3,
+                    _ => 0,
+                };
+                let shift_shamt = if shift_kind == 0 {
+                    0
+                } else if matches!(row.instruction.op, Op::Slli | Op::Srli | Op::Srai) {
+                    u64::from(row.instruction.shamt)
+                } else {
+                    row.rs2_val & 0x3f
+                };
+                let store_width = row
+                    .mem
+                    .filter(|access| access.is_write)
+                    .map_or(0, |access| u64::from(access.width));
+                (shift_kind, shift_shamt, store_width, 0)
             };
-            let store_width = row
-                .mem
-                .filter(|access| access.is_write)
-                .map_or(0, |access| u64::from(access.width));
             let metadata = vec![
                 F2_128::from(u64::from(row.instruction_word)),
                 F2_128::from(u64::from(row.instruction_len)),
@@ -99,6 +152,8 @@ impl BinaryShoutWitness {
                 F2_128::from(shift_kind),
                 F2_128::from(shift_shamt),
                 F2_128::from(store_width),
+                F2_128::from(row.pc),
+                F2_128::from(is_halt),
             ];
             for column in 1..columns {
                 rom[index][column] = metadata[column];
