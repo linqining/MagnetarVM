@@ -231,9 +231,7 @@ pub struct BinaryShoutProof {
     pub cycle_bits: usize,
     pub boolean: AddressBooleanClaim,
     pub claimed: F2_128,
-    pub cycle_point: Vec<F2_128>,
     pub rounds: Vec<Vec<F2_128>>,
-    pub challenges: Vec<F2_128>,
     pub ra0_bit_evals: Vec<F2_128>,
     pub ra1_bit_evals: Vec<F2_128>,
     pub is_32_eval: F2_128,
@@ -356,6 +354,26 @@ fn sumcheck_terms(
         challenges.push(challenge);
     }
     Ok((polynomials, challenges))
+}
+
+fn replay_terms_derived(
+    rounds: &[Vec<F2_128>],
+    mut sum: F2_128,
+    transcript: &mut Sha256Transcript,
+) -> Option<(F2_128, Vec<F2_128>)> {
+    let mut challenges = Vec::with_capacity(rounds.len());
+    for round in rounds {
+        if round.len() < 2 || round[0] + round[1] != sum {
+            return None;
+        }
+        for coefficient in round {
+            transcript.absorb("round", &coefficient.value().to_le_bytes());
+        }
+        let challenge = challenge(transcript, "sumcheck");
+        challenges.push(challenge);
+        sum = interpolate(round, challenge);
+    }
+    Some((sum, challenges))
 }
 
 fn replay_terms(
@@ -564,9 +582,7 @@ pub(crate) fn prove_binary_shout_claims(
             cycle_bits: n,
             boolean,
             claimed,
-            cycle_point: rho_j,
             rounds,
-            challenges,
             ra0_bit_evals,
             ra1_bit_evals,
             is_32_eval,
@@ -643,9 +659,6 @@ pub(crate) fn verify_binary_shout_claims(
     let gammas = (0..columns)
         .map(|_| challenge(&mut transcript, "column"))
         .collect::<Vec<_>>();
-    if proof.cycle_point != rho_j {
-        return Ok(None);
-    }
     let eq_j = eq_vector(&rho_j, cycles);
     let claimed =
         eq_j.iter()
@@ -663,16 +676,13 @@ pub(crate) fn verify_binary_shout_claims(
         return Ok(None);
     }
     transcript.absorb("claimed", &proof.claimed.value().to_le_bytes());
-    let Some(sum) = replay_terms(
-        &proof.rounds,
-        &proof.challenges,
-        proof.claimed,
-        &mut transcript,
-    ) else {
+    let Some((sum, challenges)) =
+        replay_terms_derived(&proof.rounds, proof.claimed, &mut transcript)
+    else {
         return Ok(None);
     };
-    let r_j = &proof.challenges[..n];
-    let r_k = &proof.challenges[n..];
+    let r_j = &challenges[..n];
+    let r_k = &challenges[n..];
     let mut column_evals = Vec::with_capacity(columns);
     for column in 0..columns {
         let values = witness
