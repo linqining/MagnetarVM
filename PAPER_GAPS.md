@@ -23,6 +23,11 @@
 2. **没有 Dual SIMD R1CS / BinarySpartan / Virtual Spartan**：当前是单一 `F2_128` R1CS + 通用 Spartan，所有 witness 都进 `z` 并被提交；论文是两个 SIMD R1CS 共享 witness，BinarySpartan 打包 128 bit/field element，Virtual Spartan 输出 per-segment claims。
 3. **没有完整的 MosaicPCS**：当前是 P3 多表/多点 opening，不是论文的 aligned-subcube packing `G` + lift + batch + ring switching + 单次 PCS evaluation。
 
+## 进度记录
+
+- `00818e8`：BinaryShout 支持 16/32-bit instruction。
+- 本轮：BinaryRouter store 路由改为 `Inc`（old XOR new），与 BinaryTwist 的 committed `Inc` 对齐；offset-bit claims 与 `Q_st` 尚未实现。
+
 ## 二、逐项差距
 
 ### A. 端到端协议与 succinctness
@@ -74,7 +79,7 @@
 | D7 | BinaryShout for bytecode：公开表 `Val` 有 `c` 列，读地址 bits + 所有 value columns 一个 sum-check；bytecode 表含 micro-PC/decoded fields（§4.4、§5.5） | `binary_shout.rs`：16/32-bit ROM 读取，1 个 value 列（instruction word），地址 bit + valid；不含 decoded fields/micro-PC，不处理多列 `c` | 🟡 | 扩展 table columns；把 decoded fields/selector `Q` 变成 Shout claims；接 bytecode table |
 | D8 | Shout 的地址虚拟化/one-hot 检查 | bit-sliced 地址 + booleanity；valid 列 | 🟡 | 同 D3/D4；当前是 bit-sliced 特化 |
 | D9 | BinaryRouter for shifts：`Y(o,j)=Σ X·Q·R`，`Q` 来自 bytecode 并由 Shout 认证；register-specified shift 展开为固定 virtual instructions（§5.4） | `binary_router.rs`：64-bit shift，按 public `ShiftRoute` 计算系数；`Q` 不存在，直接按 row 的 route 求值；register shamt 直接动态使用 | 🟡 | 引入 one-hot `Q`；由 Shout 认证 `Q`；register shift 展开；`X` 用 direct copy segment |
-| D10 | BinaryRouter for stores：输出是 `Inc`（old XOR new），`R_st` 带 3 个 offset bits，`Q_st` 4 个 width selector（§5.4） | 当前路由 **new word**，不是 `Inc`；offset 来自 access，但未输出 offset-bit claims；width 未做 one-hot `Q_st` | 🟡 | 改成路由 `Inc`；输出 offset-bit claims；接 bytecode width selector |
+| D10 | BinaryRouter for stores：输出是 `Inc`（old XOR new），`R_st` 带 3 个 offset bits，`Q_st` 4 个 width selector（§5.4） | 已改为路由 `Inc`（old XOR new）：written bits 用 old⊕source 两个 source，unwritten 为 0；offset 仍来自 public access，未输出 offset-bit claims；width 未做 one-hot `Q_st` | 🟡 | 输出 offset-bit claims；接 bytecode width selector `Q_st` |
 | D11 | 两个 BinaryRouter 实例（shift、store） | 一个通用 router claim 覆盖两类 route | 🟡 | 拆成两个实例，各自 claim/selector |
 | D12 | bytecode 预处理：instruction expansion、public ROM/bytecode table（§2、§5.5） | 一 instruction = 一 micro-op；ROM 由 trace 携带 | ❌ | 实现 expansion + bytecode table + micro-PC |
 | D13 | ROM/bytecode 是 public input，不由 proof 携带 | proof 携带 `rom: Vec<u32>`；statement 有 program_hash | 🟡 | 由 statement/预处理提供 ROM；proof 只带 commitment/claims |

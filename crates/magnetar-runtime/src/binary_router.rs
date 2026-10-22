@@ -1,9 +1,11 @@
 //! Reference BinaryRouter reduction for 64-bit shifts and sub-word stores.
 //!
 //! Each routed row supplies a 128-bit input (64 old/input bits followed by 64
-//! source bits) and a 64-bit output. The public route maps every output bit to
-//! either zero or one/two input bits (the two-bit case is the XOR route of a
-//! sub-word store). The prover commits to the input bits; the verifier folds
+//! source bits) and a 64-bit output. For shifts the output is the shifted word;
+//! for sub-word stores it is the RAM increment (old XOR new), matching the
+//! committed `Inc` table of BinaryTwist. The public route maps every output
+//! bit to zero, one, or two input bits; the two-bit case is the XOR route of a
+//! store increment. The prover commits to the input bits; the verifier folds
 //! the public routing coefficients and checks the output with a sum-check.
 
 use magnetar_constraint::{Field, F2_128};
@@ -36,9 +38,9 @@ impl RouterRoute {
             RouterRoute::Store(route) => {
                 let written = route.written_bits();
                 if written.contains(&output_bit) {
-                    vec![SOURCE_OFFSET + (output_bit - route.offset * 8)]
+                    vec![output_bit, SOURCE_OFFSET + (output_bit - route.offset * 8)]
                 } else {
-                    vec![output_bit]
+                    Vec::new()
                 }
             }
         }
@@ -128,7 +130,7 @@ impl BinaryRouterWitness {
                         .map_err(|error| ProofError::Pcs(error.to_string()))?;
                     routes.push(RouterRoute::Store(route));
                     inputs.push((old, source));
-                    outputs.push(new);
+                    outputs.push(old ^ new);
                     write_word(&mut ram, word, new);
                 }
                 _ => {
