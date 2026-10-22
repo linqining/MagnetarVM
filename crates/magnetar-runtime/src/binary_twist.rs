@@ -884,7 +884,6 @@ pub struct ReadHistoryClaim {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BinaryTwistReadClaim {
-    pub claimed_read: F2_128,
     pub initial: ReadInitialClaim,
     pub history: ReadHistoryClaim,
 }
@@ -903,7 +902,6 @@ pub struct WriteHistoryClaim {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BinaryTwistWriteClaim {
-    pub claimed_write: F2_128,
     pub base: WriteBaseClaim,
     pub history: WriteHistoryClaim,
 }
@@ -922,8 +920,6 @@ pub struct BinaryTwistUpdateClaim {
 /// empty and shares the CPU witness's mosaic commitment.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BinaryTwistRamProof {
-    pub address_bits: usize,
-    pub cycle_bits: usize,
     pub boolean: AddressBooleanClaim,
     pub read: BinaryTwistReadClaim,
     pub write: BinaryTwistWriteClaim,
@@ -1334,7 +1330,6 @@ pub(crate) fn prove_binary_twist_claims(
     });
     inc_expected.push(vec![inc_eval]);
     let read = BinaryTwistReadClaim {
-        claimed_read,
         initial: initial_claim,
         history: history_claim,
     };
@@ -1538,7 +1533,6 @@ pub(crate) fn prove_binary_twist_claims(
     });
     inc_expected.push(vec![successor_inc]);
     let write = BinaryTwistWriteClaim {
-        claimed_write,
         base: base_claim,
         history: history_claim,
     };
@@ -1617,8 +1611,6 @@ pub(crate) fn prove_binary_twist_claims(
     addr_expected.extend(inc_expected);
     Ok((
         BinaryTwistRamProof {
-            address_bits: a,
-            cycle_bits: n,
             boolean,
             read,
             write,
@@ -1658,9 +1650,7 @@ pub(crate) fn verify_binary_twist_claims(
     let address_bits = cells.trailing_zeros() as usize;
     let cycle_bits = cycles.trailing_zeros() as usize;
     let addr_columns = 2 * address_bits + 2;
-    if proof.address_bits != address_bits
-        || proof.cycle_bits != cycle_bits
-        || commitment.tables.len() <= table_index + 1
+    if commitment.tables.len() <= table_index + 1
         || commitment.tables[table_index].num_variables != cycle_bits.max(1)
         || commitment.tables[table_index].num_columns != addr_columns
         || commitment.tables[table_index + 1].num_variables != cycle_bits.max(1)
@@ -1720,9 +1710,6 @@ pub(crate) fn verify_binary_twist_claims(
         .fold(F2_128::from(0u64), |sum, (weight, value)| {
             sum + *weight * *value
         });
-    if proof.read.claimed_read != claimed_read {
-        return Ok(None);
-    }
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-read-initial");
     absorb_mosaic_commitment(&mut transcript, commitment);
@@ -1831,9 +1818,6 @@ pub(crate) fn verify_binary_twist_claims(
         .fold(F2_128::from(0u64), |sum, (weight, value)| {
             sum + *weight * *value
         });
-    if proof.write.claimed_write != claimed_write {
-        return Ok(None);
-    }
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-write-base");
     absorb_mosaic_commitment(&mut transcript, commitment);
@@ -2083,7 +2067,8 @@ mod ram_tests {
         assert!(verify_binary_twist_ram(&witness, &proof).unwrap());
 
         let mut tampered = proof.clone();
-        tampered.read.claimed_read = tampered.read.claimed_read + F2_128::from(1u64);
+        tampered.read.initial.rounds[0][0] =
+            tampered.read.initial.rounds[0][0] + F2_128::from(1u64);
         assert!(!verify_binary_twist_ram(&witness, &tampered).unwrap());
 
         let mut tampered = proof.clone();

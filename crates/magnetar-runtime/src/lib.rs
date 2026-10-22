@@ -3231,8 +3231,8 @@ mod tests {
         assert!(verify_unified_trace(&trace, &tampered, 8).is_err());
 
         let mut tampered = proof.clone();
-        tampered.access.ram.read.claimed_read =
-            tampered.access.ram.read.claimed_read + F2_128::from(1u64);
+        tampered.access.ram.read.initial.rounds[0][0] =
+            tampered.access.ram.read.initial.rounds[0][0] + F2_128::from(1u64);
         assert!(verify_unified_trace(&trace, &tampered, 8).is_err());
 
         let mut broken = trace.clone();
@@ -4363,12 +4363,13 @@ mod tests {
         verify_trace_access(&trace, &proof).unwrap();
 
         let mut tampered = proof.clone();
-        tampered.ram.read.claimed_read = tampered.ram.read.claimed_read + F2_128::from(1u64);
+        tampered.ram.read.initial.rounds[0][0] =
+            tampered.ram.read.initial.rounds[0][0] + F2_128::from(1u64);
         assert!(verify_trace_access(&trace, &tampered).is_err());
 
         let mut tampered = proof.clone();
-        tampered.registers.read.claimed_read =
-            tampered.registers.read.claimed_read + F2_128::from(1u64);
+        tampered.registers.read.initial.rounds[0][0] =
+            tampered.registers.read.initial.rounds[0][0] + F2_128::from(1u64);
         assert!(verify_trace_access(&trace, &tampered).is_err());
 
         assert!(verify_trace_access(&trace, &tampered).is_err());

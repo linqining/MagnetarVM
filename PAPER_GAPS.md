@@ -94,7 +94,8 @@
 - `90b042b`：`ReadInitialClaim`/`UpdateClaim` 的 `ra/wa/inc` evals 移除，access 降至 15,114 B。
 - `cb003ee`：`ReadHistoryClaim`/`WriteBaseClaim` evals 移除，access 降至 14,042 B。
 - `81b0192`：`WriteHistoryClaim` current/successor evals 移除，access 降至 13,306 B。
-- 本轮：`ReadInitialClaim.cycle_point` 与 `UpdateClaim.cell_point` 移除，access 降至 12,874 B。
+- `0450061`：`ReadInitialClaim.cycle_point` 与 `UpdateClaim.cell_point` 移除，access 降至 12,874 B。
+- 本轮：`BinaryTwistRamProof` 的 `address_bits`/`cycle_bits` 与 `claimed_read`/`claimed_write` 移除，access 降至 12,778 B。
 
 ## 二、逐项差距
 
@@ -103,7 +104,7 @@
 | # | 论文要求（§） | 当前实现 | 状态 | 剩余工作 |
 |---|---|---|---|---|
 | A1 | 协议只发送一个 commitment，所有 claims 由一个 PCS evaluation 证明（§5.5） | unified proof 中 CPU/RAM/Shout/Router 共享一个 P3 commitment/opening；但 chunked/per-row 仍有独立 P3 proof，register access 仍有 Merkle | 🟡 | 把 register、chunk、per-row 也并入同一 packed commitment；去掉额外 opening |
-| A2 | 证明大小不随 trace 行数线性增长；verifier 不重建 trace（§2、§5.5） | `rom` 在 public `Statement`；`access.steps` 已删除；unified 与 chunked proof 都不再携带 `rows`（verifier 与 trace 一起接收 proof）；unified proof 265,655 B；但 verifier 仍需要完整 trace 并重建 CPU system，per-row CPU 证明仍随行数增长 | 🟡 | committed trace/segment layout + Virtual Spartan 消除 verifier 对完整 trace 的依赖 |
+| A2 | 证明大小不随 trace 行数线性增长；verifier 不重建 trace（§2、§5.5） | `rom` 在 public `Statement`；`access.steps` 已删除；unified 与 chunked proof 都不再携带 `rows`（verifier 与 trace 一起接收 proof）；unified proof 265,559 B；但 verifier 仍需要完整 trace 并重建 CPU system，per-row CPU 证明仍随行数增长 | 🟡 | committed trace/segment layout + Virtual Spartan 消除 verifier 对完整 trace 的依赖 |
 | A3 | verifier 只做 hash 和 binary-field 运算（§2.1） | P3/hash-based PCS，无 trusted setup；但 verifier 还重建约束系统/trace | 🟡 | 去掉 verifier 的 trace/系统重建；预计算 public layout |
 | A4 | 透明、无 trusted setup、标准 hash、post-quantum（§1） | P3 binary-field PCS + SHA-256 transcript；默认路径无 trusted setup | ✅ | 保持；KZG 后端只是可选 |
 | A5 | 一个 commitment 在 challenge 前发送（§5.5） | unified 路径满足；standalone Shout/Router/Chunked 仍各自 commit | 🟡 | 统一所有 proof 变体的 commit 顺序与 commitment 数量 |
