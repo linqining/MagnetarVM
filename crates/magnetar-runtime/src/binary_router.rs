@@ -448,27 +448,21 @@ pub struct BinaryRouterProof {
     pub input_bit_evals: Vec<F2_128>,
     pub offset_rounds: Vec<Vec<F2_128>>,
     pub offset_challenges: Vec<F2_128>,
-    pub offset_cycle_point: Vec<F2_128>,
     pub offset_evals: Vec<F2_128>,
     pub width_rounds: Vec<Vec<F2_128>>,
     pub width_challenges: Vec<F2_128>,
-    pub width_cycle_point: Vec<F2_128>,
     pub width_evals: Vec<F2_128>,
     pub shift_rounds: Vec<Vec<F2_128>>,
     pub shift_challenges: Vec<F2_128>,
-    pub shift_cycle_point: Vec<F2_128>,
     pub shift_eval: F2_128,
     pub q_rounds: Vec<Vec<F2_128>>,
     pub q_challenges: Vec<F2_128>,
-    pub q_cycle_point: Vec<F2_128>,
     pub q_evals: Vec<F2_128>,
     pub hq_rounds: Vec<Vec<F2_128>>,
     pub hq_challenges: Vec<F2_128>,
-    pub hq_cycle_point: Vec<F2_128>,
     pub hq_evals: Vec<F2_128>,
     pub valid_rounds: Vec<Vec<F2_128>>,
     pub valid_challenges: Vec<F2_128>,
-    pub valid_cycle_point: Vec<F2_128>,
     pub valid_evals: Vec<F2_128>,
     pub opening: Option<P3MosaicOpening>,
 }
@@ -918,12 +912,12 @@ pub(crate) fn prove_binary_router_claims(
     let (
         q_rounds,
         q_challenges,
-        q_rho_j,
+        _q_rho_j,
         q_evals,
         q_point,
         hq_rounds,
         hq_challenges,
-        hq_rho_j,
+        _hq_rho_j,
         hq_evals,
         hq_point,
     ) = if has_q {
@@ -1089,27 +1083,21 @@ pub(crate) fn prove_binary_router_claims(
             input_bit_evals,
             offset_rounds,
             offset_challenges,
-            offset_cycle_point: offset_rho_j,
             offset_evals,
             width_rounds,
             width_challenges,
-            width_cycle_point: width_rho_j,
             width_evals,
             shift_rounds,
             shift_challenges,
-            shift_cycle_point: shift_rho_j,
             shift_eval,
             q_rounds,
             q_challenges,
-            q_cycle_point: q_rho_j,
             q_evals,
             hq_rounds,
             hq_challenges,
-            hq_cycle_point: hq_rho_j,
             hq_evals,
             valid_rounds,
             valid_challenges,
-            valid_cycle_point: valid_rho_j,
             valid_evals,
             opening: None,
         },
@@ -1288,9 +1276,6 @@ pub(crate) fn verify_binary_router_claims(
     let deltas = (0..3)
         .map(|_| challenge(&mut transcript, "delta"))
         .collect::<Vec<_>>();
-    if proof.offset_cycle_point != offset_rho_j {
-        return Ok(None);
-    }
     let Some(sum) = replay_terms(
         &proof.offset_rounds,
         &proof.offset_challenges,
@@ -1318,9 +1303,6 @@ pub(crate) fn verify_binary_router_claims(
     let width_deltas = (0..4)
         .map(|_| challenge(&mut transcript, "delta"))
         .collect::<Vec<_>>();
-    if proof.width_cycle_point != width_rho_j {
-        return Ok(None);
-    }
     let Some(sum) = replay_terms(
         &proof.width_rounds,
         &proof.width_challenges,
@@ -1358,9 +1340,6 @@ pub(crate) fn verify_binary_router_claims(
     let mut transcript = Sha256Transcript::new("magnetar-binary-router-shift");
     absorb_commitment(&mut transcript, commitment);
     let shift_rho_j = sample_point(&mut transcript, n);
-    if proof.shift_cycle_point != shift_rho_j {
-        return Ok(None);
-    }
     let Some(sum) = replay_terms(
         &proof.shift_rounds,
         &proof.shift_challenges,
@@ -1384,9 +1363,6 @@ pub(crate) fn verify_binary_router_claims(
     let valid_deltas = (0..2)
         .map(|_| challenge(&mut transcript, "delta"))
         .collect::<Vec<_>>();
-    if proof.valid_cycle_point != valid_rho_j {
-        return Ok(None);
-    }
     let Some(sum) = replay_terms(
         &proof.valid_rounds,
         &proof.valid_challenges,
@@ -1421,9 +1397,6 @@ pub(crate) fn verify_binary_router_claims(
         absorb_commitment(&mut transcript, commitment);
         let q_rho_j = sample_point(&mut transcript, n);
         let _q_rho_h = sample_point(&mut transcript, 8);
-        if proof.q_cycle_point != q_rho_j {
-            return Ok(None);
-        }
         let Some(sum) = replay_terms(
             &proof.q_rounds,
             &proof.q_challenges,
@@ -1446,9 +1419,6 @@ pub(crate) fn verify_binary_router_claims(
         absorb_commitment(&mut transcript, commitment);
         let hq_rho_j = sample_point(&mut transcript, n);
         let _hq_rho_h = sample_point(&mut transcript, 8);
-        if proof.hq_cycle_point != hq_rho_j {
-            return Ok(None);
-        }
         let Some(sum) = replay_terms(
             &proof.hq_rounds,
             &proof.hq_challenges,
