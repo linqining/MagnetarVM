@@ -6,7 +6,9 @@
 //! switching are not yet implemented.
 
 use magnetar_constraint::F2_128;
-use magnetar_proof::Mle;
+use magnetar_proof::{eq, prove, verify_rounds, Mle, ProofError, SumcheckProof};
+use magnetar_transcript::Sha256Transcript;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Clone, Debug)]
@@ -34,7 +36,13 @@ pub enum MosaicError {
     #[error("component index {0} is out of range")]
     Index(usize),
     #[error(transparent)]
-    Proof(#[from] magnetar_proof::ProofError),
+    Proof(#[from] ProofError),
+    #[error("batching needs at least one claim")]
+    EmptyBatch,
+    #[error("batching claim point has the wrong arity")]
+    PointArity,
+    #[error("batched sumcheck failed")]
+    BatchSumcheck,
 }
 
 impl PackedMosaic {
@@ -110,6 +118,120 @@ impl PackedMosaic {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MosaicBatchingProof {
+    pub sumcheck: SumcheckProof<F2_128>,
+    pub point: Vec<F2_128>,
+    pub value: F2_128,
+}
+
+fn challenge(transcript: &mut Sha256Transcript, label: &str) -> F2_128 {
+    let bytes = transcript.challenge_32(label);
+    let mut value = [0u8; 16];
+    value.copy_from_slice(&bytes[..16]);
+    F2_128::from_bits(u128::from_le_bytes(value))
+}
+
+fn absorb_claims(transcript: &mut Sha256Transcript, claims: &[(Vec<F2_128>, F2_128)]) {
+    transcript.absorb("claims", &(claims.len() as u64).to_le_bytes());
+    for (point, value) in claims {
+        transcript.absorb("arity", &(point.len() as u64).to_le_bytes());
+        for coordinate in point {
+            transcript.absorb("point", &coordinate.value().to_le_bytes());
+        }
+        transcript.absorb("value", &value.value().to_le_bytes());
+    }
+}
+
+/// Batch several claims `G(r_i) = v_i` into one claim `G(r) = v`.
+///
+/// Prover side. The verifier samples the batching coefficients and replays the
+/// sum-check; the output is a single evaluation claim for the PCS.
+pub fn batch_claims(
+    values: &[F2_128],
+    claims: &[(Vec<F2_128>, F2_128)],
+    transcript: &mut Sha256Transcript,
+) -> Result<MosaicBatchingProof, MosaicError> {
+    if claims.is_empty() {
+        return Err(MosaicError::EmptyBatch);
+    }
+    let total_bits = values.len().trailing_zeros() as usize;
+    if values.len() != 1usize << total_bits {
+        return Err(MosaicError::InvalidSize(values.len()));
+    }
+    absorb_claims(transcript, claims);
+    let alphas = (0..claims.len())
+        .map(|_| challenge(transcript, "batch"))
+        .collect::<Vec<_>>();
+    let mle = Mle::new(values.to_vec())?;
+    let poly = |point: &[F2_128]| {
+        let weight = claims
+            .iter()
+            .zip(&alphas)
+            .fold(F2_128::from(0u64), |sum, ((claim_point, _), alpha)| {
+                sum + *alpha * eq(claim_point, point)
+            });
+        weight * mle.eval(point).unwrap_or(F2_128::from(0u64))
+    };
+    let (sumcheck, point, _) = prove(poly, total_bits, 2, |round, values| {
+        for coefficient in values {
+            transcript.absorb("round", &coefficient.value().to_le_bytes());
+        }
+        transcript.absorb("round", &(round as u64).to_le_bytes());
+        challenge(transcript, "sumcheck")
+    })?;
+    let value = mle.eval(&point)?;
+    Ok(MosaicBatchingProof {
+        sumcheck,
+        point,
+        value,
+    })
+}
+
+pub fn verify_batching(
+    proof: &MosaicBatchingProof,
+    claims: &[(Vec<F2_128>, F2_128)],
+    total_bits: usize,
+    transcript: &mut Sha256Transcript,
+) -> Result<(), MosaicError> {
+    if claims.is_empty() {
+        return Err(MosaicError::EmptyBatch);
+    }
+    absorb_claims(transcript, claims);
+    let alphas = (0..claims.len())
+        .map(|_| challenge(transcript, "batch"))
+        .collect::<Vec<_>>();
+    let expected = claims
+        .iter()
+        .zip(&alphas)
+        .fold(F2_128::from(0u64), |sum, ((_, value), alpha)| {
+            sum + *alpha * *value
+        });
+    if proof.sumcheck.claimed_sum != expected {
+        return Err(MosaicError::BatchSumcheck);
+    }
+    let (point, current) = verify_rounds(&proof.sumcheck, total_bits, 2, |round, values| {
+        for coefficient in values {
+            transcript.absorb("round", &coefficient.value().to_le_bytes());
+        }
+        transcript.absorb("round", &(round as u64).to_le_bytes());
+        challenge(transcript, "sumcheck")
+    })?;
+    if point != proof.point {
+        return Err(MosaicError::BatchSumcheck);
+    }
+    let weight = claims
+        .iter()
+        .zip(&alphas)
+        .fold(F2_128::from(0u64), |sum, ((claim_point, _), alpha)| {
+            sum + *alpha * eq(claim_point, &point)
+        });
+    if current != weight * proof.value {
+        return Err(MosaicError::BatchSumcheck);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,5 +268,23 @@ mod tests {
     fn packing_rejects_invalid_shapes() {
         assert!(PackedMosaic::new(&[]).is_err());
         assert!(PackedMosaic::new(&[vec![F2_128::from(1u64); 3]]).is_err());
+    }
+    #[test]
+    fn batching_reduces_claims_to_one_point() {
+        let components = vec![values(2, 1), values(4, 2), values(8, 3)];
+        let mosaic = PackedMosaic::new(&components).unwrap();
+        let point0 = mosaic.lift(0, &[F2_128::from(5u64)]).unwrap();
+        let point1 = mosaic
+            .lift(1, &[F2_128::from(7u64), F2_128::from(11u64)])
+            .unwrap();
+        let claims = vec![
+            (point0.clone(), mosaic.eval_packed(&point0).unwrap()),
+            (point1.clone(), mosaic.eval_packed(&point1).unwrap()),
+        ];
+        let mut prover_transcript = Sha256Transcript::new("mosaic-batch-test");
+        let proof = batch_claims(&mosaic.values, &claims, &mut prover_transcript).unwrap();
+        let mut verifier_transcript = Sha256Transcript::new("mosaic-batch-test");
+        verify_batching(&proof, &claims, mosaic.total_bits, &mut verifier_transcript).unwrap();
+        assert_eq!(proof.value, mosaic.eval_packed(&proof.point).unwrap());
     }
 }
