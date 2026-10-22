@@ -1765,4 +1765,21 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn store_only_router_omits_q_claims() {
+        let trace = trace();
+        let store_witness =
+            BinaryRouterWitness::from_trace_mode(&trace, RouterMode::Stores).unwrap();
+        let store_proof = prove_binary_router(&store_witness).unwrap();
+        assert!(store_proof.q_evals.is_empty());
+        assert!(store_proof.hq_evals.is_empty());
+        assert!(verify_binary_router(&store_witness, &store_proof).unwrap());
+
+        let shift_witness =
+            BinaryRouterWitness::from_trace_mode(&trace, RouterMode::Shifts).unwrap();
+        let shift_proof = prove_binary_router(&shift_witness).unwrap();
+        assert!(!shift_proof.q_evals.is_empty());
+        assert!(!shift_proof.hq_evals.is_empty());
+        assert!(verify_binary_router(&shift_witness, &shift_proof).unwrap());
+    }
 }

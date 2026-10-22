@@ -59,7 +59,8 @@
 - `123e584`：把 Q/hQ 缩成 64 列（按 shamt 而非 kind+shamt），hQ 目标改为 shamt；体积降至 278,243 B。
 - `b225f61`：增加 `shift_q_and_hq_are_one_hot` 测试。
 - `352d1e6`：新增 `proof_scaling` 示例。
-- 本轮：Q/hQ claims/P3 points 改为仅在 shift table 非空时生成；store-only 跳过 Q/hQ，proof 降至 269,075 B。
+- `5968262`：Q/hQ claims/P3 points 改为仅在 shift table 非空时生成；store-only 跳过 Q/hQ，proof 降至 269,075 B。
+- 本轮：增加 `store_only_router_omits_q_claims` 测试，验证 store-only proof 的 Q/hQ evals 为空、shift-only 非空。
 
 ## 二、逐项差距
 
