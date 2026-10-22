@@ -31,7 +31,8 @@
 - `8665018`：把 register Twist 接入 `TraceAccessProof` 与 unified shared P3 opening。
 - `443def7`：移除 register Merkle fields/steps；register Twist 成为唯一 register consistency proof。
 - `6a37129`：BinaryShout 支持 `c=2` value columns（instruction word + instruction length）。
-- 本轮：扩展到 `c=7`（word、length、opcode、rd、rs1、rs2、imm），为 bytecode/decoded-field Shout 与 Router `Q` 做铺垫。
+- `753b59e`：BinaryShout 扩展到 `c=7`（word、length、opcode、rd、rs1、rs2、imm）。
+- 本轮：BinaryRouter 提交 3 个 offset bits，并用 sumcheck 与 public offset 链接；`Q`/`Q_st` 仍待实现。
 
 ## 二、逐项差距
 
@@ -84,7 +85,7 @@
 | D7 | BinaryShout for bytecode：公开表 `Val` 有 `c` 列，读地址 bits + 所有 value columns 一个 sum-check；bytecode 表含 micro-PC/decoded fields（§4.4、§5.5） | `binary_shout.rs`：16/32-bit ROM 读取，支持 `c=7` 个 value columns（word、length、opcode、rd、rs1、rs2、imm），用随机 `γ` 合并成一个 read claim；地址 bit + valid；仍不含 micro-PC/完整 bytecode table | 🟡 | 增加 micro-PC/bytecode table 与 selector columns；把 decoded fields 接到 Router 的 `Q` |
 | D8 | Shout 的地址虚拟化/one-hot 检查 | bit-sliced 地址 + booleanity；valid 列 | 🟡 | 同 D3/D4；当前是 bit-sliced 特化 |
 | D9 | BinaryRouter for shifts：`Y(o,j)=Σ X·Q·R`，`Q` 来自 bytecode 并由 Shout 认证；register-specified shift 展开为固定 virtual instructions（§5.4） | `binary_router.rs`：64-bit shift，按 public `ShiftRoute` 计算系数；`Q` 不存在，直接按 row 的 route 求值；register shamt 直接动态使用 | 🟡 | 引入 one-hot `Q`；由 Shout 认证 `Q`；register shift 展开；`X` 用 direct copy segment |
-| D10 | BinaryRouter for stores：输出是 `Inc`（old XOR new），`R_st` 带 3 个 offset bits，`Q_st` 4 个 width selector（§5.4） | 已改为路由 `Inc`（old XOR new）：written bits 用 old⊕source 两个 source，unwritten 为 0；offset 仍来自 public access，未输出 offset-bit claims；width 未做 one-hot `Q_st` | 🟡 | 输出 offset-bit claims；接 bytecode width selector `Q_st` |
+| D10 | BinaryRouter for stores：输出是 `Inc`（old XOR new），`R_st` 带 3 个 offset bits，`Q_st` 4 个 width selector（§5.4） | 路由 `Inc`（old XOR new）；3 个 offset bits 已提交并通过 sumcheck 链接到 public offset；routing 仍用 public offset；width 未做 one-hot `Q_st` | 🟡 | 让 routing 直接使用 offset 的 MLE；接 bytecode width selector `Q_st` |
 | D11 | 两个 BinaryRouter 实例（shift、store） | 一个通用 router claim 覆盖两类 route | 🟡 | 拆成两个实例，各自 claim/selector |
 | D12 | bytecode 预处理：instruction expansion、public ROM/bytecode table（§2、§5.5） | 一 instruction = 一 micro-op；ROM 由 trace 携带 | ❌ | 实现 expansion + bytecode table + micro-PC |
 | D13 | ROM/bytecode 是 public input，不由 proof 携带 | proof 携带 `rom: Vec<u32>`；statement 有 program_hash | 🟡 | 由 statement/预处理提供 ROM；proof 只带 commitment/claims |
