@@ -483,4 +483,15 @@ mod tests {
             assert!(!verify_address_multiplicity(&tampered, write, &witness).unwrap());
         }
     }
+    #[test]
+    fn address_proof_binds_the_lambda_challenge() {
+        let trace = trace();
+        let witness = BinaryTwistWitness::from_trace(&trace).unwrap();
+        let proof = prove_address_multiplicity(&witness, true).unwrap();
+        assert!(verify_address_multiplicity(&proof, true, &witness).unwrap());
+
+        let mut tampered = proof;
+        tampered.lambda = tampered.lambda + F2_128::from(1u64);
+        assert!(!verify_address_multiplicity(&tampered, true, &witness).unwrap());
+    }
 }

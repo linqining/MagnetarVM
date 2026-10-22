@@ -101,7 +101,8 @@
 - `395630f`：新增 `trace_commitment` 原型，把 trace 展平为 P3 多项式并验证 commitment/opening。
 - `20f27d9`：trace commitment 改为 4 个 aligned segments，并校验 segment 重建。
 - `534cc9d`：standalone `AddressMultiplicityProof` 移除 header/challenges，verifier 从 transcript 派生。
-- 本轮：移除 `AddressMultiplicityProof` 中与 opening 重复的 `commitment` 字段，verifier 用 opening 内的 commitment；D4 仍为 standalone。
+- `9e85a2d`：移除 `AddressMultiplicityProof` 中与 opening 重复的 `commitment` 字段。
+- 本轮：新增 `address_proof_binds_the_lambda_challenge` 测试，验证 lambda 篡改被拒绝；shared-claim 集成尝试未提交。
 
 ## 二、逐项差距
 
