@@ -2231,7 +2231,8 @@ fn trace_from_statement(
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AuxTraceProof {
     pub shout: Option<crate::binary_shout::BinaryShoutProof>,
-    pub router: Option<crate::binary_router::BinaryRouterProof>,
+    pub shift_router: Option<crate::binary_router::BinaryRouterProof>,
+    pub store_router: Option<crate::binary_router::BinaryRouterProof>,
     pub opening: P3MosaicOpening,
 }
 
@@ -2306,20 +2307,26 @@ fn chunk_proof_digest(
 
 fn prove_aux_trace(trace: &Trace) -> Result<Option<AuxTraceProof>, RuntimeError> {
     let shout_witness = BinaryShoutWitness::from_trace(trace).ok();
-    let router_witness = BinaryRouterWitness::from_trace(trace).ok();
-    if shout_witness.is_none() && router_witness.is_none() {
+    let shift_router_witness = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Shifts).ok();
+    let store_router_witness = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Stores).ok();
+    if shout_witness.is_none() && shift_router_witness.is_none() && store_router_witness.is_none() {
         return Ok(None);
     }
     let pcs = P3BinaryPcs::new(100);
     let mut tables = Vec::new();
     let mut shout_index = None;
-    let mut router_index = None;
+    let mut shift_router_index = None;
+    let mut store_router_index = None;
     if let Some(witness) = &shout_witness {
         shout_index = Some(tables.len());
         tables.push(witness.table());
     }
-    if let Some(witness) = &router_witness {
-        router_index = Some(tables.len());
+    if let Some(witness) = &shift_router_witness {
+        shift_router_index = Some(tables.len());
+        tables.push(witness.table());
+    }
+    if let Some(witness) = &store_router_witness {
+        store_router_index = Some(tables.len());
         tables.push(witness.table());
     }
     let commitment = pcs
@@ -2337,30 +2344,45 @@ fn prove_aux_trace(trace: &Trace) -> Result<Option<AuxTraceProof>, RuntimeError>
     } else {
         None
     };
-    let router = if let (Some(witness), Some(index)) = (&router_witness, router_index) {
-        let (claim, claim_points, claim_values) =
-            prove_binary_router_claims(witness, &commitment, index)
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        points.extend(claim_points);
-        values.extend(claim_values);
-        Some(claim)
-    } else {
-        None
-    };
+    let shift_router =
+        if let (Some(witness), Some(index)) = (&shift_router_witness, shift_router_index) {
+            let (claim, claim_points, claim_values) =
+                prove_binary_router_claims(witness, &commitment, index)
+                    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            points.extend(claim_points);
+            values.extend(claim_values);
+            Some(claim)
+        } else {
+            None
+        };
+    let store_router =
+        if let (Some(witness), Some(index)) = (&store_router_witness, store_router_index) {
+            let (claim, claim_points, claim_values) =
+                prove_binary_router_claims(witness, &commitment, index)
+                    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            points.extend(claim_points);
+            values.extend(claim_values);
+            Some(claim)
+        } else {
+            None
+        };
     let opening = pcs
         .open_mosaic(&tables, &points)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     Ok(Some(AuxTraceProof {
         shout,
-        router,
+        shift_router,
+        store_router,
         opening,
     }))
 }
 
 fn verify_aux_trace(trace: &Trace, aux: Option<&AuxTraceProof>) -> Result<(), RuntimeError> {
     let shout_witness = BinaryShoutWitness::from_trace(trace).ok();
-    let router_witness = BinaryRouterWitness::from_trace(trace).ok();
-    let expected = shout_witness.is_some() || router_witness.is_some();
+    let shift_router_witness = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Shifts).ok();
+    let store_router_witness = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Stores).ok();
+    let expected =
+        shout_witness.is_some() || shift_router_witness.is_some() || store_router_witness.is_some();
     if !expected {
         if aux.is_some() {
             return Err(RuntimeError::Proof(
@@ -2382,10 +2404,18 @@ fn verify_aux_trace(trace: &Trace, aux: Option<&AuxTraceProof>) -> Result<(), Ru
         }
         _ => {}
     }
-    match (&router_witness, &aux.router) {
+    match (&shift_router_witness, &aux.shift_router) {
         (Some(_), None) | (None, Some(_)) => {
             return Err(RuntimeError::Proof(
-                "BinaryRouter presence does not match the trace".into(),
+                "shift BinaryRouter presence does not match the trace".into(),
+            ));
+        }
+        _ => {}
+    }
+    match (&store_router_witness, &aux.store_router) {
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(RuntimeError::Proof(
+                "store BinaryRouter presence does not match the trace".into(),
             ));
         }
         _ => {}
@@ -2397,7 +2427,12 @@ fn verify_aux_trace(trace: &Trace, aux: Option<&AuxTraceProof>) -> Result<(), Ru
         next_table += 1;
         index
     });
-    let router_index = router_witness.as_ref().map(|_| {
+    let shift_router_index = shift_router_witness.as_ref().map(|_| {
+        let index = next_table;
+        next_table += 1;
+        index
+    });
+    let store_router_index = store_router_witness.as_ref().map(|_| {
         let index = next_table;
         next_table += 1;
         index
@@ -2414,13 +2449,30 @@ fn verify_aux_trace(trace: &Trace, aux: Option<&AuxTraceProof>) -> Result<(), Ru
         points.extend(claim_points);
         values.extend(claim_values);
     }
-    if let (Some(witness), Some(claim), Some(index)) = (&router_witness, &aux.router, router_index)
+    if let (Some(witness), Some(claim), Some(index)) =
+        (&shift_router_witness, &aux.shift_router, shift_router_index)
     {
         let Some((claim_points, claim_values)) =
             verify_binary_router_claims(witness, claim, commitment, index)
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?
         else {
-            return Err(RuntimeError::Proof("BinaryRouter proof rejected".into()));
+            return Err(RuntimeError::Proof(
+                "shift BinaryRouter proof rejected".into(),
+            ));
+        };
+        points.extend(claim_points);
+        values.extend(claim_values);
+    }
+    if let (Some(witness), Some(claim), Some(index)) =
+        (&store_router_witness, &aux.store_router, store_router_index)
+    {
+        let Some((claim_points, claim_values)) =
+            verify_binary_router_claims(witness, claim, commitment, index)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        else {
+            return Err(RuntimeError::Proof(
+                "store BinaryRouter proof rejected".into(),
+            ));
         };
         points.extend(claim_points);
         values.extend(claim_values);
@@ -3681,7 +3733,7 @@ mod tests {
         let trace = execute(&program, config()).unwrap();
         let proof = prove_chunked_trace(&trace, 8, 2).unwrap();
         let aux = proof.aux.as_ref().expect("aux claims");
-        assert!(aux.shout.is_some() && aux.router.is_some());
+        assert!(aux.shout.is_some() && aux.shift_router.is_some() && aux.store_router.is_some());
         verify_chunked_trace(&trace, &proof, 8).unwrap();
 
         let mut tampered = proof;
@@ -3689,14 +3741,14 @@ mod tests {
             .aux
             .as_mut()
             .unwrap()
-            .router
+            .store_router
             .as_mut()
             .unwrap()
             .claimed = tampered
             .aux
             .as_ref()
             .unwrap()
-            .router
+            .store_router
             .as_ref()
             .unwrap()
             .claimed

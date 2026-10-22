@@ -51,7 +51,8 @@
 - `c88ea15`：删除 `TraceAccessProof.steps`，memory bindings 改为从 trace + BinaryTwist witness 重新检查。
 - `c025617`：新增 `PackedSharedPcs::from_mosaic`，把现有 P3 多列 points/values 自动拆成单列 aux components。
 - `f665e75`：BinaryRouter 增加 `RouterMode` 与 `RouterRoute::None`，支持 standalone shift-only / store-only 实例。
-- 本轮：unified proof 拆成独立的 `shift_router`/`store_router` tables/claims；D11 完成（chunked 仍合并）。
+- `d69358e`：unified proof 拆成独立的 `shift_router`/`store_router` tables/claims。
+- 本轮：chunked `AuxTraceProof` 也拆成 shift/store 两个实例；D11 完全完成。
 
 ## 二、逐项差距
 
@@ -105,7 +106,7 @@
 | D8 | Shout 的地址虚拟化/one-hot 检查 | bit-sliced 地址 + booleanity；valid 列 | 🟡 | 同 D3/D4；当前是 bit-sliced 特化 |
 | D9 | BinaryRouter for shifts：`Y(o,j)=Σ X·Q·R`，`Q` 来自 bytecode 并由 Shout 认证；register-specified shift 展开为固定 virtual instructions（§5.4） | `binary_router.rs`：64-bit shift，按 public `ShiftRoute` 计算系数；committed `shift_code` + `is_shift`/`is_store` 并与 public route 链接；仍不是 one-hot `Q`，routing 仍用 public route；register shamt 直接动态使用 | 🟡 | 引入 one-hot `Q`；由 Shout 认证 `Q`；register shift 展开；`X` 用 direct copy segment |
 | D10 | BinaryRouter for stores：输出是 `Inc`（old XOR new），`R_st` 带 3 个 offset bits，`Q_st` 4 个 width selector（§5.4） | 路由 `Inc`；3 个 offset bits + 4 个 one-hot width bits 已提交，并分别通过 sumcheck 链接到 public offset/width；routing 仍用 public offset/width；未接 bytecode selector | 🟡 | 让 routing 直接使用 offset/width 的 MLE；接 bytecode width selector `Q_st` |
-| D11 | 两个 BinaryRouter 实例（shift、store） | `RouterMode`/`RouterRoute::None` 支持 standalone 实例；unified proof 现在有独立的 `shift_router`/`store_router` tables 与 claims；chunked `AuxTraceProof` 仍是合并 router | ✅ | chunked 也拆成两个实例（可选） |
+| D11 | 两个 BinaryRouter 实例（shift、store） | `RouterMode`/`RouterRoute::None` 支持 standalone 实例；unified 与 chunked `AuxTraceProof` 都使用独立的 `shift_router`/`store_router` tables 与 claims | ✅ | 已实现 |
 | D12 | bytecode 预处理：instruction expansion、public ROM/bytecode table（§2、§5.5） | public `preprocess` bytecode table 已存在并被 Shout 使用（含 selectors/micro-PC）；仍是一 instruction = 一 micro-op，没有 instruction expansion | 🟡 | 实现 expansion（尤其 register-shift 的固定 virtual instruction sequence）与多 micro-op 表 |
 | D13 | ROM/bytecode 是 public input，不由 proof 携带 | `Statement` 现在携带 `rom`；`TraceProof`/`UnifiedTraceProof`/`ChunkedTraceProof` 已移除 `rom` 字段；verifier 从 statement 使用 ROM | ✅ | bytecode table/micro-PC 仍需按 D7/D12 完成 |
 
