@@ -47,7 +47,8 @@
 - `fc53a87`：`PackedMosaic::commit/open/verify` 用单个 P3 commitment/opening 验证 packed `G`。
 - `c2dbfba`：新增 `PackedSharedPcs` adapter（primary + aux components → packed `G` → batching → 单 P3 opening）。
 - `4bee0e4`：新增 `flatten_table_claims`，把多列 P3 claim 转成 per-column packed claims。
-- 本轮：`PackedSharedPcs` 通过 `prove_spartan`/`verify_spartan` 的端到端测试，验证 packed `G` + batching + 单 P3 opening 可以驱动 CPU Spartan proof。
+- `bab9cfd`：`PackedSharedPcs` 通过 `prove_spartan`/`verify_spartan` 端到端测试。
+- 本轮：删除 `TraceAccessProof.steps`，memory bindings 改为从 trace + BinaryTwist witness 重新检查；`rom` 已在 public `Statement`。
 
 ## 二、逐项差距
 
@@ -56,7 +57,7 @@
 | # | 论文要求（§） | 当前实现 | 状态 | 剩余工作 |
 |---|---|---|---|---|
 | A1 | 协议只发送一个 commitment，所有 claims 由一个 PCS evaluation 证明（§5.5） | unified proof 中 CPU/RAM/Shout/Router 共享一个 P3 commitment/opening；但 chunked/per-row 仍有独立 P3 proof，register access 仍有 Merkle | 🟡 | 把 register、chunk、per-row 也并入同一 packed commitment；去掉额外 opening |
-| A2 | 证明大小不随 trace 行数线性增长；verifier 不重建 trace（§2、§5.5） | `UnifiedTraceProof` 携带 `rows: Vec<TraceRow>`、`access.steps: Vec<TraceAccessStep>`、`rom`；`verify_unified_statement` 从 proof rows 重建 trace | ❌ | 这是最大差距：需要 committed trace/segment layout + Virtual Spartan claims，删除 rows/steps/rom 的传输 |
+| A2 | 证明大小不随 trace 行数线性增长；verifier 不重建 trace（§2、§5.5） | `rom` 已移入 public `Statement`；`access.steps` 已删除，memory bindings 从 trace+Twist witness 重新检查；但 `rows: Vec<TraceRow>` 仍由 proof 携带，verifier 仍重建 trace | ❌ | 仍需 committed trace/segment layout + Virtual Spartan claims，删除 rows |
 | A3 | verifier 只做 hash 和 binary-field 运算（§2.1） | P3/hash-based PCS，无 trusted setup；但 verifier 还重建约束系统/trace | 🟡 | 去掉 verifier 的 trace/系统重建；预计算 public layout |
 | A4 | 透明、无 trusted setup、标准 hash、post-quantum（§1） | P3 binary-field PCS + SHA-256 transcript；默认路径无 trusted setup | ✅ | 保持；KZG 后端只是可选 |
 | A5 | 一个 commitment 在 challenge 前发送（§5.5） | unified 路径满足；standalone Shout/Router/Chunked 仍各自 commit | 🟡 | 统一所有 proof 变体的 commit 顺序与 commitment 数量 |
