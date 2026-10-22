@@ -12,8 +12,6 @@ use crate::{eq, Mle, ProofError};
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SegmentClaim {
-    pub name: String,
-    pub point: Vec<F2_128>,
     pub value: F2_128,
 }
 
@@ -68,11 +66,7 @@ pub fn split_segment_claims(
         let local = local_point(point, segment);
         let segment_values = values[segment.offset..segment.end()].to_vec();
         let value = Mle::new(segment_values)?.eval(&local)?;
-        claims.push(SegmentClaim {
-            name: segment.name.clone(),
-            point: local,
-            value,
-        });
+        claims.push(SegmentClaim { value });
     }
     Ok(claims)
 }
@@ -94,11 +88,9 @@ pub fn reconstruct_segment_claim(
     }
     let mut reconstructed = F2_128::from(0u64);
     for (segment, claim) in layout.segments.iter().zip(claims) {
-        if claim.name != segment.name || claim.point != local_point(point, segment) {
-            return Err(VirtualSpartanError::ClaimShape);
-        }
+        let local = local_point(point, segment);
         let suffix = suffix_bits(segment, total_bits);
-        reconstructed = reconstructed + eq(&suffix, &point[claim.point.len()..]) * claim.value;
+        reconstructed = reconstructed + eq(&suffix, &point[local.len()..]) * claim.value;
     }
     Ok(reconstructed)
 }
