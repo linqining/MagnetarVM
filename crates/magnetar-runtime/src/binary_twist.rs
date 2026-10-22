@@ -879,7 +879,6 @@ pub struct ReadInitialClaim {
     pub claimed: F2_128,
     pub cycle_point: Vec<F2_128>,
     pub rounds: Vec<Vec<F2_128>>,
-    pub challenges: Vec<F2_128>,
     pub ra_bit_evals: Vec<F2_128>,
     pub ra_valid_eval: F2_128,
 }
@@ -938,7 +937,6 @@ pub struct BinaryTwistWriteClaim {
 pub struct BinaryTwistUpdateClaim {
     pub cell_point: Vec<F2_128>,
     pub rounds: Vec<Vec<F2_128>>,
-    pub challenges: Vec<F2_128>,
     pub wa_bit_evals: Vec<F2_128>,
     pub wa_valid_eval: F2_128,
     pub inc_eval: F2_128,
@@ -1071,6 +1069,26 @@ fn sumcheck_terms(
         challenges.push(challenge);
     }
     Ok((polynomials, challenges))
+}
+
+fn replay_terms_derived(
+    rounds: &[Vec<F2_128>],
+    mut sum: F2_128,
+    transcript: &mut Sha256Transcript,
+) -> Option<(F2_128, Vec<F2_128>)> {
+    let mut challenges = Vec::with_capacity(rounds.len());
+    for round in rounds {
+        if round.len() < 2 || round[0] + round[1] != sum {
+            return None;
+        }
+        for coefficient in round {
+            transcript.absorb("round", &coefficient.value().to_le_bytes());
+        }
+        let challenge = challenge(transcript, "sumcheck");
+        challenges.push(challenge);
+        sum = interpolate_values(round, challenge);
+    }
+    Some((sum, challenges))
 }
 
 fn replay_terms(
@@ -1255,7 +1273,6 @@ pub(crate) fn prove_binary_twist_claims(
         },
         cycle_point: rho_j.clone(),
         rounds,
-        challenges: challenges.clone(),
         ra_bit_evals: ra_bit_evals.clone(),
         ra_valid_eval,
     };
@@ -1660,7 +1677,6 @@ pub(crate) fn prove_binary_twist_claims(
     let update = BinaryTwistUpdateClaim {
         cell_point: rho_k,
         rounds,
-        challenges: challenges.clone(),
         wa_bit_evals: wa_bit_evals.clone(),
         wa_valid_eval,
         inc_eval,
@@ -1801,16 +1817,15 @@ pub(crate) fn verify_binary_twist_claims(
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-read-initial");
     absorb_mosaic_commitment(&mut transcript, commitment);
     absorb_point(&mut transcript, "cycle", &rho_j);
-    let Some(sum) = replay_terms(
+    let Some((sum, initial_challenges)) = replay_terms_derived(
         &proof.read.initial.rounds,
-        &proof.read.initial.challenges,
         proof.read.initial.claimed,
         &mut transcript,
     ) else {
         return Ok(None);
     };
-    let r_j = &proof.read.initial.challenges[..cycle_bits];
-    let r_k = &proof.read.initial.challenges[cycle_bits..];
+    let r_j = &initial_challenges[..cycle_bits];
+    let r_k = &initial_challenges[cycle_bits..];
     let eq_eval = eq_points(&rho_j, r_j);
     let m0_eval = fold_all(&witness.initial, r_k);
     let ra_eval = address_value(
@@ -2033,16 +2048,13 @@ pub(crate) fn verify_binary_twist_claims(
     if proof.update.cell_point != rho_k {
         return Ok(None);
     }
-    let Some(sum) = replay_terms(
-        &proof.update.rounds,
-        &proof.update.challenges,
-        F2_128::from(0u64),
-        &mut transcript,
-    ) else {
+    let Some((sum, update_challenges)) =
+        replay_terms_derived(&proof.update.rounds, F2_128::from(0u64), &mut transcript)
+    else {
         return Ok(None);
     };
-    let r_jp = &proof.update.challenges[..cycle_bits];
-    let r_k = &proof.update.challenges[cycle_bits..];
+    let r_jp = &update_challenges[..cycle_bits];
+    let r_k = &update_challenges[cycle_bits..];
     let eq_eval = eq_points(&rho_k, r_k);
     let delta_eval = eq_at_index(r_jp, 0);
     let final_eval = fold_all(&witness.final_value, r_k);
