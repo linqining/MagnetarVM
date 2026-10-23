@@ -80,3 +80,10 @@ JALR reuses the ADD datapath with `left = rs1`, `right = imm`:
 
 Tests cover the ALU/CPU rows and a LUI + JALR trace mapping. The JALR
 `target & !1` alignment bit and `rd = pc + 4` are not yet constrained.
+
+
+## JALR alignment
+
+JALR now forces `next_pc[0] = 0` and binds bits 1.. to the ADD output. The odd
+sum test (`0x40 + 1`) yields `next_pc = 0x40`. Packed s2 uses the same masked
+binding. `rd = pc + 4` and rs1/register-file binding are still open.

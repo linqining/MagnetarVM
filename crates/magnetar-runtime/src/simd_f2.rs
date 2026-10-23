@@ -1704,11 +1704,19 @@ impl GatedCpuRow {
                 vec![alu.is_jal],
                 Vec::new(),
             ));
-            relation.add(BitRow::new(
-                vec![next_pc[bit], alu.out[bit]],
-                vec![alu.is_jalr],
-                Vec::new(),
-            ));
+            if bit == 0 {
+                relation.add(BitRow::new(
+                    vec![next_pc[bit]],
+                    vec![alu.is_jalr],
+                    Vec::new(),
+                ));
+            } else {
+                relation.add(BitRow::new(
+                    vec![next_pc[bit], alu.out[bit]],
+                    vec![alu.is_jalr],
+                    Vec::new(),
+                ));
+            }
         }
         Self {
             width,
@@ -1791,7 +1799,15 @@ impl GatedCpuRow {
         );
         system.add_constraint(
             Expr::var(self.alu.is_jalr),
-            packed(&self.next_pc, 0).add(packed(&self.alu.out, 0)),
+            Expr::var(self.next_pc[0]),
+            Expr::constant(0u64),
+        );
+        system.add_constraint(
+            Expr::var(self.alu.is_jalr),
+            packed(&self.next_pc, 0)
+                .add(packed(&self.alu.out, 0))
+                .add(Expr::var(self.next_pc[0]))
+                .add(Expr::var(self.alu.out[0])),
             Expr::constant(0u64),
         );
         let shift_results = self
@@ -1841,7 +1857,9 @@ impl GatedCpuRow {
         bits.extend(memory);
         bits.extend(self.shift.inactive_witness());
         let jump = matches!(op, GatedAluOp::Jal | GatedAluOp::Jalr);
-        let next_pc = if jump {
+        let next_pc = if op == GatedAluOp::Jalr {
+            left.wrapping_add(right) & !1
+        } else if jump {
             left.wrapping_add(right)
         } else {
             pc.wrapping_add(4)
@@ -1948,6 +1966,19 @@ mod gated_cpu_row_tests {
         assert_eq!(jalr_next, 0x42);
         let jalr_witness = row.relation.to_witness(&jalr);
         assert!(row.packed_companion_system().check(&jalr_witness).is_ok());
+
+        let odd_jalr = row.alu_witness_at(0x1000, 0x40, 0x1, GatedAluOp::Jalr);
+        assert!(row.relation.check(&odd_jalr));
+        let odd_next = row
+            .next_pc
+            .iter()
+            .enumerate()
+            .fold(0u64, |value, (bit, var)| {
+                value | (u64::from(odd_jalr[*var]) << bit)
+            });
+        assert_eq!(odd_next, 0x40);
+        let odd_witness = row.relation.to_witness(&odd_jalr);
+        assert!(row.packed_companion_system().check(&odd_witness).is_ok());
 
         let shift = row.shift_witness_at(0x1008, 5, 2, BitShiftKind::Sll);
         assert!(row.relation.check(&shift));

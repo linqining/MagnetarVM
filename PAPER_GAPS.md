@@ -1756,3 +1756,8 @@ dual backend. JAL's `rd = pc + 4` write value is still not constrained.
 
 Remaining JALR items: force target bit 0 to zero, bind rs1 to the register file,
 and constrain `rd = pc + 4`.
+
+
+JALR now clears target bit 0: `next_pc[0]` is constrained to zero and only bits
+1.. are bound to `rs1 + imm`. The odd-target test yields the aligned PC. The
+destination write (`rd = pc + 4`) and rs1/register-file binding remain open.
