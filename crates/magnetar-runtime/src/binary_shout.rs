@@ -226,6 +226,8 @@ type ClaimBundle<T> = (T, Vec<P3MosaicPoint>, Vec<Vec<F2_128>>);
 pub struct BinaryShoutProof {
     pub boolean: AddressBooleanClaim,
     pub rounds: Vec<Vec<F2_128>>,
+    pub boolean_column_point: Vec<F2_128>,
+    pub read_address_point: Vec<F2_128>,
     pub opening: Option<P3MosaicOpening>,
 }
 
@@ -543,6 +545,8 @@ pub(crate) fn prove_binary_shout_claims(
         BinaryShoutProof {
             boolean,
             rounds,
+            boolean_column_point: boolean_challenges[n..].to_vec(),
+            read_address_point: challenges[n..].to_vec(),
             opening: None,
         },
         points,

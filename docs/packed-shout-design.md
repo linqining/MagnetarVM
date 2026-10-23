@@ -53,3 +53,19 @@ The prototype attempted in this session was removed for that reason.
 - no second unpacked commitment in the final bundle.
 
 Until steps 1-3 are designed, `packed BinaryShout` remains open.
+
+
+## Update: column batching attempt
+
+A grouped packed-table attempt (combined table + address0 + address1 + is32 +
+valid) was implemented and rejected. The address columns do not enter the Shout
+read check as a multilinear table over the column index: `address_value`
+combines the independently folded address-bit columns as a product of
+`(1 + bit + k)` factors. Packing the column index into a hypercube dimension
+therefore changes the checked value. The grouped implementation produced a
+different address evaluation and was reverted.
+
+Consequence: batching packed Shout columns requires a new sum-check that
+evaluates the address-bit product from packed coefficients, not a standard 2D
+MLE. The per-column packed prototype remains (correct, but 48,481 B vs 17,273 B
+reference on the small trace).
