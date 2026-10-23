@@ -91,7 +91,7 @@ pub struct UniformCpuFullLayout {
 impl UniformCpuFullLayout {
     pub fn alu_witness(&self, op: StepOp, pc: u64, rs1: u64, rs2: u64, imm: u64) -> Witness {
         let alu = self.alu.witness(op, pc, rs1, rs2, imm);
-        let memory = self.memory.witness(pc, rs1, imm, 0, true);
+        let memory = self.memory.inactive_witness(pc, rs1, imm);
         self.combine(&alu.witness, &memory)
     }
 
@@ -157,6 +157,7 @@ pub struct UniformMemoryRowLayout {
     pub pc: BitAdderLayout,
     pub is_load: VarId,
     pub is_store: VarId,
+    pub is_mem: VarId,
     pub num_vars: usize,
     pub system: ConstraintSystem,
 }
@@ -171,6 +172,19 @@ impl UniformMemoryRowLayout {
         }
         values[self.is_load] = F2_128::from(u64::from(is_load));
         values[self.is_store] = F2_128::from(u64::from(!is_load));
+        values[self.is_mem] = F2_128::from(1u64);
+        Witness::new(values)
+    }
+
+    /// Memory-side witness for an ALU row: the selector is off and the
+    /// load/store bits are both zero.
+    pub fn inactive_witness(&self, pc: u64, rs1: u64, imm: u64) -> Witness {
+        let mut values = vec![F2_128::from(0u64); self.num_vars];
+        self.addr.fill_witness(&mut values, rs1, imm);
+        self.pc.fill_witness(&mut values, pc, 4);
+        values[self.is_load] = F2_128::from(0u64);
+        values[self.is_store] = F2_128::from(0u64);
+        values[self.is_mem] = F2_128::from(0u64);
         Witness::new(values)
     }
 
@@ -213,8 +227,9 @@ pub fn uniform_memory_row_layout(width: usize) -> (ConstraintSystem, UniformMemo
     let pc = pc.shifted(pc_offset);
     let is_load = system.alloc(1).start;
     let is_store = system.alloc(1).start;
+    let is_mem = system.alloc(1).start;
     let one = Expr::constant(1u64);
-    for var in data.iter().chain([is_load, is_store].iter()) {
+    for var in data.iter().chain([is_load, is_store, is_mem].iter()) {
         system.add_constraint(
             Expr::var(*var),
             Expr::var(*var).add(one.clone()),
@@ -224,7 +239,7 @@ pub fn uniform_memory_row_layout(width: usize) -> (ConstraintSystem, UniformMemo
     system.add_constraint(
         Expr::var(is_load).add(Expr::var(is_store)),
         one,
-        Expr::constant(1u64),
+        Expr::var(is_mem),
     );
     let num_vars = system.num_vars;
     let row_system = system.clone();
@@ -237,6 +252,7 @@ pub fn uniform_memory_row_layout(width: usize) -> (ConstraintSystem, UniformMemo
             pc,
             is_load,
             is_store,
+            is_mem,
             num_vars,
             system: row_system,
         },
@@ -522,7 +538,13 @@ mod batch_tests {
         for row in &rows {
             assert_eq!(row.values().len(), layout.num_vars);
             system.check(row).expect("uniform memory row");
+            assert_eq!(row.values()[layout.is_mem].value(), 1);
         }
+        let inactive = layout.inactive_witness(0x1008, 0x30, 0x06);
+        system.check(&inactive).expect("inactive memory row");
+        assert_eq!(inactive.values()[layout.is_mem].value(), 0);
+        assert_eq!(inactive.values()[layout.is_load].value(), 0);
+        assert_eq!(inactive.values()[layout.is_store].value(), 0);
         for (group, expected) in [
             (crate::CpuVarKind::RamAddr, 0x12u64),
             (crate::CpuVarKind::RamValue, 0x34u64),

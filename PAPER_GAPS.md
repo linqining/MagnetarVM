@@ -611,3 +611,14 @@ The schema currently enforces the CPU-side address/data columns and selectors on
 `magnetar-runtime::simd_full` proves a two-row batch (ALU + load) with shared matrices and PC-chain rows. Tests cover the combined relation and proof.
 
 This is a single-schema stepping stone, not yet selector-gated: inactive sub-relations are still enforced by default witnesses, which costs variables/constraints. Next: gate ALU/memory constraints by row selector, then connect the memory columns to BinaryTwist claims.
+
+
+### Memory selector gating (first step)
+
+`UniformMemoryRowLayout` now has an `is_mem` selector and the constraint
+
+```text
+is_load + is_store = is_mem
+```
+
+instead of forcing one of them to 1. `inactive_witness` produces an ALU-side default with `is_mem = is_load = is_store = 0` and zero data. The combined schema uses this default for ALU rows, so memory operation selectors are genuinely off on ALU rows. The address/data sub-relations are still active; full gating of those constraints requires intermediate selector products or a dedicated gated gadget, which is the next step.
