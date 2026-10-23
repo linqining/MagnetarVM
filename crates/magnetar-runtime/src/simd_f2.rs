@@ -1455,6 +1455,10 @@ mod gated_cpu_row_tests {
         let row = GatedCpuRow::new(8);
         let alu = row.alu_witness(0b1010_1010, 0b1100_1100, GatedAluOp::Xor);
         assert!(row.relation.check(&alu));
+        let placed = row.alu_witness_at(0x1004, 0b1010_1010, 0b1100_1100, GatedAluOp::Xor);
+        assert!(row.relation.check(&placed));
+        let placed_witness = row.relation.to_witness(&placed);
+        assert!(row.packed_companion_system().check(&placed_witness).is_ok());
         let companion = row.packed_companion_system();
         let alu_witness = row.relation.to_witness(&alu);
         if let Err(error) = companion.check(&alu_witness) {
