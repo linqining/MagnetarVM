@@ -339,7 +339,7 @@ mod tests {
         for store in [false, true] {
             let w = witness(store);
             for index in 0..groups(has_q(&w)).len() {
-                if [5, 7, 8].contains(&index) {
+                if [5, 8].contains(&index) {
                     continue; // shift_code is a code; q/hq groups need separate handling
                 }
                 let proof = prove_group(&w, index).unwrap();

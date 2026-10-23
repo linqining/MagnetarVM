@@ -111,3 +111,13 @@ All pass. Three groups are deliberately excluded:
 
 The next step is to handle those three groups and merge the per-group proofs
 into one Router proof.
+
+
+## q group
+
+The q group (point 6, columns 137..201) also passes the isolated proof test.
+The generic test now covers all boolean groups plus q. Remaining excluded:
+
+- shift_code (column 265): a code, not a bit;
+- hq (201..265): its leaf batch still disagrees, so it needs separate
+  semantics/debugging.
