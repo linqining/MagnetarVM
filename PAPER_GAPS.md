@@ -636,3 +636,15 @@ instead of forcing one of them to 1. `inactive_witness` produces an ALU-side def
 Tests cover XOR/AND check and embedding into the packed system. This is the semantic s1 slice; it does **not** yet have a native F2 proof backend.
 
 Architecture decision needed: (A) prove s1 by embedding the bit relation into the packed F2^128 system (current BitRelation path), (B) implement a native F2 R1CS/PCS/sum-check backend, or (C) keep the bit relation as the semantic source and initially embed, then swap in a native F2 backend behind the same interface.
+
+
+### Bit proof backend boundary
+
+Chosen intermediate path: keep the F2 bit relation as the semantic s1 source and isolate the proof backend behind `BitProofBackend`.
+
+- `EmbeddedBitBackend<P: Pcs>` embeds the bit relation into the packed F2^128 system and proves it with Spartan;
+- `prove`/`verify` are generic over the PCS;
+- test proves/verifies the XOR relation with P3;
+- a native F2 backend can later implement the same trait without changing the CPU schema or claim layout.
+
+This avoids blocking the uniform schema on the native F2 proof decision.
