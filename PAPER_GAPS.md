@@ -1910,3 +1910,17 @@ binding.
 
 The opening is therefore dominated by the base P3 proof for this commitment
 shape, not by the number of points or the trace table alone.
+
+
+### A: isolated BEQ/BNE branch row
+
+`branch_row::GatedBranchRow` prototypes a branch row with:
+
+- two independent ADD datapaths (`pc + imm`, `pc + 4`);
+- XOR/OR equality reduction over `rs1`/`rs2`;
+- BEQ/BNE selectors and a `taken` bit;
+- `next_pc = taken ? target : sequential` mux.
+
+Test `branch_row_selects_equal_and_not_equal` covers BEQ taken/not-taken and BNE
+taken on 8-bit values. The row is not yet fused into `GatedCpuRow` or the trace
+adapter; that is the next A step.
