@@ -25,6 +25,7 @@ pub struct GatedBranchRow {
     pub beq_eq: VarId,
     pub bne_or: VarId,
     pub taken: VarId,
+    pub is_branch: VarId,
     pub next: Vec<VarId>,
     pub one: VarId,
     pub relation: BitRelation,
@@ -58,14 +59,15 @@ impl GatedBranchRow {
         let beq_eq = cursor + 2;
         let bne_or = cursor + 3;
         let taken = cursor + 4;
-        let one = cursor + 5;
-        cursor += 6;
+        let is_branch = cursor + 5;
+        let one = cursor + 6;
+        cursor += 7;
         let next = (cursor..cursor + width).collect::<Vec<_>>();
         cursor += width;
         relation.num_vars = cursor;
 
         relation.add(BitRow::new(vec![one], vec![one], vec![one]));
-        for selector in [is_beq, is_bne, beq_eq, bne_or, taken] {
+        for selector in [is_beq, is_bne, beq_eq, bne_or, taken, is_branch] {
             relation.add(BitRow::new(vec![selector], vec![selector, one], Vec::new()));
         }
         for var in rs1
@@ -111,7 +113,11 @@ impl GatedBranchRow {
             vec![bne_or],
         ));
         relation.add(BitRow::new(vec![beq_eq, bne_or], vec![one], vec![taken]));
-        relation.add(BitRow::new(vec![is_beq, is_bne], vec![one], vec![one]));
+        relation.add(BitRow::new(
+            vec![is_beq, is_bne],
+            vec![one],
+            vec![is_branch],
+        ));
         for (bit, next_var) in next.iter().enumerate() {
             relation.add(BitRow::new(
                 vec![taken],
@@ -136,10 +142,19 @@ impl GatedBranchRow {
             beq_eq,
             bne_or,
             taken,
+            is_branch,
             next,
             one,
             relation,
         }
+    }
+
+    pub fn inactive_witness(&self) -> Vec<bool> {
+        let mut bits = self.target_alu.witness(0, 0, GatedAluOp::Inactive);
+        bits.extend(self.seq_alu.witness(0, 0, GatedAluOp::Inactive));
+        bits.resize(self.relation.num_vars, false);
+        bits[self.one] = true;
+        bits
     }
 
     pub fn witness(&self, pc: u64, imm: u64, rs1: u64, rs2: u64, beq: bool) -> Vec<bool> {
@@ -172,6 +187,7 @@ impl GatedBranchRow {
         bits[self.beq_eq] = beq && !or_value;
         bits[self.bne_or] = !beq && or_value;
         bits[self.taken] = taken;
+        bits[self.is_branch] = true;
         for bit in 0..self.width {
             let target = bits[self.target_alu.out[bit]];
             let sequential = bits[self.seq_offset + self.seq_alu.out[bit]];

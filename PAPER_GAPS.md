@@ -1924,3 +1924,22 @@ shape, not by the number of points or the trace table alone.
 Test `branch_row_selects_equal_and_not_equal` covers BEQ taken/not-taken and BNE
 taken on 8-bit values. The row is not yet fused into `GatedCpuRow` or the trace
 adapter; that is the next A step.
+
+
+### A: BEQ/BNE fused into GatedCpuRow
+
+`GatedCpuRow` now includes `GatedBranchRow` as a fourth row kind:
+
+```text
+is_alu + is_mem + is_shift + is_branch = 1
+```
+
+- branch target/sequential ALU inputs are gated to `pc`;
+- `next_pc` is bound to the branch mux output;
+- `sequential + is_jal + is_jalr + is_branch = 1`;
+- branch trace rows map to `GatedCpuRowInput::Branch`.
+
+Test `branch_trace_proves_through_gated_dual` executes `beq x0,x0,+8`
+(taken), then a normal Add, and proves/verifies through the gated dual backend.
+
+Still missing: BLT/BGE/BLTU/BGEU and branch `rd`/register binding.

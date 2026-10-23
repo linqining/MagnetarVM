@@ -6,6 +6,7 @@
 //! PCS/sum-check; choosing that proof backend is the next architecture
 //! decision.
 
+use crate::branch_row::GatedBranchRow;
 use crate::RuntimeError;
 use magnetar_constraint::{VarId, F2_128};
 use magnetar_proof::dual_field::{BitRelation, BitRow};
@@ -1590,6 +1591,8 @@ pub struct GatedCpuRow {
     pub memory_offset: usize,
     pub shift: GatedShiftRow,
     pub shift_offset: usize,
+    pub branch: GatedBranchRow,
+    pub branch_offset: usize,
     pub pc: Vec<VarId>,
     pub next_pc: Vec<VarId>,
     pub sequential: VarId,
@@ -1626,11 +1629,27 @@ impl GatedCpuRow {
                 shift_vars(&row.c),
             ));
         }
+        let branch = GatedBranchRow::new(width);
+        let branch_offset = relation.num_vars;
+        relation.num_vars += branch.relation.num_vars;
+        for row in &branch.relation.rows {
+            let shift_vars = |vars: &[VarId]| {
+                vars.iter()
+                    .map(|var| *var + branch_offset)
+                    .collect::<Vec<_>>()
+            };
+            relation.add(BitRow::new(
+                shift_vars(&row.a),
+                shift_vars(&row.b),
+                shift_vars(&row.c),
+            ));
+        }
         relation.add(BitRow::new(
             vec![
                 alu.is_alu,
                 memory_offset + memory.adder.gate,
                 shift_offset + shift.is_shift,
+                branch_offset + branch.is_branch,
             ],
             vec![alu.one],
             vec![alu.one],
@@ -1662,7 +1681,12 @@ impl GatedCpuRow {
         let sequential = relation.num_vars;
         relation.num_vars += 1;
         relation.add(BitRow::new(
-            vec![sequential, alu.is_jal, alu.is_jalr],
+            vec![
+                sequential,
+                alu.is_jal,
+                alu.is_jalr,
+                branch_offset + branch.is_branch,
+            ],
             vec![alu.one],
             vec![alu.one],
         ));
@@ -1717,6 +1741,38 @@ impl GatedCpuRow {
                     Vec::new(),
                 ));
             }
+            let branch_gate = branch_offset + branch.is_branch;
+            relation.add(BitRow::new(
+                vec![branch.target_alu.a[bit] + branch_offset, pc[bit]],
+                vec![branch_gate],
+                Vec::new(),
+            ));
+            relation.add(BitRow::new(
+                vec![
+                    branch.seq_alu.a[bit] + branch_offset + branch.seq_offset,
+                    pc[bit],
+                ],
+                vec![branch_gate],
+                Vec::new(),
+            ));
+            relation.add(BitRow::new(
+                vec![next_pc[bit], branch.next[bit] + branch_offset],
+                vec![branch_gate],
+                Vec::new(),
+            ));
+            if bit == 2 {
+                relation.add(BitRow::new(
+                    vec![branch.seq_alu.b[bit] + branch_offset + branch.seq_offset],
+                    vec![branch_gate],
+                    vec![branch_gate],
+                ));
+            } else {
+                relation.add(BitRow::new(
+                    vec![branch.seq_alu.b[bit] + branch_offset + branch.seq_offset],
+                    vec![branch_gate],
+                    Vec::new(),
+                ));
+            }
         }
         Self {
             width,
@@ -1725,6 +1781,8 @@ impl GatedCpuRow {
             memory_offset,
             shift,
             shift_offset,
+            branch,
+            branch_offset,
             pc,
             next_pc,
             sequential,
@@ -1850,6 +1908,27 @@ impl GatedCpuRow {
         system
     }
 
+    pub fn branch_witness_at(
+        &self,
+        pc: u64,
+        left: u64,
+        right: u64,
+        imm: u64,
+        beq: bool,
+    ) -> Vec<bool> {
+        let mut bits = self.alu.witness(0, 0, GatedAluOp::Inactive);
+        bits.extend(self.memory.witness(0, 0, 0, false));
+        bits.extend(self.shift.inactive_witness());
+        bits.extend(self.branch.witness(pc, imm, left, right, beq));
+        let taken = if beq { left == right } else { left != right };
+        let next_pc = if taken {
+            pc.wrapping_add(imm)
+        } else {
+            pc.wrapping_add(4)
+        };
+        self.finish(bits, pc, next_pc, false)
+    }
+
     fn finish(&self, mut bits: Vec<bool>, pc: u64, next_pc: u64, sequential: bool) -> Vec<bool> {
         bits.resize(self.relation.num_vars, false);
         for bit in 0..self.width {
@@ -1900,6 +1979,7 @@ impl GatedCpuRow {
         let mut bits = self.alu.witness(0, 0, GatedAluOp::Inactive);
         bits.extend(self.memory.witness(0, 0, 0, false));
         bits.extend(self.shift.witness(left, shamt, kind));
+        bits.extend(self.branch.inactive_witness());
         self.finish(bits, pc, pc.wrapping_add(4), true)
     }
 
@@ -1915,6 +1995,7 @@ impl GatedCpuRow {
         let memory = self.memory.witness(rs1, imm, value, is_mem);
         bits.extend(memory);
         bits.extend(self.shift.inactive_witness());
+        bits.extend(self.branch.inactive_witness());
         self.finish(bits, pc, pc.wrapping_add(4), true)
     }
 }
@@ -1927,6 +2008,15 @@ mod gated_cpu_row_tests {
     fn combined_gated_row_selects_alu_or_memory() {
         let row = GatedCpuRow::new(8);
         let alu = row.alu_witness(0b1010_1010, 0b1100_1100, GatedAluOp::Xor);
+        for (index, bit_row) in row.relation.rows.iter().enumerate() {
+            let parity = |vars: &[VarId]| vars.iter().filter(|v| alu[**v]).count() % 2 == 1;
+            if (parity(&bit_row.a) && parity(&bit_row.b)) != parity(&bit_row.c) {
+                eprintln!(
+                    "bad alu row {index}: {:?} {:?} {:?}",
+                    bit_row.a, bit_row.b, bit_row.c
+                );
+            }
+        }
         assert!(row.relation.check(&alu));
         let placed = row.alu_witness_at(0x1004, 0b1010_1010, 0b1100_1100, GatedAluOp::Xor);
         assert!(row.relation.check(&placed));
@@ -1999,6 +2089,28 @@ mod gated_cpu_row_tests {
         let odd_witness = row.relation.to_witness(&odd_jalr);
         assert!(row.packed_companion_system().check(&odd_witness).is_ok());
 
+        let branch = row.branch_witness_at(0x10, 5, 5, 8, true);
+        for (index, bit_row) in row.relation.rows.iter().enumerate() {
+            let parity = |vars: &[VarId]| vars.iter().filter(|v| branch[**v]).count() % 2 == 1;
+            if (parity(&bit_row.a) && parity(&bit_row.b)) != parity(&bit_row.c) {
+                eprintln!(
+                    "bad branch cpu row {index}: {:?} {:?} {:?}",
+                    bit_row.a, bit_row.b, bit_row.c
+                );
+            }
+        }
+        assert!(row.relation.check(&branch));
+        let branch_next = row
+            .next_pc
+            .iter()
+            .enumerate()
+            .fold(0u64, |value, (bit, var)| {
+                value | (u64::from(branch[*var]) << bit)
+            });
+        assert_eq!(branch_next, 0x18);
+        let branch_witness = row.relation.to_witness(&branch);
+        assert!(row.packed_companion_system().check(&branch_witness).is_ok());
+
         let shift = row.shift_witness_at(0x1008, 5, 2, BitShiftKind::Sll);
         assert!(row.relation.check(&shift));
         assert!(!shift[row.alu.is_alu]);
@@ -2036,6 +2148,12 @@ pub enum GatedCpuRowInput {
         shamt: u64,
         kind: BitShiftKind,
     },
+    Branch {
+        left: u64,
+        right: u64,
+        imm: u64,
+        beq: bool,
+    },
 }
 
 pub fn prove_gated_cpu_batch(
@@ -2067,6 +2185,12 @@ pub fn prove_gated_cpu_batch(
             GatedCpuRowInput::Shift { left, shamt, kind } => {
                 row.shift_witness_at(0, *left, *shamt, *kind)
             }
+            GatedCpuRowInput::Branch {
+                left,
+                right,
+                imm,
+                beq,
+            } => row.branch_witness_at(0, *left, *right, *imm, *beq),
         };
         witnesses.push(row.relation.to_witness(&bits));
     }
@@ -2179,6 +2303,12 @@ pub fn prove_gated_cpu_batch_pc(
             GatedCpuRowInput::Shift { left, shamt, kind } => {
                 row.shift_witness_at(*pc, *left, *shamt, *kind)
             }
+            GatedCpuRowInput::Branch {
+                left,
+                right,
+                imm,
+                beq,
+            } => row.branch_witness_at(*pc, *left, *right, *imm, *beq),
         };
         z.extend(
             witness_vector(&system, &row.relation.to_witness(&bits))
@@ -2261,6 +2391,7 @@ mod claim_routing_tests {
                 GatedCpuRowInput::Alu { .. } => ClaimKind::Register,
                 GatedCpuRowInput::Memory { .. } => ClaimKind::Ram,
                 GatedCpuRowInput::Shift { .. } => ClaimKind::Shift,
+                GatedCpuRowInput::Branch { .. } => ClaimKind::Direct,
             };
             claims.push(crate::protocol::Claim::new(
                 kind,

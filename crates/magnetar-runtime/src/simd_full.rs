@@ -255,6 +255,21 @@ pub fn gated_rows_from_trace(
             ));
             continue;
         }
+        if matches!(
+            row.instruction.op,
+            magnetar_spec::Op::Beq | magnetar_spec::Op::Bne
+        ) {
+            rows.push((
+                row.pc,
+                GatedCpuRowInput::Branch {
+                    left: row.rs1_val,
+                    right: row.rs2_val,
+                    imm: row.instruction.imm as u64,
+                    beq: row.instruction.op == magnetar_spec::Op::Beq,
+                },
+            ));
+            continue;
+        }
         if row.instruction.op == magnetar_spec::Op::Jalr {
             rows.push((
                 row.pc,
@@ -443,6 +458,66 @@ mod auipc_trace_tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn branch_trace_proves_through_gated_dual() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Beq,
+                    rd: 0,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 8,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Add,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Add,
+                    rd: 2,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let rows = gated_rows_from_trace(&trace, 8).unwrap();
+        assert!(matches!(
+            rows[0].1,
+            GatedCpuRowInput::Branch { beq: true, .. }
+        ));
+        use crate::simd_dual::{prove_gated_dual_batch_bits, verify_gated_dual_batch_bits};
+        use magnetar_pcs::P3SharedPcs;
+        use magnetar_proof::DirectBitPcs;
+        let backend = DirectBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
+        let (proof, layout) = prove_gated_dual_batch_bits(8, &rows, &backend).unwrap();
+        verify_gated_dual_batch_bits(8, &rows, &proof, &layout, &backend).unwrap();
     }
 
     #[test]

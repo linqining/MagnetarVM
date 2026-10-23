@@ -39,6 +39,7 @@ fn claims_for(rows: &[(u64, GatedCpuRowInput)]) -> Vec<Claim> {
                 GatedCpuRowInput::Alu { .. } => ClaimKind::Register,
                 GatedCpuRowInput::Memory { .. } => ClaimKind::Ram,
                 GatedCpuRowInput::Shift { .. } => ClaimKind::Shift,
+                GatedCpuRowInput::Branch { .. } => ClaimKind::Direct,
             };
             Claim::new(
                 kind,

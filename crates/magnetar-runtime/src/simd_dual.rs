@@ -414,6 +414,12 @@ pub fn prove_gated_dual_batch(
             GatedCpuRowInput::Shift { left, shamt, kind } => {
                 row.shift_witness_at(*pc, *left, *shamt, *kind)
             }
+            GatedCpuRowInput::Branch {
+                left,
+                right,
+                imm,
+                beq,
+            } => row.branch_witness_at(*pc, *left, *right, *imm, *beq),
         };
         z.extend(
             witness_vector(&s2_system, &row.relation.to_witness(&bits))
@@ -633,6 +639,12 @@ fn gated_batch_bits(
             GatedCpuRowInput::Shift { left, shamt, kind } => {
                 row.shift_witness_at(*pc, *left, *shamt, *kind)
             }
+            GatedCpuRowInput::Branch {
+                left,
+                right,
+                imm,
+                beq,
+            } => row.branch_witness_at(*pc, *left, *right, *imm, *beq),
         };
         bits.extend(instance);
         bits.resize(bits.len() + base_cols - row.relation.num_vars, false);
