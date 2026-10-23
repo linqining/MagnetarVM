@@ -1494,3 +1494,20 @@ DirectBitPcs<PackedSharedPcs>
 `PackedSharedPcs` builds a single packed `G`, lifts the primary/aux claims, batches them into one sumcheck point, and opens with one P3 proof. With no auxiliary tables, this exercises the single-commitment/single-evaluation adapter on the gated CPU proof.
 
 This is still the reference one-field-per-bit layer; it does not yet implement the paper's MosaicPCS + ring-switch + 128-bit commitment packing composition. It does show the gated dual can run against the Mosaic adapter without changing the CPU matrices.
+
+
+### P0 progress: ring switch composed with Mosaic adapter
+
+`gated_dual_combines_ring_switch_and_mosaic` runs the gated dual batch with:
+
+```text
+RingSwitchPackedBitPcs<PackedSharedPcs>
+```
+
+Composition:
+
+- RingSwitch packs 128 witness bits per field element and performs the DP24 reduction;
+- `PackedSharedPcs` receives the packed table, builds one Mosaic `G`, batches claims, and opens with one P3 proof;
+- the gated CPU matrices are unchanged.
+
+This composes the two key proof-system layers (ring switching + single-commitment Mosaic adapter) on a real gated CPU batch. It is still not full Virtual Spartan claim reduction across auxiliary components.
