@@ -1378,3 +1378,18 @@ Tests cover -1<1, 1<-1, and -5<-3 in 8-bit two's complement. The q=8 Direct/Ring
 Tests cover 5<<2=20, 20>>2=5, -8>>1=-4 (8-bit), and a trace with `slli`.
 
 This is a separate shift component, not yet fused into `GatedAluRow`; it closes the shift proof gap while leaving work fusion/selector integration for later.
+
+
+### P0 progress: shift and auxiliary Shout/Router proofs
+
+`gated_shift` proves SLL/SRL/SRA rows independently with the native F2 barrel-shift relation and extracts shift events from a trace.
+
+`gated_aux` builds the bytecode/shift/store auxiliary proofs for a trace:
+
+- `BinaryShoutWitness` + `prove_binary_shout`;
+- `BinaryRouterWitness` in Shift and Store modes, when the trace has the corresponding rows;
+- verify rebuilds each witness and checks each proof.
+
+Test `gated_aux_proves_shout_and_shift` covers a trace with `slli` and `ecall`. Store mode is wired but not exercised in that test.
+
+These are component proofs; they are not yet fused into the gated CPU row or the bundle's claim routing.
