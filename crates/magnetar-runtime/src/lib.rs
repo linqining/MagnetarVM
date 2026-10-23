@@ -11,6 +11,7 @@ pub mod binary_twist_address;
 pub mod protocol;
 pub mod register_twist;
 pub mod simd_cpu;
+pub mod simd_f2;
 pub mod simd_full;
 pub mod simd_memory;
 pub mod trace_commitment;

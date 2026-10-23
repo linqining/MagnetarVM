@@ -622,3 +622,17 @@ is_load + is_store = is_mem
 ```
 
 instead of forcing one of them to 1. `inactive_witness` produces an ALU-side default with `is_mem = is_load = is_store = 0` and zero data. The combined schema uses this default for ALU rows, so memory operation selectors are genuinely off on ALU rows. The address/data sub-relations are still active; full gating of those constraints requires intermediate selector products or a dedicated gated gadget, which is the next step.
+
+
+### Native F2 bit slice (s1)
+
+`magnetar-runtime::simd_f2` adds a standalone bit-level CPU relation:
+
+- `UniformBitAluRelation::xor(width)` and `::and(width)`;
+- variables for rs1/rs2/rd bits plus a constant-one bit;
+- XOR rows `(a + b) * 1 = c`, AND rows `a * b = c`;
+- `check` over F2 and `to_system`/`to_witness` embedding.
+
+Tests cover XOR/AND check and embedding into the packed system. This is the semantic s1 slice; it does **not** yet have a native F2 proof backend.
+
+Architecture decision needed: (A) prove s1 by embedding the bit relation into the packed F2^128 system (current BitRelation path), (B) implement a native F2 R1CS/PCS/sum-check backend, or (C) keep the bit relation as the semantic source and initially embed, then swap in a native F2 backend behind the same interface.
