@@ -1761,3 +1761,18 @@ and constrain `rd = pc + 4`.
 JALR now clears target bit 0: `next_pc[0]` is constrained to zero and only bits
 1.. are bound to `rs1 + imm`. The odd-target test yields the aligned PC. The
 destination write (`rd = pc + 4`) and rs1/register-file binding remain open.
+
+
+### A: unified gated proof object
+
+`unified_gated` combines two proofs over the same trace commitment:
+
+- `UnifiedTraceProof`: the legacy shared-commitment proof whose CPU, register
+  Twist, RAM Twist, Shout, and Router claims share one commitment/opening;
+- `P3GatedBundle`: the gated SIMD CPU proof with public PC binding.
+
+`prove_unified_gated` / `verify_unified_gated` verify both against the same trace
+digest. This is one proof object and closes the reference-model binding gap
+transitively through the shared trace, but it is still two proof systems: the
+gated CPU claims are not yet merged into the legacy Virtual Spartan commitment.
+Merging those claims is the remaining A work.
