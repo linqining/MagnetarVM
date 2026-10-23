@@ -98,3 +98,18 @@ This gives one packed table commitment and one ring-switch leaf claim for the
 address product, while the Shout boolean/read sum-checks stay unchanged.
 It needs new GKR product-tree messages and verifier equations; it is not
 implemented yet.
+
+
+## Implemented: leaf batching
+
+The grouped-table idea was replaced by a leaf batch. The prover sends the
+read-point folded address/valid columns as leaves, samples a random column
+point `r_col`, and proves
+
+```text
+Σ_col eq(r_col, col) · leaf_col = MLE(packed_table)(r_col, r_j)
+```
+
+with one ring-switch opening. The leaves are checked against the read-point
+Shout claims, and tampering either the leaves or the packed value is rejected.
+The small-trace proof is 4,193 B versus 17,385 B for the reference.

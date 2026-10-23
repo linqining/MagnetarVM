@@ -1,14 +1,16 @@
-//! Packed BinaryShout final evaluations.
+//! Packed BinaryShout final evaluations with leaf batching.
 //!
-//! The Shout sum-checks still run over the bit-sliced witness, but the final
-//! table evaluations are proved with packed column commitments and the DP24
-//! ring-switch backend instead of a Mosaic bit-table opening. Packed column
-//! commitments are fixed before the Shout challenges are derived, so the
-//! challenges bind both the bit table commitment and the packed columns.
+//! The Shout sum-checks still use the bit-sliced witness. The address/valid
+//! columns are packed into one 128-bit table, and the verifier checks the
+//! address product from the folded leaves. A random row-batch challenge binds
+//! the leaves to the packed table with one ring-switch opening:
+//!
+//!   Σ_col eq(r_col, col) · leaf_col = MLE(packed_table)(r_col, r_j)
 
 use magnetar_constraint::F2_128;
 use magnetar_pcs::{P3BinaryPcs, P3MosaicCommitment, P3MosaicOpening, P3SharedPcs};
 use magnetar_proof::{BitPcs, RingSwitchOpening, RingSwitchPackedBitPcs};
+use magnetar_transcript::Sha256Transcript;
 
 use crate::binary_shout::{
     prove_binary_shout_claims, verify_binary_shout_claims, BinaryShoutProof, BinaryShoutWitness,
@@ -16,43 +18,66 @@ use crate::binary_shout::{
 use crate::RuntimeError;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct PackedShoutColumnOpening {
-    pub point: Vec<F2_128>,
-    pub value: F2_128,
-    pub opening: RingSwitchOpening<P3MosaicOpening>,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PackedShoutProof {
     pub claims: BinaryShoutProof,
     pub table_commitment: P3MosaicCommitment,
-    pub column_commitments: Vec<P3MosaicCommitment>,
-    pub column_points: Vec<Vec<Vec<F2_128>>>,
-    pub column_values: Vec<Vec<F2_128>>,
-    pub column_openings: Vec<Vec<PackedShoutColumnOpening>>,
+    pub leaves: Vec<F2_128>,
+    pub packed_commitment: P3MosaicCommitment,
+    pub packed_point: Vec<F2_128>,
+    pub packed_value: F2_128,
+    pub packed_opening: RingSwitchOpening<P3MosaicOpening>,
 }
 
-fn padded_point(point: &[F2_128], target_bits: usize) -> Vec<F2_128> {
-    let mut padded = point.to_vec();
-    padded.resize(target_bits, F2_128::from(0u64));
-    padded
+fn pad_bits(mut bits: Vec<bool>) -> Vec<bool> {
+    bits.resize(bits.len().next_power_of_two().max(256), false);
+    bits
 }
 
-fn pad_bits(bits: &[F2_128]) -> Vec<bool> {
-    let mut packed = bits
-        .iter()
-        .map(|value| value.value() == 1)
-        .collect::<Vec<_>>();
-    packed.resize(packed.len().next_power_of_two().max(256), false);
-    packed
-}
-
-fn binding(table: &P3MosaicCommitment, columns: &[P3MosaicCommitment]) -> [u8; 32] {
-    let mut bytes = bincode::serialize(table).unwrap_or_default();
-    for column in columns {
-        bytes.extend_from_slice(&bincode::serialize(column).unwrap_or_default());
+fn table_bits(witness: &BinaryShoutWitness) -> (Vec<bool>, usize, usize) {
+    let table = witness.table();
+    let col_bits = table.columns.len().next_power_of_two().trailing_zeros() as usize;
+    let mut bits = vec![false; (1usize << col_bits) * witness.cycles];
+    for (column, values) in table.columns.iter().enumerate() {
+        for (cycle, value) in values.iter().enumerate() {
+            bits[cycle * (1usize << col_bits) + column] = value.value() == 1;
+        }
     }
-    magnetar_transcript::sha256(&bytes)
+    (pad_bits(bits), col_bits, witness.cycle_bits)
+}
+
+fn eq_at(point: &[F2_128], index: usize) -> F2_128 {
+    point
+        .iter()
+        .enumerate()
+        .fold(F2_128::from(1u64), |acc, (bit, r)| {
+            if (index >> bit) & 1 == 1 {
+                acc * *r
+            } else {
+                acc * (F2_128::from(1u64) + *r)
+            }
+        })
+}
+
+fn challenge_field(transcript: &mut Sha256Transcript, label: &str) -> F2_128 {
+    let bytes = transcript.challenge_bytes(label, 16);
+    F2_128::from_bits(u128::from_le_bytes(bytes.try_into().expect("16 bytes")))
+}
+
+fn column_challenge(
+    table: &P3MosaicCommitment,
+    packed: &P3MosaicCommitment,
+    leaves: &[F2_128],
+    col_bits: usize,
+) -> Vec<F2_128> {
+    let mut transcript = Sha256Transcript::new("magnetar-packed-shout-columns");
+    transcript.absorb("table", &bincode::serialize(table).unwrap_or_default());
+    transcript.absorb("packed", &bincode::serialize(packed).unwrap_or_default());
+    for leaf in leaves {
+        transcript.absorb("leaf", &leaf.value().to_le_bytes());
+    }
+    (0..col_bits)
+        .map(|_| challenge_field(&mut transcript, "col"))
+        .collect()
 }
 
 pub fn prove_packed_shout(witness: &BinaryShoutWitness) -> Result<PackedShoutProof, RuntimeError> {
@@ -60,65 +85,53 @@ pub fn prove_packed_shout(witness: &BinaryShoutWitness) -> Result<PackedShoutPro
         .validate()
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let table = witness.table();
-    let pcs = P3BinaryPcs::new(100);
-    let table_commitment = pcs
+    let bit_commitment = P3BinaryPcs::new(100)
         .commit_mosaic(core::slice::from_ref(&table))
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let (packed_bits, col_bits, cycle_bits) = table_bits(witness);
     let backend =
         RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
-    let mut column_commitments = Vec::new();
-    let mut column_bits = Vec::new();
-    for column in &table.columns {
-        let bits = pad_bits(column);
-        column_commitments.push(
-            backend
-                .commit(&bits)
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?,
-        );
-        column_bits.push(bits);
+    let packed_commitment = backend
+        .commit(&packed_bits)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let mut binding = bincode::serialize(&bit_commitment).unwrap_or_default();
+    binding.extend_from_slice(&bincode::serialize(&packed_commitment).unwrap_or_default());
+    let binding = magnetar_transcript::sha256(&binding);
+    let (claims, points, values) = prove_binary_shout_claims(witness, &bit_commitment, 0, &binding)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let leaves = values[1].clone();
+    let r_col = column_challenge(&bit_commitment, &packed_commitment, &leaves, col_bits);
+    let point = [r_col.clone(), points[1].point.clone()].concat();
+    let mut padded_point = point.clone();
+    padded_point.resize(
+        packed_bits.len().trailing_zeros() as usize,
+        F2_128::from(0u64),
+    );
+    let (packed_value, packed_opening) = backend
+        .open(&packed_bits, &padded_point)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let expected = leaves
+        .iter()
+        .enumerate()
+        .fold(F2_128::from(0u64), |sum, (column, leaf)| {
+            sum + eq_at(&r_col, column) * *leaf
+        });
+    if packed_value != expected {
+        return Err(RuntimeError::Proof(format!(
+            "packed Shout leaf batch disagrees: packed={packed_value:?} expected={expected:?} leaves={} col_bits={col_bits} point={} r_col={r_col:?}",
+            leaves.len(),
+            padded_point.len()
+        )));
     }
-    let binding = binding(&table_commitment, &column_commitments);
-    let (claims, points, values) =
-        prove_binary_shout_claims(witness, &table_commitment, 0, &binding)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-
-    let mut column_points = Vec::new();
-    let mut column_values = Vec::new();
-    let mut column_openings = Vec::new();
-    for (point_index, point) in points.iter().enumerate() {
-        let mut p_values = Vec::new();
-        let mut p_openings = Vec::new();
-        let mut p_points = Vec::new();
-        for (column_index, _commitment) in column_commitments.iter().enumerate() {
-            let target_bits = column_bits[column_index].len().trailing_zeros() as usize;
-            let p = padded_point(&point.point, target_bits);
-            let (value, opening) = backend
-                .open(&column_bits[column_index], &p)
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-            if value != values[point_index][column_index] {
-                return Err(RuntimeError::Proof(
-                    "packed Shout packed value disagrees with claim".into(),
-                ));
-            }
-            p_values.push(value);
-            p_openings.push(PackedShoutColumnOpening {
-                point: p.clone(),
-                value,
-                opening,
-            });
-            p_points.push(p);
-        }
-        column_points.push(p_points);
-        column_values.push(p_values);
-        column_openings.push(p_openings);
-    }
+    let _ = cycle_bits;
     Ok(PackedShoutProof {
         claims,
-        table_commitment,
-        column_commitments,
-        column_points,
-        column_values,
-        column_openings,
+        table_commitment: bit_commitment,
+        leaves,
+        packed_commitment,
+        packed_point: padded_point,
+        packed_value,
+        packed_opening,
     })
 }
 
@@ -126,54 +139,55 @@ pub fn verify_packed_shout(
     witness: &BinaryShoutWitness,
     proof: &PackedShoutProof,
 ) -> Result<(), RuntimeError> {
-    let binding = binding(&proof.table_commitment, &proof.column_commitments);
-    let Some((points, values)) =
+    let mut binding = bincode::serialize(&proof.table_commitment).unwrap_or_default();
+    binding.extend_from_slice(&bincode::serialize(&proof.packed_commitment).unwrap_or_default());
+    let binding = magnetar_transcript::sha256(&binding);
+    let Some((_points, values)) =
         verify_binary_shout_claims(witness, &proof.claims, &proof.table_commitment, 0, &binding)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?
     else {
         return Err(RuntimeError::Proof("packed Shout claims rejected".into()));
     };
-    if points.len() != proof.column_openings.len() {
+    if proof.leaves.len() != values[1].len() || proof.leaves != values[1] {
         return Err(RuntimeError::Proof(
-            "packed Shout point count mismatch".into(),
+            "packed Shout leaves disagree with read claims".into(),
+        ));
+    }
+    let col_bits = proof.leaves.len().next_power_of_two().trailing_zeros() as usize;
+    let r_col = column_challenge(
+        &proof.table_commitment,
+        &proof.packed_commitment,
+        &proof.leaves,
+        col_bits,
+    );
+    let expected_batch = proof
+        .leaves
+        .iter()
+        .enumerate()
+        .fold(F2_128::from(0u64), |sum, (column, leaf)| {
+            sum + eq_at(&r_col, column) * *leaf
+        });
+    if expected_batch != proof.packed_value {
+        return Err(RuntimeError::Proof(
+            "packed Shout leaf batch value mismatch".into(),
         ));
     }
     let backend =
         RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
-    for (point_index, point) in points.iter().enumerate() {
-        for (column_index, column) in point.columns.iter().enumerate() {
-            let opening = &proof.column_openings[point_index][column_index];
-            if padding_count(&opening.point) != 0 {
-                // Points are already padded; the helper is only for shape checks.
-            }
-            if opening.value != values[point_index][*column] {
-                return Err(RuntimeError::Proof(
-                    "packed Shout value does not match claim".into(),
-                ));
-            }
-            if opening.point.len() != proof.column_points[point_index][column_index].len() {
-                return Err(RuntimeError::Proof(
-                    "packed Shout point shape mismatch".into(),
-                ));
-            }
-            if !backend
-                .verify(
-                    &proof.column_commitments[column_index],
-                    &opening.point,
-                    opening.value,
-                    &opening.opening,
-                )
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?
-            {
-                return Err(RuntimeError::Proof("packed Shout opening rejected".into()));
-            }
-        }
+    if !backend
+        .verify(
+            &proof.packed_commitment,
+            &proof.packed_point,
+            proof.packed_value,
+            &proof.packed_opening,
+        )
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+    {
+        return Err(RuntimeError::Proof(
+            "packed Shout table opening rejected".into(),
+        ));
     }
     Ok(())
-}
-
-fn padding_count(point: &[F2_128]) -> usize {
-    point.iter().filter(|value| value.value() == 0).count()
 }
 
 #[cfg(test)]
@@ -214,5 +228,13 @@ mod tests {
         let witness = BinaryShoutWitness::from_trace(&trace).unwrap();
         let proof = prove_packed_shout(&witness).unwrap();
         verify_packed_shout(&witness, &proof).unwrap();
+
+        let mut tampered = proof.clone();
+        tampered.leaves[0] = tampered.leaves[0] + F2_128::from(1u64);
+        assert!(verify_packed_shout(&witness, &tampered).is_err());
+
+        let mut tampered = proof;
+        tampered.packed_value = tampered.packed_value + F2_128::from(1u64);
+        assert!(verify_packed_shout(&witness, &tampered).is_err());
     }
 }

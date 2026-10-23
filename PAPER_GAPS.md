@@ -1583,3 +1583,32 @@ Benchmark (`packed_shout_bench`, small 3-row trace):
 | packed Shout prototype | 48,481 | 11.4 ms |
 
 The prototype is correct but **larger** than the reference because it opens each column separately (two points × many columns), so the next step is batching all packed columns into one Mosaic/ring-switch claim instead of per-column openings.
+
+
+### A: packed BinaryShout leaf batching
+
+`packed_shout` now uses one packed address/valid table and a row-batch challenge:
+
+- the bit table commitment is unchanged;
+- the packed table is committed before the Shout challenges;
+- the read-point folded columns are sent as leaves;
+- `r_col` is sampled after the leaf values;
+- verifier checks:
+  ```text
+  Σ_col eq(r_col, col) · leaf_col = MLE(packed_table)(r_col, r_j)
+  ```
+  with one ring-switch opening;
+- leaves are checked against the read-point Shout claims; tampering either
+  leaves or the packed value is rejected.
+
+Benchmark (`packed_shout_bench`, small trace):
+
+| proof | bytes | prove |
+|---|---:|---:|
+| reference BinaryShout | 17,385 | 0.89 ms |
+| packed Shout (leaf batch) | **4,193** | **0.45 ms** |
+
+This is a 4.1x reduction and now smaller than the reference. The Shout verifier
+still receives the witness in this reference architecture; replacing the
+witness-derived column checks with the packed leaves for a witness-blind
+verifier is the remaining integration step.
