@@ -697,11 +697,13 @@ pub struct StageSpec {
 #[derive(Clone, Debug)]
 pub struct ProtocolPlan {
     stages: Vec<StageSpec>,
+    execution: Vec<ExecutionStage>,
 }
 
 impl ProtocolPlan {
     pub fn unified() -> Self {
         Self {
+            execution: UNIFIED_EXECUTION_STAGES.to_vec(),
             stages: vec![
                 StageSpec {
                     id: StageId::Cpu,
@@ -756,6 +758,10 @@ impl ProtocolPlan {
 
     pub fn stages(&self) -> &[StageSpec] {
         &self.stages
+    }
+
+    pub fn execution(&self) -> &[ExecutionStage] {
+        &self.execution
     }
 
     pub fn stage(&self, id: StageId) -> Option<&StageSpec> {
@@ -817,7 +823,7 @@ impl Orchestrator {
         trace: &magnetar_spec::Trace,
         width: usize,
     ) -> Result<UnifiedTraceProof, crate::RuntimeError> {
-        let proof = crate::prove_unified_inner(trace, width)?;
+        let proof = crate::prove_unified_with_plan(trace, width, &self.plan)?;
         let bundle = ProofBundle::from_unified(&proof);
         self.plan
             .check_bundle(&bundle)
@@ -835,7 +841,7 @@ impl Orchestrator {
         self.plan
             .check_bundle(&bundle)
             .map_err(|error| crate::RuntimeError::Proof(error.to_string()))?;
-        crate::verify_unified_inner(trace, proof, width)
+        crate::verify_unified_with_plan(trace, proof, width, &self.plan)
     }
 }
 
@@ -912,12 +918,10 @@ mod phase_tests {
     }
 }
 
-/// Execution plan for the current unified prover context. This is separate
-/// from `ProtocolPlan` (which declares claim routing/security order): the
-/// prover must commit before it can create commitment-bound claims, and it
-/// only runs the lockstep CPU reduction after all auxiliary claims exist.
+/// One executable stage shared by the prover and verifier. `Commit` is
+/// prover-only; the verifier skips it because the commitment is in the proof.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ProverStage {
+pub enum ExecutionStage {
     Commit,
     Access,
     Shout,
@@ -927,31 +931,12 @@ pub(crate) enum ProverStage {
     Cpu,
 }
 
-pub(crate) const UNIFIED_PROVER_STAGES: &[ProverStage] = &[
-    ProverStage::Commit,
-    ProverStage::Access,
-    ProverStage::Shout,
-    ProverStage::ShiftRouter,
-    ProverStage::StoreRouter,
-    ProverStage::RegisterAndTrace,
-    ProverStage::Cpu,
-];
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum VerifierStage {
-    Access,
-    Shout,
-    ShiftRouter,
-    StoreRouter,
-    RegisterAndTrace,
-    Cpu,
-}
-
-pub(crate) const UNIFIED_VERIFIER_STAGES: &[VerifierStage] = &[
-    VerifierStage::Access,
-    VerifierStage::Shout,
-    VerifierStage::ShiftRouter,
-    VerifierStage::StoreRouter,
-    VerifierStage::RegisterAndTrace,
-    VerifierStage::Cpu,
+pub const UNIFIED_EXECUTION_STAGES: &[ExecutionStage] = &[
+    ExecutionStage::Commit,
+    ExecutionStage::Access,
+    ExecutionStage::Shout,
+    ExecutionStage::ShiftRouter,
+    ExecutionStage::StoreRouter,
+    ExecutionStage::RegisterAndTrace,
+    ExecutionStage::Cpu,
 ];

@@ -2198,23 +2198,34 @@ impl<'a> UnifiedProveContext<'a> {
     }
 }
 
+pub(crate) fn prove_unified_with_plan(
+    trace: &Trace,
+    width: usize,
+    plan: &crate::protocol::ProtocolPlan,
+) -> Result<UnifiedTraceProof, RuntimeError> {
+    let mut context = UnifiedProveContext::new(trace, width)?;
+    for stage in plan.execution() {
+        match stage {
+            crate::protocol::ExecutionStage::Commit => context.commit()?,
+            crate::protocol::ExecutionStage::Access => context.prove_access()?,
+            crate::protocol::ExecutionStage::Shout => context.prove_shout()?,
+            crate::protocol::ExecutionStage::ShiftRouter => context.prove_shift_router()?,
+            crate::protocol::ExecutionStage::StoreRouter => context.prove_store_router()?,
+            crate::protocol::ExecutionStage::RegisterAndTrace => {
+                context.prove_register_and_trace()?
+            }
+            crate::protocol::ExecutionStage::Cpu => context.prove_cpu()?,
+        }
+    }
+    context.finish()
+}
+
+#[allow(dead_code)]
 pub(crate) fn prove_unified_inner(
     trace: &Trace,
     width: usize,
 ) -> Result<UnifiedTraceProof, RuntimeError> {
-    let mut context = UnifiedProveContext::new(trace, width)?;
-    for stage in crate::protocol::UNIFIED_PROVER_STAGES {
-        match stage {
-            crate::protocol::ProverStage::Commit => context.commit()?,
-            crate::protocol::ProverStage::Access => context.prove_access()?,
-            crate::protocol::ProverStage::Shout => context.prove_shout()?,
-            crate::protocol::ProverStage::ShiftRouter => context.prove_shift_router()?,
-            crate::protocol::ProverStage::StoreRouter => context.prove_store_router()?,
-            crate::protocol::ProverStage::RegisterAndTrace => context.prove_register_and_trace()?,
-            crate::protocol::ProverStage::Cpu => context.prove_cpu()?,
-        }
-    }
-    context.finish()
+    prove_unified_with_plan(trace, width, &crate::protocol::ProtocolPlan::unified())
 }
 
 pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTraceProof, RuntimeError> {
@@ -2468,25 +2479,41 @@ impl<'a> UnifiedVerifyContext<'a> {
     }
 }
 
+pub(crate) fn verify_unified_with_plan(
+    trace: &Trace,
+    proof: &UnifiedTraceProof,
+    width: usize,
+    plan: &crate::protocol::ProtocolPlan,
+) -> Result<(), RuntimeError> {
+    let mut context = UnifiedVerifyContext::new(trace, proof, width)?;
+    for stage in plan.execution() {
+        match stage {
+            crate::protocol::ExecutionStage::Commit => {}
+            crate::protocol::ExecutionStage::Access => context.verify_access()?,
+            crate::protocol::ExecutionStage::Shout => context.verify_shout()?,
+            crate::protocol::ExecutionStage::ShiftRouter => context.verify_shift_router()?,
+            crate::protocol::ExecutionStage::StoreRouter => context.verify_store_router()?,
+            crate::protocol::ExecutionStage::RegisterAndTrace => {
+                context.verify_register_and_trace()?
+            }
+            crate::protocol::ExecutionStage::Cpu => context.verify_cpu()?,
+        }
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
 pub(crate) fn verify_unified_inner(
     trace: &Trace,
     proof: &UnifiedTraceProof,
     width: usize,
 ) -> Result<(), RuntimeError> {
-    let mut context = UnifiedVerifyContext::new(trace, proof, width)?;
-    for stage in crate::protocol::UNIFIED_VERIFIER_STAGES {
-        match stage {
-            crate::protocol::VerifierStage::Access => context.verify_access()?,
-            crate::protocol::VerifierStage::Shout => context.verify_shout()?,
-            crate::protocol::VerifierStage::ShiftRouter => context.verify_shift_router()?,
-            crate::protocol::VerifierStage::StoreRouter => context.verify_store_router()?,
-            crate::protocol::VerifierStage::RegisterAndTrace => {
-                context.verify_register_and_trace()?
-            }
-            crate::protocol::VerifierStage::Cpu => context.verify_cpu()?,
-        }
-    }
-    Ok(())
+    verify_unified_with_plan(
+        trace,
+        proof,
+        width,
+        &crate::protocol::ProtocolPlan::unified(),
+    )
 }
 
 /// Verify a unified proof against the public statement before rebuilding the
