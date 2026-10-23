@@ -1009,6 +1009,10 @@ pub struct GatedMemoryRow {
 }
 
 impl GatedMemoryRow {
+    pub fn packed_system(&self) -> magnetar_constraint::ConstraintSystem {
+        self.relation.to_system()
+    }
+
     pub fn new(width: usize) -> Self {
         let adder = GatedBitAdder::new(width);
         let mut relation = adder.relation.clone();
@@ -1057,7 +1061,7 @@ pub fn prove_gated_memory_batch(
         ));
     }
     let row = GatedMemoryRow::new(width);
-    let system = row.relation.to_system();
+    let system = row.packed_system();
     let mut witnesses = Vec::new();
     for (rs1, imm, value, is_mem) in rows {
         let bits = row.witness(*rs1, *imm, *value, *is_mem);
@@ -1077,7 +1081,7 @@ pub fn verify_gated_memory_batch(
 ) -> Result<(), RuntimeError> {
     use magnetar_proof::verify_shared_simd_spartan;
     let row = GatedMemoryRow::new(width);
-    let system = row.relation.to_system();
+    let system = row.packed_system();
     let pcs = magnetar_pcs::P3BinaryPcs::new(100);
     verify_shared_simd_spartan(&system, instances, proof, &pcs)
         .map_err(|error| RuntimeError::Proof(error.to_string()))
@@ -1342,6 +1346,12 @@ impl GatedCpuRow {
         }
     }
 
+    /// Packed-field view of the gated row. The selector-gated constraints are
+    /// bit-level; this embeds them into the F2^128 R1CS used by the PCS/proof.
+    pub fn packed_system(&self) -> magnetar_constraint::ConstraintSystem {
+        self.relation.to_system()
+    }
+
     pub fn alu_witness(&self, left: u64, right: u64, op: GatedAluOp) -> Vec<bool> {
         let mut bits = self.alu.witness(left, right, op);
         let memory = self.memory.witness(0, 0, 0, false);
@@ -1406,7 +1416,7 @@ pub fn prove_gated_cpu_batch(
         ));
     }
     let row = GatedCpuRow::new(width);
-    let system = row.relation.to_system();
+    let system = row.packed_system();
     let mut witnesses = Vec::new();
     for input in rows {
         let bits = match input {
@@ -1433,7 +1443,7 @@ pub fn verify_gated_cpu_batch(
     use magnetar_proof::verify_shared_simd_spartan;
 
     let row = GatedCpuRow::new(width);
-    let system = row.relation.to_system();
+    let system = row.packed_system();
     let pcs = magnetar_pcs::P3BinaryPcs::new(100);
     verify_shared_simd_spartan(&system, instances, proof, &pcs)
         .map_err(|error| RuntimeError::Proof(error.to_string()))

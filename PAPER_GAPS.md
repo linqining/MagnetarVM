@@ -900,3 +900,15 @@ Test checks XOR, AND, ADD (5+3=8), and inactive-zero rows; the XOR row also prov
 - inactive sub-row outputs are zero.
 
 `prove_gated_cpu_batch` / `verify_gated_cpu_batch` batch q combined rows through `prove_shared_simd_spartan`. Test proves an ADD row and a memory row together.
+
+
+### Packed view of gated rows
+
+`GatedCpuRow::packed_system()` and `GatedMemoryRow::packed_system()` expose the F2^128 R1CS embedding of the selector-gated bit relations. The combined batch proof already runs on these systems with P3:
+
+- selector-gated ALU/memory constraints;
+- inactive outputs zero;
+- one-hot ALU/memory row selection;
+- prove/verify through `prove_shared_simd_spartan`.
+
+This is selector gating proven in the packed field. It is not yet word-packed (64 bits per field element); the remaining B decision is whether the packed schema should stop at F2^128 embedding of bit rows or introduce true word-packed columns with packed selectors.
