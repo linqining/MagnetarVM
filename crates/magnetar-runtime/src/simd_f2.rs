@@ -1138,8 +1138,11 @@ pub struct GatedAluRow {
     pub is_and: VarId,
     pub is_add: VarId,
     pub one: VarId,
+    pub xor_diff: Vec<VarId>,
     pub xor_prod: Vec<VarId>,
+    pub and_prod: Vec<VarId>,
     pub and_gated: Vec<VarId>,
+    pub add_xor: Vec<VarId>,
     pub add_gated: Vec<VarId>,
     pub relation: BitRelation,
 }
@@ -1232,8 +1235,11 @@ impl GatedAluRow {
             is_and,
             is_add,
             one,
+            xor_diff,
             xor_prod,
+            and_prod,
             and_gated,
+            add_xor,
             add_gated,
             relation,
         }
@@ -1428,6 +1434,21 @@ impl GatedCpuRow {
                 .add(packed(&self.alu.add_gated, 0)),
             Expr::var(self.alu.one),
             Expr::constant(0u64),
+        );
+        system.add_constraint(
+            Expr::var(self.alu.is_xor),
+            packed(&self.alu.xor_diff, 0),
+            packed(&self.alu.xor_prod, 0),
+        );
+        system.add_constraint(
+            Expr::var(self.alu.is_and),
+            packed(&self.alu.and_prod, 0),
+            packed(&self.alu.and_gated, 0),
+        );
+        system.add_constraint(
+            Expr::var(self.alu.is_add),
+            packed(&self.alu.add_xor, 0),
+            packed(&self.alu.add_gated, 0),
         );
         system.add_constraint(
             Expr::var(self.memory.adder.gate + self.memory_offset),

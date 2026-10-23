@@ -1270,3 +1270,16 @@ Acceptance criteria:
 - no separate unpacked witness commitment in the final bundle.
 
 This is the main remaining component-level gap for RAM proof size.
+
+
+### P0 progress: fuller packed s2
+
+`GatedAluRow` now exposes `xor_diff`, `and_prod`, and `add_xor`, and `packed_companion_system` adds the selector-gated packed products:
+
+```text
+is_xor * Σ β xor_diff = Σ β xor_prod
+is_and * Σ β and_prod = Σ β and_gated
+is_add * Σ β add_xor  = Σ β add_gated
+```
+
+plus the packed ALU output linear check and the packed memory data select. The q=8 Direct/RingSwitch tests still pass, so the dual relation has a more complete packed s2 while remaining one witness.
