@@ -73,3 +73,19 @@ group-5 bits/layout are correct; the earlier failure came from the packed
 prototype's column-challenge/point construction, not from the table or an
 empty point. The next Router attempt should build the point as
 `[r_col, points[5].point]` and verify it against this known-good base case.
+
+
+## Isolated group 5 proof
+
+`packed_router::prove_group5` / `verify_group5` isolate the previously failing
+group:
+
+- fixed columns 135..137, width 2;
+- point 5 from the reference claims;
+- transcript-derived non-zero column challenge;
+- one ring-switch opening;
+- verifier recomputes the expected leaf batch and checks the opening.
+
+Test `group5_packed_round_trips` passes. The width/point construction that failed
+inside the nine-group prototype is therefore understood in isolation; the next
+step is to add the remaining groups one at a time around this working base.
