@@ -121,3 +121,23 @@ The generic test now covers all boolean groups plus q. Remaining excluded:
 - shift_code (column 265): a code, not a bit;
 - hq (201..265): its leaf batch still disagrees, so it needs separate
   semantics/debugging.
+
+
+## Field groups
+
+`shift_code` (column 265) and `hq` (columns 201..265) are field-valued, not
+boolean bits. They now use `prove_field_group` / `verify_field_group`:
+
+- flatten the group columns into a field table;
+- commit/open with the standard P3 PCS (no bit packing);
+- one random column batch.
+
+Test `all_router_groups_round_trip` now covers **every** Router group in both
+Shift and Store modes:
+
+```text
+boolean (2 groups), input, offset, width, valid, q, hq, shift_code
+```
+
+All pass individually. Next: merge the group proofs and wire them into the aux
+bundle.

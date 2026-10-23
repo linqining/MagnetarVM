@@ -6,7 +6,7 @@
 
 use magnetar_constraint::F2_128;
 use magnetar_pcs::{P3BinaryPcs, P3MosaicCommitment, P3MosaicOpening, P3SharedPcs};
-use magnetar_proof::{BitPcs, RingSwitchOpening, RingSwitchPackedBitPcs};
+use magnetar_proof::{BitPcs, Mle, Pcs, RingSwitchOpening, RingSwitchPackedBitPcs};
 
 use crate::binary_router::{prove_binary_router_claims, BinaryRouterWitness};
 use crate::RuntimeError;
@@ -90,6 +90,16 @@ pub fn has_q(witness: &BinaryRouterWitness) -> bool {
         .shift_q
         .iter()
         .any(|c| c.iter().any(|v| v.value() == 1))
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct FieldGroupProof {
+    pub spec_index: usize,
+    pub commitment: P3MosaicCommitment,
+    pub point: Vec<F2_128>,
+    pub value: F2_128,
+    pub leaves: Vec<F2_128>,
+    pub opening: P3MosaicOpening,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -250,6 +260,122 @@ pub fn verify_group(
     Ok(())
 }
 
+pub fn is_field_group(spec_index: usize) -> bool {
+    matches!(spec_index, 5 | 8)
+}
+
+pub fn prove_field_group(
+    witness: &BinaryRouterWitness,
+    spec_index: usize,
+) -> Result<FieldGroupProof, RuntimeError> {
+    let all = groups(has_q(witness));
+    let spec = *all
+        .get(spec_index)
+        .ok_or_else(|| RuntimeError::Proof("group index".into()))?;
+    let (points, values) = context(witness)?;
+    let table = witness.table();
+    let cycles = witness.cycles;
+    let width = spec.width.next_power_of_two();
+    let mut flat = vec![F2_128::from(0u64); width * cycles];
+    for off in 0..spec.width {
+        flat[off..]
+            .iter_mut()
+            .step_by(width)
+            .zip(table.columns[spec.start + off].iter())
+            .for_each(|(slot, value)| *slot = *value);
+    }
+    let leaves =
+        values[spec.point_index][spec.value_offset..spec.value_offset + spec.width].to_vec();
+    let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+    let commitment = pcs
+        .commit(&flat)
+        .map_err(|e| RuntimeError::Proof(e.to_string()))?;
+    let col_bits = spec.width.next_power_of_two().trailing_zeros() as usize;
+    let mut t = magnetar_transcript::Sha256Transcript::new("packed-router-field-group");
+    t.absorb(
+        "commitment",
+        &bincode::serialize(&commitment).unwrap_or_default(),
+    );
+    for leaf in &leaves {
+        t.absorb("leaf", &leaf.value().to_le_bytes());
+    }
+    let r = (0..col_bits)
+        .map(|_| challenge_field(&mut t, "col"))
+        .collect::<Vec<_>>();
+    let mut point = [r.clone(), points[spec.point_index].clone()].concat();
+    point.resize(flat.len().trailing_zeros() as usize, F2_128::from(0u64));
+    let value = Mle::new(flat.clone())
+        .map_err(|e| RuntimeError::Proof(e.to_string()))?
+        .eval(&point)
+        .map_err(|e| RuntimeError::Proof(e.to_string()))?;
+    let opening = pcs
+        .open(&flat, &point)
+        .map_err(|e| RuntimeError::Proof(e.to_string()))?;
+    let expected = leaves
+        .iter()
+        .enumerate()
+        .fold(F2_128::from(0u64), |sum, (c, leaf)| {
+            sum + eq_at(&r, c) * *leaf
+        });
+    if value != expected {
+        return Err(RuntimeError::Proof(format!(
+            "field group {spec_index} batch mismatch"
+        )));
+    }
+    Ok(FieldGroupProof {
+        spec_index,
+        commitment,
+        point,
+        value,
+        leaves,
+        opening,
+    })
+}
+
+pub fn verify_field_group(
+    witness: &BinaryRouterWitness,
+    proof: &FieldGroupProof,
+) -> Result<(), RuntimeError> {
+    let all = groups(has_q(witness));
+    let spec = *all
+        .get(proof.spec_index)
+        .ok_or_else(|| RuntimeError::Proof("group index".into()))?;
+    let (_points, values) = context(witness)?;
+    if proof.leaves != values[spec.point_index][spec.value_offset..spec.value_offset + spec.width] {
+        return Err(RuntimeError::Proof("field group leaves mismatch".into()));
+    }
+    let col_bits = spec.width.next_power_of_two().trailing_zeros() as usize;
+    let mut t = magnetar_transcript::Sha256Transcript::new("packed-router-field-group");
+    t.absorb(
+        "commitment",
+        &bincode::serialize(&proof.commitment).unwrap_or_default(),
+    );
+    for leaf in &proof.leaves {
+        t.absorb("leaf", &leaf.value().to_le_bytes());
+    }
+    let r = (0..col_bits)
+        .map(|_| challenge_field(&mut t, "col"))
+        .collect::<Vec<_>>();
+    let expected = proof
+        .leaves
+        .iter()
+        .enumerate()
+        .fold(F2_128::from(0u64), |sum, (c, leaf)| {
+            sum + eq_at(&r, c) * *leaf
+        });
+    if proof.value != expected {
+        return Err(RuntimeError::Proof("field group batch value".into()));
+    }
+    let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+    if !pcs
+        .verify(&proof.commitment, &proof.point, proof.value, &proof.opening)
+        .map_err(|e| RuntimeError::Proof(e.to_string()))?
+    {
+        return Err(RuntimeError::Proof("field group opening rejected".into()));
+    }
+    Ok(())
+}
+
 pub fn prove_group5(witness: &BinaryRouterWitness) -> Result<PackedGroupProof, RuntimeError> {
     prove_group(witness, 6)
 }
@@ -339,11 +465,13 @@ mod tests {
         for store in [false, true] {
             let w = witness(store);
             for index in 0..groups(has_q(&w)).len() {
-                if [5, 8].contains(&index) {
-                    continue; // shift_code is a code; q/hq groups need separate handling
+                if is_field_group(index) {
+                    let proof = prove_field_group(&w, index).unwrap();
+                    verify_field_group(&w, &proof).unwrap();
+                } else {
+                    let proof = prove_group(&w, index).unwrap();
+                    verify_group(&w, &proof).unwrap();
                 }
-                let proof = prove_group(&w, index).unwrap();
-                verify_group(&w, &proof).unwrap();
             }
         }
     }
