@@ -1457,3 +1457,16 @@ is_alu + is_mem + is_shift = 1
 - bundle claim mapping uses `ClaimKind::Shift`.
 
 The shift relation is fused at row level, but packed s2 still only checks ALU/memory (shift rows make the ALU/memory packed checks zero). A packed shift companion is a remaining s2 item.
+
+
+### P0 progress: packed gate for shift rows
+
+`packed_companion_system` now adds a packed shift gate:
+
+```text
+is_shift * Σ β (rd_sll + rd_srl + rd_sra) = Σ β (rd_sll + rd_srl + rd_sra)
+```
+
+so a shift-inactive row forces the packed shift result to zero, while an active row leaves the selected result unchanged. `GatedShiftRow::result_vars(kind)` exposes the three shifted result ranges for this check.
+
+The ALU/memory packed checks still hold on shift rows (their gated outputs are zero). Test `combined_gated_row_selects_alu_or_memory` checks the shift companion, and q=8 Direct/RingSwitch still pass with mixed shift rows.

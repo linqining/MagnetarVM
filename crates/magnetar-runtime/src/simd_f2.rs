@@ -1680,6 +1680,19 @@ impl GatedCpuRow {
             packed(&self.alu.sub_xor, 0),
             packed(&self.alu.sub_gated, 0),
         );
+        let shift_results = self
+            .shift
+            .result_vars(BitShiftKind::Sll)
+            .into_iter()
+            .chain(self.shift.result_vars(BitShiftKind::Srl))
+            .chain(self.shift.result_vars(BitShiftKind::Sra))
+            .map(|var| var + self.shift_offset)
+            .collect::<Vec<_>>();
+        system.add_constraint(
+            Expr::var(self.shift.is_shift + self.shift_offset),
+            packed(&shift_results, 0),
+            packed(&shift_results, 0),
+        );
         system.add_constraint(
             Expr::var(self.memory.adder.gate + self.memory_offset),
             packed(&self.memory.data_in, self.memory_offset),
@@ -1777,6 +1790,8 @@ mod gated_cpu_row_tests {
         assert!(!shift[row.alu.is_alu]);
         assert!(!shift[row.memory_offset + row.memory.adder.gate]);
         assert!(shift[row.shift_offset + row.shift.is_shift]);
+        let shift_witness = row.relation.to_witness(&shift);
+        assert!(row.packed_companion_system().check(&shift_witness).is_ok());
 
         let memory = row.memory_witness(0x10, 2, 0x34, true);
         assert!(row.relation.check(&memory));
@@ -2429,6 +2444,24 @@ impl GatedShiftRow {
             srl_offset,
             sra_offset,
             relation,
+        }
+    }
+
+    pub fn result_vars(&self, kind: BitShiftKind) -> Vec<VarId> {
+        match kind {
+            BitShiftKind::Sll => self.sll.rd.clone(),
+            BitShiftKind::Srl => self
+                .srl
+                .rd
+                .iter()
+                .map(|var| *var + self.srl_offset)
+                .collect(),
+            BitShiftKind::Sra => self
+                .sra
+                .rd
+                .iter()
+                .map(|var| *var + self.sra_offset)
+                .collect(),
         }
     }
 
