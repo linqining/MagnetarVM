@@ -52,3 +52,18 @@ PC+4 constraints and `finish()` helper still assumed sequential execution.
 - only the next-PC sum rows are gated by `sequential`.
 
 These formulas are ready to be lifted into `GatedCpuRow`.
+
+
+## Implemented: JAL
+
+The validated PC row was lifted into `GatedCpuRow`:
+
+- `sequential + is_jal = 1`;
+- PC+4 sum rows gated by `sequential`;
+- carry chain uses unconditional AND rows;
+- `is_jal · (a + pc) = 0` and `is_jal · (next_pc + add_out) = 0`;
+- `finish()` takes an explicit next PC;
+- trace adapter maps `Op::Jal` to the gated ALU row.
+
+Tests cover the ALU target, PC binding, packed companion, trace mapping, and a
+two-row gated dual proof. `rd = pc + 4` for JAL is not yet constrained.

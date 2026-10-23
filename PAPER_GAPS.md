@@ -1728,3 +1728,17 @@ checks the truncated output `0x34`.
 - trace adapter maps `Op::Auipc` to `GatedAluOp::Auipc`.
 
 Tests cover the ALU output, the CPU packed companion, and the trace adapter mapping.
+
+
+### P0 progress: JAL control flow
+
+`GatedCpuRow` now supports JAL:
+
+- PC+4 is conditional on `sequential`; JAL clears it;
+- target is the ADD datapath `pc + imm` and is bound to `next_pc`;
+- ALU `a` is bound to `pc`;
+- packed s2 checks both bindings;
+- trace adapter maps `Op::Jal`.
+
+A two-row JAL trace (`jal x1, +4` then `addi`) proves/verifies through the gated
+dual backend. JAL's `rd = pc + 4` write value is still not constrained.

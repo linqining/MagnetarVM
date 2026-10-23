@@ -1127,6 +1127,7 @@ pub enum GatedAluOp {
     Slt,
     Lui,
     Auipc,
+    Jal,
     Inactive,
 }
 
@@ -1161,6 +1162,7 @@ pub struct GatedAluRow {
     pub is_lui: VarId,
     pub lui_gated: Vec<VarId>,
     pub is_auipc: VarId,
+    pub is_jal: VarId,
     pub relation: BitRelation,
 }
 
@@ -1205,10 +1207,11 @@ impl GatedAluRow {
         let is_lui = 25 * width + 12;
         let lui_gated = (25 * width + 13..26 * width + 13).collect::<Vec<_>>();
         let is_auipc = 26 * width + 13;
-        let mut relation = BitRelation::new(26 * width + 14);
+        let is_jal = 26 * width + 14;
+        let mut relation = BitRelation::new(26 * width + 15);
         relation.add(BitRow::new(vec![one], vec![one], vec![one]));
         for selector in [
-            is_alu, is_xor, is_and, is_add, is_sub, is_slt, is_slts, is_lui, is_auipc,
+            is_alu, is_xor, is_and, is_add, is_sub, is_slt, is_slts, is_lui, is_auipc, is_jal,
         ] {
             relation.add(BitRow::new(vec![selector], vec![selector, one], Vec::new()));
         }
@@ -1223,6 +1226,7 @@ impl GatedAluRow {
             vec![slt_mode],
         ));
         relation.add(BitRow::new(vec![is_auipc], vec![is_add], vec![is_auipc]));
+        relation.add(BitRow::new(vec![is_jal], vec![is_add], vec![is_jal]));
         relation.add(BitRow::new(vec![add_carries[0]], vec![one], Vec::new()));
         relation.add(BitRow::new(vec![sub_carries[0]], vec![one], vec![one]));
         for bit in 0..width {
@@ -1388,6 +1392,7 @@ impl GatedAluRow {
             is_lui,
             lui_gated,
             is_auipc,
+            is_jal,
             relation,
         }
     }
@@ -1403,13 +1408,21 @@ impl GatedAluRow {
             GatedAluOp::Sltu => (false, false, false, false, true, false),
             GatedAluOp::Slt => (false, false, false, false, false, true),
             GatedAluOp::Lui => (false, false, false, false, false, false),
-            GatedAluOp::Auipc => (false, false, true, false, false, false),
+            GatedAluOp::Auipc | GatedAluOp::Jal => (false, false, true, false, false, false),
             GatedAluOp::Inactive => (false, false, false, false, false, false),
         };
         let is_lui = op == GatedAluOp::Lui;
         let is_auipc = op == GatedAluOp::Auipc;
-        bits[self.is_alu] =
-            is_xor || is_and || is_add || is_sub || is_slt || is_slts || is_lui || is_auipc;
+        let is_jal = op == GatedAluOp::Jal;
+        bits[self.is_alu] = is_xor
+            || is_and
+            || is_add
+            || is_sub
+            || is_slt
+            || is_slts
+            || is_lui
+            || is_auipc
+            || is_jal;
         bits[self.is_xor] = is_xor;
         bits[self.is_and] = is_and;
         bits[self.is_add] = is_add;
@@ -1418,6 +1431,7 @@ impl GatedAluRow {
         bits[self.is_slts] = is_slts;
         bits[self.is_lui] = is_lui;
         bits[self.is_auipc] = is_auipc;
+        bits[self.is_jal] = is_jal;
         bits[self.slt_mode] = is_slt || is_slts;
         let add_carries = 7 * self.width + 6;
         let sub_b_eff = 14 * self.width + 7;
@@ -1467,7 +1481,7 @@ impl GatedAluRow {
                 GatedAluOp::Sub => a ^ b_eff ^ sub_carry,
                 GatedAluOp::Sltu | GatedAluOp::Slt => false,
                 GatedAluOp::Lui => b,
-                GatedAluOp::Auipc => a ^ b ^ add_carry,
+                GatedAluOp::Auipc | GatedAluOp::Jal => a ^ b ^ add_carry,
                 GatedAluOp::Inactive => false,
             };
         }
@@ -1567,6 +1581,7 @@ pub struct GatedCpuRow {
     pub shift_offset: usize,
     pub pc: Vec<VarId>,
     pub next_pc: Vec<VarId>,
+    pub sequential: VarId,
     pub relation: BitRelation,
 }
 
@@ -1630,28 +1645,35 @@ impl GatedCpuRow {
                 Vec::new(),
             ));
         }
-        // Enforce next_pc = pc + 4 (mod 2^width).
+        // Enforce next_pc = pc + 4 only for sequential rows.
         let carry = (relation.num_vars..relation.num_vars + width).collect::<Vec<_>>();
         relation.num_vars += width;
+        let sequential = relation.num_vars;
+        relation.num_vars += 1;
+        relation.add(BitRow::new(
+            vec![sequential, alu.is_jal],
+            vec![alu.one],
+            vec![alu.one],
+        ));
         for bit in 0..width {
             if bit < 2 {
                 relation.add(BitRow::new(
                     vec![next_pc[bit], pc[bit]],
-                    vec![alu.one],
+                    vec![sequential],
                     Vec::new(),
                 ));
             } else if bit == 2 {
                 relation.add(BitRow::new(
-                    vec![pc[bit], alu.one],
-                    vec![alu.one],
-                    vec![next_pc[bit]],
+                    vec![next_pc[bit], pc[bit]],
+                    vec![sequential],
+                    vec![sequential],
                 ));
-                relation.add(BitRow::new(vec![carry[bit]], vec![alu.one], vec![pc[bit]]));
+                relation.add(BitRow::new(vec![pc[bit]], vec![alu.one], vec![carry[bit]]));
             } else {
                 relation.add(BitRow::new(
-                    vec![pc[bit], carry[bit - 1]],
-                    vec![alu.one],
-                    vec![next_pc[bit]],
+                    vec![next_pc[bit], pc[bit], carry[bit - 1]],
+                    vec![sequential],
+                    Vec::new(),
                 ));
                 relation.add(BitRow::new(
                     vec![pc[bit]],
@@ -1659,6 +1681,18 @@ impl GatedCpuRow {
                     vec![carry[bit]],
                 ));
             }
+        }
+        for bit in 0..width {
+            relation.add(BitRow::new(
+                vec![alu.a[bit], pc[bit]],
+                vec![alu.is_jal],
+                Vec::new(),
+            ));
+            relation.add(BitRow::new(
+                vec![next_pc[bit], alu.out[bit]],
+                vec![alu.is_jal],
+                Vec::new(),
+            ));
         }
         Self {
             width,
@@ -1669,6 +1703,7 @@ impl GatedCpuRow {
             shift_offset,
             pc,
             next_pc,
+            sequential,
             relation,
         }
     }
@@ -1728,6 +1763,16 @@ impl GatedCpuRow {
             packed(&self.alu.a, 0).add(packed(&self.pc, 0)),
             Expr::constant(0u64),
         );
+        system.add_constraint(
+            Expr::var(self.alu.is_jal),
+            packed(&self.alu.a, 0).add(packed(&self.pc, 0)),
+            Expr::constant(0u64),
+        );
+        system.add_constraint(
+            Expr::var(self.alu.is_jal),
+            packed(&self.next_pc, 0).add(packed(&self.alu.out, 0)),
+            Expr::constant(0u64),
+        );
         let shift_results = self
             .shift
             .result_vars(BitShiftKind::Sll)
@@ -1749,13 +1794,14 @@ impl GatedCpuRow {
         system
     }
 
-    fn finish(&self, mut bits: Vec<bool>, pc: u64) -> Vec<bool> {
+    fn finish(&self, mut bits: Vec<bool>, pc: u64, next_pc: u64, sequential: bool) -> Vec<bool> {
         bits.resize(self.relation.num_vars, false);
         for bit in 0..self.width {
             bits[self.pc[bit]] = (pc >> bit) & 1 == 1;
-            bits[self.next_pc[bit]] = ((pc + 4) >> bit) & 1 == 1;
+            bits[self.next_pc[bit]] = (next_pc >> bit) & 1 == 1;
         }
-        let carry_start = self.relation.num_vars - self.width;
+        bits[self.sequential] = sequential;
+        let carry_start = self.pc[0] + 2 * self.width;
         let pc_bit = |bit: usize| (pc >> bit) & 1 == 1;
         bits[carry_start + 2] = pc_bit(2);
         for bit in 3..self.width {
@@ -1773,7 +1819,12 @@ impl GatedCpuRow {
         let memory = self.memory.witness(0, 0, 0, false);
         bits.extend(memory);
         bits.extend(self.shift.inactive_witness());
-        self.finish(bits, pc)
+        let next_pc = if op == GatedAluOp::Jal {
+            left.wrapping_add(right)
+        } else {
+            pc.wrapping_add(4)
+        };
+        self.finish(bits, pc, next_pc, op != GatedAluOp::Jal)
     }
 
     pub fn memory_witness(&self, rs1: u64, imm: u64, value: u64, is_mem: bool) -> Vec<bool> {
@@ -1790,7 +1841,7 @@ impl GatedCpuRow {
         let mut bits = self.alu.witness(0, 0, GatedAluOp::Inactive);
         bits.extend(self.memory.witness(0, 0, 0, false));
         bits.extend(self.shift.witness(left, shamt, kind));
-        self.finish(bits, pc)
+        self.finish(bits, pc, pc.wrapping_add(4), true)
     }
 
     pub fn memory_witness_at(
@@ -1805,7 +1856,7 @@ impl GatedCpuRow {
         let memory = self.memory.witness(rs1, imm, value, is_mem);
         bits.extend(memory);
         bits.extend(self.shift.inactive_witness());
-        self.finish(bits, pc)
+        self.finish(bits, pc, pc.wrapping_add(4), true)
     }
 }
 
@@ -1849,6 +1900,19 @@ mod gated_cpu_row_tests {
         let auipc_witness = row.relation.to_witness(&auipc);
         assert!(row.packed_companion_system().check(&auipc_witness).is_ok());
         assert!(auipc[row.alu.is_auipc]);
+
+        let jal = row.alu_witness_at(0x1000, 0x1000, 0x20, GatedAluOp::Jal);
+        assert!(row.relation.check(&jal));
+        let jal_next = row
+            .next_pc
+            .iter()
+            .enumerate()
+            .fold(0u64, |value, (bit, var)| {
+                value | (u64::from(jal[*var]) << bit)
+            });
+        assert_eq!(jal_next, 0x20);
+        let jal_witness = row.relation.to_witness(&jal);
+        assert!(row.packed_companion_system().check(&jal_witness).is_ok());
 
         let shift = row.shift_witness_at(0x1008, 5, 2, BitShiftKind::Sll);
         assert!(row.relation.check(&shift));
