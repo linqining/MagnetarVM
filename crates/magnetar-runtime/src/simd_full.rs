@@ -9,6 +9,7 @@ use magnetar_proof::{
     prove_spartan_with_matrices, verify_spartan_with_matrices, witness_vector, SharedBlockMatrix,
     SpartanProof,
 };
+use magnetar_spec::Trace;
 
 use crate::RuntimeError;
 
@@ -69,6 +70,52 @@ fn matrices(
     Ok((a, b, c))
 }
 
+/// Convert a trace prefix of supported ALU/load/store rows into combined
+/// schema witnesses. Unsupported rows end the slice; the count must be a
+/// nonzero power of two.
+pub fn simd_full_rows_from_trace(
+    trace: &Trace,
+    width: usize,
+) -> Result<Vec<Witness>, RuntimeError> {
+    let (_system, layout) = uniform_cpu_full_layout(width);
+    let mut rows = Vec::new();
+    for row in &trace.rows {
+        if row.instruction.op.amo_width().is_some()
+            || crate::branch_op_for(row.instruction.op).is_some()
+        {
+            break;
+        }
+        if let Some(access) = row.mem {
+            let imm = row.instruction.imm as u64;
+            if access.is_write {
+                rows.push(layout.memory_witness(row.pc, row.rs1_val, imm, access.value, false));
+            } else {
+                rows.push(layout.memory_witness(row.pc, row.rs1_val, imm, row.rd_val, true));
+            }
+            continue;
+        }
+        let Some(step_op) = crate::step_op_for(row.instruction.op) else {
+            break;
+        };
+        if crate::w_step_op_for(row.instruction.op).is_some() {
+            break;
+        }
+        let imm = match row.instruction.op {
+            magnetar_spec::Op::Slli | magnetar_spec::Op::Srli | magnetar_spec::Op::Srai => {
+                u64::from(row.instruction.shamt)
+            }
+            _ => row.instruction.imm as u64,
+        };
+        rows.push(layout.alu_witness(step_op, row.pc, row.rs1_val, row.rs2_val, imm));
+    }
+    if rows.is_empty() || !rows.len().is_power_of_two() {
+        return Err(RuntimeError::Proof(
+            "SIMD full CPU slice must contain a nonzero power-of-two number of rows".into(),
+        ));
+    }
+    Ok(rows)
+}
+
 pub fn prove_simd_full_rows(width: usize, rows: &[Witness]) -> Result<SimdFullProof, RuntimeError> {
     if rows.is_empty() {
         return Err(RuntimeError::Proof("empty SIMD full CPU batch".into()));
@@ -117,6 +164,45 @@ mod tests {
             layout.alu_witness(StepOp::Add, 0x1000, 3, 4, 0),
             layout.memory_witness(0x1004, 5, 2, 0x34, true),
         ];
+        let proof = prove_simd_full_rows(16, &rows).expect("prove");
+        verify_simd_full_rows(&proof).expect("verify");
+    }
+    #[test]
+    fn mixed_trace_slice_round_trips() {
+        use magnetar_executor::execute;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+        let instruction = |op: Op, rd: u8, rs1: u8, rs2: u8, imm: i64| Instruction {
+            op,
+            rd,
+            rs1,
+            rs2,
+            imm,
+            shamt: 0,
+        };
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                instruction(Op::Lui, 10, 0, 0, 0x1000_0000).encode(),
+                instruction(Op::Sw, 0, 10, 0, 0).encode(),
+                instruction(Op::Lw, 11, 10, 0, 0).encode(),
+                instruction(Op::Add, 12, 11, 0, 0).encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .expect("trace");
+        let rows = simd_full_rows_from_trace(&trace, 16).expect("rows");
+        assert_eq!(rows.len(), 4);
         let proof = prove_simd_full_rows(16, &rows).expect("prove");
         verify_simd_full_rows(&proof).expect("verify");
     }

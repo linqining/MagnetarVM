@@ -648,3 +648,16 @@ Chosen intermediate path: keep the F2 bit relation as the semantic s1 source and
 - a native F2 backend can later implement the same trait without changing the CPU schema or claim layout.
 
 This avoids blocking the uniform schema on the native F2 proof decision.
+
+
+### Mixed ALU/memory trace slice
+
+`simd_full_rows_from_trace` now converts a trace prefix of supported ALU and load/store rows into combined-schema witnesses:
+
+- ALU rows use `alu_witness`;
+- load rows use `memory_witness(..., is_load=true)`;
+- store rows use `memory_witness(..., is_load=false)`;
+- unsupported rows (branch/AMO/W) end the slice;
+- the slice must be a nonzero power of two.
+
+Test `mixed_trace_slice_round_trips` executes `lui; sw; lw; add; ecall`, takes the four supported rows, and proves/verifies them with shared matrices. This validates the combined schema on a real trace, not just hand-built witnesses.
