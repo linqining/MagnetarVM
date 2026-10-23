@@ -1634,3 +1634,44 @@ pub fn verify_gated_cpu_batch_pc(
     verify_spartan_with_matrices(&a, &b, &c, proof, &pcs)
         .map_err(|error| RuntimeError::Proof(error.to_string()))
 }
+
+#[cfg(test)]
+mod claim_routing_tests {
+    use super::*;
+
+    #[test]
+    fn gated_rows_route_register_and_ram_claims() {
+        use crate::protocol::{ClaimKind, ClaimSet, ProtocolPlan, SegmentId};
+
+        let rows = [
+            GatedCpuRowInput::Alu {
+                left: 5,
+                right: 3,
+                op: GatedAluOp::Add,
+            },
+            GatedCpuRowInput::Memory {
+                rs1: 0x10,
+                imm: 2,
+                value: 0x34,
+                is_mem: true,
+            },
+        ];
+        let mut claims = ClaimSet::new();
+        for (pc, input) in [(0x1000u64, rows[0]), (0x1004, rows[1])] {
+            let kind = match input {
+                GatedCpuRowInput::Alu { .. } => ClaimKind::Register,
+                GatedCpuRowInput::Memory { .. } => ClaimKind::Ram,
+            };
+            claims.push(crate::protocol::Claim::new(
+                kind,
+                SegmentId(0),
+                vec![magnetar_constraint::F2_128::from(pc)],
+                magnetar_constraint::F2_128::from(1u64),
+            ));
+        }
+        let plan = ProtocolPlan::unified();
+        plan.check_virtual_claims(&claims).unwrap();
+        plan.consume_virtual_claims(&mut claims).unwrap();
+        assert_eq!(claims.remaining(), 0);
+    }
+}

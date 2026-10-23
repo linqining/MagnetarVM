@@ -8,6 +8,7 @@ use magnetar_pcs::{P3MosaicCommitment, P3MosaicOpening, P3SharedPcs};
 use magnetar_proof::dual_field::{BitRelation, BitRow};
 use magnetar_proof::{prove_lockstep, verify_lockstep, witness_vector, LockstepProof};
 
+use crate::simd_f2::{GatedCpuRow, GatedCpuRowInput};
 use crate::RuntimeError;
 
 fn bit_relation(layout: &magnetar_cpu::simd::UniformCpuRowLayout, op: StepOp) -> BitRelation {
@@ -328,6 +329,150 @@ pub fn verify_dual_batch(
     .map_err(|error| RuntimeError::Proof(error.to_string()))
 }
 
+/// Gated dual batch: the selector-gated CPU row as s1 (bit relation) and its
+/// packed F2^128 system as s2, with PC-chain extra rows on the packed side.
+pub fn prove_gated_dual_batch(
+    width: usize,
+    rows: &[(u64, GatedCpuRowInput)],
+) -> Result<
+    (
+        LockstepProof<P3MosaicCommitment, P3MosaicOpening>,
+        WitnessLayout,
+    ),
+    RuntimeError,
+> {
+    use magnetar_proof::spartan::MatrixPart;
+    use magnetar_proof::{prove_lockstep_with_matrices, SharedBlockMatrix};
+
+    if rows.is_empty() || !rows.len().is_power_of_two() {
+        return Err(RuntimeError::Proof(
+            "gated dual batch must be a nonzero power of two".into(),
+        ));
+    }
+    let row = GatedCpuRow::new(width);
+    let s1_system = row.relation.to_system();
+    let s2_system = row.packed_system();
+    let base_cols = (row.relation.num_vars + 1).next_power_of_two();
+    let mut extra_a = Vec::new();
+    let mut extra_b = Vec::new();
+    let mut extra_c = Vec::new();
+    for instance in 0..rows.len().saturating_sub(1) {
+        for bit in 0..width {
+            extra_a.push(vec![(
+                instance * base_cols + row.next_pc[bit],
+                magnetar_constraint::F2_128::from(1u64),
+            )]);
+            extra_b.push(vec![(
+                instance * base_cols + row.alu.one,
+                magnetar_constraint::F2_128::from(1u64),
+            )]);
+            extra_c.push(vec![(
+                (instance + 1) * base_cols + row.pc[bit],
+                magnetar_constraint::F2_128::from(1u64),
+            )]);
+        }
+    }
+    let zero_rows = vec![Vec::new(); rows.len().saturating_sub(1) * width];
+    let a0 = SharedBlockMatrix::from_system(&s1_system, MatrixPart::A, rows.len())
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(zero_rows.clone());
+    let b0 = SharedBlockMatrix::from_system(&s1_system, MatrixPart::B, rows.len())
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(zero_rows.clone());
+    let c0 = SharedBlockMatrix::from_system(&s1_system, MatrixPart::C, rows.len())
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(zero_rows);
+    let a1 = SharedBlockMatrix::from_system(&s2_system, MatrixPart::A, rows.len())
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(extra_a);
+    let b1 = SharedBlockMatrix::from_system(&s2_system, MatrixPart::B, rows.len())
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(extra_b);
+    let c1 = SharedBlockMatrix::from_system(&s2_system, MatrixPart::C, rows.len())
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(extra_c);
+    let mut z = Vec::new();
+    for (pc, input) in rows {
+        let bits = match input {
+            GatedCpuRowInput::Alu { left, right, op } => {
+                row.alu_witness_at(*pc, *left, *right, *op)
+            }
+            GatedCpuRowInput::Memory {
+                rs1,
+                imm,
+                value,
+                is_mem,
+            } => row.memory_witness_at(*pc, *rs1, *imm, *value, *is_mem),
+        };
+        z.extend(
+            witness_vector(&s2_system, &row.relation.to_witness(&bits))
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?,
+        );
+    }
+    let layout_segments = segment_layout(z.len())?;
+    let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+    let proof =
+        prove_lockstep_with_matrices(&z, &a0, &b0, &c0, &a1, &b1, &c1, &layout_segments, &pcs)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok((proof, layout_segments))
+}
+
+pub fn verify_gated_dual_batch(
+    width: usize,
+    rows: &[(u64, GatedCpuRowInput)],
+    proof: &LockstepProof<P3MosaicCommitment, P3MosaicOpening>,
+    layout: &WitnessLayout,
+) -> Result<(), RuntimeError> {
+    use magnetar_proof::spartan::MatrixPart;
+    use magnetar_proof::{verify_lockstep_with_matrices, SharedBlockMatrix};
+
+    let row = GatedCpuRow::new(width);
+    let s1_system = row.relation.to_system();
+    let s2_system = row.packed_system();
+    let base_cols = (row.relation.num_vars + 1).next_power_of_two();
+    let mut extra_a = Vec::new();
+    let mut extra_b = Vec::new();
+    let mut extra_c = Vec::new();
+    for instance in 0..rows.len().saturating_sub(1) {
+        for bit in 0..width {
+            extra_a.push(vec![(
+                instance * base_cols + row.next_pc[bit],
+                magnetar_constraint::F2_128::from(1u64),
+            )]);
+            extra_b.push(vec![(
+                instance * base_cols + row.alu.one,
+                magnetar_constraint::F2_128::from(1u64),
+            )]);
+            extra_c.push(vec![(
+                (instance + 1) * base_cols + row.pc[bit],
+                magnetar_constraint::F2_128::from(1u64),
+            )]);
+        }
+    }
+    let zero_rows = vec![Vec::new(); rows.len().saturating_sub(1) * width];
+    let a0 = SharedBlockMatrix::from_system(&s1_system, MatrixPart::A, rows.len())
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(zero_rows.clone());
+    let b0 = SharedBlockMatrix::from_system(&s1_system, MatrixPart::B, rows.len())
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(zero_rows.clone());
+    let c0 = SharedBlockMatrix::from_system(&s1_system, MatrixPart::C, rows.len())
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(zero_rows);
+    let a1 = SharedBlockMatrix::from_system(&s2_system, MatrixPart::A, rows.len())
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(extra_a);
+    let b1 = SharedBlockMatrix::from_system(&s2_system, MatrixPart::B, rows.len())
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(extra_b);
+    let c1 = SharedBlockMatrix::from_system(&s2_system, MatrixPart::C, rows.len())
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(extra_c);
+    let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+    verify_lockstep_with_matrices(&a0, &b0, &c0, &a1, &b1, &c1, layout, proof, &pcs)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,6 +489,31 @@ mod tests {
         let (proof, layout) =
             prove_dual_cpu(8, StepOp::Add, 0b1010_1010, 0b1100_1100).expect("prove");
         verify_dual_cpu(8, StepOp::Add, &proof, &layout).expect("verify");
+    }
+
+    #[test]
+    fn gated_dual_batch_runs_in_lockstep() {
+        let rows = [
+            (
+                0x1000,
+                GatedCpuRowInput::Alu {
+                    left: 5,
+                    right: 3,
+                    op: crate::simd_f2::GatedAluOp::Add,
+                },
+            ),
+            (
+                0x1004,
+                GatedCpuRowInput::Memory {
+                    rs1: 0x10,
+                    imm: 2,
+                    value: 0x34,
+                    is_mem: true,
+                },
+            ),
+        ];
+        let (proof, layout) = prove_gated_dual_batch(8, &rows).expect("prove");
+        verify_gated_dual_batch(8, &rows, &proof, &layout).expect("verify");
     }
 
     #[test]

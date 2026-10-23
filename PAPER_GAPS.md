@@ -926,3 +926,26 @@ This is selector gating proven in the packed field. It is not yet word-packed (6
 - one shared-matrix Spartan proof.
 
 Test batches an ADD row and a memory row at PCs 0x1000/0x1004 and verifies the chain. This is a selector-gated CPU row with cross-cycle continuity in the packed field.
+
+
+### Gated dual batch and claim routing
+
+`simd_dual::prove_gated_dual_batch` / `verify_gated_dual_batch` connect `GatedCpuRow` to the dual lockstep path:
+
+- s1: gated bit relation (`relation.to_system`);
+- s2: packed F2^128 gated system;
+- shared matrices for q rows;
+- PC-chain extra rows;
+- one `LockstepProof`.
+
+`simd_gated_dual_compare` (release, single run) compares q=2 ADD:
+
+| path | proof | prove | verify |
+|---|---:|---:|---:|
+| always-active dual | 133,128 B | 30.7 ms | 10.6 ms |
+| gated dual | 86,136 B | 4.8 ms | 2.8 ms |
+| gated dual mixed ALU/memory | 86,232 B | — | — |
+
+The gated row is ~35% smaller and ~6x faster to prove in this run. These are illustrative single-run numbers, not a statistically stable benchmark.
+
+`gated_rows_route_register_and_ram_claims` builds `ClaimKind::Register` / `ClaimKind::Ram` claims from gated ALU/memory rows and verifies they pass `ProtocolPlan::unified()` claim production and consumption (`TwistRegisters`/`TwistRam` sinks). This is protocol-level routing, not yet a BinaryTwist proof over gated memory rows.
