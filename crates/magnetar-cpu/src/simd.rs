@@ -17,6 +17,7 @@ pub struct UniformCpuRowLayout {
     pub width: usize,
     pub step: UniformStepLayout,
     pub num_vars: usize,
+    pub system: ConstraintSystem,
 }
 
 impl UniformCpuRowLayout {
@@ -57,12 +58,14 @@ pub struct UniformCpuRowWitness {
 pub fn uniform_cpu_row_layout(width: usize) -> (ConstraintSystem, UniformCpuRowLayout) {
     let (system, step) = uniform_step_relation(width);
     let num_vars = system.num_vars;
+    let row_system = system.clone();
     (
         system,
         UniformCpuRowLayout {
             width,
             step,
             num_vars,
+            system: row_system,
         },
     )
 }
@@ -159,6 +162,56 @@ impl UniformCpuBatchLayout {
         Ok(&witness.values[offset..offset + self.row.num_vars])
     }
 
+    /// Build a block-diagonal batch system for the instances plus PC-chain
+    /// equality constraints. This is the batched baseline; a shared-matrix
+    /// SIMD encoding replaces the block-diagonal matrices later.
+    pub fn batch_system(
+        &self,
+        rows: &[UniformCpuRowWitness],
+    ) -> Result<(ConstraintSystem, magnetar_constraint::Witness), SimdError> {
+        if rows.len() != self.cycles {
+            return Err(SimdError::CycleCount {
+                expected: self.cycles,
+                actual: rows.len(),
+            });
+        }
+        let mut system = ConstraintSystem::new(0);
+        let mut values = Vec::new();
+        let mut offsets = Vec::with_capacity(rows.len());
+        for (cycle, row) in rows.iter().enumerate() {
+            if row.witness.values().len() != self.row.num_vars {
+                return Err(SimdError::RowWidth {
+                    cycle,
+                    expected: self.row.num_vars,
+                    actual: row.witness.values().len(),
+                });
+            }
+            let offset = system.merge(self.row.system.clone());
+            offsets.push(offset);
+            values.extend_from_slice(row.witness.values());
+        }
+        let groups = self.row.var_groups();
+        let pc = groups
+            .iter()
+            .find(|group| group.kind == crate::CpuVarKind::Pc)
+            .ok_or(SimdError::MissingPcGroup)?;
+        let next_pc = groups
+            .iter()
+            .find(|group| group.kind == crate::CpuVarKind::NextPc)
+            .ok_or(SimdError::MissingPcGroup)?;
+        let one = magnetar_constraint::Expr::constant(1u64);
+        for pair in offsets.windows(2) {
+            for (pc_bit, next_bit) in pc.vars.iter().zip(next_pc.vars.iter()) {
+                system.add_constraint(
+                    magnetar_constraint::Expr::var(pair[0] + *next_bit),
+                    one.clone(),
+                    magnetar_constraint::Expr::var(pair[1] + *pc_bit),
+                );
+            }
+        }
+        Ok((system, magnetar_constraint::Witness::new(values)))
+    }
+
     /// Semantic PC-chain check for the ALU/PC schema slice. Cross-cycle
     /// constraints will move into the SIMD matrix later; this keeps the batch
     /// construction honest in the meantime.
@@ -189,6 +242,8 @@ pub enum SimdError {
     },
     #[error("cycle {0} out of range")]
     CycleOutOfRange(usize),
+    #[error("row layout has no PC/NextPc group")]
+    MissingPcGroup,
     #[error("PC chain break at cycle {cycle}: row pc {pc}, expected {expected}")]
     PcChain {
         cycle: usize,
@@ -250,6 +305,27 @@ mod batch_tests {
             batch.validate_pc_chain(&broken),
             Err(SimdError::PcChain { .. })
         ));
+    }
+
+    #[test]
+    fn batch_system_enforces_pc_chain() {
+        let (_system, row) = uniform_cpu_row_layout(8);
+        let rows = [
+            row.witness(StepOp::Add, 0, 1, 2, 0),
+            row.witness(StepOp::Xor, 4, 3, 4, 0),
+            row.witness(StepOp::Addi, 8, 5, 0, 6),
+        ];
+        let batch = UniformCpuBatchLayout::new(row.clone(), rows.len());
+        let (system, witness) = batch.batch_system(&rows).expect("batch system");
+        system.check(&witness).expect("valid PC chain");
+
+        let broken = [
+            row.witness(StepOp::Add, 0, 1, 2, 0),
+            row.witness(StepOp::Xor, 8, 3, 4, 0),
+        ];
+        let broken_batch = UniformCpuBatchLayout::new(row.clone(), broken.len());
+        let (system, witness) = broken_batch.batch_system(&broken).expect("batch system");
+        assert!(system.check(&witness).is_err());
     }
 
     #[test]

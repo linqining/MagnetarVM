@@ -519,3 +519,14 @@ Blocking decision for the next step: choose between
 
 1. **block-diagonal batched runtime baseline** (fast to wire, validates claims/proof metrics), or
 2. **true shared-matrix SIMD relation** (paper target; larger upfront rewrite, needs memory columns and dual-field design).
+
+
+### Batched row system with PC constraints
+
+`UniformCpuBatchLayout::batch_system(rows)` now builds:
+
+- q block-diagonal copies of the uniform row system;
+- cross-cycle constraints `next_pc_i == pc_{i+1}` on every bit;
+- a concatenated witness.
+
+Tests verify a contiguous PC chain satisfies the batch system and a broken chain is rejected. This is the block-diagonal baseline, not yet the paper's shared-matrix SIMD relation; it gives a runnable comparison point and exercises selector/PC semantics.
