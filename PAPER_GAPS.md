@@ -1247,3 +1247,26 @@ The CPU proof is ~18x smaller; total bundle is ~2.8x smaller because BinaryTwist
 | total | 112,965 |
 
 This is a simple per-component backend split. It does not yet pack the BinaryTwist RAM tables; RAM is still the memory-checking proof.
+
+
+### Deferred: packed BinaryTwist
+
+Status: **not implemented**. Current RAM consistency still uses the existing BinaryTwist proof over one-hot address/value/increment tables; "M5 memory" only covers the gated memory CPU row.
+
+Planned scope:
+
+- pack BinaryTwist address / value / increment tables at 128 bits per F2^128 element;
+- run read/write/update sum-checks over the packed representation;
+- apply the same DP24 ring-switch reduction used by `RingSwitchPackedBitPcs` to the BinaryTwist evaluation claims;
+- keep one commitment/opening across the packed tables where possible;
+- add tamper tests for packed address, value, increment, and final memory state;
+- benchmark packed vs current BinaryTwist on the same RAM trace.
+
+Acceptance criteria:
+
+- same RAM witness as the current BinaryTwist path;
+- verify accepts honest packed proof and rejects tampered tables;
+- proof size/RAM cost measured against the 41,041 B current reference;
+- no separate unpacked witness commitment in the final bundle.
+
+This is the main remaining component-level gap for RAM proof size.
