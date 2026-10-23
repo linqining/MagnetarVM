@@ -89,3 +89,25 @@ group:
 Test `group5_packed_round_trips` passes. The width/point construction that failed
 inside the nine-group prototype is therefore understood in isolation; the next
 step is to add the remaining groups one at a time around this working base.
+
+
+## Generic group proofs
+
+`packed_router::prove_group` / `verify_group` now isolate every Router group
+against the reference values. Test `all_router_groups_round_trip` covers both
+Shift and Store modes for the boolean groups:
+
+- boolean 0..128;
+- boolean 128..201;
+- input 0..128;
+- offset 128..131;
+- width 131..135;
+- valid 135..137.
+
+All pass. Three groups are deliberately excluded:
+
+- shift_code (column 265) is a code, not a boolean bit;
+- q (137..201) and hq (201..265) need their own non-bit handling.
+
+The next step is to handle those three groups and merge the per-group proofs
+into one Router proof.
