@@ -108,6 +108,101 @@ impl UniformBitAluRelation {
         Self::add_sub(width, true)
     }
 
+    /// Unsigned less-than: one if `rs1 < rs2`.
+    pub fn slt(width: usize) -> Self {
+        assert!(width > 0);
+        let rs1 = (0..width).collect::<Vec<_>>();
+        let rs2 = (width..2 * width).collect::<Vec<_>>();
+        let b_eff = (2 * width..3 * width).collect::<Vec<_>>();
+        let rd = (3 * width..4 * width).collect::<Vec<_>>();
+        let diff = (4 * width..5 * width).collect::<Vec<_>>();
+        let carries = (5 * width..6 * width + 1).collect::<Vec<_>>();
+        let p1 = (6 * width + 1..7 * width + 1).collect::<Vec<_>>();
+        let p2 = (7 * width + 1..8 * width + 1).collect::<Vec<_>>();
+        let p3 = (8 * width + 1..9 * width + 1).collect::<Vec<_>>();
+        let xor_ab = (9 * width + 1..10 * width + 1).collect::<Vec<_>>();
+        let one = 10 * width + 1;
+        let lt = 10 * width + 2;
+        let mut relation = BitRelation::new(10 * width + 3);
+        relation.add(BitRow::new(vec![one], vec![one], vec![one]));
+        relation.add(BitRow::new(vec![carries[0]], vec![one], vec![one]));
+        for bit in 0..width {
+            relation.add(BitRow::new(
+                vec![rs2[bit], one],
+                vec![one],
+                vec![b_eff[bit]],
+            ));
+            relation.add(BitRow::new(vec![rs1[bit]], vec![b_eff[bit]], vec![p1[bit]]));
+            relation.add(BitRow::new(
+                vec![rs1[bit]],
+                vec![carries[bit]],
+                vec![p2[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![b_eff[bit]],
+                vec![carries[bit]],
+                vec![p3[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![rs1[bit], b_eff[bit]],
+                vec![one],
+                vec![xor_ab[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![xor_ab[bit], carries[bit]],
+                vec![one],
+                vec![diff[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![p1[bit], p2[bit], p3[bit]],
+                vec![one],
+                vec![carries[bit + 1]],
+            ));
+            if bit == 0 {
+                relation.add(BitRow::new(vec![rd[bit]], vec![one], vec![lt]));
+            } else {
+                relation.add(BitRow::new(vec![rd[bit]], vec![one], Vec::new()));
+            }
+        }
+        relation.add(BitRow::new(vec![carries[width], one], vec![one], vec![lt]));
+        Self {
+            width,
+            rs1,
+            rs2,
+            rd,
+            one,
+            relation,
+        }
+    }
+
+    pub fn slt_witness(&self, left: u64, right: u64) -> Vec<bool> {
+        let width = self.width;
+        let mut bits = vec![false; 10 * width + 3];
+        bits[self.one] = true;
+        let b_eff = 2 * width;
+        let diff = 4 * width;
+        let carries = 5 * width;
+        bits[carries] = true;
+        for bit in 0..width {
+            let a = (left >> bit) & 1 == 1;
+            let b = (right >> bit) & 1 == 1;
+            let carry = bits[carries + bit];
+            bits[self.rs1[bit]] = a;
+            bits[self.rs2[bit]] = b;
+            bits[b_eff + bit] = !b;
+            bits[carries + bit + 1] = (a && !b) || (a && carry) || (!b && carry);
+            bits[6 * width + 1 + bit] = a && !b;
+            bits[7 * width + 1 + bit] = a && carry;
+            bits[8 * width + 1 + bit] = !b && carry;
+            bits[9 * width + 1 + bit] = a ^ !b;
+            bits[diff + bit] = a ^ !b ^ carry;
+        }
+        let less = !bits[carries + width];
+        bits[10 * width + 2] = less;
+        bits[self.rd[0]] = less;
+        bits
+    }
+
     fn add_sub(width: usize, subtract: bool) -> Self {
         assert!(width > 0);
         let rs1 = (0..width).collect::<Vec<_>>();
@@ -305,5 +400,17 @@ mod tests {
             value | (u64::from(wrapped[*var]) << bit)
         });
         assert_eq!(rd, 254);
+    }
+    #[test]
+    fn bit_slt_relation_uses_borrow_out() {
+        let slt = UniformBitAluRelation::slt(8);
+        for (left, right, expected) in [(3u64, 5u64, 1u64), (5, 3, 0), (5, 5, 0), (255, 1, 0)] {
+            let bits = slt.slt_witness(left, right);
+            assert!(slt.relation.check(&bits), "{left} < {right}");
+            assert_eq!(u64::from(bits[slt.rd[0]]), expected, "{left} < {right}");
+            for bit in 1..8 {
+                assert!(!bits[slt.rd[bit]]);
+            }
+        }
     }
 }

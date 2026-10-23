@@ -688,3 +688,15 @@ Tests check 5+3=8, reject a tampered result bit, and prove/verify the relation t
 - `sub_witness(left, right)` computes two's-complement subtraction.
 
 Tests check 5 - 3 = 2 and 3 - 5 = 254 (8-bit wraparound). `add` remains the same public API with `subtract = false`. The relation still proves through `EmbeddedBitBackend`.
+
+
+### F2 unsigned SLT
+
+`UniformBitAluRelation::slt(width)` computes `rs1 < rs2` from a two's-complement subtraction borrow:
+
+- `b_eff = ~rs2`, carry-in 1;
+- same carry/majority chain as `sub`;
+- final carry 1 means `rs1 >= rs2`, so `lt = 1 XOR carry`;
+- `rd[0] = lt`, all higher rd bits forced to 0.
+
+Tests cover 3<5, 5<3, 5==5, and 255<1; all check over F2. Signed SLT can be obtained by flipping the sign bit of both operands (next).
