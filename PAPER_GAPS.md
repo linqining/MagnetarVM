@@ -1840,3 +1840,19 @@ gated claims present: true
 
 This replaces the previous two-proof wrapper (legacy unified plus a separate
 gated bundle).
+
+
+Unified proof size breakdown (two gated rows):
+
+```text
+total   173,439 B
+opening 163,592 B
+access    5,546 B
+gated     1,857 B
+cpu       1,264 B
+shout     1,146 B
+```
+
+The shared P3 opening is 94% of the proof. Packed aux/claims are now small; the
+next size work must target the opening itself (fewer claim points or a batched
+Mosaic opening), not the component witnesses.

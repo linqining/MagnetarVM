@@ -41,9 +41,13 @@ fn main() {
     .unwrap();
     let proof = prove_unified_gated(&trace, 8).unwrap();
     verify_unified_gated(&trace, &proof, 8).unwrap();
-    println!(
-        "unified gated: {} B, gated claims={}",
-        bincode::serialize(&proof.unified).unwrap().len(),
-        proof.unified.gated.is_some()
-    );
+    let p = &proof.unified;
+    println!("total {}", bincode::serialize(p).unwrap().len());
+    println!("access {}", bincode::serialize(&p.access).unwrap().len());
+    println!("cpu {}", bincode::serialize(&p.cpu).unwrap().len());
+    println!("gated {}", bincode::serialize(&p.gated).unwrap().len());
+    println!("opening {}", bincode::serialize(&p.opening).unwrap().len());
+    println!("shout {}", bincode::serialize(&p.shout).unwrap().len());
+    println!("shift {}", bincode::serialize(&p.shift_router).unwrap().len());
+    println!("store {}", bincode::serialize(&p.store_router).unwrap().len());
 }
