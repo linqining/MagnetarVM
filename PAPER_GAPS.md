@@ -1109,3 +1109,27 @@ Tests:
 - `bit_pcs_drives_spartan_without_changing_matrices` proves a bit R1CS through `DirectBitPcs<TestPcs>`.
 
 A future `PackedBitPcs` can implement 128-bits-per-field commitment + ring switching behind the same trait without touching the CPU schema. The lockstep/gated-dual path is not yet generic over `BitPcs`; that is the next integration step.
+
+
+### M4/M5 BitPcs backends and shared tests
+
+`BitPcs` now has two implementations:
+
+- `DirectBitPcs<P>`: one F2^128 cell per bit (M4);
+- `PackedBitPcs<P>`: packs up to 128 bits into one field element (M5). `PackedOpening` stores the packed opening and `verify` recovers the bit-MLE value from the packed value's basis bits.
+
+Shared CPU/gated/dual tests:
+
+- `both_bit_pcs_backends_run_the_same_lockstep_test` runs the same matrices/layout with Direct and Packed;
+- `gated_dual_backends_share_the_same_test` runs the gated s1/s2 matrices through both backends.
+
+M5 currently supports at most 128 witness bits per commitment (`PackedBitPcs` returns an explicit error above that). Multi-field packing needs the full ring-switching reduction and is not implemented.
+
+M4 vs M5 benchmark (`bit_pcs_m4_m5_bench`, 63-bit packed select, P3, release):
+
+| backend | proof | prove | verify |
+|---|---:|---:|---:|
+| M4 DirectBitPcs | 53,648 B | 1.31 ms | 0.73 ms |
+| M5 PackedBitPcs | 1,488 B | 0.20 ms | 0.22 ms |
+
+This is the first measurable M5 proof-size result: ~36x smaller and ~6x faster to prove in this microbenchmark. It is a 128-bit-witness prototype, not yet a full multi-field ring-switching backend.

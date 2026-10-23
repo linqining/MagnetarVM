@@ -475,14 +475,15 @@ pub mod f2_protocol;
 pub mod simd;
 pub mod spartan;
 pub mod virtual_spartan;
-pub use bit_pcs::{BitPcs, DirectBitPcs};
+pub use bit_pcs::{BitPcs, DirectBitPcs, PackedBitPcs, PackedOpening};
 pub use simd::SharedBlockMatrix;
 pub use spartan::{
-    prove_lockstep, prove_lockstep_claims, prove_lockstep_with_matrices, prove_shared_simd_spartan,
-    prove_spartan, prove_spartan_bits, prove_spartan_with_matrices, verify_lockstep,
-    verify_lockstep_claims, verify_lockstep_segments, verify_lockstep_with_matrices,
-    verify_shared_simd_spartan, verify_spartan, verify_spartan_bits, verify_spartan_with_matrices,
-    witness_vector, LockstepClaims, LockstepProof, SpartanError, SpartanMatrix, SpartanProof,
+    prove_lockstep, prove_lockstep_bits, prove_lockstep_claims, prove_lockstep_with_matrices,
+    prove_shared_simd_spartan, prove_spartan, prove_spartan_bits, prove_spartan_with_matrices,
+    verify_lockstep, verify_lockstep_bits, verify_lockstep_claims, verify_lockstep_segments,
+    verify_lockstep_with_matrices, verify_shared_simd_spartan, verify_spartan, verify_spartan_bits,
+    verify_spartan_with_matrices, witness_vector, LockstepClaims, LockstepProof, SparseMatrix,
+    SpartanError, SpartanMatrix, SpartanProof,
 };
 
 /// Sum-check for `eq(x) * (a0*b0 - c0 + alpha * (a1*b1 - c1))`, degree three.

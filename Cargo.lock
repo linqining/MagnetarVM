@@ -868,6 +868,7 @@ dependencies = [
  "magnetar-runtime",
  "magnetar-spec",
  "magnetar-transcript",
+ "serde",
 ]
 
 [[package]]

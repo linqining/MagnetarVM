@@ -22,3 +22,4 @@ magnetar-privacy.workspace = true
 
 [dev-dependencies]
 bincode.workspace = true
+serde.workspace = true

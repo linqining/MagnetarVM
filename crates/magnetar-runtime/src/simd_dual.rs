@@ -506,6 +506,63 @@ mod tests {
     }
 
     #[test]
+    fn gated_dual_backends_share_the_same_test() {
+        use magnetar_proof::spartan::MatrixPart;
+        use magnetar_proof::{
+            prove_lockstep_bits, verify_lockstep_bits, BitPcs, DirectBitPcs, PackedBitPcs,
+            SparseMatrix,
+        };
+
+        let row = GatedCpuRow::new(3);
+        let bits = row.alu_witness_at(0, 5, 3, crate::simd_f2::GatedAluOp::Add);
+        let base_cols = (row.relation.num_vars + 1).next_power_of_two();
+        let mut packed_bits = vec![false; base_cols];
+        packed_bits[..bits.len()].copy_from_slice(&bits);
+        let s1 = row.relation.to_system();
+        let mut s2 = row.packed_companion_system();
+        for _ in s2.constraints.len()..s1.constraints.len() {
+            s2.add_constraint(
+                magnetar_constraint::Expr::constant(0u64),
+                magnetar_constraint::Expr::constant(1u64),
+                magnetar_constraint::Expr::constant(0u64),
+            );
+        }
+        let a0 = SparseMatrix::from_system(&s1, MatrixPart::A).unwrap();
+        let b0 = SparseMatrix::from_system(&s1, MatrixPart::B).unwrap();
+        let c0 = SparseMatrix::from_system(&s1, MatrixPart::C).unwrap();
+        let a1 = SparseMatrix::from_system(&s2, MatrixPart::A).unwrap();
+        let b1 = SparseMatrix::from_system(&s2, MatrixPart::B).unwrap();
+        let c1 = SparseMatrix::from_system(&s2, MatrixPart::C).unwrap();
+        let layout = segment_layout(base_cols).unwrap();
+        let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+        let direct = DirectBitPcs::new(pcs.clone());
+        let proof =
+            prove_lockstep_bits(&packed_bits, &a0, &b0, &c0, &a1, &b1, &c1, &layout, &direct)
+                .unwrap();
+        verify_lockstep_bits(&a0, &b0, &c0, &a1, &b1, &c1, &layout, &proof, &direct).unwrap();
+
+        let packed = PackedBitPcs::new(pcs);
+        let p3_commitment = packed.commit(&packed_bits).unwrap();
+        let p3_point = (0..8)
+            .map(|bit| magnetar_constraint::F2_128::from((bit % 2) as u64))
+            .collect::<Vec<_>>();
+        let (p3_value, p3_opening) = packed.open(&packed_bits, &p3_point).unwrap();
+        assert!(packed
+            .verify(&p3_commitment, &p3_point, p3_value, &p3_opening)
+            .unwrap());
+        let commitment = packed.commit(&packed_bits).unwrap();
+        let point = (0..6)
+            .map(|bit| magnetar_constraint::F2_128::from((bit % 2) as u64))
+            .collect::<Vec<_>>();
+        let (value, opening) = packed.open(&packed_bits, &point).unwrap();
+        assert!(packed.verify(&commitment, &point, value, &opening).unwrap());
+        let proof =
+            prove_lockstep_bits(&packed_bits, &a0, &b0, &c0, &a1, &b1, &c1, &layout, &packed)
+                .unwrap();
+        verify_lockstep_bits(&a0, &b0, &c0, &a1, &b1, &c1, &layout, &proof, &packed).unwrap();
+    }
+
+    #[test]
     fn gated_dual_batch_runs_in_lockstep() {
         let rows = [
             (

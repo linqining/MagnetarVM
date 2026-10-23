@@ -40,7 +40,7 @@ impl MatrixPart {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct SparseMatrix {
+pub struct SparseMatrix {
     pub(crate) rows: Vec<Vec<(usize, F2_128)>>,
     pub(crate) cols: usize,
 }
@@ -79,10 +79,7 @@ impl SpartanMatrix for SparseMatrix {
 }
 
 impl SparseMatrix {
-    pub(crate) fn from_system(
-        system: &ConstraintSystem,
-        part: MatrixPart,
-    ) -> Result<Self, SpartanError> {
+    pub fn from_system(system: &ConstraintSystem, part: MatrixPart) -> Result<Self, SpartanError> {
         let rows_padded = system.constraints.len().next_power_of_two().max(1);
         let cols = (system.num_vars + 1).next_power_of_two().max(1);
         let mut rows = Vec::with_capacity(rows_padded);
@@ -962,6 +959,135 @@ pub fn prove_lockstep_claims<P: Pcs>(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub fn prove_lockstep_claims_bits<B: BitPcs>(
+    z: &[F2_128],
+    a0: &dyn SpartanMatrix,
+    b0: &dyn SpartanMatrix,
+    c0: &dyn SpartanMatrix,
+    a1: &dyn SpartanMatrix,
+    b1: &dyn SpartanMatrix,
+    c1: &dyn SpartanMatrix,
+    layout: &WitnessLayout,
+    backend: &B,
+    commitment: B::Commitment,
+) -> Result<(LockstepClaims<B::Commitment>, Vec<F2_128>), SpartanError> {
+    if a0.rows() != a1.rows()
+        || b0.rows() != a1.rows()
+        || c0.rows() != a1.rows()
+        || a0.cols() != a1.cols()
+        || b0.cols() != a1.cols()
+        || c0.cols() != a1.cols()
+        || z.len() != a1.cols()
+    {
+        return Err(SpartanError::Dimensions);
+    }
+    let az0 = a0.mul_vec(z)?;
+    let bz0 = b0.mul_vec(z)?;
+    let cz0 = c0.mul_vec(z)?;
+    let az1 = a1.mul_vec(z)?;
+    let bz1 = b1.mul_vec(z)?;
+    let cz1 = c1.mul_vec(z)?;
+    let az0_mle = Mle::new(az0.clone())?;
+    let bz0_mle = Mle::new(bz0.clone())?;
+    let cz0_mle = Mle::new(cz0.clone())?;
+    let az1_mle = Mle::new(az1.clone())?;
+    let bz1_mle = Mle::new(bz1.clone())?;
+    let cz1_mle = Mle::new(cz1.clone())?;
+    let row_bits = a0.rows().trailing_zeros() as usize;
+    let transcript = RefCell::new(Sha256Transcript::new("lockstep-reference-v1"));
+    let tau = {
+        let mut transcript = transcript.borrow_mut();
+        transcript.absorb("commitment", &backend.commitment_bytes(&commitment));
+        transcript.absorb("rows", &(a0.rows() as u64).to_le_bytes());
+        transcript.absorb("cols", &(a0.cols() as u64).to_le_bytes());
+        (0..row_bits)
+            .map(|_| challenge_field(&mut transcript, "tau"))
+            .collect::<Vec<_>>()
+    };
+    let eq_values = (0..a0.rows())
+        .map(|index| eq(&tau, &bits(index, row_bits)))
+        .collect::<Vec<_>>();
+    let alpha = {
+        let mut transcript = transcript.borrow_mut();
+        challenge_field(&mut transcript, "relation-batch")
+    };
+    let (outer, rx, _) = prove_product6(
+        eq_values,
+        az0,
+        bz0,
+        cz0,
+        az1,
+        bz1,
+        cz1,
+        alpha,
+        |round, values| round_challenge(&transcript, "outer-round", round, values),
+    )?;
+    if outer.claimed_sum != F2_128::from(0u64) {
+        return Err(SpartanError::ClaimMismatch {
+            expected: F2_128::from(0u64),
+            actual: outer.claimed_sum,
+        });
+    }
+    let va0 = az0_mle.eval(&rx)?;
+    let vb0 = bz0_mle.eval(&rx)?;
+    let vc0 = cz0_mle.eval(&rx)?;
+    let va1 = az1_mle.eval(&rx)?;
+    let vb1 = bz1_mle.eval(&rx)?;
+    let vc1 = cz1_mle.eval(&rx)?;
+    let (r0, r1) = {
+        let mut transcript = transcript.borrow_mut();
+        for value in [va0, vb0, vc0, va1, vb1, vc1] {
+            absorb_field(&mut transcript, "claim", value);
+        }
+        (
+            challenge_field(&mut transcript, "batch0"),
+            challenge_field(&mut transcript, "batch1"),
+        )
+    };
+    let expected_inner_claim =
+        va0 + r0 * vb0 + r0 * r0 * vc0 + alpha * (va1 + r1 * vb1 + r1 * r1 * vc1);
+    let a0_values = a0.row_combination(&rx)?;
+    let b0_values = b0.row_combination(&rx)?;
+    let c0_values = c0.row_combination(&rx)?;
+    let a1_values = a1.row_combination(&rx)?;
+    let b1_values = b1.row_combination(&rx)?;
+    let c1_values = c1.row_combination(&rx)?;
+    let left_values = (0..z.len())
+        .map(|index| {
+            a0_values[index]
+                + r0 * b0_values[index]
+                + r0 * r0 * c0_values[index]
+                + alpha * (a1_values[index] + r1 * b1_values[index] + r1 * r1 * c1_values[index])
+        })
+        .collect::<Vec<_>>();
+    let (inner, ry, _) = prove_product2(left_values, z.to_vec(), |round, values| {
+        round_challenge(&transcript, "inner-round", round, values)
+    })?;
+    if inner.claimed_sum != expected_inner_claim {
+        return Err(SpartanError::ClaimMismatch {
+            expected: expected_inner_claim,
+            actual: inner.claimed_sum,
+        });
+    }
+    let segments = split_segment_claims(layout, z, &ry)?;
+    Ok((
+        LockstepClaims {
+            commitment,
+            v_a0: va0,
+            v_b0: vb0,
+            v_c0: vc0,
+            v_a1: va1,
+            v_b1: vb1,
+            v_c1: vc1,
+            outer,
+            inner,
+            segments,
+        },
+        ry,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn prove_lockstep_claims_with_matrices<P: Pcs>(
     z: &[F2_128],
     a0: &dyn SpartanMatrix,
@@ -1106,6 +1232,41 @@ pub fn prove_lockstep_with_matrices<P: Pcs>(
     let (claims, ry) =
         prove_lockstep_claims_with_matrices(z, a0, b0, c0, a1, b1, c1, layout, pcs, commitment)?;
     let opening = pcs.open(z, &ry)?;
+    Ok(LockstepProof {
+        commitment: claims.commitment,
+        v_a0: claims.v_a0,
+        v_b0: claims.v_b0,
+        v_c0: claims.v_c0,
+        v_a1: claims.v_a1,
+        v_b1: claims.v_b1,
+        v_c1: claims.v_c1,
+        outer: claims.outer,
+        inner: claims.inner,
+        segments: claims.segments,
+        opening,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn prove_lockstep_bits<B: BitPcs>(
+    bits: &[bool],
+    a0: &dyn SpartanMatrix,
+    b0: &dyn SpartanMatrix,
+    c0: &dyn SpartanMatrix,
+    a1: &dyn SpartanMatrix,
+    b1: &dyn SpartanMatrix,
+    c1: &dyn SpartanMatrix,
+    layout: &WitnessLayout,
+    backend: &B,
+) -> Result<LockstepProof<B::Commitment, B::Opening>, SpartanError> {
+    let z = bits
+        .iter()
+        .map(|bit| F2_128::from(u64::from(*bit)))
+        .collect::<Vec<_>>();
+    let commitment = backend.commit(bits)?;
+    let (claims, ry) =
+        prove_lockstep_claims_bits(&z, a0, b0, c0, a1, b1, c1, layout, backend, commitment)?;
+    let (_, opening) = backend.open(bits, &ry)?;
     Ok(LockstepProof {
         commitment: claims.commitment,
         v_a0: claims.v_a0,
@@ -1324,6 +1485,94 @@ pub fn verify_lockstep_claims<P: Pcs>(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub fn verify_lockstep_bits<B: BitPcs>(
+    a0: &dyn SpartanMatrix,
+    b0: &dyn SpartanMatrix,
+    c0: &dyn SpartanMatrix,
+    a1: &dyn SpartanMatrix,
+    b1: &dyn SpartanMatrix,
+    c1: &dyn SpartanMatrix,
+    layout: &WitnessLayout,
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    backend: &B,
+) -> Result<(), SpartanError> {
+    if a0.rows() != a1.rows()
+        || b0.rows() != a1.rows()
+        || c0.rows() != a1.rows()
+        || a0.cols() != a1.cols()
+        || b0.cols() != a1.cols()
+        || c0.cols() != a1.cols()
+    {
+        return Err(SpartanError::Dimensions);
+    }
+    let row_bits = a0.rows().trailing_zeros() as usize;
+    let transcript = RefCell::new(Sha256Transcript::new("lockstep-reference-v1"));
+    let tau = {
+        let mut transcript = transcript.borrow_mut();
+        transcript.absorb("commitment", &backend.commitment_bytes(&proof.commitment));
+        transcript.absorb("rows", &(a0.rows() as u64).to_le_bytes());
+        transcript.absorb("cols", &(a0.cols() as u64).to_le_bytes());
+        (0..row_bits)
+            .map(|_| challenge_field(&mut transcript, "tau"))
+            .collect::<Vec<_>>()
+    };
+    let alpha = {
+        let mut transcript = transcript.borrow_mut();
+        challenge_field(&mut transcript, "relation-batch")
+    };
+    let (rx, outer_final) = verify_rounds(&proof.outer, row_bits, 3, |round, values| {
+        round_challenge(&transcript, "outer-round", round, values)
+    })?;
+    let expected_outer = eq(&tau, &rx)
+        * (proof.v_a0 * proof.v_b0 - proof.v_c0 + alpha * (proof.v_a1 * proof.v_b1 - proof.v_c1));
+    if outer_final != expected_outer {
+        return Err(SpartanError::Verification("lockstep outer mismatch"));
+    }
+    let (r0, r1) = {
+        let mut transcript = transcript.borrow_mut();
+        for value in [
+            proof.v_a0, proof.v_b0, proof.v_c0, proof.v_a1, proof.v_b1, proof.v_c1,
+        ] {
+            absorb_field(&mut transcript, "claim", value);
+        }
+        (
+            challenge_field(&mut transcript, "batch0"),
+            challenge_field(&mut transcript, "batch1"),
+        )
+    };
+    let expected_inner_claim = proof.v_a0
+        + r0 * proof.v_b0
+        + r0 * r0 * proof.v_c0
+        + alpha * (proof.v_a1 + r1 * proof.v_b1 + r1 * r1 * proof.v_c1);
+    if proof.inner.claimed_sum != expected_inner_claim {
+        return Err(SpartanError::Verification("lockstep inner claim mismatch"));
+    }
+    let (ry, inner_final) = verify_rounds(
+        &proof.inner,
+        a0.cols().trailing_zeros() as usize,
+        2,
+        |round, values| round_challenge(&transcript, "inner-round", round, values),
+    )?;
+    let vw = reconstruct_segment_claim(layout, &proof.segments, &ry)?;
+    let a0_at = a0.eval_mle(&rx, &ry)?;
+    let b0_at = b0.eval_mle(&rx, &ry)?;
+    let c0_at = c0.eval_mle(&rx, &ry)?;
+    let a1_at = a1.eval_mle(&rx, &ry)?;
+    let b1_at = b1.eval_mle(&rx, &ry)?;
+    let c1_at = c1.eval_mle(&rx, &ry)?;
+    let expected_inner =
+        (a0_at + r0 * b0_at + r0 * r0 * c0_at + alpha * (a1_at + r1 * b1_at + r1 * r1 * c1_at))
+            * vw;
+    if inner_final != expected_inner {
+        return Err(SpartanError::Verification("lockstep inner mismatch"));
+    }
+    if !backend.verify(&proof.commitment, &ry, vw, &proof.opening)? {
+        return Err(SpartanError::Verification("lockstep PCS opening rejected"));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn verify_lockstep_with_matrices<P: Pcs>(
     a0: &dyn SpartanMatrix,
     b0: &dyn SpartanMatrix,
@@ -1499,6 +1748,42 @@ mod tests {
         let mut system = ConstraintSystem::new(3);
         system.add_constraint(Expr::var(0), Expr::var(1), Expr::var(2));
         (system, Witness::new(vec![a, b, product]))
+    }
+
+    #[test]
+    fn both_bit_pcs_backends_run_the_same_lockstep_test() {
+        let mut system = ConstraintSystem::new(3);
+        system.add_constraint(Expr::var(0), Expr::var(1), Expr::var(2));
+        let bits = [true, true, true, false];
+        let a = SparseMatrix::from_system(&system, MatrixPart::A).unwrap();
+        let b = SparseMatrix::from_system(&system, MatrixPart::B).unwrap();
+        let c = SparseMatrix::from_system(&system, MatrixPart::C).unwrap();
+        let layout = WitnessLayout::new(vec![
+            Segment::new("lo", 0, 2, SegmentKind::Direct, SegmentOwner::Cpu),
+            Segment::new("hi", 2, 2, SegmentKind::Direct, SegmentOwner::Cpu),
+        ])
+        .unwrap();
+
+        let direct = crate::DirectBitPcs::new(TestPcs);
+        let proof = prove_lockstep_bits(&bits, &a, &b, &c, &a, &b, &c, &layout, &direct).unwrap();
+        verify_lockstep_bits(&a, &b, &c, &a, &b, &c, &layout, &proof, &direct).unwrap();
+
+        let packed = crate::PackedBitPcs::new(TestPcs);
+        let proof = prove_lockstep_bits(&bits, &a, &b, &c, &a, &b, &c, &layout, &packed).unwrap();
+        verify_lockstep_bits(&a, &b, &c, &a, &b, &c, &layout, &proof, &packed).unwrap();
+    }
+
+    #[test]
+    fn packed_bit_pcs_drives_the_same_spartan_test() {
+        let mut system = ConstraintSystem::new(3);
+        system.add_constraint(Expr::var(0), Expr::var(1), Expr::var(2));
+        let bits = [true, true, true, false];
+        let a = SparseMatrix::from_system(&system, MatrixPart::A).unwrap();
+        let b = SparseMatrix::from_system(&system, MatrixPart::B).unwrap();
+        let c = SparseMatrix::from_system(&system, MatrixPart::C).unwrap();
+        let backend = crate::PackedBitPcs::new(TestPcs);
+        let proof = prove_spartan_bits(&bits, &a, &b, &c, &backend).unwrap();
+        verify_spartan_bits(&a, &b, &c, &proof, &backend).unwrap();
     }
 
     #[test]
