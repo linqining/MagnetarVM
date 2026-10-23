@@ -494,6 +494,7 @@ pub fn verify_gated_dual_batch(
 fn gated_shared_matrices(
     row: &GatedCpuRow,
     cycles: usize,
+    statement: Option<(u64, u64)>,
 ) -> Result<
     (
         usize,
@@ -534,7 +535,37 @@ fn gated_shared_matrices(
             )]);
         }
     }
-    let zero_rows = vec![Vec::new(); cycles.saturating_sub(1) * row.width];
+    let mut statement_rows = 0usize;
+    if let Some((initial_pc, final_pc)) = statement {
+        statement_rows = 2 * row.width;
+        for (instance, pc) in [(0usize, initial_pc), (cycles - 1, final_pc)] {
+            for bit in 0..row.width {
+                let value = (pc >> bit) & 1;
+                let var = if instance == 0 {
+                    row.pc[bit]
+                } else {
+                    row.next_pc[bit]
+                };
+                extra_a.push(vec![(
+                    instance * base_cols + var,
+                    magnetar_constraint::F2_128::from(1u64),
+                )]);
+                extra_b.push(vec![(
+                    instance * base_cols + row.alu.one,
+                    magnetar_constraint::F2_128::from(1u64),
+                )]);
+                if value == 1 {
+                    extra_c.push(vec![(
+                        instance * base_cols + row.alu.one,
+                        magnetar_constraint::F2_128::from(1u64),
+                    )]);
+                } else {
+                    extra_c.push(Vec::new());
+                }
+            }
+        }
+    }
+    let zero_rows = vec![Vec::new(); cycles.saturating_sub(1) * row.width + statement_rows];
     let a0 = SharedBlockMatrix::from_system(&s1_system, MatrixPart::A, cycles)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?
         .with_extra_rows(zero_rows.clone());
@@ -597,7 +628,7 @@ pub fn prove_gated_dual_batch_bits<B: magnetar_proof::BitPcs>(
         ));
     }
     let row = GatedCpuRow::new(width);
-    let (base_cols, s1, s2) = gated_shared_matrices(&row, rows.len())?;
+    let (base_cols, s1, s2) = gated_shared_matrices(&row, rows.len(), None)?;
     let bits = gated_batch_bits(&row, base_cols, rows);
     let layout = segment_layout(bits.len())?;
     let proof = prove_lockstep_bits(
@@ -617,7 +648,54 @@ pub fn verify_gated_dual_batch_bits<B: magnetar_proof::BitPcs>(
     use magnetar_proof::verify_lockstep_bits;
 
     let row = GatedCpuRow::new(width);
-    let (_base_cols, s1, s2) = gated_shared_matrices(&row, rows.len())?;
+    let (_base_cols, s1, s2) = gated_shared_matrices(&row, rows.len(), None)?;
+    verify_lockstep_bits(
+        &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], layout, proof, backend,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))
+}
+
+#[allow(clippy::type_complexity)]
+pub fn prove_gated_dual_batch_bits_with_pc<B: magnetar_proof::BitPcs>(
+    width: usize,
+    rows: &[(u64, GatedCpuRowInput)],
+    backend: &B,
+    initial_pc: u64,
+    final_pc: u64,
+) -> Result<(LockstepProof<B::Commitment, B::Opening>, WitnessLayout), RuntimeError> {
+    use magnetar_proof::prove_lockstep_bits;
+
+    if rows.is_empty() || !rows.len().is_power_of_two() {
+        return Err(RuntimeError::Proof(
+            "gated dual batch must be a nonzero power of two".into(),
+        ));
+    }
+    let row = GatedCpuRow::new(width);
+    let (base_cols, s1, s2) =
+        gated_shared_matrices(&row, rows.len(), Some((initial_pc, final_pc)))?;
+    let bits = gated_batch_bits(&row, base_cols, rows);
+    let layout = segment_layout(bits.len())?;
+    let proof = prove_lockstep_bits(
+        &bits, &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], &layout, backend,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok((proof, layout))
+}
+
+pub fn verify_gated_dual_batch_bits_with_pc<B: magnetar_proof::BitPcs>(
+    width: usize,
+    rows: &[(u64, GatedCpuRowInput)],
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    layout: &WitnessLayout,
+    backend: &B,
+    initial_pc: u64,
+    final_pc: u64,
+) -> Result<(), RuntimeError> {
+    use magnetar_proof::verify_lockstep_bits;
+
+    let row = GatedCpuRow::new(width);
+    let (_base_cols, s1, s2) =
+        gated_shared_matrices(&row, rows.len(), Some((initial_pc, final_pc)))?;
     verify_lockstep_bits(
         &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], layout, proof, backend,
     )
@@ -697,6 +775,40 @@ mod tests {
             prove_lockstep_bits(&packed_bits, &a0, &b0, &c0, &a1, &b1, &c1, &layout, &packed)
                 .unwrap();
         verify_lockstep_bits(&a0, &b0, &c0, &a1, &b1, &c1, &layout, &proof, &packed).unwrap();
+    }
+
+    #[test]
+    fn gated_dual_binds_public_pc_statement() {
+        use magnetar_proof::DirectBitPcs;
+
+        let rows = [
+            (
+                0x1000,
+                GatedCpuRowInput::Alu {
+                    left: 5,
+                    right: 3,
+                    op: crate::simd_f2::GatedAluOp::Add,
+                },
+            ),
+            (
+                0x1004,
+                GatedCpuRowInput::Alu {
+                    left: 7,
+                    right: 2,
+                    op: crate::simd_f2::GatedAluOp::Sub,
+                },
+            ),
+        ];
+        let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+        let direct = DirectBitPcs::new(pcs);
+        let (proof, layout) =
+            prove_gated_dual_batch_bits_with_pc(8, &rows, &direct, 0x1000, 0x1008).unwrap();
+        verify_gated_dual_batch_bits_with_pc(8, &rows, &proof, &layout, &direct, 0x1000, 0x1008)
+            .unwrap();
+        assert!(verify_gated_dual_batch_bits_with_pc(
+            8, &rows, &proof, &layout, &direct, 0x1000, 0x100c,
+        )
+        .is_err());
     }
 
     #[test]

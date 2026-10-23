@@ -1470,3 +1470,14 @@ is_shift * Σ β (rd_sll + rd_srl + rd_sra) = Σ β (rd_sll + rd_srl + rd_sra)
 so a shift-inactive row forces the packed shift result to zero, while an active row leaves the selected result unchanged. `GatedShiftRow::result_vars(kind)` exposes the three shifted result ranges for this check.
 
 The ALU/memory packed checks still hold on shift rows (their gated outputs are zero). Test `combined_gated_row_selects_alu_or_memory` checks the shift companion, and q=8 Direct/RingSwitch still pass with mixed shift rows.
+
+
+### P0 progress: public initial/final PC statement
+
+`prove/verify_gated_dual_batch_bits_with_pc` adds public PC binding to the gated dual batch:
+
+- first instance `pc` is constrained to the public initial PC;
+- last instance `next_pc` is constrained to the public final PC;
+- the rows are added to the s2 matrices and mirrored by zero rows on s1 so lockstep dimensions match.
+
+Test `gated_dual_binds_public_pc_statement` proves `pc=0x1000 -> next_pc=0x1008` and rejects a wrong final PC. This is the first public statement bound directly into the gated CPU proof, not just stored in the bundle.
