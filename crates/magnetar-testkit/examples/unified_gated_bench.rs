@@ -42,6 +42,12 @@ fn main() {
     let proof = prove_unified_gated(&trace, 8).unwrap();
     verify_unified_gated(&trace, &proof, 8).unwrap();
     let p = &proof.unified;
+    for (index, table) in p.cpu.commitment.tables.iter().enumerate() {
+        println!(
+            "table {index} columns {} vars {}",
+            table.num_columns, table.num_variables
+        );
+    }
     println!("total {}", bincode::serialize(p).unwrap().len());
     println!("access {}", bincode::serialize(&p.access).unwrap().len());
     println!("cpu {}", bincode::serialize(&p.cpu).unwrap().len());

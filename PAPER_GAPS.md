@@ -1878,3 +1878,22 @@ batched opening     159,936 B
 Only a ~2% reduction. The packed G polynomial is as large as the sum of all
 table columns, so the final one-point P3 opening plus batching sumcheck nearly
 cancels the point-count savings. The prototype was reverted.
+
+
+Unified commitment table shapes (two gated rows):
+
+```text
+table 0: 1 column,  7 vars
+table 1: 8 columns, 1 var
+table 2: 1 column,  1 var
+table 3: 8 columns, 2 vars
+table 4: 12 columns,3 vars
+table 5: 1 column,  3 vars
+table 6: 1 column,  5 vars
+table 7: 1 column, 11 vars  (trace table, 2048 elements)
+```
+
+The trace table alone is ~87% of the committed field elements. The opening is
+therefore dominated by the trace table, not the CPU/aux tables. Replacing the
+full trace table claim with a smaller segment commitment (or binding trace rows
+through the already-public trace digest) is the next size lever.
