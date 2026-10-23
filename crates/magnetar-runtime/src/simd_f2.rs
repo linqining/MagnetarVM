@@ -1138,6 +1138,9 @@ pub struct GatedAluRow {
     pub is_and: VarId,
     pub is_add: VarId,
     pub one: VarId,
+    pub xor_prod: Vec<VarId>,
+    pub and_gated: Vec<VarId>,
+    pub add_gated: Vec<VarId>,
     pub relation: BitRelation,
 }
 
@@ -1229,6 +1232,9 @@ impl GatedAluRow {
             is_and,
             is_add,
             one,
+            xor_prod,
+            and_gated,
+            add_gated,
             relation,
         }
     }
@@ -1784,5 +1790,110 @@ mod gated_twist_tests {
         let witness = gated_memory_twist_witness(8, &rows).unwrap();
         let proof = prove_binary_twist_ram(&witness).unwrap();
         assert!(verify_binary_twist_ram(&witness, &proof).unwrap());
+    }
+}
+
+/// Packed s2 companion for a gated ALU row: one F2^128 linear check that the
+/// packed output equals the packed selected ALU products.
+pub fn gated_alu_packed_system(row: &GatedAluRow) -> magnetar_constraint::ConstraintSystem {
+    use magnetar_constraint::{ConstraintSystem, Expr};
+    let packed = |vars: &[VarId]| {
+        vars.iter()
+            .enumerate()
+            .fold(Expr::constant(0u64), |expr, (bit, var)| {
+                expr.add(Expr::var(*var).scale(F2_128::from(1u128 << bit)))
+            })
+    };
+    let mut system = ConstraintSystem::new(row.relation.num_vars);
+    system.add_constraint(
+        packed(&row.out)
+            .add(packed(&row.xor_prod))
+            .add(packed(&row.and_gated))
+            .add(packed(&row.add_gated)),
+        Expr::var(row.one),
+        Expr::constant(0u64),
+    );
+    system
+}
+
+/// Dual proof for a gated ALU row: bit relation s1 and packed-output s2 over
+/// the same witness, with the s2 zero-padded to s1's row count.
+pub fn prove_gated_alu_packed(
+    width: usize,
+    left: u64,
+    right: u64,
+    op: GatedAluOp,
+) -> Result<
+    (
+        magnetar_proof::LockstepProof<
+            magnetar_pcs::P3MosaicCommitment,
+            magnetar_pcs::P3MosaicOpening,
+        >,
+        magnetar_constraint::WitnessLayout,
+    ),
+    RuntimeError,
+> {
+    use magnetar_constraint::{Segment, SegmentKind, SegmentOwner, WitnessLayout};
+    use magnetar_pcs::P3SharedPcs;
+    use magnetar_proof::{prove_lockstep, witness_vector};
+
+    let row = GatedAluRow::new(width);
+    let bits = row.witness(left, right, op);
+    let witness = row.relation.to_witness(&bits);
+    let s1 = row.relation.to_system();
+    let mut s2 = gated_alu_packed_system(&row);
+    for _ in s2.constraints.len()..s1.constraints.len() {
+        s2.add_constraint(
+            magnetar_constraint::Expr::constant(0u64),
+            magnetar_constraint::Expr::constant(1u64),
+            magnetar_constraint::Expr::constant(0u64),
+        );
+    }
+    let z =
+        witness_vector(&s2, &witness).map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let total = z.len().trailing_zeros() as usize;
+    let half = total - 1;
+    let layout = WitnessLayout::new(vec![
+        Segment::new("lo", 0, 1 << half, SegmentKind::Direct, SegmentOwner::Cpu),
+        Segment::new(
+            "hi",
+            1 << half,
+            1 << half,
+            SegmentKind::Direct,
+            SegmentOwner::Cpu,
+        ),
+    ])
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+    let proof = prove_lockstep(&s1, &s2, &witness, &layout, &pcs)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok((proof, layout))
+}
+
+#[cfg(test)]
+mod gated_alu_packed_tests {
+    use super::*;
+    use magnetar_pcs::P3SharedPcs;
+    use magnetar_proof::{verify_lockstep, witness_vector};
+
+    #[test]
+    fn gated_alu_packed_companion_verifies() {
+        for op in [GatedAluOp::Xor, GatedAluOp::And, GatedAluOp::Add] {
+            let (proof, layout) = prove_gated_alu_packed(8, 0x12, 0x34, op).unwrap();
+            let row = GatedAluRow::new(8);
+            let witness = row.relation.to_witness(&row.witness(0x12, 0x34, op));
+            let s1 = row.relation.to_system();
+            let mut s2 = gated_alu_packed_system(&row);
+            for _ in s2.constraints.len()..s1.constraints.len() {
+                s2.add_constraint(
+                    magnetar_constraint::Expr::constant(0u64),
+                    magnetar_constraint::Expr::constant(1u64),
+                    magnetar_constraint::Expr::constant(0u64),
+                );
+            }
+            let _ = witness_vector(&s2, &witness).unwrap();
+            let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+            verify_lockstep(&s1, &s2, &layout, &proof, &pcs).unwrap();
+        }
     }
 }

@@ -1013,3 +1013,16 @@ Benchmark (`packed_select_bench`, release, 64 bits):
 | dual same-W lockstep | 67,720 B | 1.14 ms | 1.25 ms |
 
 Key finding: packing reduces s2 rows from 64 to 2, but proof size stays PCS/variable-bound because the witness is still one F2^128 cell per bit. Row reduction improves prover work modestly; large proof-size gains require the BinarySpartan 128-bits-per-field commitment packing and ring switching (Milestone 5), not s2 row packing alone.
+
+
+### Milestone 2: packed companion for gated ALU
+
+`gated_alu_packed_system(row)` builds the s2 linear check:
+
+```text
+Σ β_i out_i = Σ β_i xor_prod_i + Σ β_i and_gated_i + Σ β_i add_gated_i
+```
+
+over the same bit witness as the gated ALU s1 relation. `prove_gated_alu_packed` runs the s1 bit relation and this packed s2 companion in one lockstep proof (s2 zero-padded to s1's row count).
+
+Test covers XOR/AND/ADD. This is a real packed linear check over the gated CPU row, but proof size is still variable-bound because the commitment remains one F2^128 cell per bit.
