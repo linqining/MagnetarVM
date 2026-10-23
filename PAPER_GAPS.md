@@ -725,3 +725,15 @@ Tests cover 3<5, 5<3, -1<1, 1<-1, -5<-3, 127<-128, -128<127. Both signed and uns
 - final stage wires into rd.
 
 Tests cover 5<<2=20, 20>>2=5, -8>>1=-4 (8-bit), and shift-by-zero. This completes the basic F2 ALU op set (XOR/AND/ADD/SUB/SLT/SLL/SRL/SRA) at the semantic level.
+
+
+### Gated bit ops
+
+`GatedBitOp` is the F2 selector-gating primitive:
+
+- XOR path: `diff = a XOR b`, `out = diff * gate`;
+- AND path: `prod = a * b`, `out = prod * gate`;
+- `gate = 0` forces every output bit to zero;
+- `gate = 1` computes the operation.
+
+Tests cover enabled and disabled XOR/AND. This is the gadget needed to gate ALU/memory sub-relations without turning the R1CS degree above two; applying it across the full CPU schema is the next step.

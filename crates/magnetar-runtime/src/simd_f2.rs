@@ -665,3 +665,126 @@ mod shift_tests {
         }
     }
 }
+
+/// Gated bit operation: when `gate = 0`, the output is forced to zero; when
+/// `gate = 1`, it computes the requested bit op. This is the selector-gating
+/// primitive for the F2 schema.
+#[derive(Clone, Debug)]
+pub struct GatedBitOp {
+    pub width: usize,
+    pub a: Vec<VarId>,
+    pub b: Vec<VarId>,
+    pub out: Vec<VarId>,
+    pub gate: VarId,
+    pub relation: BitRelation,
+}
+
+impl GatedBitOp {
+    pub fn xor(width: usize) -> Self {
+        let (mut relation, a, b, out, gate, one, inner) = Self::layout(width, 2 * width + 1);
+        for bit in 0..width {
+            relation.add(BitRow::new(
+                vec![a[bit], b[bit]],
+                vec![one],
+                vec![inner[bit]],
+            ));
+            relation.add(BitRow::new(vec![inner[bit]], vec![gate], vec![out[bit]]));
+        }
+        Self {
+            width,
+            a,
+            b,
+            out,
+            gate,
+            relation,
+        }
+    }
+
+    pub fn and(width: usize) -> Self {
+        let (mut relation, a, b, out, gate, _one, inner) = Self::layout(width, width);
+        for bit in 0..width {
+            relation.add(BitRow::new(vec![a[bit]], vec![b[bit]], vec![inner[bit]]));
+            relation.add(BitRow::new(vec![inner[bit]], vec![gate], vec![out[bit]]));
+        }
+        Self {
+            width,
+            a,
+            b,
+            out,
+            gate,
+            relation,
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn layout(
+        width: usize,
+        inner_len: usize,
+    ) -> (
+        BitRelation,
+        Vec<VarId>,
+        Vec<VarId>,
+        Vec<VarId>,
+        VarId,
+        VarId,
+        Vec<VarId>,
+    ) {
+        let a = (0..width).collect::<Vec<_>>();
+        let b = (width..2 * width).collect::<Vec<_>>();
+        let out = (2 * width..3 * width).collect::<Vec<_>>();
+        let gate = 3 * width;
+        let one = 3 * width + 1;
+        let inner = (3 * width + 2..3 * width + 2 + inner_len).collect::<Vec<_>>();
+        let num_vars = 3 * width + 2 + inner_len;
+        let mut relation = BitRelation::new(num_vars);
+        relation.add(BitRow::new(vec![one], vec![one], vec![one]));
+        relation.add(BitRow::new(vec![gate], vec![one], vec![gate]));
+        (relation, a, b, out, gate, one, inner)
+    }
+
+    pub fn witness(&self, a: u64, b: u64, gate: bool, and: bool) -> Vec<bool> {
+        let mut bits = vec![false; self.relation.num_vars];
+        bits[3 * self.width + 1] = true;
+        bits[self.gate] = gate;
+        let inner = 3 * self.width + 2;
+        for bit in 0..self.width {
+            let left = (a >> bit) & 1 == 1;
+            let right = (b >> bit) & 1 == 1;
+            bits[self.a[bit]] = left;
+            bits[self.b[bit]] = right;
+            let value = if and { left & right } else { left ^ right };
+            bits[inner + bit] = value;
+            bits[self.out[bit]] = gate && value;
+        }
+        bits
+    }
+}
+
+#[cfg(test)]
+mod gated_tests {
+    use super::*;
+
+    #[test]
+    fn gated_xor_is_zero_when_disabled() {
+        let op = GatedBitOp::xor(8);
+        let enabled = op.witness(0b1010_1010, 0b1100_1100, true, false);
+        assert!(op.relation.check(&enabled));
+        let disabled = op.witness(0b1010_1010, 0b1100_1100, false, false);
+        assert!(op.relation.check(&disabled));
+        for (bit, var) in op.out.iter().enumerate() {
+            assert_eq!(u64::from(disabled[*var]), 0, "bit {bit}");
+        }
+    }
+
+    #[test]
+    fn gated_and_is_zero_when_disabled() {
+        let op = GatedBitOp::and(8);
+        let enabled = op.witness(0b1010_1010, 0b1100_1100, true, true);
+        assert!(op.relation.check(&enabled));
+        let disabled = op.witness(0b1010_1010, 0b1100_1100, false, true);
+        assert!(op.relation.check(&disabled));
+        for (bit, var) in op.out.iter().enumerate() {
+            assert_eq!(u64::from(disabled[*var]), 0, "bit {bit}");
+        }
+    }
+}
