@@ -1297,3 +1297,21 @@ plus the packed ALU output linear check and the packed memory data select. The q
 Test `supported_trace_prefix_proves_through_gated_dual` executes a small RV64 program (`add`, `add`, `xor`, `and`, `ecall`), converts the four supported rows, and proves/verifies them through the gated dual batch with `DirectBitPcs`.
 
 This is a real trace-to-gated adapter for the supported subset, not yet full RV64 op coverage.
+
+
+### P0 progress: register-file Twist from gated events/trace
+
+`gated_register_twist_witness(events, initial)` builds the p=2 register-file BinaryTwist witness:
+
+- two sub-cycles per ALU event: read rs1, then read rs2 and write rd;
+- one-hot read/write addresses, value snapshots, increments, final register state;
+- validates the witness and proves it with `prove_binary_twist_ram`.
+
+`gated_register_events_from_trace(trace)` extracts register events from a supported ALU prefix (ADD/XOR/AND) using the actual trace rs1/rs2/rd values and initial registers.
+
+Tests:
+
+- `gated_register_events_prove_through_binary_twist`;
+- `trace_events_prove_through_register_twist` (4 events from a real RV64 trace).
+
+This closes the register-proof component; bundle-level Register claim replacement is still pending.
