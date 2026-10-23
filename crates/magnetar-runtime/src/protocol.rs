@@ -1020,12 +1020,12 @@ pub enum ExecutionStage {
 
 pub const UNIFIED_EXECUTION_STAGES: &[ExecutionStage] = &[
     ExecutionStage::Commit,
+    ExecutionStage::Cpu,
     ExecutionStage::Access,
     ExecutionStage::Shout,
     ExecutionStage::ShiftRouter,
     ExecutionStage::StoreRouter,
     ExecutionStage::RegisterAndTrace,
-    ExecutionStage::Cpu,
     ExecutionStage::Opening,
 ];
 
@@ -1417,6 +1417,8 @@ pub(crate) struct UnifiedVerifyContext<'a> {
     values: Vec<Vec<F2_128>>,
     register_claims: Option<crate::binary_twist::MosaicClaims>,
     routed_claims: Option<ClaimSet>,
+    cpu_ry: Option<Vec<F2_128>>,
+    cpu_value: Option<F2_128>,
 }
 
 impl<'a> UnifiedVerifyContext<'a> {
@@ -1511,6 +1513,8 @@ impl<'a> UnifiedVerifyContext<'a> {
             values: Vec::new(),
             register_claims: None,
             routed_claims: None,
+            cpu_ry: None,
+            cpu_value: None,
         })
     }
 
@@ -1644,13 +1648,8 @@ impl<'a> UnifiedVerifyContext<'a> {
         let (ry, segments, value) =
             verify_lockstep_claims(&system_a, &system_b, &layout, &self.proof.cpu, &pcs)
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        self.points.push(P3MosaicPoint {
-            table: 0,
-            point: ry.clone(),
-            columns: vec![0],
-            next_columns: Vec::new(),
-        });
-        self.values.push(vec![value]);
+        self.cpu_ry = Some(ry.clone());
+        self.cpu_value = Some(value);
         let catalog = SegmentCatalog::from_layout(&layout);
         self.routed_claims = Some(
             route_segment_claims(&layout, &ry, &segments, &catalog)
@@ -1660,6 +1659,20 @@ impl<'a> UnifiedVerifyContext<'a> {
     }
 
     pub(crate) fn verify_opening(&mut self) -> Result<(), RuntimeError> {
+        let ry = self
+            .cpu_ry
+            .as_ref()
+            .ok_or_else(|| RuntimeError::Proof("opening before CPU".into()))?;
+        let value = self
+            .cpu_value
+            .ok_or_else(|| RuntimeError::Proof("missing CPU value".into()))?;
+        self.points.push(P3MosaicPoint {
+            table: 0,
+            point: ry.clone(),
+            columns: vec![0],
+            next_columns: Vec::new(),
+        });
+        self.values.push(vec![value]);
         let mut pairs = self
             .points
             .drain(..)

@@ -398,3 +398,19 @@ Next: `verify_lockstep_claims` (verify equations without the PCS opening), then 
 `prove_unified_inner` runs the CPU claim stage, adds the z point `(table 0, ry, W(ry))`, sorts all points by table, and opens the single commitment once. The verifier verifies the CPU claim equations without an opening, routes the segment claims, adds the z point, and verifies the one opening.
 
 Proof bytes are unchanged: **261,695 B** at width 64, split as access 12,778 / CPU claims 2,032 / opening 239,208 / Shout 2,298 / routers 5,347. The separate-opening prototype (387,183 B) remains rejected.
+
+
+### Virtual Spartan claims: CPU-first and consumer boundary
+
+Execution order is now:
+
+```text
+Commit → Cpu → Access → Shout → ShiftRouter → StoreRouter
+→ RegisterAndTrace → Opening
+```
+
+The CPU stage only derives `ry`, `W(ry)`, and the segment claims; it does not add the z point. `Opening` adds `(table 0, ry, W(ry))` after every aux point exists, sorts by table, and verifies one P3 opening. This removes the ordering bug where `verify_access` overwrote a CPU point added too early.
+
+Routed claims still flow through `CLAIM_CONSUMERS` and `consume_virtual_claims`; proof bytes remain **261,695 B**.
+
+Remaining blocker for true cryptographic consumption: `cpu_segment_layout` currently marks every CPU witness segment as `SegmentOwner::Cpu`, so routed claims contain no Register/RAM/Shift/Store/Bytecode families. The merged CPU system does not retain per-variable owner metadata. Next stage: make `merged_cpu_system`/`row_cpu_relation` emit a component-aware `CpuWitnessLayout`, so Virtual Spartan really emits Register/RAM/Shift/Store segment claims that Twist/Router/Shout can consume.
