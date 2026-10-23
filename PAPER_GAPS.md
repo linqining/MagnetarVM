@@ -1856,3 +1856,10 @@ shout     1,146 B
 The shared P3 opening is 94% of the proof. Packed aux/claims are now small; the
 next size work must target the opening itself (fewer claim points or a batched
 Mosaic opening), not the component witnesses.
+
+
+The unified opening has 32 points over 8 tables. A coalescing pass over
+identical `(table, point, next_columns)` claims found no duplicates, so point
+merging alone cannot reduce the 163 KB opening. Reducing it requires a batched
+Mosaic opening (one final point) or fewer claim families, which is a PCS-level
+change rather than claim routing.

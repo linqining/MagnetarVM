@@ -48,6 +48,12 @@ fn main() {
     println!("gated {}", bincode::serialize(&p.gated).unwrap().len());
     println!("opening {}", bincode::serialize(&p.opening).unwrap().len());
     println!("shout {}", bincode::serialize(&p.shout).unwrap().len());
-    println!("shift {}", bincode::serialize(&p.shift_router).unwrap().len());
-    println!("store {}", bincode::serialize(&p.store_router).unwrap().len());
+    println!(
+        "shift {}",
+        bincode::serialize(&p.shift_router).unwrap().len()
+    );
+    println!(
+        "store {}",
+        bincode::serialize(&p.store_router).unwrap().len()
+    );
 }
