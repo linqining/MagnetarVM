@@ -8,6 +8,7 @@ pub mod binary_router;
 pub mod binary_shout;
 pub mod binary_twist;
 pub mod binary_twist_address;
+pub mod gated_bundle;
 pub mod packed_select;
 pub mod protocol;
 pub mod register_twist;

@@ -1067,3 +1067,26 @@ Release q=2/4/8 after PC+4:
 | 2 | 85,560 B | 5.5 ms | 2.8 ms |
 | 4 | 107,056 B | 8.4 ms | 4.8 ms |
 | 8 | 133,512 B | 15.7 ms | 7.7 ms |
+
+
+### Milestone 4: gated end-to-end bundle
+
+`magnetar-runtime::gated_bundle` ties the gated CPU path to memory checking:
+
+- gated dual CPU proof (`prove_gated_dual_batch`);
+- BinaryTwist RAM proof from `gated_memory_twist_witness`;
+- `Register`/`Ram` claims routed through `ProtocolPlan::unified()`;
+- `verify_gated_bundle` checks CPU, RAM, claim production and consumption.
+
+Test `gated_bundle_covers_alu_memory_and_twist` covers an ALU ADD row and a memory row.
+
+`gated_bundle_bench` (release, one ALU + one memory row):
+
+| component | bytes |
+|---|---:|
+| CPU lockstep | 85,880 |
+| BinaryTwist RAM | 41,041 |
+| claims | 100 |
+| total | 127,021 |
+
+prove 7.3 ms, verify 3.5 ms in this run. This is the first end-to-end gated CPU + Twist bundle; it still uses the 1-bit/cell commitment, so M5 remains the proof-size gap.
