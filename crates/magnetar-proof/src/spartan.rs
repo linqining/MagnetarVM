@@ -7,6 +7,7 @@
 //! The reduction is real, but the PCS is pluggable and the bundled test PCS is
 //! deliberately non-succinct. BinarySpartan/Ligerito can replace it later.
 
+use crate::bit_pcs::BitPcs;
 use crate::virtual_spartan::{
     reconstruct_segment_claim, split_segment_claims, SegmentClaim, VirtualSpartanError,
 };
@@ -337,6 +338,105 @@ pub fn prove_spartan<P: Pcs>(
 /// Prove a Spartan relation given matrix implementations. This is the entry
 /// point used by the shared-matrix SIMD path; `z` is already padded to
 /// `a.cols()`.
+pub fn prove_spartan_bits<B: BitPcs>(
+    witness_bits: &[bool],
+    a: &dyn SpartanMatrix,
+    b: &dyn SpartanMatrix,
+    c: &dyn SpartanMatrix,
+    backend: &B,
+) -> Result<SpartanProof<B::Commitment, B::Opening>, SpartanError> {
+    let z = witness_bits
+        .iter()
+        .map(|bit| F2_128::from(u64::from(*bit)))
+        .collect::<Vec<_>>();
+    if z.len() != a.cols() || b.cols() != a.cols() || c.cols() != a.cols() {
+        return Err(SpartanError::Dimensions);
+    }
+    let az = a.mul_vec(&z)?;
+    let bz = b.mul_vec(&z)?;
+    let cz = c.mul_vec(&z)?;
+    let z_mle = Mle::new(z.to_vec())?;
+    let az_mle = Mle::new(az.to_vec())?;
+    let bz_mle = Mle::new(bz.to_vec())?;
+    let cz_mle = Mle::new(cz.to_vec())?;
+
+    let row_bits = a.rows().trailing_zeros() as usize;
+    let commitment = backend.commit(witness_bits)?;
+    let transcript = RefCell::new(Sha256Transcript::new("spartan-reference-v1"));
+    let tau = {
+        let mut transcript = transcript.borrow_mut();
+        transcript.absorb("commitment", &backend.commitment_bytes(&commitment));
+        transcript.absorb("rows", &(a.rows() as u64).to_le_bytes());
+        transcript.absorb("cols", &(a.cols() as u64).to_le_bytes());
+        (0..row_bits)
+            .map(|_| challenge_field(&mut transcript, "tau"))
+            .collect::<Vec<_>>()
+    };
+
+    let eq_values: Vec<F2_128> = (0..a.rows())
+        .map(|index| eq(&tau, &bits(index, row_bits)))
+        .collect();
+    let (outer, rx, _) = prove_product4(eq_values, az, bz, cz, |round, values| {
+        round_challenge(&transcript, "outer-round", round, values)
+    })?;
+    if outer.claimed_sum != F2_128::from(0u64) {
+        return Err(SpartanError::ClaimMismatch {
+            expected: F2_128::from(0u64),
+            actual: outer.claimed_sum,
+        });
+    }
+
+    let v_a = az_mle.eval(&rx)?;
+    let v_b = bz_mle.eval(&rx)?;
+    let v_c = cz_mle.eval(&rx)?;
+    {
+        let mut transcript = transcript.borrow_mut();
+        absorb_field(&mut transcript, "va", v_a);
+        absorb_field(&mut transcript, "vb", v_b);
+        absorb_field(&mut transcript, "vc", v_c);
+    }
+    let r = {
+        let mut transcript = transcript.borrow_mut();
+        challenge_field(&mut transcript, "batch")
+    };
+    let expected_inner_claim = v_a + r * v_b + r * r * v_c;
+
+    let a_values = a.row_combination(&rx)?;
+    let b_values = b.row_combination(&rx)?;
+    let c_values = c.row_combination(&rx)?;
+    let left_values: Vec<F2_128> = (0..z.len())
+        .map(|index| a_values[index] + r * b_values[index] + r * r * c_values[index])
+        .collect();
+    let (inner, ry, _) = prove_product2(left_values, z.to_vec(), |round, values| {
+        round_challenge(&transcript, "inner-round", round, values)
+    })?;
+    if inner.claimed_sum != expected_inner_claim {
+        return Err(SpartanError::ClaimMismatch {
+            expected: expected_inner_claim,
+            actual: inner.claimed_sum,
+        });
+    }
+
+    let vw = z_mle.eval(&ry)?;
+    let (opened, opening) = backend.open(witness_bits, &ry)?;
+    if opened != vw {
+        return Err(SpartanError::ClaimMismatch {
+            expected: vw,
+            actual: opened,
+        });
+    }
+    Ok(SpartanProof {
+        commitment,
+        v_a,
+        v_b,
+        v_c,
+        outer,
+        inner,
+        vw,
+        opening,
+    })
+}
+
 pub fn prove_spartan_with_matrices<P: Pcs>(
     z: &[F2_128],
     a: &dyn SpartanMatrix,
@@ -487,6 +587,72 @@ pub fn prove_simd_spartan<P: Pcs>(
 
 /// Verify a Spartan proof against matrix implementations (shared-matrix SIMD
 /// path).
+pub fn verify_spartan_bits<B: BitPcs>(
+    a: &dyn SpartanMatrix,
+    b: &dyn SpartanMatrix,
+    c: &dyn SpartanMatrix,
+    proof: &SpartanProof<B::Commitment, B::Opening>,
+    backend: &B,
+) -> Result<(), SpartanError> {
+    if b.cols() != a.cols() || c.cols() != a.cols() || b.rows() != a.rows() || c.rows() != a.rows()
+    {
+        return Err(SpartanError::Dimensions);
+    }
+    let row_bits = a.rows().trailing_zeros() as usize;
+    let col_bits = a.cols().trailing_zeros() as usize;
+
+    let transcript = RefCell::new(Sha256Transcript::new("spartan-reference-v1"));
+    let tau = {
+        let mut transcript = transcript.borrow_mut();
+        transcript.absorb("commitment", &backend.commitment_bytes(&proof.commitment));
+        transcript.absorb("rows", &(a.rows() as u64).to_le_bytes());
+        transcript.absorb("cols", &(a.cols() as u64).to_le_bytes());
+        (0..row_bits)
+            .map(|_| challenge_field(&mut transcript, "tau"))
+            .collect::<Vec<_>>()
+    };
+
+    if proof.outer.claimed_sum != F2_128::from(0u64) {
+        return Err(SpartanError::Verification("outer claim is not zero"));
+    }
+    let (rx, outer_final) = verify_rounds(&proof.outer, row_bits, 3, |round, values| {
+        round_challenge(&transcript, "outer-round", round, values)
+    })?;
+    let expected_outer = eq(&tau, &rx) * (proof.v_a * proof.v_b - proof.v_c);
+    if outer_final != expected_outer {
+        return Err(SpartanError::Verification("outer sumcheck mismatch"));
+    }
+
+    {
+        let mut transcript = transcript.borrow_mut();
+        absorb_field(&mut transcript, "va", proof.v_a);
+        absorb_field(&mut transcript, "vb", proof.v_b);
+        absorb_field(&mut transcript, "vc", proof.v_c);
+    }
+    let r = {
+        let mut transcript = transcript.borrow_mut();
+        challenge_field(&mut transcript, "batch")
+    };
+    let expected_inner_claim = proof.v_a + r * proof.v_b + r * r * proof.v_c;
+    if proof.inner.claimed_sum != expected_inner_claim {
+        return Err(SpartanError::Verification("inner claim mismatch"));
+    }
+    let (ry, inner_final) = verify_rounds(&proof.inner, col_bits, 2, |round, values| {
+        round_challenge(&transcript, "inner-round", round, values)
+    })?;
+    let a = a.eval_mle(&rx, &ry)?;
+    let b = b.eval_mle(&rx, &ry)?;
+    let c = c.eval_mle(&rx, &ry)?;
+    let expected_inner = (a + r * b + r * r * c) * proof.vw;
+    if inner_final != expected_inner {
+        return Err(SpartanError::Verification("inner sumcheck mismatch"));
+    }
+    if !backend.verify(&proof.commitment, &ry, proof.vw, &proof.opening)? {
+        return Err(SpartanError::Verification("PCS opening rejected"));
+    }
+    Ok(())
+}
+
 pub fn verify_spartan_with_matrices<P: Pcs>(
     a: &dyn SpartanMatrix,
     b: &dyn SpartanMatrix,
@@ -1333,6 +1499,19 @@ mod tests {
         let mut system = ConstraintSystem::new(3);
         system.add_constraint(Expr::var(0), Expr::var(1), Expr::var(2));
         (system, Witness::new(vec![a, b, product]))
+    }
+
+    #[test]
+    fn bit_pcs_drives_spartan_without_changing_matrices() {
+        let mut system = ConstraintSystem::new(3);
+        system.add_constraint(Expr::var(0), Expr::var(1), Expr::var(2));
+        let bits = [true, true, true, false];
+        let a = SparseMatrix::from_system(&system, MatrixPart::A).unwrap();
+        let b = SparseMatrix::from_system(&system, MatrixPart::B).unwrap();
+        let c = SparseMatrix::from_system(&system, MatrixPart::C).unwrap();
+        let backend = crate::DirectBitPcs::new(TestPcs);
+        let proof = prove_spartan_bits(&bits, &a, &b, &c, &backend).unwrap();
+        verify_spartan_bits(&a, &b, &c, &proof, &backend).unwrap();
     }
 
     #[test]

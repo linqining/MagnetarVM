@@ -1090,3 +1090,22 @@ Test `gated_bundle_covers_alu_memory_and_twist` covers an ALU ADD row and a memo
 | total | 127,021 |
 
 prove 7.3 ms, verify 3.5 ms in this run. This is the first end-to-end gated CPU + Twist bundle; it still uses the 1-bit/cell commitment, so M5 remains the proof-size gap.
+
+
+### BitPcs abstraction
+
+`magnetar-proof::BitPcs` is the bit-witness commitment backend:
+
+- `commit(bits)`;
+- `open(bits, point) -> (value, opening)`;
+- `verify(commitment, point, value, opening)`;
+- `commitment_bytes`.
+
+`DirectBitPcs<P: Pcs>` implements the current one-F2^128-cell-per-bit encoding. `prove_spartan_bits` / `verify_spartan_bits` run the Spartan reduction over bit witnesses and delegate commitment/opening to a `BitPcs`; the CPU/matrix code is unchanged.
+
+Tests:
+
+- `direct_bit_pcs_opens_bit_mle` checks commit/open/verify;
+- `bit_pcs_drives_spartan_without_changing_matrices` proves a bit R1CS through `DirectBitPcs<TestPcs>`.
+
+A future `PackedBitPcs` can implement 128-bits-per-field commitment + ring switching behind the same trait without touching the CPU schema. The lockstep/gated-dual path is not yet generic over `BitPcs`; that is the next integration step.
