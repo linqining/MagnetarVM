@@ -1195,3 +1195,18 @@ Scaling (`bit_pcs_scaling_bench`, P3, release):
 | 512 | 106,104 B | unsupported | 6,408 B |
 
 Ring-switch proof overhead is about 2 KB for `s_hat_v` plus the sum-check and PCS opening; it is still 16-18x smaller than M4 in this benchmark.
+
+
+### Ring-switch M5 on gated dual q=2/4/8
+
+`prove_gated_dual_batch_bits` / `verify_gated_dual_batch_bits` are generic over `BitPcs`, so the same gated s1/s2 matrices run with Direct (M4) and RingSwitch (M5).
+
+`gated_dual_m4_m5_bench` (P3, release, mixed ALU/memory):
+
+| cycles | M4 proof | M5 ring proof | M4 prove | M5 ring prove |
+|---:|---:|---:|---:|---:|
+| 2 | 84,696 B | 4,816 B | 6.3 ms | 4.3 ms |
+| 4 | 106,352 B | 6,624 B | 9.8 ms | 7.5 ms |
+| 8 | 130,888 B | 10,736 B | 16.7 ms | 14.2 ms |
+
+At q=8 the ring-switch M5 proof is ~12x smaller, with comparable prover/verifier time. Test `gated_dual_batch_runs_with_both_backends_on_q8` verifies both backends on q=8.
