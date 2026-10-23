@@ -1742,3 +1742,17 @@ Tests cover the ALU output, the CPU packed companion, and the trace adapter mapp
 
 A two-row JAL trace (`jal x1, +4` then `addi`) proves/verifies through the gated
 dual backend. JAL's `rd = pc + 4` write value is still not constrained.
+
+
+### P0 progress: JALR control flow
+
+`GatedAluOp::Jalr` is supported:
+
+- target = rs1 + imm via the ADD datapath;
+- next_pc bound to the ALU output;
+- PC+4 disabled by `sequential = 1 + is_jal + is_jalr`;
+- packed s2 binds next_pc to the ALU output;
+- trace adapter maps `Op::Jalr`.
+
+Remaining JALR items: force target bit 0 to zero, bind rs1 to the register file,
+and constrain `rd = pc + 4`.

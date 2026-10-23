@@ -67,3 +67,16 @@ The validated PC row was lifted into `GatedCpuRow`:
 
 Tests cover the ALU target, PC binding, packed companion, trace mapping, and a
 two-row gated dual proof. `rd = pc + 4` for JAL is not yet constrained.
+
+
+## Implemented: JALR
+
+JALR reuses the ADD datapath with `left = rs1`, `right = imm`:
+
+- `is_jalr` ALU selector, implied `is_add`;
+- `sequential + is_jal + is_jalr = 1`;
+- `is_jalr · (next_pc + add_out) = 0` in s1 and packed s2;
+- trace adapter maps `Op::Jalr`.
+
+Tests cover the ALU/CPU rows and a LUI + JALR trace mapping. The JALR
+`target & !1` alignment bit and `rd = pc + 4` are not yet constrained.

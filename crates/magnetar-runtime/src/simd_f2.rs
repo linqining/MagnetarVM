@@ -1128,6 +1128,7 @@ pub enum GatedAluOp {
     Lui,
     Auipc,
     Jal,
+    Jalr,
     Inactive,
 }
 
@@ -1163,6 +1164,7 @@ pub struct GatedAluRow {
     pub lui_gated: Vec<VarId>,
     pub is_auipc: VarId,
     pub is_jal: VarId,
+    pub is_jalr: VarId,
     pub relation: BitRelation,
 }
 
@@ -1208,10 +1210,12 @@ impl GatedAluRow {
         let lui_gated = (25 * width + 13..26 * width + 13).collect::<Vec<_>>();
         let is_auipc = 26 * width + 13;
         let is_jal = 26 * width + 14;
-        let mut relation = BitRelation::new(26 * width + 15);
+        let is_jalr = 26 * width + 15;
+        let mut relation = BitRelation::new(26 * width + 16);
         relation.add(BitRow::new(vec![one], vec![one], vec![one]));
         for selector in [
             is_alu, is_xor, is_and, is_add, is_sub, is_slt, is_slts, is_lui, is_auipc, is_jal,
+            is_jalr,
         ] {
             relation.add(BitRow::new(vec![selector], vec![selector, one], Vec::new()));
         }
@@ -1227,6 +1231,7 @@ impl GatedAluRow {
         ));
         relation.add(BitRow::new(vec![is_auipc], vec![is_add], vec![is_auipc]));
         relation.add(BitRow::new(vec![is_jal], vec![is_add], vec![is_jal]));
+        relation.add(BitRow::new(vec![is_jalr], vec![is_add], vec![is_jalr]));
         relation.add(BitRow::new(vec![add_carries[0]], vec![one], Vec::new()));
         relation.add(BitRow::new(vec![sub_carries[0]], vec![one], vec![one]));
         for bit in 0..width {
@@ -1393,6 +1398,7 @@ impl GatedAluRow {
             lui_gated,
             is_auipc,
             is_jal,
+            is_jalr,
             relation,
         }
     }
@@ -1408,12 +1414,15 @@ impl GatedAluRow {
             GatedAluOp::Sltu => (false, false, false, false, true, false),
             GatedAluOp::Slt => (false, false, false, false, false, true),
             GatedAluOp::Lui => (false, false, false, false, false, false),
-            GatedAluOp::Auipc | GatedAluOp::Jal => (false, false, true, false, false, false),
+            GatedAluOp::Auipc | GatedAluOp::Jal | GatedAluOp::Jalr => {
+                (false, false, true, false, false, false)
+            }
             GatedAluOp::Inactive => (false, false, false, false, false, false),
         };
         let is_lui = op == GatedAluOp::Lui;
         let is_auipc = op == GatedAluOp::Auipc;
         let is_jal = op == GatedAluOp::Jal;
+        let is_jalr = op == GatedAluOp::Jalr;
         bits[self.is_alu] = is_xor
             || is_and
             || is_add
@@ -1422,7 +1431,8 @@ impl GatedAluRow {
             || is_slts
             || is_lui
             || is_auipc
-            || is_jal;
+            || is_jal
+            || is_jalr;
         bits[self.is_xor] = is_xor;
         bits[self.is_and] = is_and;
         bits[self.is_add] = is_add;
@@ -1432,6 +1442,7 @@ impl GatedAluRow {
         bits[self.is_lui] = is_lui;
         bits[self.is_auipc] = is_auipc;
         bits[self.is_jal] = is_jal;
+        bits[self.is_jalr] = is_jalr;
         bits[self.slt_mode] = is_slt || is_slts;
         let add_carries = 7 * self.width + 6;
         let sub_b_eff = 14 * self.width + 7;
@@ -1481,7 +1492,7 @@ impl GatedAluRow {
                 GatedAluOp::Sub => a ^ b_eff ^ sub_carry,
                 GatedAluOp::Sltu | GatedAluOp::Slt => false,
                 GatedAluOp::Lui => b,
-                GatedAluOp::Auipc | GatedAluOp::Jal => a ^ b ^ add_carry,
+                GatedAluOp::Auipc | GatedAluOp::Jal | GatedAluOp::Jalr => a ^ b ^ add_carry,
                 GatedAluOp::Inactive => false,
             };
         }
@@ -1651,7 +1662,7 @@ impl GatedCpuRow {
         let sequential = relation.num_vars;
         relation.num_vars += 1;
         relation.add(BitRow::new(
-            vec![sequential, alu.is_jal],
+            vec![sequential, alu.is_jal, alu.is_jalr],
             vec![alu.one],
             vec![alu.one],
         ));
@@ -1691,6 +1702,11 @@ impl GatedCpuRow {
             relation.add(BitRow::new(
                 vec![next_pc[bit], alu.out[bit]],
                 vec![alu.is_jal],
+                Vec::new(),
+            ));
+            relation.add(BitRow::new(
+                vec![next_pc[bit], alu.out[bit]],
+                vec![alu.is_jalr],
                 Vec::new(),
             ));
         }
@@ -1773,6 +1789,11 @@ impl GatedCpuRow {
             packed(&self.next_pc, 0).add(packed(&self.alu.out, 0)),
             Expr::constant(0u64),
         );
+        system.add_constraint(
+            Expr::var(self.alu.is_jalr),
+            packed(&self.next_pc, 0).add(packed(&self.alu.out, 0)),
+            Expr::constant(0u64),
+        );
         let shift_results = self
             .shift
             .result_vars(BitShiftKind::Sll)
@@ -1819,12 +1840,13 @@ impl GatedCpuRow {
         let memory = self.memory.witness(0, 0, 0, false);
         bits.extend(memory);
         bits.extend(self.shift.inactive_witness());
-        let next_pc = if op == GatedAluOp::Jal {
+        let jump = matches!(op, GatedAluOp::Jal | GatedAluOp::Jalr);
+        let next_pc = if jump {
             left.wrapping_add(right)
         } else {
             pc.wrapping_add(4)
         };
-        self.finish(bits, pc, next_pc, op != GatedAluOp::Jal)
+        self.finish(bits, pc, next_pc, !jump)
     }
 
     pub fn memory_witness(&self, rs1: u64, imm: u64, value: u64, is_mem: bool) -> Vec<bool> {
@@ -1913,6 +1935,19 @@ mod gated_cpu_row_tests {
         assert_eq!(jal_next, 0x20);
         let jal_witness = row.relation.to_witness(&jal);
         assert!(row.packed_companion_system().check(&jal_witness).is_ok());
+
+        let jalr = row.alu_witness_at(0x1000, 0x40, 0x2, GatedAluOp::Jalr);
+        assert!(row.relation.check(&jalr));
+        let jalr_next = row
+            .next_pc
+            .iter()
+            .enumerate()
+            .fold(0u64, |value, (bit, var)| {
+                value | (u64::from(jalr[*var]) << bit)
+            });
+        assert_eq!(jalr_next, 0x42);
+        let jalr_witness = row.relation.to_witness(&jalr);
+        assert!(row.packed_companion_system().check(&jalr_witness).is_ok());
 
         let shift = row.shift_witness_at(0x1008, 5, 2, BitShiftKind::Sll);
         assert!(row.relation.check(&shift));

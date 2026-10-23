@@ -255,6 +255,17 @@ pub fn gated_rows_from_trace(
             ));
             continue;
         }
+        if row.instruction.op == magnetar_spec::Op::Jalr {
+            rows.push((
+                row.pc,
+                GatedCpuRowInput::Alu {
+                    left: row.rs1_val,
+                    right: row.instruction.imm as u64,
+                    op: GatedAluOp::Jalr,
+                },
+            ));
+            continue;
+        }
         if let Some(kind) = shift_kind {
             let shamt = match row.instruction.op {
                 magnetar_spec::Op::Slli | magnetar_spec::Op::Srli | magnetar_spec::Op::Srai => {
@@ -432,6 +443,63 @@ mod auipc_trace_tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn jalr_trace_maps_to_gated_alu() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Lui,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x1000,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Jalr,
+                    rd: 0,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 8,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 2,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 1,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let rows = gated_rows_from_trace(&trace, 8).unwrap();
+        assert!(rows.iter().any(|(_, input)| matches!(
+            input,
+            GatedCpuRowInput::Alu {
+                op: GatedAluOp::Jalr,
+                ..
+            }
+        )));
     }
 
     #[test]
