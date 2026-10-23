@@ -19,7 +19,7 @@ use crate::binary_shout::{
     prove_binary_shout_claims, verify_binary_shout_claims, BinaryShoutWitness,
 };
 use crate::binary_twist::{
-    batch_tables, prove_binary_twist_claims, prove_binary_twist_ram, verify_binary_twist_claims,
+    prove_binary_twist_claims, prove_binary_twist_ram, verify_binary_twist_claims,
     verify_binary_twist_ram, BatchTables, BinaryTwistRamProof, MosaicClaims,
 };
 
@@ -32,12 +32,12 @@ use magnetar_executor::{execute_with_io, ExecError, ExecutionIo};
 use magnetar_memory::{check_memory, BinaryTwistWitness, MemoryError, MemoryReport};
 use magnetar_pcs::{
     MerklePath, MerkleTree, NaiveCommitment, NaiveMerklePcs, P3BinaryPcs, P3Commitment,
-    P3MosaicCommitment, P3MosaicOpening, P3MosaicPoint, P3MosaicTable, P3Opening, P3SharedPcs,
+    P3MosaicCommitment, P3MosaicOpening, P3Opening,
 };
 use magnetar_preprocess::{preprocess, PreprocessError, PreprocessedProgram};
 use magnetar_proof::{
     prove_lockstep, prove_spartan, verify_lockstep, verify_spartan, witness_vector, LockstepProof,
-    Mle, Pcs, SpartanError, SpartanProof,
+    Pcs, SpartanError, SpartanProof,
 };
 use magnetar_recursion::{ChainedChunk, ChainedProof, ChainedRecursion, ChunkPlan, RecursionError};
 use magnetar_spec::{decode, decode_compressed, MachineConfig, MachineState, ProgramImage, Trace};
@@ -1287,7 +1287,7 @@ fn row_cpu_relation(
     }
 }
 
-fn merged_cpu_system(
+pub(crate) fn merged_cpu_system(
     trace: &Trace,
     width: usize,
 ) -> Result<(ConstraintSystem, Witness), RuntimeError> {
@@ -1585,7 +1585,7 @@ fn check_io_writes(trace: &Trace) -> Result<(), RuntimeError> {
     Ok(())
 }
 
-fn check_trace_linkage(trace: &Trace) -> Result<(), RuntimeError> {
+pub(crate) fn check_trace_linkage(trace: &Trace) -> Result<(), RuntimeError> {
     check_trace(trace)?;
     check_io_reads(trace)?;
     check_io_writes(trace)?;
@@ -1823,7 +1823,9 @@ pub fn verify_trace_proof(
     Ok(())
 }
 
-fn split_cpu_relations(system: &ConstraintSystem) -> (ConstraintSystem, ConstraintSystem) {
+pub(crate) fn split_cpu_relations(
+    system: &ConstraintSystem,
+) -> (ConstraintSystem, ConstraintSystem) {
     let mut even = ConstraintSystem::new(system.num_vars);
     let mut odd = ConstraintSystem::new(system.num_vars);
     even.public_inputs = system.public_inputs.clone();
@@ -1852,7 +1854,7 @@ fn split_cpu_relations(system: &ConstraintSystem) -> (ConstraintSystem, Constrai
     (even, odd)
 }
 
-fn cpu_segment_layout(len: usize) -> Result<WitnessLayout, RuntimeError> {
+pub(crate) fn cpu_segment_layout(len: usize) -> Result<WitnessLayout, RuntimeError> {
     let chunk = if len >= 2 { len / 2 } else { len };
     let mut segments = Vec::new();
     let mut offset = 0;
@@ -1906,304 +1908,12 @@ pub fn verify_cpu_lockstep(
         .map_err(|error| RuntimeError::Proof(error.to_string()))
 }
 
-struct UnifiedProveContext<'a> {
-    trace: &'a Trace,
-    witness: BinaryTwistWitness,
-    tables: BatchTables,
-    system: ConstraintSystem,
-    cpu_witness: magnetar_constraint::Witness,
-    z: Vec<F2_128>,
-    shout_witness: Option<BinaryShoutWitness>,
-    shift_router_witness: Option<BinaryRouterWitness>,
-    store_router_witness: Option<BinaryRouterWitness>,
-    register_witness: BinaryTwistWitness,
-    register_tables: BatchTables,
-    pcs: P3BinaryPcs,
-    mosaic_tables: Vec<P3MosaicTable>,
-    shout_table: Option<(usize, P3MosaicTable)>,
-    shift_router_table: Option<(usize, P3MosaicTable)>,
-    store_router_table: Option<(usize, P3MosaicTable)>,
-    register_index: usize,
-    trace_witness: crate::trace_commitment::TraceWitness,
-    trace_index: usize,
-    trace_table: P3MosaicTable,
-    commitment: Option<P3MosaicCommitment>,
-    access: Option<TraceAccessProof>,
-    register_claims: Option<crate::binary_twist::MosaicClaims>,
-    points: Vec<P3MosaicPoint>,
-    values: Vec<Vec<F2_128>>,
-    aux_tables: Vec<P3MosaicTable>,
-    shout: Option<crate::binary_shout::BinaryShoutProof>,
-    shift_router: Option<crate::binary_router::BinaryRouterProof>,
-    store_router: Option<crate::binary_router::BinaryRouterProof>,
-    cpu: Option<MosaicSpartanProof>,
-}
-
-impl<'a> UnifiedProveContext<'a> {
-    fn new(trace: &'a Trace, width: usize) -> Result<Self, RuntimeError> {
-        check_trace_linkage(trace)?;
-        let witness = BinaryTwistWitness::from_trace(trace)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        witness
-            .validate()
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        let tables =
-            batch_tables(&witness).map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        let (system, cpu_witness) = merged_cpu_system(trace, width)?;
-        let z = witness_vector(&system, &cpu_witness)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-
-        let shout_witness = BinaryShoutWitness::from_trace(trace).ok();
-        let shift_router_witness =
-            BinaryRouterWitness::from_trace_mode(trace, RouterMode::Shifts).ok();
-        let store_router_witness =
-            BinaryRouterWitness::from_trace_mode(trace, RouterMode::Stores).ok();
-        let register_witness = crate::register_twist::register_twist_witness(trace)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        let register_tables = batch_tables(&register_witness)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        let pcs = P3BinaryPcs::new(100);
-        let mut mosaic_tables = vec![
-            P3MosaicTable {
-                columns: vec![z.clone()],
-            },
-            tables.addr.clone(),
-            tables.inc.clone(),
-        ];
-        let mut next_table = 3usize;
-        let shout_table = shout_witness.as_ref().map(|witness| {
-            let index = next_table;
-            next_table += 1;
-            (index, witness.table())
-        });
-        if let Some((_, table)) = &shout_table {
-            mosaic_tables.push(table.clone());
-        }
-        let shift_router_table = shift_router_witness.as_ref().map(|witness| {
-            let index = next_table;
-            next_table += 1;
-            (index, witness.table())
-        });
-        if let Some((_, table)) = &shift_router_table {
-            mosaic_tables.push(table.clone());
-        }
-        let store_router_table = store_router_witness.as_ref().map(|witness| {
-            let index = next_table;
-            next_table += 1;
-            (index, witness.table())
-        });
-        if let Some((_, table)) = &store_router_table {
-            mosaic_tables.push(table.clone());
-        }
-        let register_index = mosaic_tables.len();
-        mosaic_tables.push(register_tables.addr.clone());
-        mosaic_tables.push(register_tables.inc.clone());
-        let trace_witness = crate::trace_commitment::trace_witness(trace)?;
-        let trace_index = mosaic_tables.len();
-        let trace_table = P3MosaicTable {
-            columns: vec![trace_witness.values.clone()],
-        };
-        mosaic_tables.push(trace_table.clone());
-
-        Ok(Self {
-            trace,
-            witness,
-            tables,
-            system,
-            cpu_witness,
-            z,
-            shout_witness,
-            shift_router_witness,
-            store_router_witness,
-            register_witness,
-            register_tables,
-            pcs,
-            mosaic_tables,
-            shout_table,
-            shift_router_table,
-            store_router_table,
-            register_index,
-            trace_witness,
-            trace_index,
-            trace_table,
-            commitment: None,
-            access: None,
-            register_claims: None,
-            points: Vec::new(),
-            values: Vec::new(),
-            aux_tables: Vec::new(),
-            shout: None,
-            shift_router: None,
-            store_router: None,
-            cpu: None,
-        })
-    }
-
-    fn commit(&mut self) -> Result<(), RuntimeError> {
-        let commitment = self
-            .pcs
-            .commit_mosaic(&self.mosaic_tables)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        self.commitment = Some(commitment);
-        Ok(())
-    }
-
-    fn prove_access(&mut self) -> Result<(), RuntimeError> {
-        let commitment = self
-            .commitment
-            .as_ref()
-            .ok_or_else(|| RuntimeError::Proof("access stage before commit".into()))?;
-        let (access, (points, values), register_claims) = prove_trace_access_shared(
-            self.trace,
-            &self.witness,
-            &self.tables,
-            commitment,
-            &self.register_witness,
-            &self.register_tables,
-            self.register_index,
-        )?;
-        self.access = Some(access);
-        self.points = points;
-        self.values = values;
-        self.register_claims = Some(register_claims);
-        self.aux_tables = vec![self.mosaic_tables[1].clone(), self.mosaic_tables[2].clone()];
-        Ok(())
-    }
-
-    fn prove_shout(&mut self) -> Result<(), RuntimeError> {
-        let (Some(witness), Some((index, _)), Some(commitment)) =
-            (&self.shout_witness, &self.shout_table, &self.commitment)
-        else {
-            return Ok(());
-        };
-        let (claim, claim_points, claim_values) =
-            prove_binary_shout_claims(witness, commitment, *index)
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        self.points.extend(claim_points);
-        self.values.extend(claim_values);
-        self.aux_tables.push(witness.table());
-        self.shout = Some(claim);
-        Ok(())
-    }
-
-    fn prove_shift_router(&mut self) -> Result<(), RuntimeError> {
-        let (Some(witness), Some((index, _)), Some(commitment)) = (
-            &self.shift_router_witness,
-            &self.shift_router_table,
-            &self.commitment,
-        ) else {
-            return Ok(());
-        };
-        let (claim, claim_points, claim_values) =
-            prove_binary_router_claims(witness, commitment, *index)
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        self.points.extend(claim_points);
-        self.values.extend(claim_values);
-        self.aux_tables.push(witness.table());
-        self.shift_router = Some(claim);
-        Ok(())
-    }
-
-    fn prove_store_router(&mut self) -> Result<(), RuntimeError> {
-        let (Some(witness), Some((index, _)), Some(commitment)) = (
-            &self.store_router_witness,
-            &self.store_router_table,
-            &self.commitment,
-        ) else {
-            return Ok(());
-        };
-        let (claim, claim_points, claim_values) =
-            prove_binary_router_claims(witness, commitment, *index)
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        self.points.extend(claim_points);
-        self.values.extend(claim_values);
-        self.aux_tables.push(witness.table());
-        self.store_router = Some(claim);
-        Ok(())
-    }
-
-    fn prove_register_and_trace(&mut self) -> Result<(), RuntimeError> {
-        let (register_points, register_values) = self
-            .register_claims
-            .take()
-            .ok_or_else(|| RuntimeError::Proof("register claims before access".into()))?;
-        self.points.extend(register_points);
-        self.values.extend(register_values);
-        self.aux_tables.push(self.register_tables.addr.clone());
-        self.aux_tables.push(self.register_tables.inc.clone());
-        self.aux_tables.push(self.trace_table.clone());
-
-        let trace_claims = magnetar_proof::virtual_spartan::split_segment_claims(
-            &self.trace_witness.layout,
-            &self.trace_witness.values,
-            &self.trace_witness.point,
-        )
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        let total_bits = self.trace_witness.layout.total_bits.trailing_zeros() as usize;
-        for (segment, claim) in self.trace_witness.layout.segments.iter().zip(&trace_claims) {
-            let size_bits = segment.len.trailing_zeros() as usize;
-            let suffix = segment.offset >> size_bits;
-            let mut point = self.trace_witness.point[..size_bits].to_vec();
-            for bit in 0..total_bits - size_bits {
-                point.push(F2_128::from(((suffix >> bit) & 1) as u64));
-            }
-            self.points.push(P3MosaicPoint {
-                table: self.trace_index,
-                point,
-                columns: vec![0],
-                next_columns: Vec::new(),
-            });
-            self.values.push(vec![claim.value]);
-        }
-        Ok(())
-    }
-
-    fn prove_cpu(&mut self) -> Result<(), RuntimeError> {
-        let commitment = self
-            .commitment
-            .as_ref()
-            .ok_or_else(|| RuntimeError::Proof("CPU stage before commit".into()))?;
-        let points = std::mem::take(&mut self.points);
-        let values = std::mem::take(&mut self.values);
-        let aux_tables = std::mem::take(&mut self.aux_tables);
-        let shared_pcs = P3SharedPcs::new(100, aux_tables, points, values);
-        let (system_a, system_b) = split_cpu_relations(&self.system);
-        let layout = cpu_segment_layout(self.z.len())?;
-        let cpu = prove_lockstep(
-            &system_a,
-            &system_b,
-            &self.cpu_witness,
-            &layout,
-            &shared_pcs,
-        )
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        debug_assert_eq!(cpu.commitment, *commitment);
-        self.cpu = Some(cpu);
-        Ok(())
-    }
-
-    fn finish(self) -> Result<UnifiedTraceProof, RuntimeError> {
-        Ok(UnifiedTraceProof {
-            access: self
-                .access
-                .ok_or_else(|| RuntimeError::Proof("missing access proof".into()))?,
-            trace_commitment: trace_digest(self.trace),
-            cpu: self
-                .cpu
-                .ok_or_else(|| RuntimeError::Proof("missing CPU proof".into()))?,
-            shout: self.shout,
-            shift_router: self.shift_router,
-            store_router: self.store_router,
-        })
-    }
-}
-
 pub(crate) fn prove_unified_with_plan(
     trace: &Trace,
     width: usize,
     plan: &crate::protocol::ProtocolPlan,
 ) -> Result<UnifiedTraceProof, RuntimeError> {
-    let mut context = UnifiedProveContext::new(trace, width)?;
+    let mut context = crate::protocol::UnifiedProveContext::new(trace, width)?;
     for stage in plan.execution() {
         match stage {
             crate::protocol::ExecutionStage::Commit => context.commit()?,
@@ -2232,260 +1942,13 @@ pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTracePr
     crate::protocol::Orchestrator::default().prove(trace, width)
 }
 
-struct UnifiedVerifyContext<'a> {
-    trace: &'a Trace,
-    proof: &'a UnifiedTraceProof,
-    width: usize,
-    shout_witness: Option<BinaryShoutWitness>,
-    shift_router_witness: Option<BinaryRouterWitness>,
-    store_router_witness: Option<BinaryRouterWitness>,
-    shout_index: Option<usize>,
-    shift_router_index: Option<usize>,
-    store_router_index: Option<usize>,
-    register_index: usize,
-    register_witness: BinaryTwistWitness,
-    witness: BinaryTwistWitness,
-    points: Vec<P3MosaicPoint>,
-    values: Vec<Vec<F2_128>>,
-    register_claims: Option<crate::binary_twist::MosaicClaims>,
-}
-
-impl<'a> UnifiedVerifyContext<'a> {
-    fn new(
-        trace: &'a Trace,
-        proof: &'a UnifiedTraceProof,
-        width: usize,
-    ) -> Result<Self, RuntimeError> {
-        check_trace_linkage(trace)?;
-        if proof.trace_commitment != trace_digest(trace) {
-            return Err(RuntimeError::Proof(
-                "unified proof does not match the supplied trace".into(),
-            ));
-        }
-        let shout_witness = BinaryShoutWitness::from_trace(trace).ok();
-        let shift_router_witness =
-            BinaryRouterWitness::from_trace_mode(trace, RouterMode::Shifts).ok();
-        let store_router_witness =
-            BinaryRouterWitness::from_trace_mode(trace, RouterMode::Stores).ok();
-        match (&shout_witness, &proof.shout) {
-            (Some(_), None) | (None, Some(_)) => {
-                return Err(RuntimeError::Proof(
-                    "BinaryShout proof presence does not match the trace".into(),
-                ));
-            }
-            _ => {}
-        }
-        match (&shift_router_witness, &proof.shift_router) {
-            (Some(_), None) | (None, Some(_)) => {
-                return Err(RuntimeError::Proof(
-                    "shift BinaryRouter proof presence does not match the trace".into(),
-                ));
-            }
-            _ => {}
-        }
-        match (&store_router_witness, &proof.store_router) {
-            (Some(_), None) | (None, Some(_)) => {
-                return Err(RuntimeError::Proof(
-                    "store BinaryRouter proof presence does not match the trace".into(),
-                ));
-            }
-            _ => {}
-        }
-        let expected_tables = 6
-            + usize::from(shout_witness.is_some())
-            + usize::from(shift_router_witness.is_some())
-            + usize::from(store_router_witness.is_some());
-        if proof.cpu.commitment.tables.len() != expected_tables {
-            return Err(RuntimeError::Proof(
-                "unified proof does not commit the expected CPU/RAM/aux tables".into(),
-            ));
-        }
-        let mut next_table = 3usize;
-        let shout_index = shout_witness.as_ref().map(|_| {
-            let index = next_table;
-            next_table += 1;
-            index
-        });
-        let shift_router_index = shift_router_witness.as_ref().map(|_| {
-            let index = next_table;
-            next_table += 1;
-            index
-        });
-        let store_router_index = store_router_witness.as_ref().map(|_| {
-            let index = next_table;
-            next_table += 1;
-            index
-        });
-        let register_index = next_table;
-        let register_witness = crate::register_twist::register_twist_witness(trace)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        let witness = BinaryTwistWitness::from_trace(trace)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        witness
-            .validate()
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-
-        Ok(Self {
-            trace,
-            proof,
-            width,
-            shout_witness,
-            shift_router_witness,
-            store_router_witness,
-            shout_index,
-            shift_router_index,
-            store_router_index,
-            register_index,
-            register_witness,
-            witness,
-            points: Vec::new(),
-            values: Vec::new(),
-            register_claims: None,
-        })
-    }
-
-    fn verify_access(&mut self) -> Result<(), RuntimeError> {
-        let (ram_claims, register_claims) = verify_trace_access_shared(
-            self.trace,
-            &self.proof.access,
-            &self.witness,
-            &self.proof.cpu.commitment,
-            &self.register_witness,
-            self.register_index,
-        )?;
-        self.points = ram_claims.0;
-        self.values = ram_claims.1;
-        self.register_claims = Some(register_claims);
-        Ok(())
-    }
-
-    fn verify_shout(&mut self) -> Result<(), RuntimeError> {
-        let (Some(witness), Some(claim), Some(index)) =
-            (&self.shout_witness, &self.proof.shout, self.shout_index)
-        else {
-            return Ok(());
-        };
-        let Some((points, values)) =
-            verify_binary_shout_claims(witness, claim, &self.proof.cpu.commitment, index)
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?
-        else {
-            return Err(RuntimeError::Proof("BinaryShout proof rejected".into()));
-        };
-        self.points.extend(points);
-        self.values.extend(values);
-        Ok(())
-    }
-
-    fn verify_shift_router(&mut self) -> Result<(), RuntimeError> {
-        let (Some(witness), Some(claim), Some(index)) = (
-            &self.shift_router_witness,
-            &self.proof.shift_router,
-            self.shift_router_index,
-        ) else {
-            return Ok(());
-        };
-        let Some((points, values)) =
-            verify_binary_router_claims(witness, claim, &self.proof.cpu.commitment, index)
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?
-        else {
-            return Err(RuntimeError::Proof(
-                "shift BinaryRouter proof rejected".into(),
-            ));
-        };
-        self.points.extend(points);
-        self.values.extend(values);
-        Ok(())
-    }
-
-    fn verify_store_router(&mut self) -> Result<(), RuntimeError> {
-        let (Some(witness), Some(claim), Some(index)) = (
-            &self.store_router_witness,
-            &self.proof.store_router,
-            self.store_router_index,
-        ) else {
-            return Ok(());
-        };
-        let Some((points, values)) =
-            verify_binary_router_claims(witness, claim, &self.proof.cpu.commitment, index)
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?
-        else {
-            return Err(RuntimeError::Proof(
-                "store BinaryRouter proof rejected".into(),
-            ));
-        };
-        self.points.extend(points);
-        self.values.extend(values);
-        Ok(())
-    }
-
-    fn verify_register_and_trace(&mut self) -> Result<(), RuntimeError> {
-        let (register_points, register_values) = self
-            .register_claims
-            .take()
-            .ok_or_else(|| RuntimeError::Proof("register claims before access".into()))?;
-        self.points.extend(register_points);
-        self.values.extend(register_values);
-
-        let trace_witness = crate::trace_commitment::trace_witness(self.trace)?;
-        let trace_index = self.register_index + 2;
-        let trace_claims = magnetar_proof::virtual_spartan::split_segment_claims(
-            &trace_witness.layout,
-            &trace_witness.values,
-            &trace_witness.point,
-        )
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        let trace_value = Mle::new(trace_witness.values.clone())
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?
-            .eval(&trace_witness.point)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        magnetar_proof::virtual_spartan::verify_segment_claims(
-            &trace_witness.layout,
-            &trace_claims,
-            &trace_witness.point,
-            trace_value,
-        )
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        let total_bits = trace_witness.layout.total_bits.trailing_zeros() as usize;
-        for (segment, claim) in trace_witness.layout.segments.iter().zip(&trace_claims) {
-            let size_bits = segment.len.trailing_zeros() as usize;
-            let suffix = segment.offset >> size_bits;
-            let mut point = trace_witness.point[..size_bits].to_vec();
-            for bit in 0..total_bits - size_bits {
-                point.push(F2_128::from(((suffix >> bit) & 1) as u64));
-            }
-            self.points.push(P3MosaicPoint {
-                table: trace_index,
-                point,
-                columns: vec![0],
-                next_columns: Vec::new(),
-            });
-            self.values.push(vec![claim.value]);
-        }
-        Ok(())
-    }
-
-    fn verify_cpu(&mut self) -> Result<(), RuntimeError> {
-        let (system, cpu_witness) = merged_cpu_system(self.trace, self.width)?;
-        let (system_a, system_b) = split_cpu_relations(&system);
-        let z = witness_vector(&system, &cpu_witness)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        let layout = cpu_segment_layout(z.len())?;
-        let points = std::mem::take(&mut self.points);
-        let values = std::mem::take(&mut self.values);
-        let shared_pcs = P3SharedPcs::new(100, Vec::new(), points, values);
-        verify_lockstep(&system_a, &system_b, &layout, &self.proof.cpu, &shared_pcs)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        Ok(())
-    }
-}
-
 pub(crate) fn verify_unified_with_plan(
     trace: &Trace,
     proof: &UnifiedTraceProof,
     width: usize,
     plan: &crate::protocol::ProtocolPlan,
 ) -> Result<(), RuntimeError> {
-    let mut context = UnifiedVerifyContext::new(trace, proof, width)?;
+    let mut context = crate::protocol::UnifiedVerifyContext::new(trace, proof, width)?;
     for stage in plan.execution() {
         match stage {
             crate::protocol::ExecutionStage::Commit => {}
