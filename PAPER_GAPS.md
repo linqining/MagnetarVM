@@ -1776,3 +1776,15 @@ digest. This is one proof object and closes the reference-model binding gap
 transitively through the shared trace, but it is still two proof systems: the
 gated CPU claims are not yet merged into the legacy Virtual Spartan commitment.
 Merging those claims is the remaining A work.
+
+
+### A: gated claims against a shared Mosaic commitment
+
+`gated_claim_inputs` exposes the gated CPU z, matrices, and segment layout.
+Test `gated_claims_use_shared_commitment` commits gated z as a Mosaic table and
+calls `prove_lockstep_claims_bits` with `DirectBitPcs<P3SharedPcs>` and that
+commitment. The resulting `LockstepClaims` carry the shared `P3MosaicCommitment`
+and non-empty segments.
+
+This is the proof-generation ingredient needed to merge gated CPU claims into
+`UnifiedTraceProof`; verification/opening integration is the next step.

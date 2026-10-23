@@ -10,6 +10,7 @@ use magnetar_proof::{prove_lockstep, verify_lockstep, witness_vector, LockstepPr
 
 use crate::simd_f2::{GatedCpuRow, GatedCpuRowInput};
 use crate::RuntimeError;
+use magnetar_constraint::F2_128;
 
 fn bit_relation(layout: &magnetar_cpu::simd::UniformCpuRowLayout, op: StepOp) -> BitRelation {
     let mut relation = BitRelation::new(layout.num_vars);
@@ -587,6 +588,31 @@ fn gated_shared_matrices(
     Ok((base_cols, [a0, b0, c0], [a1, b1, c1]))
 }
 
+#[allow(dead_code)]
+#[allow(clippy::type_complexity)]
+pub(crate) fn gated_claim_inputs(
+    width: usize,
+    rows: &[(u64, GatedCpuRowInput)],
+) -> Result<
+    (
+        Vec<F2_128>,
+        [magnetar_proof::SharedBlockMatrix; 3],
+        [magnetar_proof::SharedBlockMatrix; 3],
+        magnetar_constraint::WitnessLayout,
+    ),
+    RuntimeError,
+> {
+    let row = GatedCpuRow::new(width);
+    let (base_cols, systems0, systems1) = gated_shared_matrices(&row, rows.len(), None)?;
+    let bits = gated_batch_bits(&row, base_cols, rows);
+    let layout = segment_layout(bits.len())?;
+    let z = bits
+        .iter()
+        .map(|bit| F2_128::from(u64::from(*bit)))
+        .collect::<Vec<_>>();
+    Ok((z, systems0, systems1, layout))
+}
+
 fn gated_batch_bits(
     row: &GatedCpuRow,
     base_cols: usize,
@@ -702,6 +728,57 @@ pub fn verify_gated_dual_batch_bits_with_pc<B: magnetar_proof::BitPcs>(
     .map_err(|error| RuntimeError::Proof(error.to_string()))
 }
 
+#[cfg(test)]
+mod shared_claim_tests {
+    use super::*;
+    use magnetar_pcs::{P3BinaryPcs, P3MosaicTable, P3SharedPcs};
+    use magnetar_proof::spartan::prove_lockstep_claims_bits;
+    use magnetar_proof::DirectBitPcs;
+
+    #[test]
+    fn gated_claims_use_shared_commitment() {
+        let rows = [
+            (
+                0x1000,
+                GatedCpuRowInput::Alu {
+                    left: 5,
+                    right: 3,
+                    op: crate::simd_f2::GatedAluOp::Add,
+                },
+            ),
+            (
+                0x1004,
+                GatedCpuRowInput::Alu {
+                    left: 7,
+                    right: 2,
+                    op: crate::simd_f2::GatedAluOp::Xor,
+                },
+            ),
+        ];
+        let (z, a0, a1, layout) = gated_claim_inputs(8, &rows).unwrap();
+        let commitment = P3BinaryPcs::new(100)
+            .commit_mosaic(&[P3MosaicTable {
+                columns: vec![z.clone()],
+            }])
+            .unwrap();
+        let backend = DirectBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
+        let (claims, _ry) = prove_lockstep_claims_bits(
+            &z,
+            &a0[0],
+            &a0[1],
+            &a0[2],
+            &a1[0],
+            &a1[1],
+            &a1[2],
+            &layout,
+            &backend,
+            commitment.clone(),
+        )
+        .unwrap();
+        assert_eq!(claims.commitment, commitment);
+        assert!(!claims.segments.is_empty());
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
