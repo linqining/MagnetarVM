@@ -476,9 +476,10 @@ pub mod spartan;
 pub mod virtual_spartan;
 pub use simd::SharedBlockMatrix;
 pub use spartan::{
-    prove_lockstep, prove_lockstep_claims, prove_spartan, verify_lockstep, verify_lockstep_claims,
-    verify_lockstep_segments, verify_spartan, witness_vector, LockstepClaims, LockstepProof,
-    SpartanError, SpartanProof,
+    prove_lockstep, prove_lockstep_claims, prove_shared_simd_spartan, prove_spartan,
+    prove_spartan_with_matrices, verify_lockstep, verify_lockstep_claims, verify_lockstep_segments,
+    verify_shared_simd_spartan, verify_spartan, verify_spartan_with_matrices, witness_vector,
+    LockstepClaims, LockstepProof, SpartanError, SpartanMatrix, SpartanProof,
 };
 
 /// Sum-check for `eq(x) * (a0*b0 - c0 + alpha * (a1*b1 - c1))`, degree three.

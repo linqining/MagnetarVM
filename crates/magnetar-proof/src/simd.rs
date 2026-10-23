@@ -14,6 +14,7 @@ use crate::{eq, SpartanError};
 pub struct SharedBlockMatrix {
     base: SparseMatrix,
     instances: usize,
+    extra: Vec<Vec<(usize, F2_128)>>,
 }
 
 impl SpartanMatrix for SharedBlockMatrix {
@@ -50,6 +51,7 @@ impl SharedBlockMatrix {
         Ok(Self {
             base: SparseMatrix::from_system(system, part)?,
             instances,
+            extra: Vec::new(),
         })
     }
 
@@ -57,8 +59,17 @@ impl SharedBlockMatrix {
         self.instances
     }
 
+    /// Append sparse rows after the block-diagonal rows. Rows are padded to
+    /// the next power of two so the matrix can be evaluated as an MLE.
+    pub fn with_extra_rows(mut self, mut extra: Vec<Vec<(usize, F2_128)>>) -> Self {
+        let total = (self.base.rows.len() * self.instances + extra.len()).next_power_of_two();
+        extra.resize(total - self.base.rows.len() * self.instances, Vec::new());
+        self.extra = extra;
+        self
+    }
+
     pub fn rows(&self) -> usize {
-        self.base.rows.len() * self.instances
+        self.base.rows.len() * self.instances + self.extra.len()
     }
 
     pub fn cols(&self) -> usize {
@@ -74,20 +85,41 @@ impl SharedBlockMatrix {
             let start = instance * self.base.cols;
             result.extend(self.base.mul_vec(&z[start..start + self.base.cols])?);
         }
+        for row in &self.extra {
+            result.push(
+                row.iter()
+                    .fold(F2_128::from(0u64), |sum, (column, coefficient)| {
+                        sum + *coefficient * z[*column]
+                    }),
+            );
+        }
         Ok(result)
     }
 
     pub fn row_combination(&self, row_point: &[F2_128]) -> Result<Vec<F2_128>, SpartanError> {
-        let (local, instance_point) = split_point(row_point, self.base.rows.len(), self.instances)?;
-        let local = self.base.row_combination(&local)?;
+        let row_bits = self.rows().trailing_zeros() as usize;
+        if row_point.len() != row_bits {
+            return Err(SpartanError::Dimensions);
+        }
+        let local_bits = self.base.rows.len().trailing_zeros() as usize;
+        let instance_bits = self.instances.trailing_zeros() as usize;
+        let block_high = &row_point[local_bits + instance_bits..];
+        let instance_point = &row_point[local_bits..local_bits + instance_bits];
+        let zero_high = vec![F2_128::from(0u64); block_high.len()];
+        let local = self.base.row_combination(&row_point[..local_bits])?;
         let mut result = vec![F2_128::from(0u64); self.cols()];
         for instance in 0..self.instances {
-            let weight = eq(
-                &instance_point,
-                &bits(instance, self.instances.trailing_zeros() as usize),
-            );
+            let weight =
+                eq(instance_point, &bits(instance, instance_bits)) * eq(block_high, &zero_high);
             for (column, coefficient) in local.iter().enumerate() {
                 result[instance * self.base.cols + column] = *coefficient * weight;
+            }
+        }
+        for (offset, row) in self.extra.iter().enumerate() {
+            let row_index = self.base.rows.len() * self.instances + offset;
+            let weight = eq(row_point, &bits(row_index, row_bits));
+            for (column, coefficient) in row {
+                result[*column] = result[*column] + *coefficient * weight;
             }
         }
         Ok(result)
@@ -98,30 +130,39 @@ impl SharedBlockMatrix {
         row_point: &[F2_128],
         col_point: &[F2_128],
     ) -> Result<F2_128, SpartanError> {
-        let (row_local, row_instance) =
-            split_point(row_point, self.base.rows.len(), self.instances)?;
-        let (col_local, col_instance) = split_point(col_point, self.base.cols, self.instances)?;
-        let base = self.base.eval_mle(&row_local, &col_local)?;
+        let row_bits = self.rows().trailing_zeros() as usize;
+        let col_bits = self.cols().trailing_zeros() as usize;
+        if row_point.len() != row_bits || col_point.len() != col_bits {
+            return Err(SpartanError::Dimensions);
+        }
+        let local_bits = self.base.rows.len().trailing_zeros() as usize;
+        let base = self.base.eval_mle(
+            &row_point[..local_bits],
+            &col_point[..self.base.cols.trailing_zeros() as usize],
+        )?;
+        let instance_bits = self.instances.trailing_zeros() as usize;
+        let block_high = &row_point[local_bits + instance_bits..];
+        let zero_high = vec![F2_128::from(0u64); block_high.len()];
+        let row_instance = &row_point[local_bits..local_bits + instance_bits];
+        let col_instance = &col_point[self.base.cols.trailing_zeros() as usize..];
         let mut sum = F2_128::from(0u64);
         for instance in 0..self.instances {
-            let index = bits(instance, self.instances.trailing_zeros() as usize);
-            sum = sum + base * eq(&row_instance, &index) * eq(&col_instance, &index);
+            let index = bits(instance, instance_bits);
+            sum = sum
+                + base
+                    * eq(row_instance, &index)
+                    * eq(col_instance, &index)
+                    * eq(block_high, &zero_high);
+        }
+        for (offset, row) in self.extra.iter().enumerate() {
+            let row_index = self.base.rows.len() * self.instances + offset;
+            let row_weight = eq(row_point, &bits(row_index, row_bits));
+            for (column, coefficient) in row {
+                sum = sum + *coefficient * row_weight * eq(col_point, &bits(*column, col_bits));
+            }
         }
         Ok(sum)
     }
-}
-
-fn split_point(
-    point: &[F2_128],
-    local_size: usize,
-    instances: usize,
-) -> Result<(Vec<F2_128>, Vec<F2_128>), SpartanError> {
-    let local_bits = local_size.trailing_zeros() as usize;
-    let instance_bits = instances.trailing_zeros() as usize;
-    if point.len() != local_bits + instance_bits {
-        return Err(SpartanError::Dimensions);
-    }
-    Ok((point[..local_bits].to_vec(), point[local_bits..].to_vec()))
 }
 
 #[cfg(test)]

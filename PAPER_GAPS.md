@@ -554,3 +554,18 @@ This is the matrix representation target for scheme B. Spartan still constructs 
 - `verify_shared_simd_spartan(base, instances, proof, pcs)`.
 
 The shared SIMD entry builds q `SharedBlockMatrix` views over one base system, assembles a block-padded `z`, and runs the same sum-check. Tests prove and verify a two-instance batch without materializing q matrices, and the direct matrix API round-trips. This is a true shared-matrix proof prototype (local rows only; cross-cycle PC constraints still need to be added as extra rows).
+
+
+### Shared-matrix CPU batch with PC chain
+
+`SharedBlockMatrix::with_extra_rows` appends sparse rows after the block-diagonal instances (padding to the next power of two). `row_combination`/`eval_mle` account for the extra row-index bits and the non-block rows.
+
+Runtime test `uniform_cpu_batch_enforces_pc_chain_with_shared_matrices`:
+
+- base = `uniform_cpu_row_layout(16).system`;
+- two Add/Xor instances;
+- A/B/C shared matrices with extra chain rows encoding `next_pc_i * 1 = pc_{i+1}`;
+- block-padded z;
+- `prove_spartan_with_matrices` / `verify_spartan_with_matrices` pass on P3.
+
+This is the first end-to-end shared-matrix CPU proof: no q-fold materialized matrices, local ALU rows plus cross-cycle PC constraints.

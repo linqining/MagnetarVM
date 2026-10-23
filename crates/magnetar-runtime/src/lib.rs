@@ -4742,4 +4742,87 @@ mod tests {
         tampered.segments[0].value = tampered.segments[0].value + F2_128::from(1u64);
         assert!(verify_cpu_lockstep(&trace, &tampered, 16).is_err());
     }
+    #[test]
+    fn uniform_cpu_batch_proves_with_shared_matrices() {
+        use magnetar_cpu::simd::{uniform_cpu_row_layout, UniformCpuRowWitness};
+        use magnetar_proof::{prove_shared_simd_spartan, verify_shared_simd_spartan};
+
+        let (_system, layout) = uniform_cpu_row_layout(16);
+        let rows: Vec<UniformCpuRowWitness> = vec![
+            layout.witness(magnetar_cpu::StepOp::Add, 0x1000, 3, 4, 0),
+            layout.witness(magnetar_cpu::StepOp::Xor, 0x1004, 5, 6, 0),
+        ];
+        let witnesses = rows
+            .iter()
+            .map(|row| row.witness.clone())
+            .collect::<Vec<_>>();
+        let pcs = P3BinaryPcs::new(100);
+        let proof = prove_shared_simd_spartan(&layout.system, &witnesses, &pcs).unwrap();
+        verify_shared_simd_spartan(&layout.system, witnesses.len(), &proof, &pcs).unwrap();
+    }
+    #[test]
+    fn uniform_cpu_batch_enforces_pc_chain_with_shared_matrices() {
+        use magnetar_cpu::simd::uniform_cpu_row_layout;
+        use magnetar_proof::spartan::MatrixPart;
+        use magnetar_proof::{
+            prove_spartan_with_matrices, verify_spartan_with_matrices, witness_vector,
+            SharedBlockMatrix,
+        };
+
+        let (_system, layout) = uniform_cpu_row_layout(16);
+        let rows = [
+            layout.witness(magnetar_cpu::StepOp::Add, 0x1000, 3, 4, 0),
+            layout.witness(magnetar_cpu::StepOp::Xor, 0x1004, 5, 6, 0),
+        ];
+        let base_cols = witness_vector(&layout.system, &rows[0].witness)
+            .unwrap()
+            .len();
+        let groups = layout.var_groups();
+        let pc = groups
+            .iter()
+            .find(|group| group.kind == magnetar_cpu::CpuVarKind::Pc)
+            .unwrap();
+        let next_pc = groups
+            .iter()
+            .find(|group| group.kind == magnetar_cpu::CpuVarKind::NextPc)
+            .unwrap();
+
+        let mut extra_a = Vec::new();
+        let mut extra_b = Vec::new();
+        let mut extra_c = Vec::new();
+        for instance in 0..rows.len() - 1 {
+            for bit in 0..pc.vars.len() {
+                extra_a.push(vec![(
+                    instance * base_cols + next_pc.vars[bit],
+                    F2_128::from(1u64),
+                )]);
+                // The constant column of the same instance is 1 in z.
+                extra_b.push(vec![(
+                    instance * base_cols + layout.num_vars,
+                    F2_128::from(1u64),
+                )]);
+                extra_c.push(vec![(
+                    (instance + 1) * base_cols + pc.vars[bit],
+                    F2_128::from(1u64),
+                )]);
+            }
+        }
+        let a = SharedBlockMatrix::from_system(&layout.system, MatrixPart::A, rows.len())
+            .unwrap()
+            .with_extra_rows(extra_a);
+        let b = SharedBlockMatrix::from_system(&layout.system, MatrixPart::B, rows.len())
+            .unwrap()
+            .with_extra_rows(extra_b);
+        let c = SharedBlockMatrix::from_system(&layout.system, MatrixPart::C, rows.len())
+            .unwrap()
+            .with_extra_rows(extra_c);
+        let mut z = Vec::new();
+        for row in &rows {
+            z.extend(witness_vector(&layout.system, &row.witness).unwrap());
+        }
+        assert_eq!(z.len(), a.cols());
+        let pcs = P3BinaryPcs::new(100);
+        let proof = prove_spartan_with_matrices(&z, &a, &b, &c, &pcs).unwrap();
+        verify_spartan_with_matrices(&a, &b, &c, &proof, &pcs).unwrap();
+    }
 }
