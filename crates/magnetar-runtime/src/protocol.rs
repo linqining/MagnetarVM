@@ -7,7 +7,8 @@
 
 use std::collections::HashSet;
 
-use magnetar_constraint::{WitnessLayout, F2_128};
+use magnetar_constraint::{ConstraintSystem, Witness, WitnessLayout, F2_128};
+use magnetar_proof::{prove_lockstep, verify_lockstep, LockstepProof, Pcs, SpartanError};
 use thiserror::Error;
 
 use crate::binary_router::BinaryRouterProof;
@@ -33,6 +34,7 @@ pub enum ClaimKind {
     Store,
     Bytecode,
     FetchAddress,
+    Selector,
     Increment,
 }
 
@@ -47,6 +49,7 @@ impl ClaimKind {
             Self::Store => "store",
             Self::Bytecode => "bytecode",
             Self::FetchAddress => "fetch-address",
+            Self::Selector => "selector",
             Self::Increment => "increment",
         }
     }
@@ -612,5 +615,299 @@ impl ClaimReducer<crate::binary_router::BinaryRouterWitness> for RouterReducer {
             ));
         }
         Ok(())
+    }
+}
+
+/// PCS extension used by the protocol orchestrator. The default digest is
+/// stable across P3/packed/Ligerito implementations as long as the
+/// implementation exposes canonical commitment bytes.
+pub trait MosaicPcs: Pcs {
+    fn commitment_digest(&self, commitment: &Self::Commitment) -> [u8; 32] {
+        magnetar_transcript::sha256(&self.commitment_bytes(commitment))
+    }
+}
+
+impl<P: Pcs> MosaicPcs for P {}
+
+/// CPU reduction boundary: two relations over one witness, one lockstep
+/// proof. This is the trait Virtual Spartan will eventually implement.
+pub trait CpuReduction<P: Pcs> {
+    type Layout;
+
+    fn prove(
+        &self,
+        system_a: &ConstraintSystem,
+        system_b: &ConstraintSystem,
+        witness: &Witness,
+        layout: &Self::Layout,
+        pcs: &P,
+    ) -> Result<LockstepProof<P::Commitment, P::Opening>, SpartanError>;
+
+    fn verify(
+        &self,
+        system_a: &ConstraintSystem,
+        system_b: &ConstraintSystem,
+        layout: &Self::Layout,
+        proof: &LockstepProof<P::Commitment, P::Opening>,
+        pcs: &P,
+    ) -> Result<(), SpartanError>;
+}
+
+/// Current binary-field lockstep CPU reduction.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LockstepReduction;
+
+impl<P: Pcs> CpuReduction<P> for LockstepReduction {
+    type Layout = WitnessLayout;
+
+    fn prove(
+        &self,
+        system_a: &ConstraintSystem,
+        system_b: &ConstraintSystem,
+        witness: &Witness,
+        layout: &Self::Layout,
+        pcs: &P,
+    ) -> Result<LockstepProof<P::Commitment, P::Opening>, SpartanError> {
+        prove_lockstep(system_a, system_b, witness, layout, pcs)
+    }
+
+    fn verify(
+        &self,
+        system_a: &ConstraintSystem,
+        system_b: &ConstraintSystem,
+        layout: &Self::Layout,
+        proof: &LockstepProof<P::Commitment, P::Opening>,
+        pcs: &P,
+    ) -> Result<(), SpartanError> {
+        verify_lockstep(system_a, system_b, layout, proof, pcs)
+    }
+}
+
+/// One stage in the protocol plan. `consumes`/`produces` are the claim
+/// families at that boundary; they make the claim routing explicit instead of
+/// relying on the order of calls in the prover.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StageSpec {
+    pub id: StageId,
+    pub consumes: &'static [ClaimKind],
+    pub produces: &'static [ClaimKind],
+    pub optional: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProtocolPlan {
+    stages: Vec<StageSpec>,
+}
+
+impl ProtocolPlan {
+    pub fn unified() -> Self {
+        Self {
+            stages: vec![
+                StageSpec {
+                    id: StageId::Cpu,
+                    consumes: &[],
+                    produces: &[
+                        ClaimKind::Direct,
+                        ClaimKind::Register,
+                        ClaimKind::Ram,
+                        ClaimKind::Shift,
+                        ClaimKind::Store,
+                        ClaimKind::Bytecode,
+                    ],
+                    optional: false,
+                },
+                StageSpec {
+                    id: StageId::Registers,
+                    consumes: &[ClaimKind::Register],
+                    produces: &[ClaimKind::Increment, ClaimKind::RegisterIndex],
+                    optional: false,
+                },
+                StageSpec {
+                    id: StageId::Ram,
+                    consumes: &[ClaimKind::Ram],
+                    produces: &[ClaimKind::Increment],
+                    optional: false,
+                },
+                StageSpec {
+                    id: StageId::ShiftRouter,
+                    consumes: &[ClaimKind::Shift],
+                    produces: &[ClaimKind::Selector, ClaimKind::Direct],
+                    optional: true,
+                },
+                StageSpec {
+                    id: StageId::StoreRouter,
+                    consumes: &[ClaimKind::Store, ClaimKind::Increment],
+                    produces: &[ClaimKind::Selector, ClaimKind::Direct],
+                    optional: true,
+                },
+                StageSpec {
+                    id: StageId::Shout,
+                    consumes: &[
+                        ClaimKind::Bytecode,
+                        ClaimKind::RegisterIndex,
+                        ClaimKind::Selector,
+                    ],
+                    produces: &[ClaimKind::FetchAddress],
+                    optional: true,
+                },
+            ],
+        }
+    }
+
+    pub fn stages(&self) -> &[StageSpec] {
+        &self.stages
+    }
+
+    pub fn stage(&self, id: StageId) -> Option<&StageSpec> {
+        self.stages.iter().find(|stage| stage.id == id)
+    }
+
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        let mut seen = HashSet::new();
+        for stage in &self.stages {
+            if !seen.insert(stage.id) {
+                return Err(ProtocolError::DuplicateStage(stage.id));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn check_bundle(&self, bundle: &ProofBundle) -> Result<(), ProtocolError> {
+        let mut seen = HashSet::new();
+        for (stage, _) in &bundle.stages {
+            if !seen.insert(*stage) {
+                return Err(ProtocolError::DuplicateStage(*stage));
+            }
+        }
+        for stage in &self.stages {
+            if !stage.optional && !seen.contains(&stage.id) {
+                return Err(ProtocolError::MissingStage(stage.id));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Phase-3 orchestrator. The inner proof/verification routines still execute
+/// the established sequence; the plan is the single declaration of stage
+/// order, required stages, and claim routing. Future components register in
+/// the plan and the inner routine shrinks to plan-driven dispatch.
+#[derive(Clone, Debug)]
+pub struct Orchestrator {
+    plan: ProtocolPlan,
+}
+
+impl Default for Orchestrator {
+    fn default() -> Self {
+        Self::new(ProtocolPlan::unified())
+    }
+}
+
+impl Orchestrator {
+    pub fn new(plan: ProtocolPlan) -> Self {
+        Self { plan }
+    }
+
+    pub fn plan(&self) -> &ProtocolPlan {
+        &self.plan
+    }
+
+    pub fn prove(
+        &self,
+        trace: &magnetar_spec::Trace,
+        width: usize,
+    ) -> Result<UnifiedTraceProof, crate::RuntimeError> {
+        let proof = crate::prove_unified_inner(trace, width)?;
+        let bundle = ProofBundle::from_unified(&proof);
+        self.plan
+            .check_bundle(&bundle)
+            .map_err(|error| crate::RuntimeError::Proof(error.to_string()))?;
+        Ok(proof)
+    }
+
+    pub fn verify(
+        &self,
+        trace: &magnetar_spec::Trace,
+        proof: &UnifiedTraceProof,
+        width: usize,
+    ) -> Result<(), crate::RuntimeError> {
+        let bundle = ProofBundle::from_unified(proof);
+        self.plan
+            .check_bundle(&bundle)
+            .map_err(|error| crate::RuntimeError::Proof(error.to_string()))?;
+        crate::verify_unified_inner(trace, proof, width)
+    }
+}
+
+#[cfg(test)]
+mod phase_tests {
+    use super::*;
+    use magnetar_executor::execute;
+    use magnetar_pcs::{P3BinaryPcs, P3SharedPcs};
+    use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+    fn trace() -> magnetar_spec::Trace {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 11,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .expect("trace")
+    }
+
+    #[test]
+    fn protocol_plan_and_orchestrator_preserve_proof_bytes() {
+        let trace = trace();
+        let plan = ProtocolPlan::unified();
+        plan.validate().expect("valid plan");
+        let direct = crate::prove_unified_inner(&trace, 8).expect("inner proof");
+        let orchestrator = Orchestrator::new(plan);
+        let proof = orchestrator.prove(&trace, 8).expect("orchestrated proof");
+        assert_eq!(
+            bincode::serialize(&direct).unwrap(),
+            bincode::serialize(&proof).unwrap()
+        );
+        let bundle = ProofBundle::from_unified(&proof);
+        orchestrator.plan().check_bundle(&bundle).expect("bundle");
+        orchestrator.verify(&trace, &proof, 8).expect("verify");
+    }
+
+    #[test]
+    fn cpu_reduction_and_mosaic_pcs_are_wired() {
+        fn assert_cpu<P: Pcs, R: CpuReduction<P>>() {}
+        assert_cpu::<P3BinaryPcs, LockstepReduction>();
+
+        let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+        let values = vec![F2_128::from(1u64); 8];
+        let commitment = pcs.commit(&values).unwrap();
+        let first = pcs.commitment_digest(&commitment);
+        let second = pcs.commitment_digest(&commitment);
+        assert_eq!(first, second);
+        let other = P3BinaryPcs::new(100).commit(&values).unwrap();
+        assert_ne!(
+            first,
+            magnetar_transcript::sha256(&bincode::serialize(&other).unwrap())
+        );
     }
 }

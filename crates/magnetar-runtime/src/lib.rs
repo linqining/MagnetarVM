@@ -1906,7 +1906,10 @@ pub fn verify_cpu_lockstep(
         .map_err(|error| RuntimeError::Proof(error.to_string()))
 }
 
-pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTraceProof, RuntimeError> {
+pub(crate) fn prove_unified_inner(
+    trace: &Trace,
+    width: usize,
+) -> Result<UnifiedTraceProof, RuntimeError> {
     check_trace_linkage(trace)?;
     let witness = BinaryTwistWitness::from_trace(trace)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
@@ -2061,7 +2064,11 @@ pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTracePr
     })
 }
 
-pub fn verify_unified_trace(
+pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTraceProof, RuntimeError> {
+    crate::protocol::Orchestrator::default().prove(trace, width)
+}
+
+pub(crate) fn verify_unified_inner(
     trace: &Trace,
     proof: &UnifiedTraceProof,
     width: usize,
@@ -2234,6 +2241,14 @@ pub fn verify_unified_trace(
 
 /// Verify a unified proof against the public statement before rebuilding the
 /// row systems. Program identity is bound through the ROM carried by the trace.
+pub fn verify_unified_trace(
+    trace: &Trace,
+    proof: &UnifiedTraceProof,
+    width: usize,
+) -> Result<(), RuntimeError> {
+    crate::protocol::Orchestrator::default().verify(trace, proof, width)
+}
+
 pub fn verify_unified_trace_statement(
     statement: &Statement,
     trace: &Trace,

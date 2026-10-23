@@ -308,3 +308,23 @@ New `magnetar-runtime::protocol` module:
 - `ClaimReducer<W>` trait with `TwistReducer`, `ShoutReducer`, and `RouterReducer` implementations.
 
 Tests verify claim consumption, segment-id mapping, the reducer boundary, and that `ProofBundle` round-trips the existing `UnifiedTraceProof` **byte-for-byte**. No protocol bytes changed. Next: Phase 2 (`CpuReduction`, `MosaicPcs`, orchestrator), then Phase 3 wiring.
+
+
+## Trait refactor Phase 2/3
+
+Phase 2:
+
+- `CpuReduction<P: Pcs>` trait + `LockstepReduction` implementation around `prove_lockstep`/`verify_lockstep`;
+- `MosaicPcs: Pcs` extension with a commitment digest (works for P3, packed, and future Ligerito);
+- `ClaimReducer<W>` implementations for `TwistReducer`, `ShoutReducer`, `RouterReducer`;
+- tests assert both traits are wired.
+
+Phase 3 (orchestration boundary):
+
+- `ProtocolPlan::unified()` declares stage order and each stage's consumed/produced claim kinds;
+- `ProofBundle::from_unified`/`into_unified` remains byte-exact;
+- `Orchestrator::prove`/`verify` validate the plan and bundle, then call the existing inner sequence;
+- `prove_unified_trace`/`verify_unified_trace` are now thin wrappers around the orchestrator, so callers no longer own sequencing;
+- test confirms `Orchestrator` proof bytes equal the previous `prove_unified_inner` bytes and still verify.
+
+The inner prover/verifier body is still one function: the plan is declarative and enforced at the boundary, but full plan-driven dispatch (splitting the shared commitment/witness context into per-stage runners) remains the next refactor. This does not change the proof format or proof size.
