@@ -1111,3 +1111,128 @@ mod gated_memory_tests {
         verify_gated_memory_batch(8, 2, &batch).unwrap();
     }
 }
+
+/// Selector-gated F2 ALU row (XOR/AND). The row is inactive when both op
+/// selectors are zero; output is zero in that case.
+#[derive(Clone, Debug)]
+pub struct GatedAluRow {
+    pub width: usize,
+    pub a: Vec<VarId>,
+    pub b: Vec<VarId>,
+    pub out: Vec<VarId>,
+    pub is_alu: VarId,
+    pub is_xor: VarId,
+    pub is_and: VarId,
+    pub relation: BitRelation,
+}
+
+impl GatedAluRow {
+    pub fn new(width: usize) -> Self {
+        let a = (0..width).collect::<Vec<_>>();
+        let b = (width..2 * width).collect::<Vec<_>>();
+        let out = (2 * width..3 * width).collect::<Vec<_>>();
+        let is_alu = 3 * width;
+        let is_xor = 3 * width + 1;
+        let is_and = 3 * width + 2;
+        let one = 3 * width + 3;
+        let xor_diff = (3 * width + 4..4 * width + 4).collect::<Vec<_>>();
+        let xor_prod = (4 * width + 4..5 * width + 4).collect::<Vec<_>>();
+        let and_prod = (5 * width + 4..6 * width + 4).collect::<Vec<_>>();
+        let and_gated = (6 * width + 4..7 * width + 4).collect::<Vec<_>>();
+        let mut relation = BitRelation::new(7 * width + 4);
+        relation.add(BitRow::new(vec![one], vec![one], vec![one]));
+        for selector in [is_alu, is_xor, is_and] {
+            relation.add(BitRow::new(vec![selector], vec![selector, one], Vec::new()));
+        }
+        relation.add(BitRow::new(vec![is_xor, is_and], vec![one], vec![is_alu]));
+        for bit in 0..width {
+            relation.add(BitRow::new(
+                vec![a[bit], b[bit]],
+                vec![one],
+                vec![xor_diff[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![xor_diff[bit]],
+                vec![is_xor],
+                vec![xor_prod[bit]],
+            ));
+            relation.add(BitRow::new(vec![a[bit]], vec![b[bit]], vec![and_prod[bit]]));
+            relation.add(BitRow::new(
+                vec![and_prod[bit]],
+                vec![is_and],
+                vec![and_gated[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![xor_prod[bit], and_gated[bit]],
+                vec![one],
+                vec![out[bit]],
+            ));
+        }
+        Self {
+            width,
+            a,
+            b,
+            out,
+            is_alu,
+            is_xor,
+            is_and,
+            relation,
+        }
+    }
+
+    pub fn witness(&self, left: u64, right: u64, op: Option<bool>) -> Vec<bool> {
+        let mut bits = vec![false; self.relation.num_vars];
+        bits[3 * self.width + 3] = true;
+        let (is_xor, is_and) = match op {
+            Some(true) => (true, false),
+            Some(false) => (false, true),
+            None => (false, false),
+        };
+        bits[self.is_alu] = is_xor || is_and;
+        bits[self.is_xor] = is_xor;
+        bits[self.is_and] = is_and;
+        for bit in 0..self.width {
+            let a = (left >> bit) & 1 == 1;
+            let b = (right >> bit) & 1 == 1;
+            bits[self.a[bit]] = a;
+            bits[self.b[bit]] = b;
+            bits[3 * self.width + 4 + bit] = a ^ b;
+            bits[4 * self.width + 4 + bit] = is_xor && (a ^ b);
+            bits[5 * self.width + 4 + bit] = a && b;
+            bits[6 * self.width + 4 + bit] = is_and && (a && b);
+            bits[self.out[bit]] = if is_xor {
+                a ^ b
+            } else if is_and {
+                a && b
+            } else {
+                false
+            };
+        }
+        bits
+    }
+}
+
+#[cfg(test)]
+mod gated_alu_tests {
+    use super::*;
+
+    #[test]
+    fn gated_alu_selects_xor_and_and() {
+        let row = GatedAluRow::new(8);
+        let xor = row.witness(0b1010_1010, 0b1100_1100, Some(true));
+        assert!(row.relation.check(&xor));
+        let and = row.witness(0b1010_1010, 0b1100_1100, Some(false));
+        assert!(row.relation.check(&and));
+        let inactive = row.witness(0b1010_1010, 0b1100_1100, None);
+        assert!(row.relation.check(&inactive));
+        for bit in 0..8 {
+            assert!(!inactive[row.out[bit]]);
+        }
+        use magnetar_pcs::P3BinaryPcs;
+        let backend = EmbeddedBitBackend {
+            pcs: P3BinaryPcs::new(100),
+        };
+        let proof = backend.prove(&row.relation, &xor).unwrap();
+        assert!(backend.verify(&row.relation, &proof).unwrap());
+    }
+}

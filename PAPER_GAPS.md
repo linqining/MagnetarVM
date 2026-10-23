@@ -873,3 +873,16 @@ First B-scheme row-level gadget landed:
 This is still an F2 bit-level gadget, not the packed CPU schema. It establishes the row-level composition pattern (gated adder + gated columns) that the packed rebuild will follow.
 
 `prove_gated_memory_batch` / `verify_gated_memory_batch` batch q gated memory rows through `prove_shared_simd_spartan`; test proves two rows (active + inactive) with P3.
+
+
+### Scheme B: gated ALU row
+
+`GatedAluRow` composes XOR/AND under selectors:
+
+- `is_xor`, `is_and`, `is_alu` one-hot/boolean selectors;
+- `xor_diff = a XOR b`, `xor_prod = xor_diff * is_xor`;
+- `and_prod = a AND b`, `and_gated = and_prod * is_and`;
+- `out = xor_prod XOR and_gated`;
+- both selectors zero => all output bits zero.
+
+Test checks XOR, AND, and inactive-zero rows; the XOR row also proves through `EmbeddedBitBackend` + P3. This is a row-level gated ALU gadget for the B rebuild.
