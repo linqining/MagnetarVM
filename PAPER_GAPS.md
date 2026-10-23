@@ -1660,3 +1660,17 @@ Trace bundle after integration:
 | M5 | 10,736 | 42,257 | 91,401 | **144,502** |
 
 Aux dropped from 124,303 to 91,401 B; M5 bundle dropped from 177,404 to 144,502 B.
+
+
+Packed Router size breakdown (small shift trace):
+
+```text
+claims      6,129 B
+bit groups 26,432 B
+field groups 54,568 B
+total      87,201 B
+```
+
+The two field-valued groups (`shift_code`, `hq`) dominate because each uses a
+full P3 field-table opening. Batching both into one Mosaic/PackedSharedPcs
+opening is the next Router optimization.

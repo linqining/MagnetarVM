@@ -47,5 +47,8 @@ fn main() {
     verify_packed_router(&witness, &packed).unwrap();
 
     println!("reference: {reference_bytes} B prove={reference_time:?}");
-    println!("packed:    {packed_bytes} B prove={packed_time:?}");
+    let claims_bytes = bincode::serialize(&packed.claims).unwrap().len();
+    let bit_bytes = bincode::serialize(&packed.bit_groups).unwrap().len();
+    let field_bytes = bincode::serialize(&packed.field_groups).unwrap().len();
+    println!("packed:    {packed_bytes} B prove={packed_time:?} claims={claims_bytes} bits={bit_bytes} fields={field_bytes}");
 }
