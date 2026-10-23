@@ -1526,6 +1526,8 @@ pub struct GatedCpuRow {
     pub alu: GatedAluRow,
     pub memory: GatedMemoryRow,
     pub memory_offset: usize,
+    pub shift: GatedShiftRow,
+    pub shift_offset: usize,
     pub pc: Vec<VarId>,
     pub next_pc: Vec<VarId>,
     pub relation: BitRelation,
@@ -1546,8 +1548,27 @@ impl GatedCpuRow {
             };
             relation.add(BitRow::new(shift(&row.a), shift(&row.b), shift(&row.c)));
         }
+        let shift = GatedShiftRow::new(width);
+        let shift_offset = relation.num_vars;
+        relation.num_vars += shift.relation.num_vars;
+        for row in &shift.relation.rows {
+            let shift_vars = |vars: &[VarId]| {
+                vars.iter()
+                    .map(|var| *var + shift_offset)
+                    .collect::<Vec<_>>()
+            };
+            relation.add(BitRow::new(
+                shift_vars(&row.a),
+                shift_vars(&row.b),
+                shift_vars(&row.c),
+            ));
+        }
         relation.add(BitRow::new(
-            vec![alu.is_alu, memory_offset + memory.adder.gate],
+            vec![
+                alu.is_alu,
+                memory_offset + memory.adder.gate,
+                shift_offset + shift.is_shift,
+            ],
             vec![alu.one],
             vec![alu.one],
         ));
@@ -1602,6 +1623,8 @@ impl GatedCpuRow {
             alu,
             memory,
             memory_offset,
+            shift,
+            shift_offset,
             pc,
             next_pc,
             relation,
@@ -1688,11 +1711,25 @@ impl GatedCpuRow {
         let mut bits = self.alu.witness(left, right, op);
         let memory = self.memory.witness(0, 0, 0, false);
         bits.extend(memory);
+        bits.extend(self.shift.inactive_witness());
         self.finish(bits, pc)
     }
 
     pub fn memory_witness(&self, rs1: u64, imm: u64, value: u64, is_mem: bool) -> Vec<bool> {
         self.memory_witness_at(0, rs1, imm, value, is_mem)
+    }
+
+    pub fn shift_witness_at(
+        &self,
+        pc: u64,
+        left: u64,
+        shamt: u64,
+        kind: BitShiftKind,
+    ) -> Vec<bool> {
+        let mut bits = self.alu.witness(0, 0, GatedAluOp::Inactive);
+        bits.extend(self.memory.witness(0, 0, 0, false));
+        bits.extend(self.shift.witness(left, shamt, kind));
+        self.finish(bits, pc)
     }
 
     pub fn memory_witness_at(
@@ -1706,6 +1743,7 @@ impl GatedCpuRow {
         let mut bits = self.alu.witness(0, 0, GatedAluOp::Inactive);
         let memory = self.memory.witness(rs1, imm, value, is_mem);
         bits.extend(memory);
+        bits.extend(self.shift.inactive_witness());
         self.finish(bits, pc)
     }
 }
@@ -1734,6 +1772,12 @@ mod gated_cpu_row_tests {
         assert!(alu[row.alu.is_alu]);
         assert!(!alu[row.memory_offset + row.memory.adder.gate]);
 
+        let shift = row.shift_witness_at(0x1008, 5, 2, BitShiftKind::Sll);
+        assert!(row.relation.check(&shift));
+        assert!(!shift[row.alu.is_alu]);
+        assert!(!shift[row.memory_offset + row.memory.adder.gate]);
+        assert!(shift[row.shift_offset + row.shift.is_shift]);
+
         let memory = row.memory_witness(0x10, 2, 0x34, true);
         assert!(row.relation.check(&memory));
         let memory_witness = row.relation.to_witness(&memory);
@@ -1757,6 +1801,11 @@ pub enum GatedCpuRowInput {
         imm: u64,
         value: u64,
         is_mem: bool,
+    },
+    Shift {
+        left: u64,
+        shamt: u64,
+        kind: BitShiftKind,
     },
 }
 
@@ -1786,6 +1835,9 @@ pub fn prove_gated_cpu_batch(
                 value,
                 is_mem,
             } => row.memory_witness(*rs1, *imm, *value, *is_mem),
+            GatedCpuRowInput::Shift { left, shamt, kind } => {
+                row.shift_witness_at(0, *left, *shamt, *kind)
+            }
         };
         witnesses.push(row.relation.to_witness(&bits));
     }
@@ -1895,6 +1947,9 @@ pub fn prove_gated_cpu_batch_pc(
                 value,
                 is_mem,
             } => row.memory_witness_at(*pc, *rs1, *imm, *value, *is_mem),
+            GatedCpuRowInput::Shift { left, shamt, kind } => {
+                row.shift_witness_at(*pc, *left, *shamt, *kind)
+            }
         };
         z.extend(
             witness_vector(&system, &row.relation.to_witness(&bits))
@@ -1976,6 +2031,7 @@ mod claim_routing_tests {
             let kind = match input {
                 GatedCpuRowInput::Alu { .. } => ClaimKind::Register,
                 GatedCpuRowInput::Memory { .. } => ClaimKind::Ram,
+                GatedCpuRowInput::Shift { .. } => ClaimKind::Shift,
             };
             claims.push(crate::protocol::Claim::new(
                 kind,
@@ -2374,6 +2430,13 @@ impl GatedShiftRow {
             sra_offset,
             relation,
         }
+    }
+
+    pub fn inactive_witness(&self) -> Vec<bool> {
+        let mut bits = self.witness(0, 0, BitShiftKind::Sll);
+        bits[self.is_sll] = false;
+        bits[self.is_shift] = false;
+        bits
     }
 
     pub fn witness(&self, left: u64, shamt: u64, kind: BitShiftKind) -> Vec<bool> {

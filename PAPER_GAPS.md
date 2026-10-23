@@ -1439,3 +1439,21 @@ Test `aux_claims_route_through_protocol` uses a shift + ecall trace and verifies
 - a single witness can select one shift kind while all three relations are present.
 
 Test `fused_shift_row_selects_kind` checks 5<<2=20, 20>>2=5, -8>>1=-4 in one row. This is the row-level fusion needed for the CPU schema; wiring it into `GatedCpuRow` (and its one-hot ALU/memory/shift selector) is the remaining integration step.
+
+
+### P0 progress: shift fused into GatedCpuRow
+
+`GatedCpuRow` now unions ALU, memory, and the fused `GatedShiftRow`:
+
+```text
+is_alu + is_mem + is_shift = 1
+```
+
+- `GatedCpuRowInput::Shift { left, shamt, kind }`;
+- `shift_witness_at` fills ALU/memory inactive and the selected shift relation;
+- ALU/memory witnesses fill the shift relation inactive;
+- trace adapter maps SLL/SRL/SRA rows to `Shift`;
+- q=8 Direct/RingSwitch test mixes ALU, SUB, SLTU, SLT, and shift rows;
+- bundle claim mapping uses `ClaimKind::Shift`.
+
+The shift relation is fused at row level, but packed s2 still only checks ALU/memory (shift rows make the ALU/memory packed checks zero). A packed shift companion is a remaining s2 item.

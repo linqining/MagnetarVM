@@ -221,6 +221,35 @@ pub fn gated_rows_from_trace(
 
     let mut rows = Vec::new();
     for row in &trace.rows {
+        let shift_kind = match row.instruction.op {
+            magnetar_spec::Op::Sll | magnetar_spec::Op::Slli => {
+                Some(crate::simd_f2::BitShiftKind::Sll)
+            }
+            magnetar_spec::Op::Srl | magnetar_spec::Op::Srli => {
+                Some(crate::simd_f2::BitShiftKind::Srl)
+            }
+            magnetar_spec::Op::Sra | magnetar_spec::Op::Srai => {
+                Some(crate::simd_f2::BitShiftKind::Sra)
+            }
+            _ => None,
+        };
+        if let Some(kind) = shift_kind {
+            let shamt = match row.instruction.op {
+                magnetar_spec::Op::Slli | magnetar_spec::Op::Srli | magnetar_spec::Op::Srai => {
+                    u64::from(row.instruction.shamt)
+                }
+                _ => row.rs2_val,
+            };
+            rows.push((
+                row.pc,
+                GatedCpuRowInput::Shift {
+                    left: row.rs1_val,
+                    shamt,
+                    kind,
+                },
+            ));
+            continue;
+        }
         if let Some(access) = row.mem {
             let imm = row.instruction.imm as u64;
             let value = if access.is_write {

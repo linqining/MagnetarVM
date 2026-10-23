@@ -38,6 +38,7 @@ fn claims_for(rows: &[(u64, GatedCpuRowInput)]) -> Vec<Claim> {
             let kind = match input {
                 GatedCpuRowInput::Alu { .. } => ClaimKind::Register,
                 GatedCpuRowInput::Memory { .. } => ClaimKind::Ram,
+                GatedCpuRowInput::Shift { .. } => ClaimKind::Shift,
             };
             Claim::new(
                 kind,
@@ -250,7 +251,12 @@ pub fn prove_mixed_gated_bundle(
 
     let alu_rows = rows
         .iter()
-        .filter(|(_, input)| matches!(input, GatedCpuRowInput::Alu { .. }))
+        .filter(|(_, input)| {
+            matches!(
+                input,
+                GatedCpuRowInput::Alu { .. } | GatedCpuRowInput::Shift { .. }
+            )
+        })
         .copied()
         .collect::<Vec<_>>();
     let memory_rows = rows
@@ -295,7 +301,12 @@ pub fn verify_mixed_gated_bundle(
 
     let alu_rows = rows
         .iter()
-        .filter(|(_, input)| matches!(input, GatedCpuRowInput::Alu { .. }))
+        .filter(|(_, input)| {
+            matches!(
+                input,
+                GatedCpuRowInput::Alu { .. } | GatedCpuRowInput::Shift { .. }
+            )
+        })
         .copied()
         .collect::<Vec<_>>();
     let memory_rows = rows

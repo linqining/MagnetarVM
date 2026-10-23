@@ -410,6 +410,9 @@ pub fn prove_gated_dual_batch(
                 value,
                 is_mem,
             } => row.memory_witness_at(*pc, *rs1, *imm, *value, *is_mem),
+            GatedCpuRowInput::Shift { left, shamt, kind } => {
+                row.shift_witness_at(*pc, *left, *shamt, *kind)
+            }
         };
         z.extend(
             witness_vector(&s2_system, &row.relation.to_witness(&bits))
@@ -570,6 +573,9 @@ fn gated_batch_bits(
                 value,
                 is_mem,
             } => row.memory_witness_at(*pc, *rs1, *imm, *value, *is_mem),
+            GatedCpuRowInput::Shift { left, shamt, kind } => {
+                row.shift_witness_at(*pc, *left, *shamt, *kind)
+            }
         };
         bits.extend(instance);
         bits.resize(bits.len() + base_cols - row.relation.num_vars, false);
@@ -644,7 +650,7 @@ mod tests {
             SparseMatrix,
         };
 
-        let row = GatedCpuRow::new(3);
+        let row = GatedCpuRow::new(4);
         let bits = row.alu_witness_at(0, 5, 3, crate::simd_f2::GatedAluOp::Add);
         let base_cols = (row.relation.num_vars + 1).next_power_of_two();
         let mut packed_bits = vec![false; base_cols];
@@ -701,15 +707,23 @@ mod tests {
             .map(|index| {
                 (
                     0x1000 + 4 * index as u64,
-                    GatedCpuRowInput::Alu {
-                        left: 0x12 + index as u64,
-                        right: 0x34 + index as u64,
-                        op: match index % 4 {
-                            0 => crate::simd_f2::GatedAluOp::Add,
-                            1 => crate::simd_f2::GatedAluOp::Sub,
-                            2 => crate::simd_f2::GatedAluOp::Sltu,
-                            _ => crate::simd_f2::GatedAluOp::Slt,
-                        },
+                    if index % 5 == 4 {
+                        GatedCpuRowInput::Shift {
+                            left: 0x12 + index as u64,
+                            shamt: 2,
+                            kind: crate::simd_f2::BitShiftKind::Sll,
+                        }
+                    } else {
+                        GatedCpuRowInput::Alu {
+                            left: 0x12 + index as u64,
+                            right: 0x34 + index as u64,
+                            op: match index % 4 {
+                                0 => crate::simd_f2::GatedAluOp::Add,
+                                1 => crate::simd_f2::GatedAluOp::Sub,
+                                2 => crate::simd_f2::GatedAluOp::Sltu,
+                                _ => crate::simd_f2::GatedAluOp::Slt,
+                            },
+                        }
                     },
                 )
             })
