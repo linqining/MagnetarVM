@@ -23,6 +23,8 @@ pub struct GatedBundle<C: Clone + std::fmt::Debug, O: Clone + std::fmt::Debug> {
     pub register_events: Vec<GatedRegisterEvent>,
     pub register_initial: [u64; 32],
     pub aux: Option<GatedAuxProof>,
+    pub initial_pc: Option<u64>,
+    pub final_pc: Option<u64>,
     pub shift_events: Vec<GatedShiftEvent>,
     pub shift_proofs: Vec<SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>>,
     pub claims: Vec<Claim>,
@@ -74,6 +76,8 @@ pub fn prove_gated_bundle_with_backend<B: BitPcs>(
         register_events: Vec::new(),
         register_initial: [0u64; 32],
         aux: None,
+        initial_pc: None,
+        final_pc: None,
         shift_events: Vec::new(),
         shift_proofs: Vec::new(),
         claims,
@@ -86,7 +90,19 @@ pub fn verify_gated_bundle_with_backend<B: BitPcs>(
     bundle: &GatedBundle<B::Commitment, B::Opening>,
     backend: &B,
 ) -> Result<(), RuntimeError> {
-    verify_gated_dual_batch_bits(width, rows, &bundle.cpu, &bundle.cpu_layout, backend)?;
+    if let (Some(initial_pc), Some(final_pc)) = (bundle.initial_pc, bundle.final_pc) {
+        crate::simd_dual::verify_gated_dual_batch_bits_with_pc(
+            width,
+            rows,
+            &bundle.cpu,
+            &bundle.cpu_layout,
+            backend,
+            initial_pc,
+            final_pc,
+        )?;
+    } else {
+        verify_gated_dual_batch_bits(width, rows, &bundle.cpu, &bundle.cpu_layout, backend)?;
+    }
     if let Some(ram) = &bundle.ram {
         let witness = gated_memory_twist_witness(width, rows)?;
         verify_binary_twist_ram(&witness, ram)
@@ -352,7 +368,16 @@ pub fn prove_gated_bundle_from_trace<B: BitPcs>(
     backend: &B,
 ) -> Result<GatedBundle<B::Commitment, B::Opening>, RuntimeError> {
     let rows = crate::simd_full::gated_rows_from_trace(trace, width)?;
+    let initial_pc = rows.first().map(|row| row.0).unwrap_or(0);
+    let final_pc = rows.last().map(|row| row.0 + 4).unwrap_or(0);
     let mut bundle = prove_gated_bundle_with_backend(width, &rows, backend)?;
+    let (cpu, cpu_layout) = crate::simd_dual::prove_gated_dual_batch_bits_with_pc(
+        width, &rows, backend, initial_pc, final_pc,
+    )?;
+    bundle.cpu = cpu;
+    bundle.cpu_layout = cpu_layout;
+    bundle.initial_pc = Some(initial_pc);
+    bundle.final_pc = Some(final_pc);
     if let Ok((events, initial)) = crate::gated_register::gated_register_events_from_trace(trace) {
         let witness = gated_register_twist_witness(&events, &initial)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;

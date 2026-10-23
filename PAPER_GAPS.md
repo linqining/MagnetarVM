@@ -1539,3 +1539,10 @@ M5 CPU drops to 6.5 KB; register Twist and auxiliary Shout/Router now dominate t
 | M5 ring | 6,552 | 42,257 | 137,381 | 186,252 | 11.0 ms |
 
 The real dominant cost is the unpacked Shout/Router auxiliary proof (137 KB), not the CPU. This makes packed BinaryShout/BinaryRouter and packed register Twist the next meaningful size work; CPU M5 optimization has already taken its component to 6.5 KB.
+
+
+### P0 progress: trace bundle binds public PCs
+
+`GatedBundle` now records `initial_pc` / `final_pc` when built from a trace. `prove_gated_bundle_from_trace` re-proves the CPU batch with `prove_gated_dual_batch_bits_with_pc`, and `verify_gated_bundle_with_backend` dispatches to the PC-bound verifier when those fields are present.
+
+Test `trace_bundle_includes_aux_and_register` now verifies CPU, register, aux, and public PC binding from a real trace.
