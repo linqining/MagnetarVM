@@ -257,7 +257,12 @@ pub fn gated_rows_from_trace(
         }
         if matches!(
             row.instruction.op,
-            magnetar_spec::Op::Beq | magnetar_spec::Op::Bne
+            magnetar_spec::Op::Beq
+                | magnetar_spec::Op::Bne
+                | magnetar_spec::Op::Blt
+                | magnetar_spec::Op::Bge
+                | magnetar_spec::Op::Bltu
+                | magnetar_spec::Op::Bgeu
         ) {
             rows.push((
                 row.pc,
@@ -265,7 +270,15 @@ pub fn gated_rows_from_trace(
                     left: row.rs1_val,
                     right: row.rs2_val,
                     imm: row.instruction.imm as u64,
-                    beq: row.instruction.op == magnetar_spec::Op::Beq,
+                    kind: match row.instruction.op {
+                        magnetar_spec::Op::Beq => crate::branch_row::BranchKind::Beq,
+                        magnetar_spec::Op::Bne => crate::branch_row::BranchKind::Bne,
+                        magnetar_spec::Op::Blt => crate::branch_row::BranchKind::Blt,
+                        magnetar_spec::Op::Bge => crate::branch_row::BranchKind::Bge,
+                        magnetar_spec::Op::Bltu => crate::branch_row::BranchKind::Bltu,
+                        magnetar_spec::Op::Bgeu => crate::branch_row::BranchKind::Bgeu,
+                        _ => unreachable!(),
+                    },
                 },
             ));
             continue;
@@ -510,7 +523,10 @@ mod auipc_trace_tests {
         let rows = gated_rows_from_trace(&trace, 8).unwrap();
         assert!(matches!(
             rows[0].1,
-            GatedCpuRowInput::Branch { beq: true, .. }
+            GatedCpuRowInput::Branch {
+                kind: crate::branch_row::BranchKind::Beq,
+                ..
+            }
         ));
         use crate::simd_dual::{prove_gated_dual_batch_bits, verify_gated_dual_batch_bits};
         use magnetar_pcs::P3SharedPcs;

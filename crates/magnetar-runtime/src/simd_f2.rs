@@ -6,7 +6,7 @@
 //! PCS/sum-check; choosing that proof backend is the next architecture
 //! decision.
 
-use crate::branch_row::GatedBranchRow;
+use crate::branch_row::{BranchKind, GatedBranchRow};
 use crate::RuntimeError;
 use magnetar_constraint::{VarId, F2_128};
 use magnetar_proof::dual_field::{BitRelation, BitRow};
@@ -1914,13 +1914,20 @@ impl GatedCpuRow {
         left: u64,
         right: u64,
         imm: u64,
-        beq: bool,
+        kind: BranchKind,
     ) -> Vec<bool> {
         let mut bits = self.alu.witness(0, 0, GatedAluOp::Inactive);
         bits.extend(self.memory.witness(0, 0, 0, false));
         bits.extend(self.shift.inactive_witness());
-        bits.extend(self.branch.witness(pc, imm, left, right, beq));
-        let taken = if beq { left == right } else { left != right };
+        bits.extend(self.branch.witness(pc, imm, left, right, kind));
+        let taken = match kind {
+            BranchKind::Beq => left == right,
+            BranchKind::Bne => left != right,
+            BranchKind::Blt => (left as i64) < (right as i64),
+            BranchKind::Bge => (left as i64) >= (right as i64),
+            BranchKind::Bltu => left < right,
+            BranchKind::Bgeu => left >= right,
+        };
         let next_pc = if taken {
             pc.wrapping_add(imm)
         } else {
@@ -2089,7 +2096,7 @@ mod gated_cpu_row_tests {
         let odd_witness = row.relation.to_witness(&odd_jalr);
         assert!(row.packed_companion_system().check(&odd_witness).is_ok());
 
-        let branch = row.branch_witness_at(0x10, 5, 5, 8, true);
+        let branch = row.branch_witness_at(0x10, 5, 5, 8, BranchKind::Beq);
         for (index, bit_row) in row.relation.rows.iter().enumerate() {
             let parity = |vars: &[VarId]| vars.iter().filter(|v| branch[**v]).count() % 2 == 1;
             if (parity(&bit_row.a) && parity(&bit_row.b)) != parity(&bit_row.c) {
@@ -2152,7 +2159,7 @@ pub enum GatedCpuRowInput {
         left: u64,
         right: u64,
         imm: u64,
-        beq: bool,
+        kind: BranchKind,
     },
 }
 
@@ -2189,8 +2196,8 @@ pub fn prove_gated_cpu_batch(
                 left,
                 right,
                 imm,
-                beq,
-            } => row.branch_witness_at(0, *left, *right, *imm, *beq),
+                kind,
+            } => row.branch_witness_at(0, *left, *right, *imm, *kind),
         };
         witnesses.push(row.relation.to_witness(&bits));
     }
@@ -2307,8 +2314,8 @@ pub fn prove_gated_cpu_batch_pc(
                 left,
                 right,
                 imm,
-                beq,
-            } => row.branch_witness_at(*pc, *left, *right, *imm, *beq),
+                kind,
+            } => row.branch_witness_at(*pc, *left, *right, *imm, *kind),
         };
         z.extend(
             witness_vector(&system, &row.relation.to_witness(&bits))

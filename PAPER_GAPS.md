@@ -1943,3 +1943,13 @@ Test `branch_trace_proves_through_gated_dual` executes `beq x0,x0,+8`
 (taken), then a normal Add, and proves/verifies through the gated dual backend.
 
 Still missing: BLT/BGE/BLTU/BGEU and branch `rd`/register binding.
+
+
+BEQ/BNE branch row extended to all six RV64 branches:
+
+- BEQ/BNE use the XOR/OR equality reduction;
+- BLT/BGE use a signed SLT comparator;
+- BLTU/BGEU use an unsigned SLTU comparator;
+- all six selectors are one-hot and feed the same `next_pc` mux.
+
+`branch_row_selects_all_kinds` covers taken/not-taken cases for all six.
