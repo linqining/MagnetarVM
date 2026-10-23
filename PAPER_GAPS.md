@@ -712,3 +712,16 @@ Tests cover 3<5, 5<3, 5==5, and 255<1; all check over F2. Signed SLT can be obta
 - borrow-out gives `lt`.
 
 Tests cover 3<5, 5<3, -1<1, 1<-1, -5<-3, 127<-128, -128<127. Both signed and unsigned comparator relations check over F2.
+
+
+### F2 barrel shifts
+
+`UniformBitShiftRelation::shift(width, kind)` implements SLL/SRL/SRA over F2:
+
+- stage count `log2(width)`;
+- each stage uses shamt bits;
+- multiplexer rows `diff = a XOR b`, `prod = diff AND shamt`, `out = a XOR prod`;
+- SLL fills zero, SRL fills zero, SRA fills the sign bit;
+- final stage wires into rd.
+
+Tests cover 5<<2=20, 20>>2=5, -8>>1=-4 (8-bit), and shift-by-zero. This completes the basic F2 ALU op set (XOR/AND/ADD/SUB/SLT/SLL/SRL/SRA) at the semantic level.

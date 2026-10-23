@@ -480,3 +480,188 @@ mod tests {
         }
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BitShiftKind {
+    Sll,
+    Srl,
+    Sra,
+}
+
+/// Native F2 barrel shifter (SLL/SRL/SRA) over a bit relation.
+#[derive(Clone, Debug)]
+pub struct UniformBitShiftRelation {
+    pub width: usize,
+    pub stages: usize,
+    pub rs1: Vec<VarId>,
+    pub shamt: Vec<VarId>,
+    pub rd: Vec<VarId>,
+    pub kind: BitShiftKind,
+    pub relation: BitRelation,
+}
+
+impl UniformBitShiftRelation {
+    #[allow(clippy::needless_range_loop)]
+    pub fn shift(width: usize, kind: BitShiftKind) -> Self {
+        assert!(width.is_power_of_two() && width >= 2);
+        let stages = width.trailing_zeros() as usize;
+        let rs1 = (0..width).collect::<Vec<_>>();
+        let shamt = (width..width + stages).collect::<Vec<_>>();
+        let rd = (width + stages..2 * width + stages).collect::<Vec<_>>();
+        let zero = 2 * width + stages;
+        let one = zero + 1;
+        let mut next = one + 1;
+        let mut relation = BitRelation::new(0);
+        let mut current = rs1.clone();
+        let mut rows = Vec::new();
+        rows.push(BitRow::new(vec![zero], vec![], vec![]));
+        rows.push(BitRow::new(vec![one], vec![one], vec![one]));
+        for stage in 0..stages {
+            let shift = 1usize << stage;
+            let mut diffs = Vec::with_capacity(width);
+            let mut prods = Vec::with_capacity(width);
+            let mut outs = Vec::with_capacity(width);
+            for bit in 0..width {
+                let source = match kind {
+                    BitShiftKind::Sll => {
+                        if bit >= shift {
+                            current[bit - shift]
+                        } else {
+                            zero
+                        }
+                    }
+                    BitShiftKind::Srl => {
+                        if bit + shift < width {
+                            current[bit + shift]
+                        } else {
+                            zero
+                        }
+                    }
+                    BitShiftKind::Sra => {
+                        if bit + shift < width {
+                            current[bit + shift]
+                        } else {
+                            rs1[width - 1]
+                        }
+                    }
+                };
+                let diff = next;
+                let prod = next + 1;
+                let out = next + 2;
+                next += 3;
+                diffs.push(diff);
+                prods.push(prod);
+                outs.push(out);
+                rows.push(BitRow::new(
+                    vec![current[bit], source],
+                    vec![one],
+                    vec![diff],
+                ));
+                rows.push(BitRow::new(vec![diff], vec![shamt[stage]], vec![prod]));
+                rows.push(BitRow::new(vec![current[bit], prod], vec![one], vec![out]));
+            }
+            current = outs;
+        }
+        for bit in 0..width {
+            rows.push(BitRow::new(vec![rd[bit]], vec![one], vec![current[bit]]));
+        }
+        relation.num_vars = next;
+        for row in rows {
+            relation.add(row);
+        }
+        Self {
+            width,
+            stages,
+            rs1,
+            shamt,
+            rd,
+            kind,
+            relation,
+        }
+    }
+
+    pub fn witness(&self, left: u64, shamt: u64) -> Vec<bool> {
+        let width = self.width;
+        let mut bits = vec![false; self.relation.num_vars];
+        let zero = 2 * width + self.stages;
+        let one = zero + 1;
+        bits[one] = true;
+        for bit in 0..width {
+            bits[self.rs1[bit]] = (left >> bit) & 1 == 1;
+        }
+        let mask = (1u64 << self.stages) - 1;
+        let shift_amount = shamt & mask;
+        for bit in 0..self.stages {
+            bits[self.shamt[bit]] = (shift_amount >> bit) & 1 == 1;
+        }
+        let mut current = self.rs1.clone();
+        let mut next = one + 1;
+        for stage in 0..self.stages {
+            let shift = 1u64 << stage;
+            let active = (shift_amount >> stage) & 1 == 1;
+            let mut outs = Vec::with_capacity(width);
+            for bit in 0..width {
+                let source = match self.kind {
+                    BitShiftKind::Sll => {
+                        if (bit as u64) >= shift {
+                            bits[current[(bit as u64 - shift) as usize]]
+                        } else {
+                            false
+                        }
+                    }
+                    BitShiftKind::Srl => {
+                        if (bit as u64) + shift < width as u64 {
+                            bits[current[(bit as u64 + shift) as usize]]
+                        } else {
+                            false
+                        }
+                    }
+                    BitShiftKind::Sra => {
+                        if (bit as u64) + shift < width as u64 {
+                            bits[current[(bit as u64 + shift) as usize]]
+                        } else {
+                            bits[self.rs1[width - 1]]
+                        }
+                    }
+                };
+                let a = bits[current[bit]];
+                let diff = a ^ source;
+                let prod = active && diff;
+                let out = a ^ prod;
+                bits[next] = diff;
+                bits[next + 1] = prod;
+                bits[next + 2] = out;
+                next += 3;
+                outs.push(next - 1);
+            }
+            current = outs;
+        }
+        for bit in 0..width {
+            bits[self.rd[bit]] = bits[current[bit]];
+        }
+        bits
+    }
+}
+
+#[cfg(test)]
+mod shift_tests {
+    use super::*;
+
+    #[test]
+    fn barrel_shifts_match_rv64_semantics() {
+        for (kind, left, shamt, expected) in [
+            (BitShiftKind::Sll, 5u64, 2u64, 20u64),
+            (BitShiftKind::Srl, 20, 2, 5),
+            (BitShiftKind::Sra, 248, 1, 252),
+            (BitShiftKind::Sll, 7, 0, 7),
+        ] {
+            let shift = UniformBitShiftRelation::shift(8, kind);
+            let bits = shift.witness(left, shamt);
+            assert!(shift.relation.check(&bits), "{kind:?} {left} {shamt}");
+            let rd = shift.rd.iter().enumerate().fold(0u64, |value, (bit, var)| {
+                value | (u64::from(bits[*var]) << bit)
+            });
+            assert_eq!(rd, expected, "{kind:?} {left} {shamt}");
+        }
+    }
+}
