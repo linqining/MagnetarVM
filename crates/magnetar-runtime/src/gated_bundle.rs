@@ -6,6 +6,7 @@ use magnetar_pcs::{P3MosaicCommitment, P3MosaicOpening, P3SharedPcs};
 use magnetar_proof::{BitPcs, DirectBitPcs, LockstepProof};
 
 use crate::binary_twist::{prove_binary_twist_ram, verify_binary_twist_ram, BinaryTwistRamProof};
+use crate::gated_register::{gated_register_twist_witness, GatedRegisterEvent};
 use crate::protocol::{Claim, ClaimKind, ClaimSet, ProtocolPlan, SegmentId};
 use crate::simd_dual::{prove_gated_dual_batch_bits, verify_gated_dual_batch_bits};
 use crate::simd_f2::{gated_memory_twist_witness, GatedCpuRowInput};
@@ -16,6 +17,9 @@ pub struct GatedBundle<C: Clone + std::fmt::Debug, O: Clone + std::fmt::Debug> {
     pub cpu: LockstepProof<C, O>,
     pub cpu_layout: WitnessLayout,
     pub ram: Option<BinaryTwistRamProof>,
+    pub register: Option<BinaryTwistRamProof>,
+    pub register_events: Vec<GatedRegisterEvent>,
+    pub register_initial: [u64; 32],
     pub claims: Vec<Claim>,
 }
 
@@ -60,6 +64,9 @@ pub fn prove_gated_bundle_with_backend<B: BitPcs>(
         cpu,
         cpu_layout,
         ram,
+        register: None,
+        register_events: Vec::new(),
+        register_initial: [0u64; 32],
         claims,
     })
 }
@@ -74,6 +81,13 @@ pub fn verify_gated_bundle_with_backend<B: BitPcs>(
     if let Some(ram) = &bundle.ram {
         let witness = gated_memory_twist_witness(width, rows)?;
         verify_binary_twist_ram(&witness, ram)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    }
+    if let Some(register) = &bundle.register {
+        let witness =
+            gated_register_twist_witness(&bundle.register_events, &bundle.register_initial)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        verify_binary_twist_ram(&witness, register)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     }
     let plan = ProtocolPlan::unified();
@@ -96,6 +110,26 @@ pub fn prove_gated_bundle(
 ) -> Result<P3GatedBundle, RuntimeError> {
     let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
     prove_gated_bundle_with_backend(width, rows, &DirectBitPcs::new(pcs))
+}
+
+pub fn prove_gated_bundle_with_registers<B: BitPcs>(
+    width: usize,
+    rows: &[(u64, GatedCpuRowInput)],
+    backend: &B,
+    events: Vec<GatedRegisterEvent>,
+    initial: [u64; 32],
+) -> Result<GatedBundle<B::Commitment, B::Opening>, RuntimeError> {
+    let mut bundle = prove_gated_bundle_with_backend(width, rows, backend)?;
+    if !events.is_empty() {
+        let witness = gated_register_twist_witness(&events, &initial)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        let proof = prove_binary_twist_ram(&witness)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        bundle.register = Some(proof);
+        bundle.register_events = events;
+        bundle.register_initial = initial;
+    }
+    Ok(bundle)
 }
 
 pub fn verify_gated_bundle(
@@ -148,6 +182,28 @@ mod tests {
         let rows = rows();
         let bundle = prove_mixed_gated_bundle(8, &rows).unwrap();
         verify_mixed_gated_bundle(8, &rows, &bundle).unwrap();
+    }
+
+    #[test]
+    fn gated_bundle_attaches_register_twist() {
+        use crate::gated_register::GatedRegisterEvent;
+        use magnetar_proof::DirectBitPcs;
+
+        let rows = rows();
+        let events = vec![GatedRegisterEvent {
+            rs1: 0,
+            rs2: 0,
+            rd: 1,
+            left: 5,
+            right: 3,
+            out: 8,
+        }];
+        let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+        let backend = DirectBitPcs::new(pcs);
+        let bundle =
+            prove_gated_bundle_with_registers(8, &rows, &backend, events, [0u64; 32]).unwrap();
+        assert!(bundle.register.is_some());
+        verify_gated_bundle_with_backend(8, &rows, &bundle, &backend).unwrap();
     }
 
     #[test]

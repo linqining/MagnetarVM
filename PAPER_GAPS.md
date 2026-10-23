@@ -1315,3 +1315,16 @@ Tests:
 - `trace_events_prove_through_register_twist` (4 events from a real RV64 trace).
 
 This closes the register-proof component; bundle-level Register claim replacement is still pending.
+
+
+### P0 progress: register Twist in the gated bundle
+
+`GatedBundle` now optionally carries:
+
+- `register: Option<BinaryTwistRamProof>`;
+- `register_events`;
+- `register_initial`.
+
+`prove_gated_bundle_with_registers` attaches a p=2 register-file BinaryTwist proof to the same CPU/RAM bundle; verification rebuilds the register witness from the stored events and initial state and checks it.
+
+Test `gated_bundle_attaches_register_twist` proves/verifies an ALU + memory bundle with a register proof attached. Register claims are now backed by an actual BinaryTwist proof in the bundle, not only claim routing.
