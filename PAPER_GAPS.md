@@ -1353,3 +1353,15 @@ Tests cover 5-3=2 and 3-5=254 (8-bit wrap). The q=8 Direct/RingSwitch test now m
 - packed s2 output check includes `slt_gated`.
 
 Tests cover 3<5=1 and 5<3=0. The q=8 Direct/RingSwitch test mixes ADD/SUB/SLTU; trace adapter and register-event extraction accept `StepOp::Sltu`.
+
+
+### P0 progress: signed SLT in the gated ALU row
+
+`GatedAluOp::Slt` shares the SLTU path but flips both sign bits before the subtraction comparator:
+
+- `a_s = a XOR is_slts` at the sign bit, `b_s` likewise;
+- the SUB borrow chain runs over `a_s` / `b_s`;
+- `lt` is selected by `slt_mode = is_slt + is_slts`;
+- only bit 0 of the output is the comparison result.
+
+Tests cover -1<1, 1<-1, and -5<-3 in 8-bit two's complement. The q=8 Direct/RingSwitch test mixes ADD/SUB/SLTU/SLT; the trace adapter and register-event extractor accept `StepOp::Slt`.

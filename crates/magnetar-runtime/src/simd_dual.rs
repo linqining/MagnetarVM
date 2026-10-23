@@ -640,7 +640,7 @@ mod tests {
     fn gated_dual_backends_share_the_same_test() {
         use magnetar_proof::spartan::MatrixPart;
         use magnetar_proof::{
-            prove_lockstep_bits, verify_lockstep_bits, BitPcs, DirectBitPcs, PackedBitPcs,
+            prove_lockstep_bits, verify_lockstep_bits, BitPcs, DirectBitPcs, RevealingPackedBitPcs,
             SparseMatrix,
         };
 
@@ -672,7 +672,7 @@ mod tests {
                 .unwrap();
         verify_lockstep_bits(&a0, &b0, &c0, &a1, &b1, &c1, &layout, &proof, &direct).unwrap();
 
-        let packed = PackedBitPcs::new(pcs);
+        let packed = RevealingPackedBitPcs::new(pcs);
         let p3_commitment = packed.commit(&packed_bits).unwrap();
         let p3_point = (0..8)
             .map(|bit| magnetar_constraint::F2_128::from((bit % 2) as u64))
@@ -704,10 +704,11 @@ mod tests {
                     GatedCpuRowInput::Alu {
                         left: 0x12 + index as u64,
                         right: 0x34 + index as u64,
-                        op: match index % 3 {
+                        op: match index % 4 {
                             0 => crate::simd_f2::GatedAluOp::Add,
                             1 => crate::simd_f2::GatedAluOp::Sub,
-                            _ => crate::simd_f2::GatedAluOp::Sltu,
+                            2 => crate::simd_f2::GatedAluOp::Sltu,
+                            _ => crate::simd_f2::GatedAluOp::Slt,
                         },
                     },
                 )
@@ -847,10 +848,11 @@ mod tests {
                     GatedCpuRowInput::Alu {
                         left: 0x12 + index as u64,
                         right: 0x34 + index as u64,
-                        op: match index % 3 {
+                        op: match index % 4 {
                             0 => crate::simd_f2::GatedAluOp::Add,
                             1 => crate::simd_f2::GatedAluOp::Sub,
-                            _ => crate::simd_f2::GatedAluOp::Sltu,
+                            2 => crate::simd_f2::GatedAluOp::Sltu,
+                            _ => crate::simd_f2::GatedAluOp::Slt,
                         },
                     },
                 )

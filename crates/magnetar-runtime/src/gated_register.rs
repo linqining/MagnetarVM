@@ -146,7 +146,7 @@ pub fn gated_register_events_from_trace(
         };
         if !matches!(
             step,
-            StepOp::Add | StepOp::Sub | StepOp::Sltu | StepOp::Xor | StepOp::And
+            StepOp::Add | StepOp::Sub | StepOp::Slt | StepOp::Sltu | StepOp::Xor | StepOp::And
         ) || crate::w_step_op_for(row.instruction.op).is_some()
             || crate::branch_op_for(row.instruction.op).is_some()
         {

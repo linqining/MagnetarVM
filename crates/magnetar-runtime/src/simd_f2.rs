@@ -1124,6 +1124,7 @@ pub enum GatedAluOp {
     Add,
     Sub,
     Sltu,
+    Slt,
     Inactive,
 }
 
@@ -1149,6 +1150,10 @@ pub struct GatedAluRow {
     pub sub_xor: Vec<VarId>,
     pub sub_gated: Vec<VarId>,
     pub is_slt: VarId,
+    pub is_slts: VarId,
+    pub slt_mode: VarId,
+    pub a_s: Vec<VarId>,
+    pub b_s: Vec<VarId>,
     pub lt: VarId,
     pub slt_gated: Vec<VarId>,
     pub relation: BitRelation,
@@ -1188,15 +1193,24 @@ impl GatedAluRow {
         let is_slt = 22 * width + 8;
         let lt = 22 * width + 9;
         let slt_gated = (22 * width + 10..23 * width + 10).collect::<Vec<_>>();
-        let mut relation = BitRelation::new(23 * width + 10);
+        let a_s = (23 * width + 10..24 * width + 10).collect::<Vec<_>>();
+        let b_s = (24 * width + 10..25 * width + 10).collect::<Vec<_>>();
+        let is_slts = 25 * width + 10;
+        let slt_mode = 25 * width + 11;
+        let mut relation = BitRelation::new(25 * width + 12);
         relation.add(BitRow::new(vec![one], vec![one], vec![one]));
-        for selector in [is_alu, is_xor, is_and, is_add, is_sub, is_slt] {
+        for selector in [is_alu, is_xor, is_and, is_add, is_sub, is_slt, is_slts] {
             relation.add(BitRow::new(vec![selector], vec![selector, one], Vec::new()));
         }
         relation.add(BitRow::new(
-            vec![is_xor, is_and, is_add, is_sub, is_slt],
+            vec![is_xor, is_and, is_add, is_sub, is_slt, is_slts],
             vec![one],
             vec![is_alu],
+        ));
+        relation.add(BitRow::new(
+            vec![is_slt, is_slts],
+            vec![one],
+            vec![slt_mode],
         ));
         relation.add(BitRow::new(vec![add_carries[0]], vec![one], Vec::new()));
         relation.add(BitRow::new(vec![sub_carries[0]], vec![one], vec![one]));
@@ -1250,13 +1264,28 @@ impl GatedAluRow {
                 vec![add_carries[bit + 1]],
             ));
 
+            if bit + 1 == width {
+                relation.add(BitRow::new(
+                    vec![a[bit], is_slts],
+                    vec![one],
+                    vec![a_s[bit]],
+                ));
+                relation.add(BitRow::new(
+                    vec![b[bit], is_slts],
+                    vec![one],
+                    vec![b_s[bit]],
+                ));
+            } else {
+                relation.add(BitRow::new(vec![a_s[bit]], vec![one], vec![a[bit]]));
+                relation.add(BitRow::new(vec![b_s[bit]], vec![one], vec![b[bit]]));
+            }
             relation.add(BitRow::new(
-                vec![b[bit], one],
+                vec![b_s[bit], one],
                 vec![one],
                 vec![sub_b_eff[bit]],
             ));
             relation.add(BitRow::new(
-                vec![a[bit], sub_b_eff[bit]],
+                vec![a_s[bit], sub_b_eff[bit]],
                 vec![one],
                 vec![sub_diff[bit]],
             ));
@@ -1271,12 +1300,12 @@ impl GatedAluRow {
                 vec![sub_gated[bit]],
             ));
             relation.add(BitRow::new(
-                vec![a[bit]],
+                vec![a_s[bit]],
                 vec![sub_b_eff[bit]],
                 vec![sub_p1[bit]],
             ));
             relation.add(BitRow::new(
-                vec![a[bit]],
+                vec![a_s[bit]],
                 vec![sub_carries[bit]],
                 vec![sub_p2[bit]],
             ));
@@ -1292,7 +1321,7 @@ impl GatedAluRow {
             ));
 
             if bit == 0 {
-                relation.add(BitRow::new(vec![lt], vec![is_slt], vec![slt_gated[bit]]));
+                relation.add(BitRow::new(vec![lt], vec![slt_mode], vec![slt_gated[bit]]));
             } else {
                 relation.add(BitRow::new(vec![slt_gated[bit]], vec![one], Vec::new()));
             }
@@ -1333,6 +1362,10 @@ impl GatedAluRow {
             sub_xor,
             sub_gated,
             is_slt,
+            is_slts,
+            slt_mode,
+            a_s,
+            b_s,
             lt,
             slt_gated,
             relation,
@@ -1342,20 +1375,23 @@ impl GatedAluRow {
     pub fn witness(&self, left: u64, right: u64, op: GatedAluOp) -> Vec<bool> {
         let mut bits = vec![false; self.relation.num_vars];
         bits[3 * self.width + 5] = true;
-        let (is_xor, is_and, is_add, is_sub, is_slt) = match op {
-            GatedAluOp::Xor => (true, false, false, false, false),
-            GatedAluOp::And => (false, true, false, false, false),
-            GatedAluOp::Add => (false, false, true, false, false),
-            GatedAluOp::Sub => (false, false, false, true, false),
-            GatedAluOp::Sltu => (false, false, false, false, true),
-            GatedAluOp::Inactive => (false, false, false, false, false),
+        let (is_xor, is_and, is_add, is_sub, is_slt, is_slts) = match op {
+            GatedAluOp::Xor => (true, false, false, false, false, false),
+            GatedAluOp::And => (false, true, false, false, false, false),
+            GatedAluOp::Add => (false, false, true, false, false, false),
+            GatedAluOp::Sub => (false, false, false, true, false, false),
+            GatedAluOp::Sltu => (false, false, false, false, true, false),
+            GatedAluOp::Slt => (false, false, false, false, false, true),
+            GatedAluOp::Inactive => (false, false, false, false, false, false),
         };
-        bits[self.is_alu] = is_xor || is_and || is_add || is_sub || is_slt;
+        bits[self.is_alu] = is_xor || is_and || is_add || is_sub || is_slt || is_slts;
         bits[self.is_xor] = is_xor;
         bits[self.is_and] = is_and;
         bits[self.is_add] = is_add;
         bits[self.is_sub] = is_sub;
         bits[self.is_slt] = is_slt;
+        bits[self.is_slts] = is_slts;
+        bits[self.slt_mode] = is_slt || is_slts;
         let add_carries = 7 * self.width + 6;
         let sub_b_eff = 14 * self.width + 7;
         let sub_carries = 15 * self.width + 7;
@@ -1365,9 +1401,14 @@ impl GatedAluRow {
             let b = (right >> bit) & 1 == 1;
             let add_carry = bits[add_carries + bit];
             let sub_carry = bits[sub_carries + bit];
-            let b_eff = !b;
+            let sign = is_slts && bit + 1 == self.width;
+            let a_s = a ^ sign;
+            let b_s = b ^ sign;
+            let b_eff = !b_s;
             bits[self.a[bit]] = a;
             bits[self.b[bit]] = b;
+            bits[self.a_s[bit]] = a_s;
+            bits[self.b_s[bit]] = b_s;
             bits[3 * self.width + 6 + bit] = a ^ b;
             bits[4 * self.width + 6 + bit] = is_xor && (a ^ b);
             bits[5 * self.width + 6 + bit] = a && b;
@@ -1382,12 +1423,13 @@ impl GatedAluRow {
             bits[10 * self.width + 7 + bit] = b && add_carry;
 
             bits[sub_b_eff + bit] = b_eff;
-            bits[19 * self.width + 8 + bit] = a ^ b_eff;
-            bits[20 * self.width + 8 + bit] = a ^ b_eff ^ sub_carry;
-            bits[21 * self.width + 8 + bit] = is_sub && (a ^ b_eff ^ sub_carry);
-            bits[sub_carries + bit + 1] = (a && b_eff) || (a && sub_carry) || (b_eff && sub_carry);
-            bits[16 * self.width + 8 + bit] = a && b_eff;
-            bits[17 * self.width + 8 + bit] = a && sub_carry;
+            bits[19 * self.width + 8 + bit] = a_s ^ b_eff;
+            bits[20 * self.width + 8 + bit] = a_s ^ b_eff ^ sub_carry;
+            bits[21 * self.width + 8 + bit] = is_sub && (a_s ^ b_eff ^ sub_carry);
+            bits[sub_carries + bit + 1] =
+                (a_s && b_eff) || (a_s && sub_carry) || (b_eff && sub_carry);
+            bits[16 * self.width + 8 + bit] = a_s && b_eff;
+            bits[17 * self.width + 8 + bit] = a_s && sub_carry;
             bits[18 * self.width + 8 + bit] = b_eff && sub_carry;
 
             bits[self.out[bit]] = match op {
@@ -1395,16 +1437,16 @@ impl GatedAluRow {
                 GatedAluOp::And => a && b,
                 GatedAluOp::Add => a ^ b ^ add_carry,
                 GatedAluOp::Sub => a ^ b_eff ^ sub_carry,
-                GatedAluOp::Sltu => false,
+                GatedAluOp::Sltu | GatedAluOp::Slt => false,
                 GatedAluOp::Inactive => false,
             };
         }
         let less = !bits[sub_carries + self.width];
         bits[self.lt] = less;
         for (bit, var) in self.slt_gated.iter().enumerate() {
-            bits[*var] = is_slt && bit == 0 && less;
+            bits[*var] = (is_slt || is_slts) && bit == 0 && less;
         }
-        if is_slt {
+        if is_slt || is_slts {
             for (bit, var) in self.out.iter().enumerate() {
                 bits[*var] = bit == 0 && less;
             }
@@ -1454,6 +1496,14 @@ mod gated_alu_tests {
             value | (u64::from(not_sltu[*var]) << bit)
         });
         assert_eq!(not_sltu_rd, 0);
+        for (left, right, expected) in [(255u64, 1u64, 1u64), (1, 255, 0), (251, 253, 1)] {
+            let slt = row.witness(left, right, GatedAluOp::Slt);
+            assert!(row.relation.check(&slt));
+            let rd = row.out.iter().enumerate().fold(0u64, |value, (bit, var)| {
+                value | (u64::from(slt[*var]) << bit)
+            });
+            assert_eq!(rd, expected, "{left} < {right}");
+        }
         let inactive = row.witness(0b1010_1010, 0b1100_1100, GatedAluOp::Inactive);
         assert!(row.relation.check(&inactive));
         for bit in 0..8 {
