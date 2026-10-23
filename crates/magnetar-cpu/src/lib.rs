@@ -5,6 +5,8 @@
 //! that the uniform SIMD CPU relation will use for integer addition.
 
 use magnetar_constraint::{ConstraintSystem, Expr, VarId, Witness, F2_128};
+
+pub mod simd;
 use magnetar_spec::{
     addw, div, divu, mulh, mulhsu, mulhu, rem, remu, sllw, sraw, srlw, subw, Addr, Op, Trace,
     TraceRow, Word,

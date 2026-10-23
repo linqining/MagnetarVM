@@ -487,3 +487,17 @@ The runtime metadata reconstructs these layouts for branch/Jal/Jalr rows. Tests 
 - `CpuWitnessSegment` now carries `fetch_pc` and `rom_word` from the trace/ROM.
 
 Attempting to switch `cpu_segment_layout` exposed a hard alignment constraint: many CPU var groups are not one power-of-two aligned segment. `CpuVarGroup::is_segment_aligned` tests this; e.g. shift source is aligned but shamt (3 bits) is not. A component-aware `WitnessLayout` therefore requires repacking/aligning the CPU witness (or padding each component to an aligned segment), not just translating VarIds. The current 2-segment layout remains until that repacking is designed.
+
+
+## Pivot: uniform SIMD CPU row schema
+
+Starting point landed in `magnetar-cpu::simd`:
+
+- `UniformCpuRowLayout { width, step: UniformStepLayout, num_vars }`;
+- `uniform_cpu_row_layout(width)` builds one relation/layout shared by every ALU/PC instance;
+- `UniformCpuRowWitness` carries op/pc/rs1/rs2/imm plus the fixed-column witness;
+- test constructs Add/Xor/Addi instances against the same system and checks all satisfy it.
+
+This is the first SIMD schema slice (ALU + PC). It deliberately reuses `uniform_step_relation` rather than `simple_alu`: fixed columns and selectors, one system, multiple instances. Legacy per-row `simple_alu` remains only as a reference path. Next: batch instances into SIMD witness/matrix, then add load/store and the native F2 relation.
+
+Per-row witness repacking is frozen; metadata work remains as legacy/reference support.
