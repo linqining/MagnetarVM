@@ -300,7 +300,7 @@ pub fn gated_rows_from_trace(
             "trace has no supported gated rows".into(),
         ));
     }
-    let power = 1usize << (rows.len().trailing_zeros() as usize);
+    let power = 1usize << (usize::BITS - 1 - rows.len().leading_zeros()) as usize;
     rows.truncate(power);
     Ok(rows)
 }

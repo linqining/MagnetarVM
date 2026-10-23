@@ -147,9 +147,9 @@ pub fn prove_gated_bundle_with_registers<B: BitPcs>(
     let mut bundle = prove_gated_bundle_with_backend(width, rows, backend)?;
     if !events.is_empty() {
         let witness = gated_register_twist_witness(&events, &initial)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            .map_err(|error| RuntimeError::Proof(format!("register witness: {error}")))?;
         let proof = prove_binary_twist_ram(&witness)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            .map_err(|error| RuntimeError::Proof(format!("register proof: {error}")))?;
         bundle.register = Some(proof);
         bundle.register_events = events;
         bundle.register_initial = initial;
@@ -370,24 +370,29 @@ pub fn prove_gated_bundle_from_trace<B: BitPcs>(
     let rows = crate::simd_full::gated_rows_from_trace(trace, width)?;
     let initial_pc = rows.first().map(|row| row.0).unwrap_or(0);
     let final_pc = rows.last().map(|row| row.0 + 4).unwrap_or(0);
-    let mut bundle = prove_gated_bundle_with_backend(width, &rows, backend)?;
-    let (cpu, cpu_layout) = crate::simd_dual::prove_gated_dual_batch_bits_with_pc(
-        width, &rows, backend, initial_pc, final_pc,
-    )?;
-    bundle.cpu = cpu;
-    bundle.cpu_layout = cpu_layout;
-    bundle.initial_pc = Some(initial_pc);
-    bundle.final_pc = Some(final_pc);
+    let mut bundle = prove_gated_bundle_with_backend(width, &rows, backend)
+        .map_err(|error| RuntimeError::Proof(format!("base bundle: {error}")))?;
+    if rows.len() >= 2 {
+        let (cpu, cpu_layout) = crate::simd_dual::prove_gated_dual_batch_bits_with_pc(
+            width, &rows, backend, initial_pc, final_pc,
+        )
+        .map_err(|error| RuntimeError::Proof(format!("cpu pc: {error}")))?;
+        bundle.cpu = cpu;
+        bundle.cpu_layout = cpu_layout;
+        bundle.initial_pc = Some(initial_pc);
+        bundle.final_pc = Some(final_pc);
+    }
     if let Ok((events, initial)) = crate::gated_register::gated_register_events_from_trace(trace) {
         let witness = gated_register_twist_witness(&events, &initial)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            .map_err(|error| RuntimeError::Proof(format!("register witness: {error}")))?;
         let proof = prove_binary_twist_ram(&witness)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            .map_err(|error| RuntimeError::Proof(format!("register proof: {error}")))?;
         bundle.register = Some(proof);
         bundle.register_events = events;
         bundle.register_initial = initial;
     }
-    bundle.aux = Some(prove_gated_aux(trace)?);
+    bundle.aux =
+        Some(prove_gated_aux(trace).map_err(|error| RuntimeError::Proof(format!("aux: {error}")))?);
     Ok(bundle)
 }
 

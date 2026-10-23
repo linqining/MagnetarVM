@@ -5,15 +5,15 @@ use magnetar_spec::Trace;
 use crate::binary_router::{
     prove_binary_router, verify_binary_router, BinaryRouterProof, BinaryRouterWitness, RouterMode,
 };
-use crate::binary_shout::{
-    prove_binary_shout, verify_binary_shout, BinaryShoutProof, BinaryShoutWitness,
-};
+use crate::binary_shout::{verify_binary_shout, BinaryShoutProof, BinaryShoutWitness};
+use crate::packed_shout::{prove_packed_shout, verify_packed_shout, PackedShoutProof};
 use crate::protocol::{Claim, ClaimKind, ClaimSet, ProtocolPlan, SegmentId};
 use crate::RuntimeError;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct GatedAuxProof {
-    pub shout: BinaryShoutProof,
+    pub shout: Option<BinaryShoutProof>,
+    pub packed_shout: Option<PackedShoutProof>,
     pub shifts: Option<BinaryRouterProof>,
     pub stores: Option<BinaryRouterProof>,
 }
@@ -21,8 +21,8 @@ pub struct GatedAuxProof {
 pub fn prove_gated_aux(trace: &Trace) -> Result<GatedAuxProof, RuntimeError> {
     let shout_witness = BinaryShoutWitness::from_trace(trace)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    let shout = prove_binary_shout(&shout_witness)
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let packed_shout = prove_packed_shout(&shout_witness)
+        .map_err(|error| RuntimeError::Proof(format!("packed shout: {error}")))?;
 
     let shifts = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Shifts)
         .ok()
@@ -31,7 +31,8 @@ pub fn prove_gated_aux(trace: &Trace) -> Result<GatedAuxProof, RuntimeError> {
         .ok()
         .and_then(|witness| prove_binary_router(&witness).ok());
     Ok(GatedAuxProof {
-        shout,
+        shout: None,
+        packed_shout: Some(packed_shout),
         shifts,
         stores,
     })
@@ -40,8 +41,14 @@ pub fn prove_gated_aux(trace: &Trace) -> Result<GatedAuxProof, RuntimeError> {
 pub fn verify_gated_aux(trace: &Trace, proof: &GatedAuxProof) -> Result<(), RuntimeError> {
     let shout_witness = BinaryShoutWitness::from_trace(trace)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    verify_binary_shout(&shout_witness, &proof.shout)
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if let Some(packed) = &proof.packed_shout {
+        verify_packed_shout(&shout_witness, packed)?;
+    } else if let Some(reference) = &proof.shout {
+        verify_binary_shout(&shout_witness, reference)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    } else {
+        return Err(RuntimeError::Proof("missing Shout proof".into()));
+    }
 
     if let Some(shifts) = &proof.shifts {
         let witness = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Shifts)
@@ -138,6 +145,8 @@ mod tests {
         .unwrap();
         let proof = prove_gated_aux(&trace).unwrap();
         assert!(proof.shifts.is_some());
+        assert!(proof.shout.is_none());
+        assert!(proof.packed_shout.is_some());
         verify_gated_aux(&trace, &proof).unwrap();
     }
     #[test]

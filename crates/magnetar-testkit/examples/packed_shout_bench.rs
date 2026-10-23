@@ -19,12 +19,21 @@ fn main() {
             }
             .encode(),
             Instruction {
-                op: Op::Addi,
+                op: Op::Xor,
                 rd: 2,
-                rs1: 0,
+                rs1: 1,
                 rs2: 0,
-                imm: 9,
+                imm: 0,
                 shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Slli,
+                rd: 3,
+                rs1: 2,
+                rs2: 0,
+                imm: 0,
+                shamt: 1,
             }
             .encode(),
             Instruction::new(Op::Ecall).encode(),

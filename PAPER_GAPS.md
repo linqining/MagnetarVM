@@ -1612,3 +1612,24 @@ This is a 4.1x reduction and now smaller than the reference. The Shout verifier
 still receives the witness in this reference architecture; replacing the
 witness-derived column checks with the packed leaves for a witness-blind
 verifier is the remaining integration step.
+
+
+### Packed Shout integrated into the auxiliary bundle
+
+`GatedAuxProof` now carries `packed_shout: Option<PackedShoutProof>` and keeps
+the reference `shout` field as an optional fallback. `prove_gated_aux` emits the
+packed proof; `verify_gated_aux` dispatches to it.
+
+The gated trace row truncation was also fixed to use the largest power of two
+not exceeding the supported-row count (`add, xor, slli` now keeps two rows
+instead of one), with public-PC binding skipped for a single-row batch.
+
+Trace bundle (`add, xor, slli, ecall`) after integration:
+
+| backend | CPU | register | aux | total |
+|---|---:|---:|---:|---:|
+| M4 | 131,144 | 42,257 | 124,303 | 297,812 |
+| M5 | 10,736 | 42,257 | 124,303 | 177,404 |
+
+Aux dropped by ~13 KB (the Shout difference); the remaining 124 KB is dominated
+by the unpacked shift/store Router proofs.

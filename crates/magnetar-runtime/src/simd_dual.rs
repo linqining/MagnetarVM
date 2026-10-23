@@ -855,7 +855,7 @@ mod tests {
                 GatedCpuRowInput::Alu {
                     left: 7,
                     right: 2,
-                    op: crate::simd_f2::GatedAluOp::Sub,
+                    op: crate::simd_f2::GatedAluOp::Xor,
                 },
             ),
         ];
