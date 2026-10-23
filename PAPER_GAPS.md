@@ -1283,3 +1283,17 @@ is_add * Σ β add_xor  = Σ β add_gated
 ```
 
 plus the packed ALU output linear check and the packed memory data select. The q=8 Direct/RingSwitch tests still pass, so the dual relation has a more complete packed s2 while remaining one witness.
+
+
+### P0 progress: trace adapter for gated rows
+
+`gated_rows_from_trace(trace, width)` maps a supported trace prefix into `GatedCpuRowInput`:
+
+- ALU XOR/AND/ADD rows;
+- load/store rows;
+- unsupported op / branch / AMO / W-op ends the slice;
+- slice truncated to the largest power-of-two length.
+
+Test `supported_trace_prefix_proves_through_gated_dual` executes a small RV64 program (`add`, `add`, `xor`, `and`, `ecall`), converts the four supported rows, and proves/verifies them through the gated dual batch with `DirectBitPcs`.
+
+This is a real trace-to-gated adapter for the supported subset, not yet full RV64 op coverage.

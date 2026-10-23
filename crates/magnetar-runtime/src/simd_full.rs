@@ -207,3 +207,119 @@ mod tests {
         verify_simd_full_rows(&proof).expect("verify");
     }
 }
+
+/// Convert a supported trace prefix into gated CPU row inputs.
+///
+/// Supported rows are ALU XOR/AND/ADD and load/store rows; anything else ends
+/// the slice. The slice length is truncated to the largest power of two.
+pub fn gated_rows_from_trace(
+    trace: &Trace,
+    _width: usize,
+) -> Result<Vec<(u64, crate::simd_f2::GatedCpuRowInput)>, RuntimeError> {
+    use crate::simd_f2::{GatedAluOp, GatedCpuRowInput};
+    use magnetar_cpu::StepOp;
+
+    let mut rows = Vec::new();
+    for row in &trace.rows {
+        if let Some(access) = row.mem {
+            let imm = row.instruction.imm as u64;
+            let value = if access.is_write {
+                access.value
+            } else {
+                row.rd_val
+            };
+            rows.push((
+                row.pc,
+                GatedCpuRowInput::Memory {
+                    rs1: row.rs1_val,
+                    imm,
+                    value,
+                    is_mem: true,
+                },
+            ));
+            continue;
+        }
+        let Some(step) = crate::step_op_for(row.instruction.op) else {
+            break;
+        };
+        let op = match step {
+            StepOp::Xor => GatedAluOp::Xor,
+            StepOp::And => GatedAluOp::And,
+            StepOp::Add => GatedAluOp::Add,
+            _ => break,
+        };
+        if crate::w_step_op_for(row.instruction.op).is_some()
+            || row.instruction.op.amo_width().is_some()
+            || crate::branch_op_for(row.instruction.op).is_some()
+        {
+            break;
+        }
+        rows.push((
+            row.pc,
+            GatedCpuRowInput::Alu {
+                left: row.rs1_val,
+                right: row.rs2_val,
+                op,
+            },
+        ));
+    }
+    if rows.is_empty() {
+        return Err(RuntimeError::Proof(
+            "trace has no supported gated rows".into(),
+        ));
+    }
+    let power = 1usize << (rows.len().trailing_zeros() as usize);
+    rows.truncate(power);
+    Ok(rows)
+}
+
+#[cfg(test)]
+mod gated_trace_tests {
+    use super::*;
+
+    #[test]
+    fn supported_trace_prefix_proves_through_gated_dual() {
+        use crate::simd_dual::{prove_gated_dual_batch_bits, verify_gated_dual_batch_bits};
+        use magnetar_executor::execute;
+        use magnetar_pcs::P3SharedPcs;
+        use magnetar_proof::DirectBitPcs;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+        let instruction = |op: Op, rd: u8, rs1: u8, rs2: u8, imm: i64| Instruction {
+            op,
+            rd,
+            rs1,
+            rs2,
+            imm,
+            shamt: 0,
+        };
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                instruction(Op::Add, 1, 0, 0, 0).encode(),
+                instruction(Op::Add, 2, 0, 0, 0).encode(),
+                instruction(Op::Xor, 3, 1, 2, 0).encode(),
+                instruction(Op::And, 4, 1, 2, 0).encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .expect("trace");
+        let rows = gated_rows_from_trace(&trace, 8).expect("rows");
+        assert_eq!(rows.len(), 4);
+        let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+        let backend = DirectBitPcs::new(pcs);
+        let (proof, layout) = prove_gated_dual_batch_bits(8, &rows, &backend).expect("prove");
+        verify_gated_dual_batch_bits(8, &rows, &proof, &layout, &backend).expect("verify");
+    }
+}
