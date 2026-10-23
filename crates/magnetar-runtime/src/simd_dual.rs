@@ -136,6 +136,154 @@ pub fn verify_dual_cpu(
         .map_err(|error| RuntimeError::Proof(error.to_string()))
 }
 
+#[allow(clippy::type_complexity)]
+fn dual_batch_matrices(
+    layout: &magnetar_cpu::simd::UniformCpuRowLayout,
+    op: StepOp,
+    cycles: usize,
+) -> Result<
+    (
+        magnetar_constraint::ConstraintSystem,
+        magnetar_constraint::ConstraintSystem,
+        [magnetar_proof::SharedBlockMatrix; 3],
+        [magnetar_proof::SharedBlockMatrix; 3],
+    ),
+    RuntimeError,
+> {
+    use magnetar_proof::spartan::MatrixPart;
+    use magnetar_proof::SharedBlockMatrix;
+
+    if cycles == 0 || !cycles.is_power_of_two() {
+        return Err(RuntimeError::Proof(
+            "dual batch cycles must be a power of two".into(),
+        ));
+    }
+    let relation = bit_relation(layout, op);
+    let packed = layout.system.clone();
+    let mut s1_system = relation.to_system();
+    for _ in s1_system.constraints.len()..packed.constraints.len() {
+        s1_system.add_constraint(
+            magnetar_constraint::Expr::constant(0u64),
+            magnetar_constraint::Expr::constant(1u64),
+            magnetar_constraint::Expr::constant(0u64),
+        );
+    }
+    let base_cols = (layout.num_vars + 1).next_power_of_two();
+    let groups = layout.var_groups();
+    let pc = groups
+        .iter()
+        .find(|group| group.kind == CpuVarKind::Pc)
+        .ok_or_else(|| RuntimeError::Proof("dual row has no PC group".into()))?;
+    let next_pc = groups
+        .iter()
+        .find(|group| group.kind == CpuVarKind::NextPc)
+        .ok_or_else(|| RuntimeError::Proof("dual row has no NextPc group".into()))?;
+    let chain_rows = cycles.saturating_sub(1) * pc.vars.len();
+    let mut extra_a = Vec::new();
+    let mut extra_b = Vec::new();
+    let mut extra_c = Vec::new();
+    for instance in 0..cycles.saturating_sub(1) {
+        for bit in 0..pc.vars.len() {
+            extra_a.push(vec![(
+                instance * base_cols + next_pc.vars[bit],
+                magnetar_constraint::F2_128::from(1u64),
+            )]);
+            extra_b.push(vec![(
+                instance * base_cols + layout.num_vars,
+                magnetar_constraint::F2_128::from(1u64),
+            )]);
+            extra_c.push(vec![(
+                (instance + 1) * base_cols + pc.vars[bit],
+                magnetar_constraint::F2_128::from(1u64),
+            )]);
+        }
+    }
+    let zero_rows = vec![Vec::new(); chain_rows];
+    let a0 = SharedBlockMatrix::from_system(&s1_system, MatrixPart::A, cycles)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(zero_rows.clone());
+    let b0 = SharedBlockMatrix::from_system(&s1_system, MatrixPart::B, cycles)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(zero_rows.clone());
+    let c0 = SharedBlockMatrix::from_system(&s1_system, MatrixPart::C, cycles)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(zero_rows);
+    let a1 = SharedBlockMatrix::from_system(&packed, MatrixPart::A, cycles)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(extra_a);
+    let b1 = SharedBlockMatrix::from_system(&packed, MatrixPart::B, cycles)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(extra_b);
+    let c1 = SharedBlockMatrix::from_system(&packed, MatrixPart::C, cycles)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(extra_c);
+    Ok((s1_system, packed, [a0, b0, c0], [a1, b1, c1]))
+}
+
+pub fn prove_dual_batch(
+    width: usize,
+    op: StepOp,
+    cycles: usize,
+) -> Result<
+    (
+        LockstepProof<P3MosaicCommitment, P3MosaicOpening>,
+        WitnessLayout,
+    ),
+    RuntimeError,
+> {
+    use magnetar_proof::prove_lockstep_with_matrices;
+
+    let (_system, layout) = uniform_cpu_row_layout(width);
+    let (_s1, packed, s1, s2) = dual_batch_matrices(&layout, op, cycles)?;
+    let mut z = Vec::new();
+    for cycle in 0..cycles {
+        let row = layout.witness(
+            op,
+            0x1000 + 4 * cycle as u64,
+            0x12 + cycle as u64,
+            0x34 + cycle as u64,
+            0,
+        );
+        z.extend(
+            witness_vector(&packed, &row.witness)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?,
+        );
+    }
+    let layout_segments = segment_layout(z.len())?;
+    let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+    let proof = prove_lockstep_with_matrices(
+        &z,
+        &s1[0],
+        &s1[1],
+        &s1[2],
+        &s2[0],
+        &s2[1],
+        &s2[2],
+        &layout_segments,
+        &pcs,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok((proof, layout_segments))
+}
+
+pub fn verify_dual_batch(
+    width: usize,
+    op: StepOp,
+    cycles: usize,
+    proof: &LockstepProof<P3MosaicCommitment, P3MosaicOpening>,
+    layout: &WitnessLayout,
+) -> Result<(), RuntimeError> {
+    use magnetar_proof::verify_lockstep_with_matrices;
+
+    let (_system, row_layout) = uniform_cpu_row_layout(width);
+    let (_s1, _packed, s1, s2) = dual_batch_matrices(&row_layout, op, cycles)?;
+    let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+    verify_lockstep_with_matrices(
+        &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], layout, proof, &pcs,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +300,14 @@ mod tests {
         let (proof, layout) =
             prove_dual_cpu(8, StepOp::Add, 0b1010_1010, 0b1100_1100).expect("prove");
         verify_dual_cpu(8, StepOp::Add, &proof, &layout).expect("verify");
+    }
+
+    #[test]
+    fn dual_shared_batch_runs_in_lockstep() {
+        for op in [StepOp::Xor, StepOp::Add, StepOp::Sub] {
+            let (proof, layout) = prove_dual_batch(8, op, 2).expect("prove");
+            verify_dual_batch(8, op, 2, &proof, &layout).expect("verify");
+        }
     }
 
     #[test]

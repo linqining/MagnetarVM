@@ -822,3 +822,15 @@ The full packed ALU system is still s2. Test covers an 8-bit subtraction lockste
 All three take `SpartanMatrix` trait objects, so `SharedBlockMatrix` can drive a lockstep proof without materializing q copies. Test `shared_block_lockstep_round_trips` proves/verifies a two-instance shared-block lockstep.
 
 This is the API prerequisite for the dual shared-matrix batch (F2 s1 + packed s2 over q rows).
+
+
+### Dual shared-matrix batch
+
+`simd_dual::prove_dual_batch(width, op, cycles)` builds:
+
+- s1: F2 bit relation (XOR/ADD/SUB) as `SharedBlockMatrix`, padded with zero rows;
+- s2: packed CPU system as `SharedBlockMatrix`, with PC-chain extra rows;
+- one block-padded z over q cycles;
+- one `prove_lockstep_with_matrices` proof.
+
+`verify_dual_batch` rebuilds the same shared matrices and verifies the lockstep. Test covers XOR/ADD/SUB with q=2, all with PC-chain constraints. This is the first q-instance dual shared-matrix CPU proof.
