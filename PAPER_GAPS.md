@@ -1525,3 +1525,17 @@ Because shift rows are now fused into `GatedCpuRow`, the trace bundle no longer 
 | M5 ring | 6,552 | 42,257 | 19,561 | 54 | 68,432 | 11.3 ms |
 
 M5 CPU drops to 6.5 KB; register Twist and auxiliary Shout/Router now dominate the bundle. The aux byte count is a debug-format estimate because `GatedAuxProof` is not serialized yet.
+
+
+### P1 progress: serialized auxiliary proofs and real bundle split
+
+`GatedAuxProof` now derives serde Serialize/Deserialize, so the trace bundle benchmark can measure its actual wire size instead of a debug-string estimate.
+
+`gated_trace_bundle_m4_m5_bench` (add, xor, slli, ecall):
+
+| backend | CPU | register | aux | total | prove |
+|---|---:|---:|---:|---:|---:|
+| M4 direct | 107,880 | 42,257 | 137,381 | 287,580 | 13.2 ms |
+| M5 ring | 6,552 | 42,257 | 137,381 | 186,252 | 11.0 ms |
+
+The real dominant cost is the unpacked Shout/Router auxiliary proof (137 KB), not the CPU. This makes packed BinaryShout/BinaryRouter and packed register Twist the next meaningful size work; CPU M5 optimization has already taken its component to 6.5 KB.

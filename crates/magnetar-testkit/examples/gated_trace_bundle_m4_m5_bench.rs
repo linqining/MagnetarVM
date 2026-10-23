@@ -72,11 +72,7 @@ where
         .as_ref()
         .map(|proof| bincode::serialize(proof).expect("register").len())
         .unwrap_or(0);
-    let aux = bundle
-        .aux
-        .as_ref()
-        .map(|proof| format!("{proof:?}").len())
-        .unwrap_or(0);
+    let aux = bincode::serialize(&bundle.aux).expect("aux").len();
     let shift = bincode::serialize(&bundle.shift_proofs)
         .expect("shift")
         .len();

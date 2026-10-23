@@ -11,7 +11,7 @@ use crate::binary_shout::{
 use crate::protocol::{Claim, ClaimKind, ClaimSet, ProtocolPlan, SegmentId};
 use crate::RuntimeError;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct GatedAuxProof {
     pub shout: BinaryShoutProof,
     pub shifts: Option<BinaryRouterProof>,
