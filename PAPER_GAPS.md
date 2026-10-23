@@ -786,3 +786,15 @@ This is a real dual-relation lockstep over one witness, not yet the paper's full
 - test proves/verifies the pair.
 
 This is a genuine dual-relation lockstep over one CPU row witness. Next: extend s1 to ADD/SUB/shift and combine with the shared-matrix CPU batch.
+
+
+### Dual lockstep for ADD
+
+`simd_dual` now generalizes `prove/verify_dual_cpu(width, op, ...)`:
+
+- XOR: s1 rows `(rs1_i + rs2_i) * 1 = rd_i`;
+- ADD: s1 rows `(a_i + b_i + carry_i) * 1 = sum_i` over the packed ALU adder variables;
+- s2 is still the full packed CPU ALU system;
+- zero rows pad s1 to the packed constraint count.
+
+Tests cover XOR and ADD lockstep over one witness. Next: SUB/shift s1 rows and the shared-matrix batch version.
