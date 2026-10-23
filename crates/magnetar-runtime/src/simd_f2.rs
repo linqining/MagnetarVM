@@ -6,6 +6,7 @@
 //! PCS/sum-check; choosing that proof backend is the next architecture
 //! decision.
 
+use crate::RuntimeError;
 use magnetar_constraint::VarId;
 use magnetar_proof::dual_field::{BitRelation, BitRow};
 use magnetar_proof::{prove_spartan, verify_spartan, Pcs, SpartanError, SpartanProof};
@@ -899,5 +900,98 @@ mod gated_adder_tests {
         for (bit, var) in adder.out.iter().enumerate() {
             assert_eq!(u64::from(disabled[*var]), 0, "bit {bit}");
         }
+    }
+}
+
+/// Packed s2 companion for the XOR bit relation: one linear parity check over
+/// the same F2 witness, followed by zero rows to match the bit relation's row
+/// count for lockstep.
+fn packed_xor_parity_system(
+    relation: &UniformBitAluRelation,
+    rows: usize,
+) -> magnetar_constraint::ConstraintSystem {
+    use magnetar_constraint::{ConstraintSystem, Expr};
+    let mut system = ConstraintSystem::new(relation.relation.num_vars);
+    let sum = |bits: &[VarId]| {
+        bits.iter()
+            .fold(Expr::constant(0u64), |expr, var| expr.add(Expr::var(*var)))
+    };
+    let mut left = relation.rs1.clone();
+    left.extend_from_slice(&relation.rs2);
+    system.add_constraint(sum(&left), Expr::constant(1u64), sum(&relation.rd));
+    for _ in 1..rows {
+        system.add_constraint(
+            Expr::constant(0u64),
+            Expr::constant(1u64),
+            Expr::constant(0u64),
+        );
+    }
+    system
+}
+
+/// Prove the F2 XOR bit relation and a packed parity relation in lockstep over
+/// the same witness.
+pub fn prove_xor_dual_relation(
+    width: usize,
+    left: u64,
+    right: u64,
+) -> Result<
+    (
+        magnetar_proof::LockstepProof<
+            magnetar_pcs::P3MosaicCommitment,
+            magnetar_pcs::P3MosaicOpening,
+        >,
+        magnetar_constraint::WitnessLayout,
+    ),
+    RuntimeError,
+> {
+    use magnetar_constraint::{Segment, SegmentKind, SegmentOwner, WitnessLayout};
+    use magnetar_pcs::P3SharedPcs;
+    use magnetar_proof::{prove_lockstep, witness_vector};
+
+    let relation = UniformBitAluRelation::xor(width);
+    let bits = relation.witness(left, right, true);
+    let witness = relation.relation.to_witness(&bits);
+    let s1 = relation.relation.to_system();
+    let rows = s1.constraints.len();
+    let s2 = packed_xor_parity_system(&relation, rows);
+    let z =
+        witness_vector(&s1, &witness).map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let total_bits = z.len().trailing_zeros() as usize;
+    let half = total_bits - 1;
+    let layout = WitnessLayout::new(vec![
+        Segment::new("lo", 0, 1 << half, SegmentKind::Direct, SegmentOwner::Cpu),
+        Segment::new(
+            "hi",
+            1 << half,
+            1 << half,
+            SegmentKind::Direct,
+            SegmentOwner::Cpu,
+        ),
+    ])
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+    let proof = prove_lockstep(&s1, &s2, &witness, &layout, &pcs)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok((proof, layout))
+}
+
+#[cfg(test)]
+mod lockstep_tests {
+    use super::*;
+    use magnetar_pcs::P3SharedPcs;
+    use magnetar_proof::{verify_lockstep, witness_vector};
+
+    #[test]
+    fn f2_bit_xor_and_packed_parity_run_in_lockstep() {
+        let (_proof, layout) = prove_xor_dual_relation(8, 0b1010_1010, 0b1100_1100).unwrap();
+        let relation = UniformBitAluRelation::xor(8);
+        let bits = relation.witness(0b1010_1010, 0b1100_1100, true);
+        let witness = relation.relation.to_witness(&bits);
+        let s1 = relation.relation.to_system();
+        let s2 = packed_xor_parity_system(&relation, s1.constraints.len());
+        let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+        let _ = witness_vector(&s1, &witness).unwrap();
+        verify_lockstep(&s1, &s2, &layout, &_proof, &pcs).unwrap();
     }
 }

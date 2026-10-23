@@ -760,3 +760,16 @@ is_alu + is_mem = 1
 - test checks 5+3=8 with gate=1 and all-zero output with gate=0.
 
 This gives a gated ADD primitive for row-selector composition. Fully gating the carry chain would require a gated carry product per bit; that is the next refinement if inactive rows must not compute carries.
+
+
+### F2 s1 + packed s2 lockstep
+
+First dual-relation lockstep landed:
+
+- s1: F2 XOR bit relation (`(a_i + b_i) * 1 = c_i`) over the bit witness;
+- s2: one packed parity constraint `Σa + Σb = Σc` over the same variables, padded with zero rows to match s1's row count;
+- both use the same `Witness` and a two-segment `WitnessLayout`;
+- one `LockstepProof` with `P3SharedPcs` proves both relations jointly;
+- test proves and verifies the pair.
+
+This is a real dual-relation lockstep over one witness, not yet the paper's full F2 / F2^128 CPU relations. It establishes the wiring: bit relation + packed companion + shared witness + one lockstep proof.
