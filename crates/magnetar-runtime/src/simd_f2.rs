@@ -1112,7 +1112,16 @@ mod gated_memory_tests {
     }
 }
 
-/// Selector-gated F2 ALU row (XOR/AND). The row is inactive when both op
+/// Selector-gated F2 ALU operations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GatedAluOp {
+    Xor,
+    And,
+    Add,
+    Inactive,
+}
+
+/// Selector-gated F2 ALU row (XOR/AND/ADD). The row is inactive when all op
 /// selectors are zero; output is zero in that case.
 #[derive(Clone, Debug)]
 pub struct GatedAluRow {
@@ -1123,6 +1132,7 @@ pub struct GatedAluRow {
     pub is_alu: VarId,
     pub is_xor: VarId,
     pub is_and: VarId,
+    pub is_add: VarId,
     pub relation: BitRelation,
 }
 
@@ -1134,17 +1144,30 @@ impl GatedAluRow {
         let is_alu = 3 * width;
         let is_xor = 3 * width + 1;
         let is_and = 3 * width + 2;
-        let one = 3 * width + 3;
-        let xor_diff = (3 * width + 4..4 * width + 4).collect::<Vec<_>>();
-        let xor_prod = (4 * width + 4..5 * width + 4).collect::<Vec<_>>();
-        let and_prod = (5 * width + 4..6 * width + 4).collect::<Vec<_>>();
-        let and_gated = (6 * width + 4..7 * width + 4).collect::<Vec<_>>();
-        let mut relation = BitRelation::new(7 * width + 4);
+        let is_add = 3 * width + 3;
+        let one = 3 * width + 4;
+        let xor_diff = (3 * width + 5..4 * width + 5).collect::<Vec<_>>();
+        let xor_prod = (4 * width + 5..5 * width + 5).collect::<Vec<_>>();
+        let and_prod = (5 * width + 5..6 * width + 5).collect::<Vec<_>>();
+        let and_gated = (6 * width + 5..7 * width + 5).collect::<Vec<_>>();
+        let carries = (7 * width + 5..8 * width + 6).collect::<Vec<_>>();
+        let p1 = (8 * width + 6..9 * width + 6).collect::<Vec<_>>();
+        let p2 = (9 * width + 6..10 * width + 6).collect::<Vec<_>>();
+        let p3 = (10 * width + 6..11 * width + 6).collect::<Vec<_>>();
+        let add_diff = (11 * width + 6..12 * width + 6).collect::<Vec<_>>();
+        let add_xor = (12 * width + 6..13 * width + 6).collect::<Vec<_>>();
+        let add_gated = (13 * width + 6..14 * width + 6).collect::<Vec<_>>();
+        let mut relation = BitRelation::new(14 * width + 7);
         relation.add(BitRow::new(vec![one], vec![one], vec![one]));
-        for selector in [is_alu, is_xor, is_and] {
+        for selector in [is_alu, is_xor, is_and, is_add] {
             relation.add(BitRow::new(vec![selector], vec![selector, one], Vec::new()));
         }
-        relation.add(BitRow::new(vec![is_xor, is_and], vec![one], vec![is_alu]));
+        relation.add(BitRow::new(
+            vec![is_xor, is_and, is_add],
+            vec![one],
+            vec![is_alu],
+        ));
+        relation.add(BitRow::new(vec![carries[0]], vec![one], Vec::new()));
         for bit in 0..width {
             relation.add(BitRow::new(
                 vec![a[bit], b[bit]],
@@ -1163,7 +1186,30 @@ impl GatedAluRow {
                 vec![and_gated[bit]],
             ));
             relation.add(BitRow::new(
-                vec![xor_prod[bit], and_gated[bit]],
+                vec![a[bit], b[bit]],
+                vec![one],
+                vec![add_diff[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![add_diff[bit], carries[bit]],
+                vec![one],
+                vec![add_xor[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![add_xor[bit]],
+                vec![is_add],
+                vec![add_gated[bit]],
+            ));
+            relation.add(BitRow::new(vec![a[bit]], vec![b[bit]], vec![p1[bit]]));
+            relation.add(BitRow::new(vec![a[bit]], vec![carries[bit]], vec![p2[bit]]));
+            relation.add(BitRow::new(vec![b[bit]], vec![carries[bit]], vec![p3[bit]]));
+            relation.add(BitRow::new(
+                vec![p1[bit], p2[bit], p3[bit]],
+                vec![one],
+                vec![carries[bit + 1]],
+            ));
+            relation.add(BitRow::new(
+                vec![xor_prod[bit], and_gated[bit], add_gated[bit]],
                 vec![one],
                 vec![out[bit]],
             ));
@@ -1176,36 +1222,47 @@ impl GatedAluRow {
             is_alu,
             is_xor,
             is_and,
+            is_add,
             relation,
         }
     }
 
-    pub fn witness(&self, left: u64, right: u64, op: Option<bool>) -> Vec<bool> {
+    pub fn witness(&self, left: u64, right: u64, op: GatedAluOp) -> Vec<bool> {
         let mut bits = vec![false; self.relation.num_vars];
-        bits[3 * self.width + 3] = true;
-        let (is_xor, is_and) = match op {
-            Some(true) => (true, false),
-            Some(false) => (false, true),
-            None => (false, false),
+        bits[3 * self.width + 4] = true;
+        let (is_xor, is_and, is_add) = match op {
+            GatedAluOp::Xor => (true, false, false),
+            GatedAluOp::And => (false, true, false),
+            GatedAluOp::Add => (false, false, true),
+            GatedAluOp::Inactive => (false, false, false),
         };
-        bits[self.is_alu] = is_xor || is_and;
+        bits[self.is_alu] = is_xor || is_and || is_add;
         bits[self.is_xor] = is_xor;
         bits[self.is_and] = is_and;
+        bits[self.is_add] = is_add;
+        let carries = 7 * self.width + 5;
         for bit in 0..self.width {
             let a = (left >> bit) & 1 == 1;
             let b = (right >> bit) & 1 == 1;
+            let carry = bits[carries + bit];
             bits[self.a[bit]] = a;
             bits[self.b[bit]] = b;
-            bits[3 * self.width + 4 + bit] = a ^ b;
-            bits[4 * self.width + 4 + bit] = is_xor && (a ^ b);
-            bits[5 * self.width + 4 + bit] = a && b;
-            bits[6 * self.width + 4 + bit] = is_and && (a && b);
-            bits[self.out[bit]] = if is_xor {
-                a ^ b
-            } else if is_and {
-                a && b
-            } else {
-                false
+            bits[3 * self.width + 5 + bit] = a ^ b;
+            bits[4 * self.width + 5 + bit] = is_xor && (a ^ b);
+            bits[5 * self.width + 5 + bit] = a && b;
+            bits[6 * self.width + 5 + bit] = is_and && (a && b);
+            bits[11 * self.width + 6 + bit] = a ^ b;
+            bits[12 * self.width + 6 + bit] = a ^ b ^ carry;
+            bits[13 * self.width + 6 + bit] = is_add && (a ^ b ^ carry);
+            bits[carries + bit + 1] = (a && b) || (a && carry) || (b && carry);
+            bits[8 * self.width + 6 + bit] = a && b;
+            bits[9 * self.width + 6 + bit] = a && carry;
+            bits[10 * self.width + 6 + bit] = b && carry;
+            bits[self.out[bit]] = match op {
+                GatedAluOp::Xor => a ^ b,
+                GatedAluOp::And => a && b,
+                GatedAluOp::Add => a ^ b ^ carry,
+                GatedAluOp::Inactive => false,
             };
         }
         bits
@@ -1219,11 +1276,17 @@ mod gated_alu_tests {
     #[test]
     fn gated_alu_selects_xor_and_and() {
         let row = GatedAluRow::new(8);
-        let xor = row.witness(0b1010_1010, 0b1100_1100, Some(true));
+        let xor = row.witness(0b1010_1010, 0b1100_1100, GatedAluOp::Xor);
         assert!(row.relation.check(&xor));
-        let and = row.witness(0b1010_1010, 0b1100_1100, Some(false));
+        let and = row.witness(0b1010_1010, 0b1100_1100, GatedAluOp::And);
         assert!(row.relation.check(&and));
-        let inactive = row.witness(0b1010_1010, 0b1100_1100, None);
+        let add = row.witness(0b0000_0101, 0b0000_0011, GatedAluOp::Add);
+        assert!(row.relation.check(&add));
+        let rd = row.out.iter().enumerate().fold(0u64, |value, (bit, var)| {
+            value | (u64::from(add[*var]) << bit)
+        });
+        assert_eq!(rd, 8);
+        let inactive = row.witness(0b1010_1010, 0b1100_1100, GatedAluOp::Inactive);
         assert!(row.relation.check(&inactive));
         for bit in 0..8 {
             assert!(!inactive[row.out[bit]]);

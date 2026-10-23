@@ -877,12 +877,13 @@ This is still an F2 bit-level gadget, not the packed CPU schema. It establishes 
 
 ### Scheme B: gated ALU row
 
-`GatedAluRow` composes XOR/AND under selectors:
+`GatedAluRow` composes XOR/AND/ADD under selectors:
 
 - `is_xor`, `is_and`, `is_alu` one-hot/boolean selectors;
 - `xor_diff = a XOR b`, `xor_prod = xor_diff * is_xor`;
 - `and_prod = a AND b`, `and_gated = and_prod * is_and`;
-- `out = xor_prod XOR and_gated`;
-- both selectors zero => all output bits zero.
+- ADD carries use the shared a/b bits, with `add_gated = add_xor * is_add`;
+- `out = xor_prod XOR and_gated XOR add_gated`;
+- all selectors zero => all output bits zero.
 
-Test checks XOR, AND, and inactive-zero rows; the XOR row also proves through `EmbeddedBitBackend` + P3. This is a row-level gated ALU gadget for the B rebuild.
+Test checks XOR, AND, ADD (5+3=8), and inactive-zero rows; the XOR row also proves through `EmbeddedBitBackend` + P3. This is a row-level gated ALU gadget for the B rebuild.
