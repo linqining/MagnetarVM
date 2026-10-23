@@ -808,6 +808,26 @@ impl CpuVarGroup {
 }
 
 impl UniformAluLayout {
+    pub fn shift_shamt_vars(&self) -> &[VarId] {
+        &self.shamt_sel
+    }
+
+    pub fn shift_left_stages(&self) -> &[Vec<VarId>] {
+        &self.shift.left_stages
+    }
+
+    pub fn shift_left_products(&self) -> &[Vec<VarId>] {
+        &self.shift.left_products
+    }
+
+    pub fn shift_right_stages(&self) -> &[Vec<VarId>] {
+        &self.shift.right_stages
+    }
+
+    pub fn shift_right_products(&self) -> &[Vec<VarId>] {
+        &self.shift.right_products
+    }
+
     pub fn shift_var_groups(&self) -> Vec<CpuVarGroup> {
         vec![
             CpuVarGroup {

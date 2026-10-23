@@ -838,4 +838,11 @@ This is the API prerequisite for the dual shared-matrix batch (F2 s1 + packed s2
 
 ### Dual batch shift coverage
 
-The dual batch now includes SLL/SRL/SRA (and immediate forms). The packed s2 relation is the full packed shift; the s1 bit relation is currently only **booleanity of the rd bits** (`rd_i * rd_i = rd_i`), because the packed shift's internal barrel variables are private. This is a valid necessary condition, but not yet a bit-level shift relation. Next: expose the packed shift layout's stage/result variables and build a real bit-level shift parity relation.
+The dual batch includes SLL/SRL/SRA (and immediate forms). `UniformAluLayout` now exposes the packed shift shamt/stage/product variables, and s1 enforces the barrel mux rows:
+
+```text
+(source + current) * shamt_bit = product
+(current + product) * selector = next
+```
+
+SLL/SRL/SRA all use the real packed stage variables, so the shift dual relation is no longer only booleanity.

@@ -60,16 +60,46 @@ fn bit_relation(layout: &magnetar_cpu::simd::UniformCpuRowLayout, op: StepOp) ->
         }
         StepOp::Sll | StepOp::Srl | StepOp::Sra | StepOp::Slli | StepOp::Srli | StepOp::Srai => {
             let groups = layout.var_groups();
-            let rd = groups
+            let rs1 = groups
                 .iter()
-                .find(|group| group.kind == CpuVarKind::Rd)
-                .expect("rd group");
-            for bit in 0..layout.width {
-                relation.add(BitRow::new(
-                    vec![rd.vars[bit]],
-                    vec![rd.vars[bit]],
-                    vec![rd.vars[bit]],
-                ));
+                .find(|group| group.kind == CpuVarKind::Rs1)
+                .expect("rs1 group");
+            let alu = &layout.step.alu;
+            let shamt = alu.shift_shamt_vars();
+            let (stages, products) = if matches!(op, StepOp::Sll | StepOp::Slli) {
+                (alu.shift_left_stages(), alu.shift_left_products())
+            } else {
+                (alu.shift_right_stages(), alu.shift_right_products())
+            };
+            let mut previous = rs1.vars.clone();
+            for stage in 0..stages.len() {
+                let shift = 1usize << stage;
+                for bit in 0..layout.width {
+                    let source = if matches!(op, StepOp::Sll | StepOp::Slli) {
+                        if bit >= shift {
+                            previous[bit - shift]
+                        } else {
+                            continue;
+                        }
+                    } else if bit + shift < layout.width {
+                        previous[bit + shift]
+                    } else if matches!(op, StepOp::Sra | StepOp::Srai) {
+                        rs1.vars[layout.width - 1]
+                    } else {
+                        continue;
+                    };
+                    relation.add(BitRow::new(
+                        vec![source, previous[bit]],
+                        vec![shamt[stage]],
+                        vec![products[stage][bit]],
+                    ));
+                    relation.add(BitRow::new(
+                        vec![previous[bit], products[stage][bit]],
+                        vec![alu.selectors[op.index()]],
+                        vec![stages[stage][bit]],
+                    ));
+                }
+                previous = stages[stage].clone();
             }
         }
         _ => panic!("unsupported dual CPU op"),
