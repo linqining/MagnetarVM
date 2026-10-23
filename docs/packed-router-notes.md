@@ -38,3 +38,19 @@ non-zero but the padded MLE selects the wrong cycle. Empty (zero-length) Router
 points therefore need a separate evaluation convention before packed Router can
 be completed. The prototype was removed rather than shipping a mismatched
 opening.
+
+
+## Follow-up: point 5 is not empty
+
+A direct diagnostic of `prove_binary_router_claims` shows:
+
+```text
+point 5 len 1 firstcol 135 firstval 0x6496... fold 0x6496...
+```
+
+So the valid group point has one coordinate and its reference value matches
+`fold_all(table.column[135], point)`. The earlier "empty point" diagnosis was
+wrong. The packed Router failure is therefore in the group 5 packed table
+construction (its direct MLE is zero while the table column fold is non-zero),
+not in an empty-point convention. That table construction needs a dedicated
+debug pass before retrying packed Router.
