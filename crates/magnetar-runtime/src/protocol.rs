@@ -1272,7 +1272,7 @@ impl<'a> UnifiedProveContext<'a> {
             return Ok(());
         };
         let (claim, claim_points, claim_values) =
-            prove_binary_router_claims(witness, commitment, *index)
+            prove_binary_router_claims(witness, commitment, *index, b"")
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         self.points.extend(claim_points);
         self.values.extend(claim_values);
@@ -1290,7 +1290,7 @@ impl<'a> UnifiedProveContext<'a> {
             return Ok(());
         };
         let (claim, claim_points, claim_values) =
-            prove_binary_router_claims(witness, commitment, *index)
+            prove_binary_router_claims(witness, commitment, *index, b"")
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         self.points.extend(claim_points);
         self.values.extend(claim_values);
@@ -1568,7 +1568,7 @@ impl<'a> UnifiedVerifyContext<'a> {
             return Ok(());
         };
         let Some((points, values)) =
-            verify_binary_router_claims(witness, claim, &self.proof.cpu.commitment, index)
+            verify_binary_router_claims(witness, claim, &self.proof.cpu.commitment, index, b"")
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?
         else {
             return Err(RuntimeError::Proof(
@@ -1589,7 +1589,7 @@ impl<'a> UnifiedVerifyContext<'a> {
             return Ok(());
         };
         let Some((points, values)) =
-            verify_binary_router_claims(witness, claim, &self.proof.cpu.commitment, index)
+            verify_binary_router_claims(witness, claim, &self.proof.cpu.commitment, index, b"")
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?
         else {
             return Err(RuntimeError::Proof(

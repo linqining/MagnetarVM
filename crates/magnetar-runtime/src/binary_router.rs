@@ -659,6 +659,7 @@ pub(crate) fn prove_binary_router_claims(
     witness: &BinaryRouterWitness,
     commitment: &P3MosaicCommitment,
     table_index: usize,
+    binding: &[u8],
 ) -> Result<ClaimBundle<BinaryRouterProof>, ProofError> {
     witness.validate()?;
     let n = witness.cycle_bits;
@@ -673,6 +674,7 @@ pub(crate) fn prove_binary_router_claims(
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-router-boolean");
     absorb_commitment(&mut transcript, commitment);
+    transcript.absorb("packed-binding", binding);
     let col_bits = bit_columns.next_power_of_two().trailing_zeros() as usize;
     let rho_c = sample_point(&mut transcript, col_bits);
     let rho_j = sample_point(&mut transcript, n);
@@ -725,6 +727,7 @@ pub(crate) fn prove_binary_router_claims(
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-router");
     absorb_commitment(&mut transcript, commitment);
+    transcript.absorb("packed-binding", binding);
     let rho_o = sample_point(&mut transcript, WORD_BITS.trailing_zeros() as usize);
     let rho_j = sample_point(&mut transcript, n);
     let eq_o = eq_vector(&rho_o, WORD_BITS);
@@ -761,6 +764,7 @@ pub(crate) fn prove_binary_router_claims(
     };
     let mut transcript = Sha256Transcript::new("magnetar-binary-router-offset");
     absorb_commitment(&mut transcript, commitment);
+    transcript.absorb("packed-binding", binding);
     let offset_rho_j = sample_point(&mut transcript, n);
     let deltas = (0..3)
         .map(|_| challenge(&mut transcript, "delta"))
@@ -805,6 +809,7 @@ pub(crate) fn prove_binary_router_claims(
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-router-width");
     absorb_commitment(&mut transcript, commitment);
+    transcript.absorb("packed-binding", binding);
     let width_rho_j = sample_point(&mut transcript, n);
     let width_deltas = (0..4)
         .map(|_| challenge(&mut transcript, "delta"))
@@ -847,6 +852,7 @@ pub(crate) fn prove_binary_router_claims(
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-router-shift");
     absorb_commitment(&mut transcript, commitment);
+    transcript.absorb("packed-binding", binding);
     let shift_rho_j = sample_point(&mut transcript, n);
     let shift_eq_j = eq_vector(&shift_rho_j, cycles);
     let mut shift_factors = vec![vec![F2_128::from(0u64); cycles]; 4];
@@ -869,6 +875,7 @@ pub(crate) fn prove_binary_router_claims(
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-router-valid");
     absorb_commitment(&mut transcript, commitment);
+    transcript.absorb("packed-binding", binding);
     let valid_rho_j = sample_point(&mut transcript, n);
     let valid_deltas = (0..2)
         .map(|_| challenge(&mut transcript, "delta"))
@@ -926,6 +933,7 @@ pub(crate) fn prove_binary_router_claims(
     ) = if has_q {
         let mut transcript = Sha256Transcript::new("magnetar-binary-router-q");
         absorb_commitment(&mut transcript, commitment);
+        transcript.absorb("packed-binding", binding);
         let q_rho_j = sample_point(&mut transcript, n);
         let _q_rho_h = sample_point(&mut transcript, 8);
         let q_eq_j = eq_vector(&q_rho_j, cycles);
@@ -954,6 +962,7 @@ pub(crate) fn prove_binary_router_claims(
         };
         let mut transcript = Sha256Transcript::new("magnetar-binary-router-hq");
         absorb_commitment(&mut transcript, commitment);
+        transcript.absorb("packed-binding", binding);
         let hq_rho_j = sample_point(&mut transcript, n);
         let _hq_rho_h = sample_point(&mut transcript, 8);
         let hq_eq_j = eq_vector(&hq_rho_j, cycles);
@@ -1097,7 +1106,7 @@ pub fn prove_binary_router(witness: &BinaryRouterWitness) -> Result<BinaryRouter
     let pcs = P3BinaryPcs::new(100);
     let table = witness.table();
     let commitment = pcs.commit_mosaic(core::slice::from_ref(&table))?;
-    let (mut proof, points, _) = prove_binary_router_claims(witness, &commitment, 0)?;
+    let (mut proof, points, _) = prove_binary_router_claims(witness, &commitment, 0, b"")?;
     proof.opening = Some(pcs.open_mosaic(core::slice::from_ref(&table), &points)?);
     Ok(proof)
 }
@@ -1167,6 +1176,7 @@ pub(crate) fn verify_binary_router_claims(
     proof: &BinaryRouterProof,
     commitment: &P3MosaicCommitment,
     table_index: usize,
+    binding: &[u8],
 ) -> Result<Option<ClaimPoints>, ProofError> {
     witness.validate()?;
     let n = witness.cycle_bits;
@@ -1188,6 +1198,7 @@ pub(crate) fn verify_binary_router_claims(
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-router-boolean");
     absorb_commitment(&mut transcript, commitment);
+    transcript.absorb("packed-binding", binding);
     let rho_c = sample_point(&mut transcript, col_bits);
     let rho_j = sample_point(&mut transcript, n);
     if proof.boolean.column_point != rho_c || proof.boolean.cycle_point != rho_j {
@@ -1213,6 +1224,7 @@ pub(crate) fn verify_binary_router_claims(
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-router");
     absorb_commitment(&mut transcript, commitment);
+    transcript.absorb("packed-binding", binding);
     let rho_o = sample_point(&mut transcript, WORD_BITS.trailing_zeros() as usize);
     let rho_j = sample_point(&mut transcript, n);
     let eq_o = eq_vector(&rho_o, WORD_BITS);
@@ -1250,6 +1262,7 @@ pub(crate) fn verify_binary_router_claims(
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-router-offset");
     absorb_commitment(&mut transcript, commitment);
+    transcript.absorb("packed-binding", binding);
     let offset_rho_j = sample_point(&mut transcript, n);
     let deltas = (0..3)
         .map(|_| challenge(&mut transcript, "delta"))
@@ -1276,6 +1289,7 @@ pub(crate) fn verify_binary_router_claims(
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-router-width");
     absorb_commitment(&mut transcript, commitment);
+    transcript.absorb("packed-binding", binding);
     let width_rho_j = sample_point(&mut transcript, n);
     let width_deltas = (0..4)
         .map(|_| challenge(&mut transcript, "delta"))
@@ -1315,6 +1329,7 @@ pub(crate) fn verify_binary_router_claims(
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-router-shift");
     absorb_commitment(&mut transcript, commitment);
+    transcript.absorb("packed-binding", binding);
     let shift_rho_j = sample_point(&mut transcript, n);
     let Some((sum, shift_challenges)) =
         replay_terms_derived(&proof.shift_rounds, F2_128::from(0u64), &mut transcript)
@@ -1332,6 +1347,7 @@ pub(crate) fn verify_binary_router_claims(
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-router-valid");
     absorb_commitment(&mut transcript, commitment);
+    transcript.absorb("packed-binding", binding);
     let valid_rho_j = sample_point(&mut transcript, n);
     let valid_deltas = (0..2)
         .map(|_| challenge(&mut transcript, "delta"))
@@ -1368,6 +1384,7 @@ pub(crate) fn verify_binary_router_claims(
     if has_q {
         let mut transcript = Sha256Transcript::new("magnetar-binary-router-q");
         absorb_commitment(&mut transcript, commitment);
+        transcript.absorb("packed-binding", binding);
         let q_rho_j = sample_point(&mut transcript, n);
         let _q_rho_h = sample_point(&mut transcript, 8);
         let Some((sum, q_challenges)) = replay_terms_derived(
@@ -1392,6 +1409,7 @@ pub(crate) fn verify_binary_router_claims(
 
         let mut transcript = Sha256Transcript::new("magnetar-binary-router-hq");
         absorb_commitment(&mut transcript, commitment);
+        transcript.absorb("packed-binding", binding);
         let hq_rho_j = sample_point(&mut transcript, n);
         let _hq_rho_h = sample_point(&mut transcript, 8);
         let Some((sum, hq_challenges)) = replay_terms_derived(
@@ -1522,7 +1540,7 @@ pub fn verify_binary_router(
         return Ok(false);
     };
     let Some((points, values)) =
-        verify_binary_router_claims(witness, proof, &opening.commitment, 0)?
+        verify_binary_router_claims(witness, proof, &opening.commitment, 0, b"")?
     else {
         return Ok(false);
     };

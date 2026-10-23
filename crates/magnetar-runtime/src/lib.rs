@@ -2510,7 +2510,7 @@ fn prove_aux_trace(trace: &Trace) -> Result<Option<AuxTraceProof>, RuntimeError>
     let shift_router =
         if let (Some(witness), Some(index)) = (&shift_router_witness, shift_router_index) {
             let (claim, claim_points, claim_values) =
-                prove_binary_router_claims(witness, &commitment, index)
+                prove_binary_router_claims(witness, &commitment, index, b"")
                     .map_err(|error| RuntimeError::Proof(error.to_string()))?;
             points.extend(claim_points);
             values.extend(claim_values);
@@ -2521,7 +2521,7 @@ fn prove_aux_trace(trace: &Trace) -> Result<Option<AuxTraceProof>, RuntimeError>
     let store_router =
         if let (Some(witness), Some(index)) = (&store_router_witness, store_router_index) {
             let (claim, claim_points, claim_values) =
-                prove_binary_router_claims(witness, &commitment, index)
+                prove_binary_router_claims(witness, &commitment, index, b"")
                     .map_err(|error| RuntimeError::Proof(error.to_string()))?;
             points.extend(claim_points);
             values.extend(claim_values);
@@ -2616,7 +2616,7 @@ fn verify_aux_trace(trace: &Trace, aux: Option<&AuxTraceProof>) -> Result<(), Ru
         (&shift_router_witness, &aux.shift_router, shift_router_index)
     {
         let Some((claim_points, claim_values)) =
-            verify_binary_router_claims(witness, claim, commitment, index)
+            verify_binary_router_claims(witness, claim, commitment, index, b"")
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?
         else {
             return Err(RuntimeError::Proof(
@@ -2630,7 +2630,7 @@ fn verify_aux_trace(trace: &Trace, aux: Option<&AuxTraceProof>) -> Result<(), Ru
         (&store_router_witness, &aux.store_router, store_router_index)
     {
         let Some((claim_points, claim_values)) =
-            verify_binary_router_claims(witness, claim, commitment, index)
+            verify_binary_router_claims(witness, claim, commitment, index, b"")
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?
         else {
             return Err(RuntimeError::Proof(

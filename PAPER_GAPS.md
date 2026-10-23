@@ -1633,3 +1633,30 @@ Trace bundle (`add, xor, slli, ecall`) after integration:
 
 Aux dropped by ~13 KB (the Shout difference); the remaining 124 KB is dominated
 by the unpacked shift/store Router proofs.
+
+
+### Packed BinaryRouter merged and integrated
+
+`PackedRouterProof` now merges every Router group in one proof:
+
+- boolean groups and q use packed bit tables with ring-switch leaf batches;
+- `shift_code` and `hq` are field-valued and use P3 field-table batches;
+- all group commitments are fixed before the Router challenges (binding threaded through `prove/verify_binary_router_claims`).
+
+Benchmark (`packed_router_bench`, shift router, small trace):
+
+| proof | bytes | prove |
+|---|---:|---:|
+| reference BinaryRouter | 119,433 | 4.5 ms |
+| packed Router | **87,201** | **3.4 ms** |
+
+`GatedAuxProof` now carries `packed_shifts` / `packed_stores` and falls back to the reference Router proofs only when packed proofs are absent.
+
+Trace bundle after integration:
+
+| backend | CPU | register | aux | total |
+|---|---:|---:|---:|---:|
+| M4 | 131,144 | 42,257 | 91,401 | 264,910 |
+| M5 | 10,736 | 42,257 | 91,401 | **144,502** |
+
+Aux dropped from 124,303 to 91,401 B; M5 bundle dropped from 177,404 to 144,502 B.

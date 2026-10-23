@@ -3,9 +3,10 @@
 use magnetar_spec::Trace;
 
 use crate::binary_router::{
-    prove_binary_router, verify_binary_router, BinaryRouterProof, BinaryRouterWitness, RouterMode,
+    verify_binary_router, BinaryRouterProof, BinaryRouterWitness, RouterMode,
 };
 use crate::binary_shout::{verify_binary_shout, BinaryShoutProof, BinaryShoutWitness};
+use crate::packed_router::{prove_packed_router, verify_packed_router, PackedRouterProof};
 use crate::packed_shout::{prove_packed_shout, verify_packed_shout, PackedShoutProof};
 use crate::protocol::{Claim, ClaimKind, ClaimSet, ProtocolPlan, SegmentId};
 use crate::RuntimeError;
@@ -16,6 +17,8 @@ pub struct GatedAuxProof {
     pub packed_shout: Option<PackedShoutProof>,
     pub shifts: Option<BinaryRouterProof>,
     pub stores: Option<BinaryRouterProof>,
+    pub packed_shifts: Option<PackedRouterProof>,
+    pub packed_stores: Option<PackedRouterProof>,
 }
 
 pub fn prove_gated_aux(trace: &Trace) -> Result<GatedAuxProof, RuntimeError> {
@@ -24,17 +27,19 @@ pub fn prove_gated_aux(trace: &Trace) -> Result<GatedAuxProof, RuntimeError> {
     let packed_shout = prove_packed_shout(&shout_witness)
         .map_err(|error| RuntimeError::Proof(format!("packed shout: {error}")))?;
 
-    let shifts = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Shifts)
+    let packed_shifts = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Shifts)
         .ok()
-        .and_then(|witness| prove_binary_router(&witness).ok());
-    let stores = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Stores)
+        .and_then(|witness| prove_packed_router(&witness).ok());
+    let packed_stores = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Stores)
         .ok()
-        .and_then(|witness| prove_binary_router(&witness).ok());
+        .and_then(|witness| prove_packed_router(&witness).ok());
     Ok(GatedAuxProof {
         shout: None,
         packed_shout: Some(packed_shout),
-        shifts,
-        stores,
+        shifts: None,
+        stores: None,
+        packed_shifts,
+        packed_stores,
     })
 }
 
@@ -50,13 +55,21 @@ pub fn verify_gated_aux(trace: &Trace, proof: &GatedAuxProof) -> Result<(), Runt
         return Err(RuntimeError::Proof("missing Shout proof".into()));
     }
 
-    if let Some(shifts) = &proof.shifts {
+    if let Some(packed) = &proof.packed_shifts {
+        let witness = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Shifts)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        verify_packed_router(&witness, packed)?;
+    } else if let Some(shifts) = &proof.shifts {
         let witness = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Shifts)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         verify_binary_router(&witness, shifts)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     }
-    if let Some(stores) = &proof.stores {
+    if let Some(packed) = &proof.packed_stores {
+        let witness = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Stores)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        verify_packed_router(&witness, packed)?;
+    } else if let Some(stores) = &proof.stores {
         let witness = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Stores)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         verify_binary_router(&witness, stores)
@@ -144,7 +157,7 @@ mod tests {
         )
         .unwrap();
         let proof = prove_gated_aux(&trace).unwrap();
-        assert!(proof.shifts.is_some());
+        assert!(proof.packed_shifts.is_some());
         assert!(proof.shout.is_none());
         assert!(proof.packed_shout.is_some());
         verify_gated_aux(&trace, &proof).unwrap();
@@ -231,7 +244,7 @@ mod tests {
         )
         .unwrap();
         let proof = prove_gated_aux(&trace).unwrap();
-        assert!(proof.stores.is_some());
+        assert!(proof.packed_stores.is_some());
         verify_gated_aux(&trace, &proof).unwrap();
     }
 }
