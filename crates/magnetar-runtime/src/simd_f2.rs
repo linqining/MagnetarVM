@@ -1361,6 +1361,36 @@ impl GatedCpuRow {
                 Vec::new(),
             ));
         }
+        // Enforce next_pc = pc + 4 (mod 2^width).
+        let carry = (relation.num_vars..relation.num_vars + width).collect::<Vec<_>>();
+        relation.num_vars += width;
+        for bit in 0..width {
+            if bit < 2 {
+                relation.add(BitRow::new(
+                    vec![next_pc[bit], pc[bit]],
+                    vec![alu.one],
+                    Vec::new(),
+                ));
+            } else if bit == 2 {
+                relation.add(BitRow::new(
+                    vec![pc[bit], alu.one],
+                    vec![alu.one],
+                    vec![next_pc[bit]],
+                ));
+                relation.add(BitRow::new(vec![carry[bit]], vec![alu.one], vec![pc[bit]]));
+            } else {
+                relation.add(BitRow::new(
+                    vec![pc[bit], carry[bit - 1]],
+                    vec![alu.one],
+                    vec![next_pc[bit]],
+                ));
+                relation.add(BitRow::new(
+                    vec![pc[bit]],
+                    vec![carry[bit - 1]],
+                    vec![carry[bit]],
+                ));
+            }
+        }
         Self {
             width,
             alu,
@@ -1413,6 +1443,12 @@ impl GatedCpuRow {
             bits[self.pc[bit]] = (pc >> bit) & 1 == 1;
             bits[self.next_pc[bit]] = ((pc + 4) >> bit) & 1 == 1;
         }
+        let carry_start = self.relation.num_vars - self.width;
+        let pc_bit = |bit: usize| (pc >> bit) & 1 == 1;
+        bits[carry_start + 2] = pc_bit(2);
+        for bit in 3..self.width {
+            bits[carry_start + bit] = pc_bit(bit) && bits[carry_start + bit - 1];
+        }
         bits
     }
 
@@ -1459,6 +1495,9 @@ mod gated_cpu_row_tests {
         assert!(row.relation.check(&placed));
         let placed_witness = row.relation.to_witness(&placed);
         assert!(row.packed_companion_system().check(&placed_witness).is_ok());
+        let mut wrong = placed.clone();
+        wrong[row.next_pc[3]] = !wrong[row.next_pc[3]];
+        assert!(!row.relation.check(&wrong));
         let companion = row.packed_companion_system();
         let alu_witness = row.relation.to_witness(&alu);
         if let Err(error) = companion.check(&alu_witness) {

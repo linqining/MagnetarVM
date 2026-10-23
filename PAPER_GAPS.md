@@ -1048,3 +1048,22 @@ Release q=2/4/8 (`simd_gated_dual_scaling`, mixed ALU/memory):
 | 8 | 132,200 B | 15.2 ms | 7.2 ms |
 
 Proof size is still variable/commitment-bound, so the s2 row reduction does not change it materially. Test `gated_alu_packed_companion_verifies` covers XOR/AND/ADD; `gated_memory_packed_select_verifies` covers active/inactive memory data.
+
+
+### Milestone 3: PC increment cross-step
+
+`GatedCpuRow` now enforces `next_pc = pc + 4` inside every row:
+
+- bits 0/1 unchanged;
+- bit 2 flips and produces carry `carry_2 = pc_2`;
+- bits >= 3 use `next_i = pc_i XOR carry_{i-1}`, `carry_i = pc_i AND carry_{i-1}`.
+
+The gated dual batch's extra PC-chain rows then tie `next_pc_j = pc_{j+1}`. Test checks a placed PC (0x1004), rejects a tampered `next_pc` bit, and q=8 still proves/verifies.
+
+Release q=2/4/8 after PC+4:
+
+| cycles | proof | prove | verify |
+|---:|---:|---:|---:|
+| 2 | 85,560 B | 5.5 ms | 2.8 ms |
+| 4 | 107,056 B | 8.4 ms | 4.8 ms |
+| 8 | 133,512 B | 15.7 ms | 7.7 ms |
