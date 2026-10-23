@@ -859,3 +859,15 @@ SLL/SRL/SRA all use the real packed stage variables, so the shift dual relation 
 | 8 | 199,128 | 68.9 ms | 26.6 ms |
 
 Proof size grows sublinearly (roughly +20% per doubling), while prover time grows roughly linearly with q. This is the first scaling evidence for the dual shared-matrix path.
+
+
+### Scheme B: gated memory row
+
+First B-scheme row-level gadget landed:
+
+- `GatedMemoryRow` composes `GatedBitAdder` with gated data bits;
+- address output and data output are zero when `is_mem = 0`;
+- data input bits are always present and explicitly gated;
+- test checks active address/data and all-zero inactive outputs.
+
+This is still an F2 bit-level gadget, not the packed CPU schema. It establishes the row-level composition pattern (gated adder + gated columns) that the packed rebuild will follow.

@@ -995,3 +995,68 @@ mod lockstep_tests {
         verify_lockstep(&s1, &s2, &layout, &_proof, &pcs).unwrap();
     }
 }
+
+/// Selector-gated F2 memory row: address adder and data output are both gated
+/// by `is_mem`. This is the first B-scheme gadget that composes gated ALU
+/// primitives into a row-level relation.
+#[derive(Clone, Debug)]
+pub struct GatedMemoryRow {
+    pub width: usize,
+    pub adder: GatedBitAdder,
+    pub data_in: Vec<VarId>,
+    pub data: Vec<VarId>,
+    pub relation: BitRelation,
+}
+
+impl GatedMemoryRow {
+    pub fn new(width: usize) -> Self {
+        let adder = GatedBitAdder::new(width);
+        let mut relation = adder.relation.clone();
+        let data_in = (relation.num_vars..relation.num_vars + width).collect::<Vec<_>>();
+        let data = (relation.num_vars + width..relation.num_vars + 2 * width).collect::<Vec<_>>();
+        relation.num_vars += 2 * width;
+        for bit in 0..width {
+            relation.add(BitRow::new(
+                vec![data_in[bit]],
+                vec![adder.gate],
+                vec![data[bit]],
+            ));
+        }
+        Self {
+            width,
+            adder,
+            data_in,
+            data,
+            relation,
+        }
+    }
+
+    pub fn witness(&self, rs1: u64, imm: u64, value: u64, is_mem: bool) -> Vec<bool> {
+        let mut bits = self.adder.witness(rs1, imm, is_mem);
+        bits.resize(self.relation.num_vars, false);
+        for bit in 0..self.width {
+            let value_bit = (value >> bit) & 1 == 1;
+            bits[self.data_in[bit]] = value_bit;
+            bits[self.data[bit]] = is_mem && value_bit;
+        }
+        bits
+    }
+}
+
+#[cfg(test)]
+mod gated_memory_tests {
+    use super::*;
+
+    #[test]
+    fn gated_memory_zeroes_address_and_data_when_inactive() {
+        let row = GatedMemoryRow::new(8);
+        let active = row.witness(0x10, 0x02, 0x34, true);
+        assert!(row.relation.check(&active));
+        let inactive = row.witness(0x10, 0x02, 0x34, false);
+        assert!(row.relation.check(&inactive));
+        for bit in 0..8 {
+            assert!(!inactive[row.adder.out[bit]], "addr bit {bit}");
+            assert!(!inactive[row.data[bit]], "data bit {bit}");
+        }
+    }
+}
