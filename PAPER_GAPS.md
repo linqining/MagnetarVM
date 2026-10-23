@@ -887,3 +887,16 @@ This is still an F2 bit-level gadget, not the packed CPU schema. It establishes 
 - all selectors zero => all output bits zero.
 
 Test checks XOR, AND, ADD (5+3=8), and inactive-zero rows; the XOR row also proves through `EmbeddedBitBackend` + P3. This is a row-level gated ALU gadget for the B rebuild.
+
+
+### Scheme B: combined gated CPU row
+
+`GatedCpuRow` merges `GatedAluRow` and `GatedMemoryRow` into one F2 schema:
+
+- disjoint ALU/memory variable ranges;
+- `is_alu + is_mem = 1` across the two sub-rows;
+- ALU rows: `GatedAluOp::{Xor,And,Add,Inactive}`, memory side inactive;
+- memory rows: gated address/data, ALU side inactive;
+- inactive sub-row outputs are zero.
+
+`prove_gated_cpu_batch` / `verify_gated_cpu_batch` batch q combined rows through `prove_shared_simd_spartan`. Test proves an ADD row and a memory row together.

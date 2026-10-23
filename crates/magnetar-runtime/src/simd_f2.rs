@@ -1133,6 +1133,7 @@ pub struct GatedAluRow {
     pub is_xor: VarId,
     pub is_and: VarId,
     pub is_add: VarId,
+    pub one: VarId,
     pub relation: BitRelation,
 }
 
@@ -1223,6 +1224,7 @@ impl GatedAluRow {
             is_xor,
             is_and,
             is_add,
+            one,
             relation,
         }
     }
@@ -1297,5 +1299,166 @@ mod gated_alu_tests {
         };
         let proof = backend.prove(&row.relation, &xor).unwrap();
         assert!(backend.verify(&row.relation, &proof).unwrap());
+    }
+}
+
+/// Combined selector-gated ALU + memory row. ALU and memory occupy disjoint
+/// variable ranges; exactly one side is active (`is_alu + is_mem = 1`).
+#[derive(Clone, Debug)]
+pub struct GatedCpuRow {
+    pub width: usize,
+    pub alu: GatedAluRow,
+    pub memory: GatedMemoryRow,
+    pub memory_offset: usize,
+    pub relation: BitRelation,
+}
+
+impl GatedCpuRow {
+    pub fn new(width: usize) -> Self {
+        let alu = GatedAluRow::new(width);
+        let memory = GatedMemoryRow::new(width);
+        let memory_offset = alu.relation.num_vars;
+        let mut relation = alu.relation.clone();
+        relation.num_vars += memory.relation.num_vars;
+        for row in &memory.relation.rows {
+            let shift = |vars: &[VarId]| {
+                vars.iter()
+                    .map(|var| *var + memory_offset)
+                    .collect::<Vec<_>>()
+            };
+            relation.add(BitRow::new(shift(&row.a), shift(&row.b), shift(&row.c)));
+        }
+        relation.add(BitRow::new(
+            vec![alu.is_alu, memory_offset + memory.adder.gate],
+            vec![alu.one],
+            vec![alu.one],
+        ));
+        Self {
+            width,
+            alu,
+            memory,
+            memory_offset,
+            relation,
+        }
+    }
+
+    pub fn alu_witness(&self, left: u64, right: u64, op: GatedAluOp) -> Vec<bool> {
+        let mut bits = self.alu.witness(left, right, op);
+        let memory = self.memory.witness(0, 0, 0, false);
+        bits.extend(memory);
+        bits
+    }
+
+    pub fn memory_witness(&self, rs1: u64, imm: u64, value: u64, is_mem: bool) -> Vec<bool> {
+        let mut bits = self.alu.witness(0, 0, GatedAluOp::Inactive);
+        let memory = self.memory.witness(rs1, imm, value, is_mem);
+        bits.extend(memory);
+        bits
+    }
+}
+
+#[cfg(test)]
+mod gated_cpu_row_tests {
+    use super::*;
+
+    #[test]
+    fn combined_gated_row_selects_alu_or_memory() {
+        let row = GatedCpuRow::new(8);
+        let alu = row.alu_witness(0b1010_1010, 0b1100_1100, GatedAluOp::Xor);
+        assert!(row.relation.check(&alu));
+        assert!(alu[row.alu.is_alu]);
+        assert!(!alu[row.memory_offset + row.memory.adder.gate]);
+
+        let memory = row.memory_witness(0x10, 2, 0x34, true);
+        assert!(row.relation.check(&memory));
+        assert!(!memory[row.alu.is_alu]);
+        assert!(memory[row.memory_offset + row.memory.adder.gate]);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum GatedCpuRowInput {
+    Alu {
+        left: u64,
+        right: u64,
+        op: GatedAluOp,
+    },
+    Memory {
+        rs1: u64,
+        imm: u64,
+        value: u64,
+        is_mem: bool,
+    },
+}
+
+pub fn prove_gated_cpu_batch(
+    width: usize,
+    rows: &[GatedCpuRowInput],
+) -> Result<
+    magnetar_proof::SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>,
+    RuntimeError,
+> {
+    use magnetar_proof::prove_shared_simd_spartan;
+
+    if rows.is_empty() || !rows.len().is_power_of_two() {
+        return Err(RuntimeError::Proof(
+            "gated CPU batch must be a nonzero power of two".into(),
+        ));
+    }
+    let row = GatedCpuRow::new(width);
+    let system = row.relation.to_system();
+    let mut witnesses = Vec::new();
+    for input in rows {
+        let bits = match input {
+            GatedCpuRowInput::Alu { left, right, op } => row.alu_witness(*left, *right, *op),
+            GatedCpuRowInput::Memory {
+                rs1,
+                imm,
+                value,
+                is_mem,
+            } => row.memory_witness(*rs1, *imm, *value, *is_mem),
+        };
+        witnesses.push(row.relation.to_witness(&bits));
+    }
+    let pcs = magnetar_pcs::P3BinaryPcs::new(100);
+    prove_shared_simd_spartan(&system, &witnesses, &pcs)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))
+}
+
+pub fn verify_gated_cpu_batch(
+    width: usize,
+    instances: usize,
+    proof: &magnetar_proof::SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>,
+) -> Result<(), RuntimeError> {
+    use magnetar_proof::verify_shared_simd_spartan;
+
+    let row = GatedCpuRow::new(width);
+    let system = row.relation.to_system();
+    let pcs = magnetar_pcs::P3BinaryPcs::new(100);
+    verify_shared_simd_spartan(&system, instances, proof, &pcs)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))
+}
+
+#[cfg(test)]
+mod gated_cpu_batch_tests {
+    use super::*;
+
+    #[test]
+    fn combined_gated_row_batch_round_trips() {
+        let rows = [
+            GatedCpuRowInput::Alu {
+                left: 0b1010_1010,
+                right: 0b1100_1100,
+                op: GatedAluOp::Add,
+            },
+            GatedCpuRowInput::Memory {
+                rs1: 0x10,
+                imm: 2,
+                value: 0x34,
+                is_mem: true,
+            },
+        ];
+        let proof = prove_gated_cpu_batch(8, &rows).unwrap();
+        verify_gated_cpu_batch(8, rows.len(), &proof).unwrap();
     }
 }
