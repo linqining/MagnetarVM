@@ -704,7 +704,11 @@ mod tests {
                     GatedCpuRowInput::Alu {
                         left: 0x12 + index as u64,
                         right: 0x34 + index as u64,
-                        op: crate::simd_f2::GatedAluOp::Add,
+                        op: if index % 2 == 0 {
+                            crate::simd_f2::GatedAluOp::Add
+                        } else {
+                            crate::simd_f2::GatedAluOp::Sub
+                        },
                     },
                 )
             })
@@ -843,7 +847,11 @@ mod tests {
                     GatedCpuRowInput::Alu {
                         left: 0x12 + index as u64,
                         right: 0x34 + index as u64,
-                        op: crate::simd_f2::GatedAluOp::Add,
+                        op: if index % 2 == 0 {
+                            crate::simd_f2::GatedAluOp::Add
+                        } else {
+                            crate::simd_f2::GatedAluOp::Sub
+                        },
                     },
                 )
             })

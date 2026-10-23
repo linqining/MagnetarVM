@@ -1328,3 +1328,15 @@ This closes the register-proof component; bundle-level Register claim replacemen
 `prove_gated_bundle_with_registers` attaches a p=2 register-file BinaryTwist proof to the same CPU/RAM bundle; verification rebuilds the register witness from the stored events and initial state and checks it.
 
 Test `gated_bundle_attaches_register_twist` proves/verifies an ALU + memory bundle with a register proof attached. Register claims are now backed by an actual BinaryTwist proof in the bundle, not only claim routing.
+
+
+### P0 progress: SUB in the gated ALU row
+
+`GatedAluRow` now supports XOR/AND/ADD/SUB:
+
+- SUB uses `b_eff = ~b` and carry-in 1;
+- shared a/b bits, separate carry chain and majority products;
+- output mux includes `sub_gated`;
+- packed s2 adds `is_sub * Σ β sub_xor = Σ β sub_gated`, and the packed output check includes `sub_gated`.
+
+Tests cover 5-3=2 and 3-5=254 (8-bit wrap). The q=8 Direct/RingSwitch test now mixes ADD and SUB, and the trace adapter/register-event extractor accept `StepOp::Sub`.
