@@ -379,6 +379,7 @@ pub(crate) fn prove_binary_shout_claims(
     witness: &BinaryShoutWitness,
     commitment: &P3MosaicCommitment,
     table_index: usize,
+    binding: &[u8],
 ) -> Result<ClaimBundle<BinaryShoutProof>, ProofError> {
     witness.validate()?;
     let a = witness.address_bits;
@@ -387,6 +388,7 @@ pub(crate) fn prove_binary_shout_claims(
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-shout-boolean");
     absorb_commitment(&mut transcript, commitment);
+    transcript.absorb("packed-binding", binding);
     let total_columns = 2 * a + 2;
     let col_bits = total_columns.next_power_of_two().trailing_zeros() as usize;
     let rho_c = sample_point(&mut transcript, col_bits);
@@ -433,6 +435,7 @@ pub(crate) fn prove_binary_shout_claims(
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-shout");
     absorb_commitment(&mut transcript, commitment);
+    transcript.absorb("packed-binding", binding);
     let rho_j = sample_point(&mut transcript, n);
     let columns = witness.rom.first().map_or(0, |row| row.len());
     let gammas = (0..columns)
@@ -552,7 +555,7 @@ pub fn prove_binary_shout(witness: &BinaryShoutWitness) -> Result<BinaryShoutPro
     let pcs = P3BinaryPcs::new(100);
     let table = witness.table();
     let commitment = pcs.commit_mosaic(core::slice::from_ref(&table))?;
-    let (mut proof, points, _) = prove_binary_shout_claims(witness, &commitment, 0)?;
+    let (mut proof, points, _) = prove_binary_shout_claims(witness, &commitment, 0, b"")?;
     proof.opening = Some(pcs.open_mosaic(core::slice::from_ref(&table), &points)?);
     Ok(proof)
 }
@@ -563,6 +566,7 @@ pub(crate) fn verify_binary_shout_claims(
     proof: &BinaryShoutProof,
     commitment: &P3MosaicCommitment,
     table_index: usize,
+    binding: &[u8],
 ) -> Result<Option<ClaimPoints>, ProofError> {
     witness.validate()?;
     let a = witness.address_bits;
@@ -579,6 +583,7 @@ pub(crate) fn verify_binary_shout_claims(
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-shout-boolean");
     absorb_commitment(&mut transcript, commitment);
+    transcript.absorb("packed-binding", binding);
     let rho_c = sample_point(&mut transcript, col_bits);
     let rho_j = sample_point(&mut transcript, n);
     let Some((sum, boolean_challenges)) =
@@ -598,6 +603,7 @@ pub(crate) fn verify_binary_shout_claims(
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-shout");
     absorb_commitment(&mut transcript, commitment);
+    transcript.absorb("packed-binding", binding);
     let rho_j = sample_point(&mut transcript, n);
     let columns = witness.rom.first().map_or(0, |row| row.len());
     let gammas = (0..columns)
@@ -693,7 +699,7 @@ pub fn verify_binary_shout(
         return Ok(false);
     };
     let Some((points, values)) =
-        verify_binary_shout_claims(witness, proof, &opening.commitment, 0)?
+        verify_binary_shout_claims(witness, proof, &opening.commitment, 0, b"")?
     else {
         return Ok(false);
     };

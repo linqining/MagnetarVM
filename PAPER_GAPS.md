@@ -1561,3 +1561,25 @@ Each chunk with supported gated rows is proved by `prove_gated_bundle_from_trace
 Test `gated_chunks_aggregate` proves two chunks and verifies the hash-chain aggregate.
 
 This is the chunk planner + aggregation wiring, not a recursive zk verifier.
+
+
+### A: packed BinaryShout prototype
+
+`packed_shout` implements a packed Shout final-evaluation path:
+
+- Shout boolean/read sum-checks still run over the bit witness;
+- table columns are packed at 128 bits/field and committed before the Shout challenges;
+- the claim transcript absorbs the bit table commitment plus all packed column commitments (new `packed-binding` absorb in `binary_shout` claims);
+- each packed column evaluation is proved with `RingSwitchPackedBitPcs`;
+- the verifier recomputes the Shout claims and checks each packed opening against the expected column value.
+
+Tests: `packed_shout_round_trips`; reference `binary_shout_round_trips` still passes with the empty binding.
+
+Benchmark (`packed_shout_bench`, small 3-row trace):
+
+| proof | bytes | prove |
+|---|---:|---:|
+| reference BinaryShout | 17,273 | 4.4 ms |
+| packed Shout prototype | 48,481 | 11.4 ms |
+
+The prototype is correct but **larger** than the reference because it opens each column separately (two points × many columns), so the next step is batching all packed columns into one Mosaic/ring-switch claim instead of per-column openings.

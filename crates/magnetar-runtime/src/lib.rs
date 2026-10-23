@@ -14,6 +14,7 @@ pub mod gated_recursion;
 pub mod gated_register;
 pub mod gated_shift;
 pub mod packed_select;
+pub mod packed_shout;
 pub mod protocol;
 pub mod register_twist;
 pub mod simd_cpu;
@@ -2497,7 +2498,7 @@ fn prove_aux_trace(trace: &Trace) -> Result<Option<AuxTraceProof>, RuntimeError>
     let mut values = Vec::new();
     let shout = if let (Some(witness), Some(index)) = (&shout_witness, shout_index) {
         let (claim, claim_points, claim_values) =
-            prove_binary_shout_claims(witness, &commitment, index)
+            prove_binary_shout_claims(witness, &commitment, index, b"")
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         points.extend(claim_points);
         values.extend(claim_values);
@@ -2602,7 +2603,7 @@ fn verify_aux_trace(trace: &Trace, aux: Option<&AuxTraceProof>) -> Result<(), Ru
     let mut values = Vec::new();
     if let (Some(witness), Some(claim), Some(index)) = (&shout_witness, &aux.shout, shout_index) {
         let Some((claim_points, claim_values)) =
-            verify_binary_shout_claims(witness, claim, commitment, index)
+            verify_binary_shout_claims(witness, claim, commitment, index, b"")
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?
         else {
             return Err(RuntimeError::Proof("BinaryShout proof rejected".into()));
