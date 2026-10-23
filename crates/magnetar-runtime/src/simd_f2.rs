@@ -7,7 +7,7 @@
 //! decision.
 
 use crate::RuntimeError;
-use magnetar_constraint::VarId;
+use magnetar_constraint::{VarId, F2_128};
 use magnetar_proof::dual_field::{BitRelation, BitRow};
 use magnetar_proof::{prove_spartan, verify_spartan, Pcs, SpartanError, SpartanProof};
 
@@ -1673,5 +1673,116 @@ mod claim_routing_tests {
         plan.check_virtual_claims(&claims).unwrap();
         plan.consume_virtual_claims(&mut claims).unwrap();
         assert_eq!(claims.remaining(), 0);
+    }
+}
+
+/// Build a BinaryTwist RAM witness from active gated memory rows. The address
+/// and data are read back from the gated row witness, so the Twist table is
+/// tied to the selector-gated relation rather than to the raw inputs.
+pub fn gated_memory_twist_witness(
+    width: usize,
+    rows: &[(u64, GatedCpuRowInput)],
+) -> Result<magnetar_memory::BinaryTwistWitness, RuntimeError> {
+    let row = GatedCpuRow::new(width);
+    let cells = 1usize << width;
+    let mut current = vec![F2_128::from(0u64); cells];
+    let mut read_address = Vec::new();
+    let mut write_address = Vec::new();
+    let mut increment = Vec::new();
+    let mut value = Vec::new();
+    let mut read_value = Vec::new();
+    let mut write_value = Vec::new();
+
+    for (pc, input) in rows {
+        let GatedCpuRowInput::Memory {
+            rs1,
+            imm,
+            value: data,
+            is_mem: true,
+        } = input
+        else {
+            continue;
+        };
+        let bits = row.memory_witness_at(*pc, *rs1, *imm, *data, true);
+        let decode = |vars: &[VarId]| {
+            vars.iter().enumerate().fold(0usize, |acc, (bit, var)| {
+                acc | (usize::from(bits[*var]) << bit)
+            })
+        };
+        let address = decode(&row.memory.adder.out);
+        let data = decode(&row.memory.data);
+        if address >= cells {
+            return Err(RuntimeError::Proof(
+                "gated memory address out of range".into(),
+            ));
+        }
+        let mut read = vec![F2_128::from(0u64); cells];
+        read[address] = F2_128::from(1u64);
+        let old = current[address];
+        let new = F2_128::from(data as u64);
+        value.push(current.clone());
+        read_address.push(read.clone());
+        write_address.push(read);
+        increment.push(old + new);
+        read_value.push(old);
+        write_value.push(new);
+        current[address] = new;
+    }
+
+    if read_address.is_empty() {
+        return Err(RuntimeError::Proof(
+            "gated memory witness has no active rows".into(),
+        ));
+    }
+    let witness = magnetar_memory::BinaryTwistWitness {
+        address_bits: width,
+        cell_bits: width,
+        cycles: read_address.len(),
+        initial: vec![F2_128::from(0u64); cells],
+        read_address,
+        write_address,
+        increment,
+        value,
+        read_value,
+        write_value,
+        final_value: current,
+    };
+    witness
+        .validate()
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok(witness)
+}
+
+#[cfg(test)]
+mod gated_twist_tests {
+    use super::*;
+
+    #[test]
+    fn gated_memory_rows_prove_through_binary_twist() {
+        use crate::{prove_binary_twist_ram, verify_binary_twist_ram};
+
+        let rows = [
+            (
+                0x1000,
+                GatedCpuRowInput::Memory {
+                    rs1: 0x10,
+                    imm: 2,
+                    value: 0x34,
+                    is_mem: true,
+                },
+            ),
+            (
+                0x1004,
+                GatedCpuRowInput::Memory {
+                    rs1: 0x20,
+                    imm: 4,
+                    value: 0x56,
+                    is_mem: true,
+                },
+            ),
+        ];
+        let witness = gated_memory_twist_witness(8, &rows).unwrap();
+        let proof = prove_binary_twist_ram(&witness).unwrap();
+        assert!(verify_binary_twist_ram(&witness, &proof).unwrap());
     }
 }

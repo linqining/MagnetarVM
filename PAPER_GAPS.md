@@ -949,3 +949,45 @@ Test batches an ADD row and a memory row at PCs 0x1000/0x1004 and verifies the c
 The gated row is ~35% smaller and ~6x faster to prove in this run. These are illustrative single-run numbers, not a statistically stable benchmark.
 
 `gated_rows_route_register_and_ram_claims` builds `ClaimKind::Register` / `ClaimKind::Ram` claims from gated ALU/memory rows and verifies they pass `ProtocolPlan::unified()` claim production and consumption (`TwistRegisters`/`TwistRam` sinks). This is protocol-level routing, not yet a BinaryTwist proof over gated memory rows.
+
+
+### Gated dual scaling q = 2/4/8
+
+`cargo run --release -p magnetar-testkit --example simd_gated_dual_scaling` (mixed ALU/memory rows):
+
+| cycles | proof bytes | prove | verify |
+|---:|---:|---:|---:|
+| 2 | 84,984 | 5.8 ms | 2.8 ms |
+| 4 | 107,248 | 8.1 ms | 4.9 ms |
+| 8 | 131,208 | 23.5 ms | 7.6 ms |
+
+The gated dual path scales sublinearly in proof size; prover time grows with q. Test `gated_dual_batch_scales_to_eight_cycles` verifies q=8.
+
+### Gated memory rows prove through BinaryTwist
+
+`gated_memory_twist_witness(width, rows)`:
+
+- filters active gated memory rows;
+- reads address/data back from the gated row witness;
+- builds a one-read/one-write `BinaryTwistWitness`;
+- validates it.
+
+Test `gated_memory_rows_prove_through_binary_twist` proves/verifies the resulting RAM witness with `prove_binary_twist_ram`. This is a real BinaryTwist proof over gated memory rows, not just claim routing.
+
+### Packed XOR/select microbenchmark
+
+`cargo run --release -p magnetar-testkit --example packed_xor_select_bench`:
+
+| case | vars | rows | proof | prove | verify |
+|---|---:|---:|---:|---:|---:|
+| bit XOR 64 | 193 | 65 | 67,944 B | 2.30 ms | 1.14 ms |
+| packed XOR 64 | 4 | 2 | 3,176 B | 0.25 ms | 0.10 ms |
+| packed select 64 | 7 | 5 | 3,320 B | 0.12 ms | 0.09 ms |
+
+Packed linear rows are ~21x smaller and ~9x faster to prove in this microbenchmark. This is the strongest B-scheme evidence so far, but it only covers linear/select; AND/ADD/carry still need bit-level or lookup gadgets.
+
+### Decision data
+
+- A (F2^128 embedding) is already proving gated rows end-to-end and connecting to BinaryTwist; q=8 proof 131 KB.
+- B (word-packed) gives large wins on linear/select/XOR, but no direct win on AND/ADD/SUB/SLT/shift carry chains.
+- Recommended: keep A as the CPU correctness path; prototype packed linear/select columns for commitment compression and row gating; only extend to packed ADD/AND if profiling shows they dominate.

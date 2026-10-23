@@ -517,6 +517,24 @@ mod tests {
     }
 
     #[test]
+    fn gated_dual_batch_scales_to_eight_cycles() {
+        let rows = (0..8usize)
+            .map(|index| {
+                (
+                    0x1000 + 4 * index as u64,
+                    GatedCpuRowInput::Alu {
+                        left: 0x12 + index as u64,
+                        right: 0x34 + index as u64,
+                        op: crate::simd_f2::GatedAluOp::Add,
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let (proof, layout) = prove_gated_dual_batch(8, &rows).expect("prove");
+        verify_gated_dual_batch(8, &rows, &proof, &layout).expect("verify");
+    }
+
+    #[test]
     fn dual_shared_batch_runs_in_lockstep() {
         for op in [
             StepOp::Xor,
