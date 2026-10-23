@@ -1367,6 +1367,25 @@ fn row_cpu_var_groups(
     row: &magnetar_spec::TraceRow,
     width: usize,
 ) -> Vec<magnetar_cpu::CpuVarGroup> {
+    if row.instruction.op.amo_width().is_some() {
+        return Vec::new();
+    }
+    if let Some(access) = row.mem {
+        let imm = row.instruction.imm as u64;
+        if access.is_write {
+            let (_system, layout) = magnetar_cpu::uniform_store_row_relation(
+                64,
+                access.addr,
+                row.rs2_val,
+                row.rs1_val,
+                imm,
+            );
+            return layout.var_groups();
+        }
+        let (_system, layout) =
+            magnetar_cpu::uniform_load_row_relation(64, access.addr, row.rd_val, row.rs1_val, imm);
+        return layout.var_groups();
+    }
     let Some(step_op) = step_op_for(row.instruction.op) else {
         return Vec::new();
     };

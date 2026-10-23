@@ -773,6 +773,8 @@ pub enum CpuVarKind {
     Rd,
     Pc,
     NextPc,
+    RamAddr,
+    RamValue,
 }
 
 #[derive(Clone, Debug)]
@@ -2152,6 +2154,27 @@ pub struct UniformLoadLayout {
 }
 
 impl UniformLoadLayout {
+    pub fn var_groups(&self) -> Vec<CpuVarGroup> {
+        vec![
+            CpuVarGroup {
+                kind: CpuVarKind::Rs1,
+                vars: self.adder.a.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::Imm,
+                vars: self.adder.b.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::RamAddr,
+                vars: self.adder.sum.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::Rd,
+                vars: self.rd.clone(),
+            },
+        ]
+    }
+
     pub fn witness(&self, rs1: u64, imm: u64) -> Witness {
         let mut values = vec![F2_128::from(0u64); self.num_vars];
         self.adder.fill_witness(&mut values, rs1, imm);
@@ -2205,6 +2228,27 @@ pub struct UniformStoreLayout {
 }
 
 impl UniformStoreLayout {
+    pub fn var_groups(&self) -> Vec<CpuVarGroup> {
+        vec![
+            CpuVarGroup {
+                kind: CpuVarKind::Rs1,
+                vars: self.adder.a.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::Imm,
+                vars: self.adder.b.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::RamAddr,
+                vars: self.adder.sum.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::RamValue,
+                vars: self.rs2.clone(),
+            },
+        ]
+    }
+
     pub fn witness(&self, rs1: u64, imm: u64) -> Witness {
         let mut values = vec![F2_128::from(0u64); self.num_vars];
         self.adder.fill_witness(&mut values, rs1, imm);
@@ -5214,6 +5258,7 @@ mod metadata_tests {
                 CpuVarKind::Rd => rs1.wrapping_add(imm) & 0xff,
                 CpuVarKind::Pc => pc,
                 CpuVarKind::NextPc => pc.wrapping_add(4),
+                CpuVarKind::RamAddr | CpuVarKind::RamValue => unreachable!(),
             };
             for (bit, var) in group.vars.iter().enumerate() {
                 assert_eq!(
@@ -5240,6 +5285,46 @@ mod metadata_tests {
                 CpuVarKind::Rs1 => rs1,
                 CpuVarKind::Imm => imm,
                 CpuVarKind::Rd => rd,
+                other => panic!("unexpected {other:?}"),
+            };
+            for (bit, var) in group.vars.iter().enumerate() {
+                assert_eq!(witness.values()[*var].value() as u64, (expected >> bit) & 1);
+            }
+        }
+    }
+    #[test]
+    fn load_and_store_layouts_expose_ram_groups() {
+        let width = 8;
+        let rs1 = 0x10u64;
+        let imm = 0x02u64;
+        let addr = rs1 + imm;
+        let value = 0x34u64;
+
+        let (system, load) = uniform_load_row_relation(width, addr, value, rs1, imm);
+        let witness = load.witness(rs1, imm);
+        assert_eq!(witness.values().len(), system.num_vars);
+        for group in load.var_groups() {
+            let expected = match group.kind {
+                CpuVarKind::Rs1 => rs1,
+                CpuVarKind::Imm => imm,
+                CpuVarKind::RamAddr => addr,
+                CpuVarKind::Rd => value,
+                other => panic!("unexpected {other:?}"),
+            };
+            for (bit, var) in group.vars.iter().enumerate() {
+                assert_eq!(witness.values()[*var].value() as u64, (expected >> bit) & 1);
+            }
+        }
+
+        let (system, store) = uniform_store_row_relation(width, addr, value, rs1, imm);
+        let witness = store.witness(rs1, imm);
+        assert_eq!(witness.values().len(), system.num_vars);
+        for group in store.var_groups() {
+            let expected = match group.kind {
+                CpuVarKind::Rs1 => rs1,
+                CpuVarKind::Imm => imm,
+                CpuVarKind::RamAddr => addr,
+                CpuVarKind::RamValue => value,
                 other => panic!("unexpected {other:?}"),
             };
             for (bit, var) in group.vars.iter().enumerate() {

@@ -453,3 +453,15 @@ Test `uniform_step_var_groups_match_witness_bits` checks every variable against 
 - `simple_alu_row_relation` remains as a compatibility wrapper returning only system/witness.
 
 The runtime `row_cpu_var_groups` uses the layout-returning function, so simple ALU rows (Add/Addi/Sub/Lui/Xor/Xori/And/Andi/Or/Ori) now contribute `CpuVarGroup`s to `CpuWitnessMetadata`. Tests verify `Addi` groups match the witness bits. This confirms the two directions are independent: simple row gadgets keep their smaller circuits while still exposing component metadata.
+
+
+### Load/store RAM groups
+
+`CpuVarKind` now includes `RamAddr` and `RamValue`:
+
+- `UniformLoadLayout::var_groups()`: Rs1, Imm, RamAddr (adder sum), Rd (loaded value);
+- `UniformStoreLayout::var_groups()`: Rs1, Imm, RamAddr, RamValue (rs2);
+- runtime `row_cpu_var_groups` reconstructs these layouts for load/store/SC rows and attaches the groups to `CpuWitnessMetadata`;
+- tests verify every group's variables against the load/store witness bits.
+
+AMO is still skipped in metadata because its circuit merges store layout with an op-specific sub-relation. Next: AMO, branch/jump PC groups, and shift routing groups.
