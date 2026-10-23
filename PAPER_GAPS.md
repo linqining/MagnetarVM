@@ -1210,3 +1210,17 @@ Ring-switch proof overhead is about 2 KB for `s_hat_v` plus the sum-check and PC
 | 8 | 130,888 B | 10,736 B | 16.7 ms | 14.2 ms |
 
 At q=8 the ring-switch M5 proof is ~12x smaller, with comparable prover/verifier time. Test `gated_dual_batch_runs_with_both_backends_on_q8` verifies both backends on q=8.
+
+
+### Generic gated bundle with M5 ring CPU proof
+
+`GatedBundle<C, O>` and `prove/verify_gated_bundle_with_backend` are generic over `BitPcs`; `P3GatedBundle` is the Direct/P3 alias. The same bundle test runs with `DirectBitPcs` and `RingSwitchPackedBitPcs`.
+
+`gated_bundle_m4_m5_bench` (one ALU + one memory row):
+
+| backend | CPU | RAM | claims | total | prove | verify |
+|---|---:|---:|---:|---:|---:|---:|
+| M4 direct | 85,816 B | 41,041 B | 100 B | 126,957 B | 7.8 ms | 4.7 ms |
+| M5 ring | 4,816 B | 41,041 B | 100 B | 45,957 B | 5.1 ms | 3.8 ms |
+
+The CPU proof is ~18x smaller; total bundle is ~2.8x smaller because BinaryTwist RAM (41 KB) now dominates. Next: packed Twist or larger q to amortize the ring-switch overhead.

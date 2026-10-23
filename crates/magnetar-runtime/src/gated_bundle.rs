@@ -1,26 +1,25 @@
 //! End-to-end gated CPU bundle: gated dual CPU proof + BinaryTwist RAM proof
 //! + Register/Ram claims routed through `ProtocolPlan`.
-//!
-//! This is the first bundle that ties the selector-gated CPU path to the
-//! memory-checking path without falling back to the legacy unified prover.
 
 use magnetar_constraint::{WitnessLayout, F2_128};
-use magnetar_pcs::{P3MosaicCommitment, P3MosaicOpening};
-use magnetar_proof::LockstepProof;
+use magnetar_pcs::{P3MosaicCommitment, P3MosaicOpening, P3SharedPcs};
+use magnetar_proof::{BitPcs, DirectBitPcs, LockstepProof};
 
 use crate::binary_twist::{prove_binary_twist_ram, verify_binary_twist_ram, BinaryTwistRamProof};
 use crate::protocol::{Claim, ClaimKind, ClaimSet, ProtocolPlan, SegmentId};
-use crate::simd_dual::{prove_gated_dual_batch, verify_gated_dual_batch};
+use crate::simd_dual::{prove_gated_dual_batch_bits, verify_gated_dual_batch_bits};
 use crate::simd_f2::{gated_memory_twist_witness, GatedCpuRowInput};
 use crate::RuntimeError;
 
 #[derive(Clone, Debug)]
-pub struct GatedBundle {
-    pub cpu: LockstepProof<P3MosaicCommitment, P3MosaicOpening>,
+pub struct GatedBundle<C: Clone + std::fmt::Debug, O: Clone + std::fmt::Debug> {
+    pub cpu: LockstepProof<C, O>,
     pub cpu_layout: WitnessLayout,
     pub ram: Option<BinaryTwistRamProof>,
     pub claims: Vec<Claim>,
 }
+
+pub type P3GatedBundle = GatedBundle<P3MosaicCommitment, P3MosaicOpening>;
 
 fn claims_for(rows: &[(u64, GatedCpuRowInput)]) -> Vec<Claim> {
     rows.iter()
@@ -39,11 +38,12 @@ fn claims_for(rows: &[(u64, GatedCpuRowInput)]) -> Vec<Claim> {
         .collect()
 }
 
-pub fn prove_gated_bundle(
+pub fn prove_gated_bundle_with_backend<B: BitPcs>(
     width: usize,
     rows: &[(u64, GatedCpuRowInput)],
-) -> Result<GatedBundle, RuntimeError> {
-    let (cpu, cpu_layout) = prove_gated_dual_batch(width, rows)?;
+    backend: &B,
+) -> Result<GatedBundle<B::Commitment, B::Opening>, RuntimeError> {
+    let (cpu, cpu_layout) = prove_gated_dual_batch_bits(width, rows, backend)?;
     let ram = match gated_memory_twist_witness(width, rows) {
         Ok(witness) => Some(
             prove_binary_twist_ram(&witness)
@@ -64,12 +64,13 @@ pub fn prove_gated_bundle(
     })
 }
 
-pub fn verify_gated_bundle(
+pub fn verify_gated_bundle_with_backend<B: BitPcs>(
     width: usize,
     rows: &[(u64, GatedCpuRowInput)],
-    bundle: &GatedBundle,
+    bundle: &GatedBundle<B::Commitment, B::Opening>,
+    backend: &B,
 ) -> Result<(), RuntimeError> {
-    verify_gated_dual_batch(width, rows, &bundle.cpu, &bundle.cpu_layout)?;
+    verify_gated_dual_batch_bits(width, rows, &bundle.cpu, &bundle.cpu_layout, backend)?;
     if let Some(ram) = &bundle.ram {
         let witness = gated_memory_twist_witness(width, rows)?;
         verify_binary_twist_ram(&witness, ram)
@@ -89,14 +90,31 @@ pub fn verify_gated_bundle(
     Ok(())
 }
 
+pub fn prove_gated_bundle(
+    width: usize,
+    rows: &[(u64, GatedCpuRowInput)],
+) -> Result<P3GatedBundle, RuntimeError> {
+    let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+    prove_gated_bundle_with_backend(width, rows, &DirectBitPcs::new(pcs))
+}
+
+pub fn verify_gated_bundle(
+    width: usize,
+    rows: &[(u64, GatedCpuRowInput)],
+    bundle: &P3GatedBundle,
+) -> Result<(), RuntimeError> {
+    let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+    verify_gated_bundle_with_backend(width, rows, bundle, &DirectBitPcs::new(pcs))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::simd_f2::GatedAluOp;
+    use magnetar_proof::RingSwitchPackedBitPcs;
 
-    #[test]
-    fn gated_bundle_covers_alu_memory_and_twist() {
-        let rows = [
+    fn rows() -> Vec<(u64, GatedCpuRowInput)> {
+        vec![
             (
                 0x1000,
                 GatedCpuRowInput::Alu {
@@ -114,9 +132,24 @@ mod tests {
                     is_mem: true,
                 },
             ),
-        ];
+        ]
+    }
+
+    #[test]
+    fn gated_bundle_covers_alu_memory_and_twist() {
+        let rows = rows();
         let bundle = prove_gated_bundle(8, &rows).unwrap();
         assert!(bundle.ram.is_some());
         verify_gated_bundle(8, &rows, &bundle).unwrap();
+    }
+
+    #[test]
+    fn gated_bundle_runs_with_ring_switch_backend() {
+        let rows = rows();
+        let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+        let backend = RingSwitchPackedBitPcs::new(pcs);
+        let bundle = prove_gated_bundle_with_backend(8, &rows, &backend).unwrap();
+        assert!(bundle.ram.is_some());
+        verify_gated_bundle_with_backend(8, &rows, &bundle, &backend).unwrap();
     }
 }
