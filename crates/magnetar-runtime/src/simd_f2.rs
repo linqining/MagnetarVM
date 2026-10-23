@@ -51,6 +51,7 @@ pub struct UniformBitAluRelation {
     pub rd: Vec<VarId>,
     pub one: VarId,
     pub relation: BitRelation,
+    pub signed: bool,
 }
 
 impl UniformBitAluRelation {
@@ -76,6 +77,7 @@ impl UniformBitAluRelation {
             rd,
             one,
             relation,
+            signed: false,
         }
     }
 
@@ -97,6 +99,7 @@ impl UniformBitAluRelation {
             rd,
             one,
             relation,
+            signed: false,
         }
     }
 
@@ -109,32 +112,67 @@ impl UniformBitAluRelation {
     }
 
     /// Unsigned less-than: one if `rs1 < rs2`.
+    /// Unsigned less-than: one if `rs1 < rs2`.
     pub fn slt(width: usize) -> Self {
+        Self::slt_mode(width, false)
+    }
+
+    /// Signed two's-complement less-than.
+    pub fn slt_signed(width: usize) -> Self {
+        Self::slt_mode(width, true)
+    }
+
+    fn slt_mode(width: usize, signed: bool) -> Self {
         assert!(width > 0);
         let rs1 = (0..width).collect::<Vec<_>>();
         let rs2 = (width..2 * width).collect::<Vec<_>>();
-        let b_eff = (2 * width..3 * width).collect::<Vec<_>>();
-        let rd = (3 * width..4 * width).collect::<Vec<_>>();
-        let diff = (4 * width..5 * width).collect::<Vec<_>>();
-        let carries = (5 * width..6 * width + 1).collect::<Vec<_>>();
-        let p1 = (6 * width + 1..7 * width + 1).collect::<Vec<_>>();
-        let p2 = (7 * width + 1..8 * width + 1).collect::<Vec<_>>();
-        let p3 = (8 * width + 1..9 * width + 1).collect::<Vec<_>>();
-        let xor_ab = (9 * width + 1..10 * width + 1).collect::<Vec<_>>();
-        let one = 10 * width + 1;
-        let lt = 10 * width + 2;
-        let mut relation = BitRelation::new(10 * width + 3);
+        let a_cmp = (2 * width..3 * width).collect::<Vec<_>>();
+        let b_cmp = (3 * width..4 * width).collect::<Vec<_>>();
+        let b_eff = (4 * width..5 * width).collect::<Vec<_>>();
+        let rd = (5 * width..6 * width).collect::<Vec<_>>();
+        let diff = (6 * width..7 * width).collect::<Vec<_>>();
+        let carries = (7 * width..8 * width + 1).collect::<Vec<_>>();
+        let p1 = (8 * width + 1..9 * width + 1).collect::<Vec<_>>();
+        let p2 = (9 * width + 1..10 * width + 1).collect::<Vec<_>>();
+        let p3 = (10 * width + 1..11 * width + 1).collect::<Vec<_>>();
+        let xor_ab = (11 * width + 1..12 * width + 1).collect::<Vec<_>>();
+        let one = 12 * width + 1;
+        let lt = 12 * width + 2;
+        let mut relation = BitRelation::new(12 * width + 3);
         relation.add(BitRow::new(vec![one], vec![one], vec![one]));
         relation.add(BitRow::new(vec![carries[0]], vec![one], vec![one]));
         for bit in 0..width {
+            let sign = signed && bit == width - 1;
             relation.add(BitRow::new(
-                vec![rs2[bit], one],
+                if sign {
+                    vec![rs1[bit], one]
+                } else {
+                    vec![rs1[bit]]
+                },
+                vec![one],
+                vec![a_cmp[bit]],
+            ));
+            relation.add(BitRow::new(
+                if sign {
+                    vec![rs2[bit], one]
+                } else {
+                    vec![rs2[bit]]
+                },
+                vec![one],
+                vec![b_cmp[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![b_cmp[bit], one],
                 vec![one],
                 vec![b_eff[bit]],
             ));
-            relation.add(BitRow::new(vec![rs1[bit]], vec![b_eff[bit]], vec![p1[bit]]));
             relation.add(BitRow::new(
-                vec![rs1[bit]],
+                vec![a_cmp[bit]],
+                vec![b_eff[bit]],
+                vec![p1[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![a_cmp[bit]],
                 vec![carries[bit]],
                 vec![p2[bit]],
             ));
@@ -144,7 +182,7 @@ impl UniformBitAluRelation {
                 vec![p3[bit]],
             ));
             relation.add(BitRow::new(
-                vec![rs1[bit], b_eff[bit]],
+                vec![a_cmp[bit], b_eff[bit]],
                 vec![one],
                 vec![xor_ab[bit]],
             ));
@@ -172,33 +210,43 @@ impl UniformBitAluRelation {
             rd,
             one,
             relation,
+            signed,
         }
     }
 
     pub fn slt_witness(&self, left: u64, right: u64) -> Vec<bool> {
+        self.slt_mode_witness(left, right)
+    }
+
+    fn slt_mode_witness(&self, left: u64, right: u64) -> Vec<bool> {
         let width = self.width;
-        let mut bits = vec![false; 10 * width + 3];
+        let mut bits = vec![false; 12 * width + 3];
         bits[self.one] = true;
-        let b_eff = 2 * width;
-        let diff = 4 * width;
-        let carries = 5 * width;
+        let a_cmp = 2 * width;
+        let b_cmp = 3 * width;
+        let b_eff = 4 * width;
+        let diff = 6 * width;
+        let carries = 7 * width;
         bits[carries] = true;
         for bit in 0..width {
-            let a = (left >> bit) & 1 == 1;
-            let b = (right >> bit) & 1 == 1;
+            let sign = self.signed && bit == width - 1;
+            let a = ((left >> bit) & 1 == 1) ^ sign;
+            let b = ((right >> bit) & 1 == 1) ^ sign;
             let carry = bits[carries + bit];
-            bits[self.rs1[bit]] = a;
-            bits[self.rs2[bit]] = b;
+            bits[self.rs1[bit]] = (left >> bit) & 1 == 1;
+            bits[self.rs2[bit]] = (right >> bit) & 1 == 1;
+            bits[a_cmp + bit] = a;
+            bits[b_cmp + bit] = b;
             bits[b_eff + bit] = !b;
             bits[carries + bit + 1] = (a && !b) || (a && carry) || (!b && carry);
-            bits[6 * width + 1 + bit] = a && !b;
-            bits[7 * width + 1 + bit] = a && carry;
-            bits[8 * width + 1 + bit] = !b && carry;
-            bits[9 * width + 1 + bit] = a ^ !b;
+            bits[8 * width + 1 + bit] = a && !b;
+            bits[9 * width + 1 + bit] = a && carry;
+            bits[10 * width + 1 + bit] = !b && carry;
+            bits[11 * width + 1 + bit] = a ^ !b;
             bits[diff + bit] = a ^ !b ^ carry;
         }
         let less = !bits[carries + width];
-        bits[10 * width + 2] = less;
+        bits[12 * width + 2] = less;
         bits[self.rd[0]] = less;
         bits
     }
@@ -266,6 +314,7 @@ impl UniformBitAluRelation {
             rd,
             one,
             relation,
+            signed: false,
         }
     }
 
@@ -411,6 +460,23 @@ mod tests {
             for bit in 1..8 {
                 assert!(!bits[slt.rd[bit]]);
             }
+        }
+    }
+    #[test]
+    fn signed_slt_flips_the_sign_bit() {
+        let slt = UniformBitAluRelation::slt_signed(8);
+        for (left, right, expected) in [
+            (3u64, 5u64, 1u64),
+            (5, 3, 0),
+            (255, 1, 1),   // -1 < 1
+            (1, 255, 0),   // 1 < -1 is false
+            (251, 253, 1), // -5 < -3
+            (127, 128, 0), // 127 < -128 is false
+            (128, 127, 1), // -128 < 127
+        ] {
+            let bits = slt.slt_witness(left, right);
+            assert!(slt.relation.check(&bits), "{left} < {right}");
+            assert_eq!(u64::from(bits[slt.rd[0]]), expected, "{left} < {right}");
         }
     }
 }

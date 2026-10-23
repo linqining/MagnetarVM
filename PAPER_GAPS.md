@@ -700,3 +700,15 @@ Tests check 5 - 3 = 2 and 3 - 5 = 254 (8-bit wraparound). `add` remains the same
 - `rd[0] = lt`, all higher rd bits forced to 0.
 
 Tests cover 3<5, 5<3, 5==5, and 255<1; all check over F2. Signed SLT can be obtained by flipping the sign bit of both operands (next).
+
+
+### Signed SLT
+
+`UniformBitAluRelation::slt_signed(width)` shares the comparator layout with `slt`, but flips the sign bit of both operands before the unsigned borrow comparison:
+
+- `a_cmp = rs1` for bits below the sign, `rs1 ^ 1` at the sign;
+- `b_cmp` analogously;
+- `b_eff = ~b_cmp`, carry-in 1;
+- borrow-out gives `lt`.
+
+Tests cover 3<5, 5<3, -1<1, 1<-1, -5<-3, 127<-128, -128<127. Both signed and unsigned comparator relations check over F2.
