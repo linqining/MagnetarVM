@@ -1314,6 +1314,8 @@ pub struct GatedCpuRow {
     pub alu: GatedAluRow,
     pub memory: GatedMemoryRow,
     pub memory_offset: usize,
+    pub pc: Vec<VarId>,
+    pub next_pc: Vec<VarId>,
     pub relation: BitRelation,
 }
 
@@ -1337,11 +1339,29 @@ impl GatedCpuRow {
             vec![alu.one],
             vec![alu.one],
         ));
+        let pc = (relation.num_vars..relation.num_vars + width).collect::<Vec<_>>();
+        let next_pc =
+            (relation.num_vars + width..relation.num_vars + 2 * width).collect::<Vec<_>>();
+        relation.num_vars += 2 * width;
+        for bit in 0..width {
+            relation.add(BitRow::new(
+                vec![pc[bit]],
+                vec![pc[bit], alu.one],
+                Vec::new(),
+            ));
+            relation.add(BitRow::new(
+                vec![next_pc[bit]],
+                vec![next_pc[bit], alu.one],
+                Vec::new(),
+            ));
+        }
         Self {
             width,
             alu,
             memory,
             memory_offset,
+            pc,
+            next_pc,
             relation,
         }
     }
@@ -1352,18 +1372,42 @@ impl GatedCpuRow {
         self.relation.to_system()
     }
 
-    pub fn alu_witness(&self, left: u64, right: u64, op: GatedAluOp) -> Vec<bool> {
-        let mut bits = self.alu.witness(left, right, op);
-        let memory = self.memory.witness(0, 0, 0, false);
-        bits.extend(memory);
+    fn finish(&self, mut bits: Vec<bool>, pc: u64) -> Vec<bool> {
+        bits.resize(self.relation.num_vars, false);
+        for bit in 0..self.width {
+            bits[self.pc[bit]] = (pc >> bit) & 1 == 1;
+            bits[self.next_pc[bit]] = ((pc + 4) >> bit) & 1 == 1;
+        }
         bits
     }
 
+    pub fn alu_witness(&self, left: u64, right: u64, op: GatedAluOp) -> Vec<bool> {
+        self.alu_witness_at(0, left, right, op)
+    }
+
+    pub fn alu_witness_at(&self, pc: u64, left: u64, right: u64, op: GatedAluOp) -> Vec<bool> {
+        let mut bits = self.alu.witness(left, right, op);
+        let memory = self.memory.witness(0, 0, 0, false);
+        bits.extend(memory);
+        self.finish(bits, pc)
+    }
+
     pub fn memory_witness(&self, rs1: u64, imm: u64, value: u64, is_mem: bool) -> Vec<bool> {
+        self.memory_witness_at(0, rs1, imm, value, is_mem)
+    }
+
+    pub fn memory_witness_at(
+        &self,
+        pc: u64,
+        rs1: u64,
+        imm: u64,
+        value: u64,
+        is_mem: bool,
+    ) -> Vec<bool> {
         let mut bits = self.alu.witness(0, 0, GatedAluOp::Inactive);
         let memory = self.memory.witness(rs1, imm, value, is_mem);
         bits.extend(memory);
-        bits
+        self.finish(bits, pc)
     }
 }
 
@@ -1470,5 +1514,123 @@ mod gated_cpu_batch_tests {
         ];
         let proof = prove_gated_cpu_batch(8, &rows).unwrap();
         verify_gated_cpu_batch(8, rows.len(), &proof).unwrap();
+
+        let chained = [(0x1000, rows[0]), (0x1004, rows[1])];
+        let proof = prove_gated_cpu_batch_pc(8, &chained).unwrap();
+        verify_gated_cpu_batch_pc(8, &chained, &proof).unwrap();
     }
+}
+
+/// Gated ALU/memory batch with PC-chain rows and shared matrices.
+pub fn prove_gated_cpu_batch_pc(
+    width: usize,
+    rows: &[(u64, GatedCpuRowInput)],
+) -> Result<
+    magnetar_proof::SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>,
+    RuntimeError,
+> {
+    use magnetar_proof::spartan::MatrixPart;
+    use magnetar_proof::{prove_spartan_with_matrices, witness_vector, SharedBlockMatrix};
+
+    if rows.is_empty() || !rows.len().is_power_of_two() {
+        return Err(RuntimeError::Proof(
+            "gated CPU batch must be a nonzero power of two".into(),
+        ));
+    }
+    let row = GatedCpuRow::new(width);
+    let system = row.packed_system();
+    let base_cols = (row.relation.num_vars + 1).next_power_of_two();
+    let mut extra_a = Vec::new();
+    let mut extra_b = Vec::new();
+    let mut extra_c = Vec::new();
+    for instance in 0..rows.len().saturating_sub(1) {
+        for bit in 0..width {
+            extra_a.push(vec![(
+                instance * base_cols + row.next_pc[bit],
+                magnetar_constraint::F2_128::from(1u64),
+            )]);
+            extra_b.push(vec![(
+                instance * base_cols + row.alu.one,
+                magnetar_constraint::F2_128::from(1u64),
+            )]);
+            extra_c.push(vec![(
+                (instance + 1) * base_cols + row.pc[bit],
+                magnetar_constraint::F2_128::from(1u64),
+            )]);
+        }
+    }
+    let a = SharedBlockMatrix::from_system(&system, MatrixPart::A, rows.len())
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(extra_a);
+    let b = SharedBlockMatrix::from_system(&system, MatrixPart::B, rows.len())
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(extra_b);
+    let c = SharedBlockMatrix::from_system(&system, MatrixPart::C, rows.len())
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(extra_c);
+    let mut z = Vec::new();
+    for (pc, input) in rows {
+        let bits = match input {
+            GatedCpuRowInput::Alu { left, right, op } => {
+                row.alu_witness_at(*pc, *left, *right, *op)
+            }
+            GatedCpuRowInput::Memory {
+                rs1,
+                imm,
+                value,
+                is_mem,
+            } => row.memory_witness_at(*pc, *rs1, *imm, *value, *is_mem),
+        };
+        z.extend(
+            witness_vector(&system, &row.relation.to_witness(&bits))
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?,
+        );
+    }
+    let pcs = magnetar_pcs::P3BinaryPcs::new(100);
+    prove_spartan_with_matrices(&z, &a, &b, &c, &pcs)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))
+}
+
+pub fn verify_gated_cpu_batch_pc(
+    width: usize,
+    rows: &[(u64, GatedCpuRowInput)],
+    proof: &magnetar_proof::SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>,
+) -> Result<(), RuntimeError> {
+    use magnetar_proof::spartan::MatrixPart;
+    use magnetar_proof::{verify_spartan_with_matrices, SharedBlockMatrix};
+
+    let row = GatedCpuRow::new(width);
+    let system = row.packed_system();
+    let base_cols = (row.relation.num_vars + 1).next_power_of_two();
+    let mut extra_a = Vec::new();
+    let mut extra_b = Vec::new();
+    let mut extra_c = Vec::new();
+    for instance in 0..rows.len().saturating_sub(1) {
+        for bit in 0..width {
+            extra_a.push(vec![(
+                instance * base_cols + row.next_pc[bit],
+                magnetar_constraint::F2_128::from(1u64),
+            )]);
+            extra_b.push(vec![(
+                instance * base_cols + row.alu.one,
+                magnetar_constraint::F2_128::from(1u64),
+            )]);
+            extra_c.push(vec![(
+                (instance + 1) * base_cols + row.pc[bit],
+                magnetar_constraint::F2_128::from(1u64),
+            )]);
+        }
+    }
+    let a = SharedBlockMatrix::from_system(&system, MatrixPart::A, rows.len())
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(extra_a);
+    let b = SharedBlockMatrix::from_system(&system, MatrixPart::B, rows.len())
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(extra_b);
+    let c = SharedBlockMatrix::from_system(&system, MatrixPart::C, rows.len())
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(extra_c);
+    let pcs = magnetar_pcs::P3BinaryPcs::new(100);
+    verify_spartan_with_matrices(&a, &b, &c, proof, &pcs)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))
 }

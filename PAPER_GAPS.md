@@ -912,3 +912,17 @@ Test checks XOR, AND, ADD (5+3=8), and inactive-zero rows; the XOR row also prov
 - prove/verify through `prove_shared_simd_spartan`.
 
 This is selector gating proven in the packed field. It is not yet word-packed (64 bits per field element); the remaining B decision is whether the packed schema should stop at F2^128 embedding of bit rows or introduce true word-packed columns with packed selectors.
+
+
+### Gated CPU row with PC chain
+
+`GatedCpuRow` now carries `pc`/`next_pc` bits (boolean-constrained) and offers `alu_witness_at` / `memory_witness_at`.
+
+`prove_gated_cpu_batch_pc` / `verify_gated_cpu_batch_pc`:
+
+- q combined gated ALU/memory rows;
+- shared matrices;
+- extra PC-chain rows (`next_pc_i * 1 = pc_{i+1}`);
+- one shared-matrix Spartan proof.
+
+Test batches an ADD row and a memory row at PCs 0x1000/0x1004 and verifies the chain. This is a selector-gated CPU row with cross-cycle continuity in the packed field.
