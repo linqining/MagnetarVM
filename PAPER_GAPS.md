@@ -748,3 +748,15 @@ is_alu + is_mem = 1
 ```
 
 `alu_witness` sets `is_alu=1`/memory inactive; `memory_witness` sets `is_alu=0`/memory active. Tests assert the selector values and that both row kinds satisfy the same system. This gives the CPU schema an explicit row-kind selector for future claim routing and gated constraint blocks, without yet gating the always-active address/data sub-relations.
+
+
+### Gated F2 adder
+
+`GatedBitAdder` gates a ripple-carry adder:
+
+- full adder diff/xor rows;
+- `out = gate * xor_carry`;
+- carry chain itself remains ungated (so `gate=0` zeroes the result, not the internal carry);
+- test checks 5+3=8 with gate=1 and all-zero output with gate=0.
+
+This gives a gated ADD primitive for row-selector composition. Fully gating the carry chain would require a gated carry product per bit; that is the next refinement if inactive rows must not compute carries.

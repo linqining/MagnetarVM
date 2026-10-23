@@ -788,3 +788,116 @@ mod gated_tests {
         }
     }
 }
+
+/// Gated ripple-carry adder over F2. `gate = 0` forces the result and the
+/// carry chain to zero; `gate = 1` computes `a + b`.
+#[derive(Clone, Debug)]
+pub struct GatedBitAdder {
+    pub width: usize,
+    pub a: Vec<VarId>,
+    pub b: Vec<VarId>,
+    pub out: Vec<VarId>,
+    pub gate: VarId,
+    pub relation: BitRelation,
+}
+
+impl GatedBitAdder {
+    pub fn new(width: usize) -> Self {
+        let a = (0..width).collect::<Vec<_>>();
+        let b = (width..2 * width).collect::<Vec<_>>();
+        let out = (2 * width..3 * width).collect::<Vec<_>>();
+        let gate = 3 * width;
+        let one = 3 * width + 1;
+        let carries = (3 * width + 2..4 * width + 3).collect::<Vec<_>>();
+        let p1 = (4 * width + 3..5 * width + 3).collect::<Vec<_>>();
+        let p2 = (5 * width + 3..6 * width + 3).collect::<Vec<_>>();
+        let p3 = (6 * width + 3..7 * width + 3).collect::<Vec<_>>();
+        let diff = (7 * width + 3..8 * width + 3).collect::<Vec<_>>();
+        let xor_carry = (8 * width + 3..9 * width + 3).collect::<Vec<_>>();
+        let mut relation = BitRelation::new(9 * width + 3);
+        relation.add(BitRow::new(vec![one], vec![one], vec![one]));
+        relation.add(BitRow::new(vec![gate], vec![one], vec![gate]));
+        relation.add(BitRow::new(vec![carries[0]], vec![one], Vec::new()));
+        for bit in 0..width {
+            relation.add(BitRow::new(
+                vec![a[bit], b[bit]],
+                vec![one],
+                vec![diff[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![diff[bit], carries[bit]],
+                vec![one],
+                vec![xor_carry[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![xor_carry[bit]],
+                vec![gate],
+                vec![out[bit]],
+            ));
+            relation.add(BitRow::new(vec![a[bit]], vec![b[bit]], vec![p1[bit]]));
+            relation.add(BitRow::new(vec![a[bit]], vec![carries[bit]], vec![p2[bit]]));
+            relation.add(BitRow::new(vec![b[bit]], vec![carries[bit]], vec![p3[bit]]));
+            relation.add(BitRow::new(
+                vec![p1[bit], p2[bit], p3[bit]],
+                vec![one],
+                vec![carries[bit + 1]],
+            ));
+        }
+        Self {
+            width,
+            a,
+            b,
+            out,
+            gate,
+            relation,
+        }
+    }
+
+    pub fn witness(&self, left: u64, right: u64, gate: bool) -> Vec<bool> {
+        let mut bits = vec![false; self.relation.num_vars];
+        bits[3 * self.width + 1] = true;
+        bits[self.gate] = gate;
+        let carries = 3 * self.width + 2;
+        for bit in 0..self.width {
+            let a = (left >> bit) & 1 == 1;
+            let b = (right >> bit) & 1 == 1;
+            let carry = bits[carries + bit];
+            bits[self.a[bit]] = a;
+            bits[self.b[bit]] = b;
+            bits[carries + bit + 1] = (a && b) || (a && carry) || (b && carry);
+            bits[self.out[bit]] = gate && (a ^ b ^ carry);
+            bits[4 * self.width + 3 + bit] = a && b;
+            bits[5 * self.width + 3 + bit] = a && carry;
+            bits[6 * self.width + 3 + bit] = b && carry;
+            bits[7 * self.width + 3 + bit] = a ^ b;
+            bits[8 * self.width + 3 + bit] = a ^ b ^ carry;
+        }
+        bits
+    }
+}
+
+#[cfg(test)]
+mod gated_adder_tests {
+    use super::*;
+
+    #[test]
+    fn gated_adder_zeroes_the_result_when_disabled() {
+        let adder = GatedBitAdder::new(8);
+        let enabled = adder.witness(5, 3, true);
+        assert!(adder.relation.check(&enabled));
+        let rd = adder
+            .out
+            .iter()
+            .enumerate()
+            .fold(0u64, |value, (bit, var)| {
+                value | (u64::from(enabled[*var]) << bit)
+            });
+        assert_eq!(rd, 8);
+
+        let disabled = adder.witness(5, 3, false);
+        assert!(adder.relation.check(&disabled));
+        for (bit, var) in adder.out.iter().enumerate() {
+            assert_eq!(u64::from(disabled[*var]), 0, "bit {bit}");
+        }
+    }
+}
