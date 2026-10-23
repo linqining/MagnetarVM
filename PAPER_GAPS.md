@@ -569,3 +569,15 @@ Runtime test `uniform_cpu_batch_enforces_pc_chain_with_shared_matrices`:
 - `prove_spartan_with_matrices` / `verify_spartan_with_matrices` pass on P3.
 
 This is the first end-to-end shared-matrix CPU proof: no q-fold materialized matrices, local ALU rows plus cross-cycle PC constraints.
+
+
+### Runtime SIMD CPU slice
+
+New `magnetar-runtime::simd_cpu`:
+
+- `SimdCpuProof { width, cycles, proof }`;
+- `prove_simd_cpu_rows(width, rows)` builds the uniform layout, shared A/B/C matrices with PC-chain rows, block-padded z, and one shared-matrix Spartan proof;
+- `verify_simd_cpu_rows(proof)` rebuilds the same shared matrices;
+- `simd_cpu_rows_from_trace(trace, width)` converts a power-of-two prefix of supported ALU rows into `UniformCpuRowWitness` (memory/AMO/control/W rows are rejected).
+
+Tests prove/verify a two-row Add/Xor batch, tamper detection, and a trace prefix ending at ecall. This is the first runtime wiring of scheme B; it is a standalone CPU slice, not yet merged into `UnifiedTraceProof`. Next: load/store columns, native F2, and unified integration.

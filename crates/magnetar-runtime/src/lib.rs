@@ -10,6 +10,7 @@ pub mod binary_twist;
 pub mod binary_twist_address;
 pub mod protocol;
 pub mod register_twist;
+pub mod simd_cpu;
 pub mod trace_commitment;
 
 use crate::binary_router::{
