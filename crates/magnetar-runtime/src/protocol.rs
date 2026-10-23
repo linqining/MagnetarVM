@@ -1846,3 +1846,49 @@ mod routing_tests {
             .expect("all claims have a consumer");
     }
 }
+
+#[cfg(test)]
+mod metadata_tests {
+    use magnetar_executor::execute;
+    use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+    #[test]
+    fn cpu_witness_metadata_covers_the_merged_system() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 3,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .expect("trace");
+        let (system, witness, metadata) =
+            crate::merged_cpu_system_with_metadata(&trace, 8).expect("merged system");
+        assert_eq!(metadata.total_len(), witness.values().len());
+        assert!(metadata.total_len() <= system.num_vars);
+        let mut expected_offset = 0;
+        for segment in &metadata.segments {
+            assert_eq!(segment.offset, expected_offset);
+            expected_offset += segment.len;
+        }
+    }
+}

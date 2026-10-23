@@ -1288,11 +1288,69 @@ fn row_cpu_relation(
     }
 }
 
+/// One contiguous variable range contributed by a trace row to the merged CPU
+/// system. This is the metadata hook for component-aware Virtual Spartan
+/// segments; the initial version tags each row as CPU-owned.
+#[derive(Clone, Debug)]
+pub struct CpuWitnessSegment {
+    pub cycle: u64,
+    pub offset: usize,
+    pub len: usize,
+    pub owner: SegmentOwner,
+    pub kind: SegmentKind,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CpuWitnessMetadata {
+    pub segments: Vec<CpuWitnessSegment>,
+}
+
+impl CpuWitnessMetadata {
+    pub fn total_len(&self) -> usize {
+        self.segments
+            .last()
+            .map(|segment| segment.offset + segment.len)
+            .unwrap_or(0)
+    }
+}
+
+pub(crate) fn merged_cpu_system_with_metadata(
+    trace: &Trace,
+    width: usize,
+) -> Result<(ConstraintSystem, Witness, CpuWitnessMetadata), RuntimeError> {
+    let mut merged = ConstraintSystem::new(0);
+    let mut values = Vec::new();
+    let mut metadata = CpuWitnessMetadata::default();
+    for row in &trace.rows {
+        if let Some((system, witness)) = row_cpu_relation(row, width)? {
+            let offset = merged.merge(system);
+            if values.len() != offset {
+                return Err(RuntimeError::Proof(
+                    "row witness layout does not match the merged system".into(),
+                ));
+            }
+            let len = witness.values().len();
+            values.extend_from_slice(witness.values());
+            if len != 0 {
+                metadata.segments.push(CpuWitnessSegment {
+                    cycle: row.cycle,
+                    offset,
+                    len,
+                    owner: SegmentOwner::Cpu,
+                    kind: SegmentKind::Direct,
+                });
+            }
+        }
+    }
+    Ok((merged, Witness::new(values), metadata))
+}
+
 pub(crate) fn merged_cpu_system(
     trace: &Trace,
     width: usize,
 ) -> Result<(ConstraintSystem, Witness), RuntimeError> {
-    merged_cpu_system_for_rows(&trace.rows, width)
+    let (system, witness, _metadata) = merged_cpu_system_with_metadata(trace, width)?;
+    Ok((system, witness))
 }
 
 fn merged_cpu_system_for_rows(

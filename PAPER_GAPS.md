@@ -414,3 +414,14 @@ The CPU stage only derives `ry`, `W(ry)`, and the segment claims; it does not ad
 Routed claims still flow through `CLAIM_CONSUMERS` and `consume_virtual_claims`; proof bytes remain **261,695 B**.
 
 Remaining blocker for true cryptographic consumption: `cpu_segment_layout` currently marks every CPU witness segment as `SegmentOwner::Cpu`, so routed claims contain no Register/RAM/Shift/Store/Bytecode families. The merged CPU system does not retain per-variable owner metadata. Next stage: make `merged_cpu_system`/`row_cpu_relation` emit a component-aware `CpuWitnessLayout`, so Virtual Spartan really emits Register/RAM/Shift/Store segment claims that Twist/Router/Shout can consume.
+
+
+### Next stage: CPU witness metadata
+
+First component-layout hook landed:
+
+- `merged_cpu_system_with_metadata` returns `CpuWitnessMetadata`, one contiguous `CpuWitnessSegment` per trace row with offset/length/owner/kind;
+- `merged_cpu_system` delegates to it and discards the metadata, so existing proof bytes are unchanged;
+- test verifies the segments are contiguous and cover the witness.
+
+Current segments are still `SegmentOwner::Cpu`/`Direct`; the next increment is to tag the semantic ranges inside each row relation (register index/value, RAM address/value, shift source/output, bytecode fields) so `cpu_segment_layout` can emit real Register/RAM/Shift/Store claims for Virtual Spartan consumption.
