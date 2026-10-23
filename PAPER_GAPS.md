@@ -1715,3 +1715,16 @@ a different claim-batching/ring-switch construction, not `PackedSharedPcs`.
 
 Test `gated_alu_selects_xor_and_and` includes `LUI 0x1234` in an 8-bit row and
 checks the truncated output `0x34`.
+
+
+### P0 progress: AUIPC in the gated CPU row
+
+`GatedAluOp::Auipc` is now supported:
+
+- AUIPC reuses the ADD datapath with `left = pc`, `right = imm`;
+- `is_auipc` is a boolean sub-selector of `is_add`;
+- `GatedCpuRow` constrains `is_auipc · (packed(a) + packed(pc)) = 0`;
+- packed s2 adds the same PC binding;
+- trace adapter maps `Op::Auipc` to `GatedAluOp::Auipc`.
+
+Tests cover the ALU output, the CPU packed companion, and the trace adapter mapping.
