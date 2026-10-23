@@ -809,3 +809,16 @@ Tests cover XOR and ADD lockstep over one witness. Next: SUB/shift s1 rows and t
 ```
 
 The full packed ALU system is still s2. Test covers an 8-bit subtraction lockstep. `UniformAluLayout::sub_adder` is now public for this relation. Next: shared-matrix batching of the dual lockstep.
+
+
+### Matrix-based lockstep API
+
+`magnetar-proof` now exposes:
+
+- `prove_lockstep_claims_with_matrices(z, a0..c1, layout, pcs, commitment)`;
+- `prove_lockstep_with_matrices(z, a0..c1, layout, pcs)`;
+- `verify_lockstep_with_matrices(a0..c1, layout, proof, pcs)`.
+
+All three take `SpartanMatrix` trait objects, so `SharedBlockMatrix` can drive a lockstep proof without materializing q copies. Test `shared_block_lockstep_round_trips` proves/verifies a two-instance shared-block lockstep.
+
+This is the API prerequisite for the dual shared-matrix batch (F2 s1 + packed s2 over q rows).
