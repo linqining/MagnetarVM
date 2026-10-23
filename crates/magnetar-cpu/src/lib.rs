@@ -762,7 +762,47 @@ pub struct UniformAluLayout {
     pub num_vars: usize,
 }
 
+/// Named variable groups inside a CPU row witness. These are the
+/// component-layout hooks for Virtual Spartan: the runtime can translate
+/// `VarId`s into merged-witness offsets and emit Register/RAM/PC claims.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CpuVarKind {
+    Rs1,
+    Rs2,
+    Imm,
+    Rd,
+    Pc,
+    NextPc,
+}
+
+#[derive(Clone, Debug)]
+pub struct CpuVarGroup {
+    pub kind: CpuVarKind,
+    pub vars: Vec<VarId>,
+}
+
 impl UniformAluLayout {
+    pub fn var_groups(&self) -> Vec<CpuVarGroup> {
+        vec![
+            CpuVarGroup {
+                kind: CpuVarKind::Rs1,
+                vars: self.adder.a.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::Rs2,
+                vars: self.rs2.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::Imm,
+                vars: self.imm.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::Rd,
+                vars: self.rd.clone(),
+            },
+        ]
+    }
+
     pub fn witness(&self, op: StepOp, rs1: u64, rs2: u64, imm: u64) -> Witness {
         let mut values = vec![F2_128::from(0u64); self.num_vars];
         self.fill_witness(&mut values, op, rs1, rs2, imm);
@@ -1233,6 +1273,19 @@ pub struct UniformStepLayout {
 }
 
 impl UniformStepLayout {
+    pub fn var_groups(&self) -> Vec<CpuVarGroup> {
+        let mut groups = self.alu.var_groups();
+        groups.push(CpuVarGroup {
+            kind: CpuVarKind::Pc,
+            vars: self.pc_adder.a.clone(),
+        });
+        groups.push(CpuVarGroup {
+            kind: CpuVarKind::NextPc,
+            vars: self.pc_adder.sum.clone(),
+        });
+        groups
+    }
+
     pub fn witness(&self, op: StepOp, pc: u64, rs1: u64, rs2: u64, imm: u64) -> Witness {
         let mut values = vec![F2_128::from(0u64); self.num_vars];
         self.alu.fill_witness(&mut values, op, rs1, rs2, imm);
@@ -5065,5 +5118,39 @@ mod tests {
         )
         .unwrap();
         assert!(system.check(&witness).is_err());
+    }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+
+    #[test]
+    fn uniform_step_var_groups_match_witness_bits() {
+        let (system, layout) = uniform_step_relation(8);
+        let pc = 0x1000u64;
+        let rs1 = 5u64;
+        let rs2 = 7u64;
+        let imm = 3u64;
+        let witness = layout.witness(StepOp::Addi, pc, rs1, rs2, imm);
+        assert_eq!(witness.values().len(), system.num_vars);
+        for group in layout.var_groups() {
+            let expected = match group.kind {
+                CpuVarKind::Rs1 => rs1,
+                CpuVarKind::Rs2 => rs2,
+                CpuVarKind::Imm => imm,
+                CpuVarKind::Rd => rs1.wrapping_add(imm) & 0xff,
+                CpuVarKind::Pc => pc,
+                CpuVarKind::NextPc => pc.wrapping_add(4),
+            };
+            for (bit, var) in group.vars.iter().enumerate() {
+                assert_eq!(
+                    witness.values()[*var].value() as u64,
+                    (expected >> bit) & 1,
+                    "{:?} bit {bit}",
+                    group.kind
+                );
+            }
+        }
     }
 }

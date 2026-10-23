@@ -425,3 +425,15 @@ First component-layout hook landed:
 - test verifies the segments are contiguous and cover the witness.
 
 Each segment now also carries a `CpuRowKind` (Alu, MulDiv, Load, Store, Amo, Branch, Jump, Auipc, System) derived from the trace opcode. Segments are still `SegmentOwner::Cpu`/`Direct`; the next increment is to tag semantic variable ranges inside each row relation (register index/value, RAM address/value, shift source/output, bytecode fields) so `cpu_segment_layout` can emit real Register/RAM/Shift/Store claims for Virtual Spartan consumption.
+
+
+### CPU variable groups
+
+First variable-level metadata landed in `magnetar-cpu`:
+
+- `CpuVarKind`: `Rs1`, `Rs2`, `Imm`, `Rd`, `Pc`, `NextPc`;
+- `CpuVarGroup { kind, vars: Vec<VarId> }`;
+- `UniformAluLayout::var_groups()` returns rs1/rs2/imm/rd groups;
+- `UniformStepLayout::var_groups()` adds PC and next-PC groups from the PC adder.
+
+Test `uniform_step_var_groups_match_witness_bits` checks every variable against the corresponding bit of the witness. The runtime metadata still uses row-level `CpuRowKind`; connecting these groups to merged offsets requires `row_cpu_relation` to return the layout/var groups, which is the next increment.
