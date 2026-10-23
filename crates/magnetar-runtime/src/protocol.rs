@@ -756,6 +756,11 @@ impl ProtocolPlan {
         }
     }
 
+    pub fn with_execution(mut self, execution: Vec<ExecutionStage>) -> Self {
+        self.execution = execution;
+        self
+    }
+
     pub fn stages(&self) -> &[StageSpec] {
         &self.stages
     }
@@ -940,3 +945,45 @@ pub const UNIFIED_EXECUTION_STAGES: &[ExecutionStage] = &[
     ExecutionStage::RegisterAndTrace,
     ExecutionStage::Cpu,
 ];
+
+#[cfg(test)]
+mod plan_tests {
+    use super::*;
+
+    #[test]
+    fn execution_plan_is_actually_driven_by_the_plan() {
+        let program = magnetar_spec::ProgramImage::new(
+            0x1000,
+            vec![
+                magnetar_spec::Instruction {
+                    op: magnetar_spec::Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 3,
+                    shamt: 0,
+                }
+                .encode(),
+                magnetar_spec::Instruction::new(magnetar_spec::Op::Ecall).encode(),
+            ],
+        );
+        let trace = magnetar_executor::execute(
+            &program,
+            magnetar_spec::MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .expect("trace");
+        let broken = ProtocolPlan::unified()
+            .with_execution(vec![ExecutionStage::Access, ExecutionStage::Cpu]);
+        let error = Orchestrator::new(broken)
+            .prove(&trace, 8)
+            .expect_err("access before commit must fail");
+        assert!(error.to_string().contains("access stage before commit"));
+    }
+}
