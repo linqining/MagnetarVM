@@ -1420,3 +1420,10 @@ Test `trace_bundle_includes_aux_and_register` uses a real trace (`add`, `slli`, 
 - The trace bundle test asserts CPU, register, aux, and shift proofs are all present.
 
 This closes the store-Router test gap and puts SLL/SRL/SRA proofs into the traced bundle, while shift is still a separate component rather than fused into `GatedAluRow`.
+
+
+### P0 progress: auxiliary claim routing
+
+`gated_aux_claims(trace)` builds Shift/Store/Bytecode claims from the trace and checks them against `ProtocolPlan::unified()`; `verify_gated_aux_claims` also runs the standard claim consumers.
+
+Test `aux_claims_route_through_protocol` uses a shift + ecall trace and verifies the Shift/Bytecode claims are accepted and consumed. This connects the auxiliary proofs to the claim graph; it is still separate from proof-object claim extraction.
