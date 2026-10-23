@@ -72,6 +72,83 @@ pub fn uniform_cpu_row_layout(width: usize) -> (ConstraintSystem, UniformCpuRowL
     )
 }
 
+/// Single fixed CPU schema that instantiates both the ALU/PC relation and the
+/// load/store column relation. The two sub-relations are always active; the
+/// witness builders fill the inactive side with a consistent default (ALU rows
+/// use a load-shaped memory row with data 0; memory rows use `Add` with
+/// `rd = rs1 + imm`). Equality constraints tie the duplicated PC/rs1/imm
+/// columns together.
+#[derive(Clone, Debug)]
+pub struct UniformCpuFullLayout {
+    pub width: usize,
+    pub alu: UniformCpuRowLayout,
+    pub memory: UniformMemoryRowLayout,
+    pub memory_offset: usize,
+    pub num_vars: usize,
+    pub system: ConstraintSystem,
+}
+
+impl UniformCpuFullLayout {
+    pub fn alu_witness(&self, op: StepOp, pc: u64, rs1: u64, rs2: u64, imm: u64) -> Witness {
+        let alu = self.alu.witness(op, pc, rs1, rs2, imm);
+        let memory = self.memory.witness(pc, rs1, imm, 0, true);
+        self.combine(&alu.witness, &memory)
+    }
+
+    pub fn memory_witness(&self, pc: u64, rs1: u64, imm: u64, data: u64, is_load: bool) -> Witness {
+        let alu = self.alu.witness(StepOp::Addi, pc, rs1, 0, imm);
+        let memory = self.memory.witness(pc, rs1, imm, data, is_load);
+        self.combine(&alu.witness, &memory)
+    }
+
+    fn combine(&self, alu: &Witness, memory: &Witness) -> Witness {
+        let mut values = alu.values().to_vec();
+        values.resize(self.memory_offset, F2_128::from(0u64));
+        values.extend_from_slice(memory.values());
+        Witness::new(values)
+    }
+
+    pub fn var_groups(&self) -> Vec<CpuVarGroup> {
+        self.alu.var_groups()
+    }
+}
+
+pub fn uniform_cpu_full_layout(width: usize) -> (ConstraintSystem, UniformCpuFullLayout) {
+    let (mut system, alu) = uniform_cpu_row_layout(width);
+    let (memory_system, memory) = uniform_memory_row_layout(width);
+    let memory_offset = system.merge(memory_system);
+    let one = Expr::constant(1u64);
+    let alu_pc = alu.step.pc_adder.a.clone();
+    let alu_rs1 = alu.step.alu.adder.a.clone();
+    let alu_imm = alu.step.alu.imm.clone();
+    for (left, right) in [
+        (alu_pc, memory.pc.a.clone()),
+        (alu_rs1, memory.addr.a.clone()),
+        (alu_imm, memory.addr.b.clone()),
+    ] {
+        for (left, right) in left.iter().zip(right.iter()) {
+            system.add_constraint(
+                Expr::var(*left),
+                one.clone(),
+                Expr::var(memory_offset + *right),
+            );
+        }
+    }
+    let num_vars = system.num_vars;
+    let row_system = system.clone();
+    (
+        system,
+        UniformCpuFullLayout {
+            width,
+            alu,
+            memory,
+            memory_offset,
+            num_vars,
+            system: row_system,
+        },
+    )
+}
+
 #[derive(Clone, Debug)]
 pub struct UniformMemoryRowLayout {
     pub width: usize,
@@ -459,5 +536,15 @@ mod batch_tests {
                 assert_eq!(rows[0].values()[*var].value() as u64, (expected >> bit) & 1);
             }
         }
+    }
+    #[test]
+    fn combined_schema_accepts_alu_and_memory_rows() {
+        let (system, layout) = uniform_cpu_full_layout(8);
+        let alu = layout.alu_witness(StepOp::Add, 0x1000, 3, 4, 0);
+        let memory = layout.memory_witness(0x1004, 5, 2, 0x34, true);
+        assert_eq!(alu.values().len(), layout.num_vars);
+        assert_eq!(memory.values().len(), layout.num_vars);
+        system.check(&alu).expect("ALU row");
+        system.check(&memory).expect("memory row");
     }
 }

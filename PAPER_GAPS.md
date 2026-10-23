@@ -596,3 +596,18 @@ Tests prove/verify a two-row Add/Xor batch, tamper detection, and a trace prefix
 `magnetar-runtime::simd_memory` proves a q-row load/store batch with shared matrices and PC-chain rows, using the same `SharedBlockMatrix` path as the ALU slice. Test `simd_memory_rows_round_trip` proves/verifies one load and one store.
 
 The schema currently enforces the CPU-side address/data columns and selectors only; RAM consistency remains BinaryTwist's job. The next step is to add the load/store relation to the CPU schema (not a separate relation), then wire Twist claims.
+
+
+### Single ALU + memory CPU schema
+
+`magnetar-cpu::simd::UniformCpuFullLayout` merges the ALU/PC schema and the load/store schema into one fixed system:
+
+- both sub-relations are always active;
+- ALU rows use a default load-shaped memory witness (data 0);
+- memory rows use `Addi` on the ALU side (`rd = rs1 + imm`) so both sides are satisfied;
+- equality constraints tie the duplicated PC/rs1/imm columns;
+- `alu_witness` / `memory_witness` produce combined witnesses.
+
+`magnetar-runtime::simd_full` proves a two-row batch (ALU + load) with shared matrices and PC-chain rows. Tests cover the combined relation and proof.
+
+This is a single-schema stepping stone, not yet selector-gated: inactive sub-relations are still enforced by default witnesses, which costs variables/constraints. Next: gate ALU/memory constraints by row selector, then connect the memory columns to BinaryTwist claims.
