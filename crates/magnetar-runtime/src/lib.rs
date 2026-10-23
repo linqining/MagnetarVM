@@ -10,6 +10,7 @@ pub mod binary_twist;
 pub mod binary_twist_address;
 pub mod gated_aux;
 pub mod gated_bundle;
+pub mod gated_recursion;
 pub mod gated_register;
 pub mod gated_shift;
 pub mod packed_select;

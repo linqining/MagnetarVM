@@ -1546,3 +1546,18 @@ The real dominant cost is the unpacked Shout/Router auxiliary proof (137 KB), no
 `GatedBundle` now records `initial_pc` / `final_pc` when built from a trace. `prove_gated_bundle_from_trace` re-proves the CPU batch with `prove_gated_dual_batch_bits_with_pc`, and `verify_gated_bundle_with_backend` dispatches to the PC-bound verifier when those fields are present.
 
 Test `trace_bundle_includes_aux_and_register` now verifies CPU, register, aux, and public PC binding from a real trace.
+
+
+### P1 progress: gated chunk pipeline over the recursion boundary
+
+`gated_recursion` adds:
+
+- `prove_gated_chunks(trace, width, chunk_size)`;
+- `GatedChunkedProof { chunk_size, chunks, aggregated }`;
+- `verify_gated_chunks`.
+
+Each chunk with supported gated rows is proved by `prove_gated_bundle_from_trace`; empty/unsupported chunks are skipped. Chunk digests are aggregated with the existing `HashChainRecursion` reference backend.
+
+Test `gated_chunks_aggregate` proves two chunks and verifies the hash-chain aggregate.
+
+This is the chunk planner + aggregation wiring, not a recursive zk verifier.
