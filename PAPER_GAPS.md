@@ -991,3 +991,25 @@ Packed linear rows are ~21x smaller and ~9x faster to prove in this microbenchma
 - A (F2^128 embedding) is already proving gated rows end-to-end and connecting to BinaryTwist; q=8 proof 131 KB.
 - B (word-packed) gives large wins on linear/select/XOR, but no direct win on AND/ADD/SUB/SLT/shift carry chains.
 - Recommended: keep A as the CPU correctness path; prototype packed linear/select columns for commitment compression and row gating; only extend to packed ADD/AND if profiling shows they dominate.
+
+
+### Milestone 1: packed s2 select over one bit witness
+
+`magnetar-runtime::packed_select::PackedSelectLayout` implements the paper's word-wide selection example:
+
+- s1 over F2: `c * x_i = y_i` for every bit;
+- s2 over F2^128: `c * (Σ β_i x_i) = Σ β_i y_i`, one packed constraint plus `c*c=c`;
+- both read the same bit-valued witness;
+- `prove_packed_select` / `verify_packed_select` run one `LockstepProof` with one commitment.
+
+`lockstep_packed_system()` keeps the semantic s2 at 2 constraints and pads only for the lockstep matrix dimensions.
+
+Benchmark (`packed_select_bench`, release, 64 bits):
+
+| path | proof | prove | verify |
+|---|---:|---:|---:|
+| s1 bit select | 67,648 B | 1.59 ms | 1.03 ms |
+| s2 packed select (2 rows) | 67,096 B | 0.90 ms | 0.88 ms |
+| dual same-W lockstep | 67,720 B | 1.14 ms | 1.25 ms |
+
+Key finding: packing reduces s2 rows from 64 to 2, but proof size stays PCS/variable-bound because the witness is still one F2^128 cell per bit. Row reduction improves prover work modestly; large proof-size gains require the BinarySpartan 128-bits-per-field commitment packing and ring switching (Milestone 5), not s2 row packing alone.
