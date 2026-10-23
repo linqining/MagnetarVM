@@ -1365,3 +1365,16 @@ Tests cover 3<5=1 and 5<3=0. The q=8 Direct/RingSwitch test mixes ADD/SUB/SLTU; 
 - only bit 0 of the output is the comparison result.
 
 Tests cover -1<1, 1<-1, and -5<-3 in 8-bit two's complement. The q=8 Direct/RingSwitch test mixes ADD/SUB/SLTU/SLT; the trace adapter and register-event extractor accept `StepOp::Slt`.
+
+
+### P0 progress: shift proof component
+
+`gated_shift` wraps the native F2 barrel-shift relation as a standalone proof component:
+
+- `prove_gated_shift_row(width, event)` / `verify_gated_shift_row`;
+- SLL/SRL/SRA;
+- `gated_shift_events_from_trace(trace)` extracts shift rows from a supported trace prefix.
+
+Tests cover 5<<2=20, 20>>2=5, -8>>1=-4 (8-bit), and a trace with `slli`.
+
+This is a separate shift component, not yet fused into `GatedAluRow`; it closes the shift proof gap while leaving work fusion/selector integration for later.
