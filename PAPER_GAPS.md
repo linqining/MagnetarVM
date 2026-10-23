@@ -373,3 +373,16 @@ It verified correctly, but the hello proof grew from **261,695 B to 387,183 B** 
 4. open `G` once at the z point and all aux points.
 
 The next implementation step is therefore a `LockstepClaims` API (prove/verify without opening) plus a deferred single opening, not separate PCS commitments.
+
+
+### Deferred-opening API, step 1
+
+`magnetar-proof` now has:
+
+- `LockstepClaims<C>`: the lockstep proof fields without the PCS opening;
+- `prove_lockstep_claims(...)`: computes the CPU sum-check, segment claims, and inner challenge `ry`, but performs **no PCS commit/open**; the caller supplies the already-computed commitment bytes;
+- `prove_lockstep(...)` is now a wrapper that commits `z`, calls `prove_lockstep_claims`, and opens at `ry`, so existing callers and proof bytes are unchanged.
+
+Test `lockstep_claims_defer_the_opening` proves the claim proof and manually opens/verifies at `ry`, confirming the deferred API is sound.
+
+Next: `verify_lockstep_claims` (verify equations without the PCS opening), then make `UnifiedTraceProof` use `LockstepClaims` + one final `P3Mosaic` opening that includes the z point at `ry` and all aux points.

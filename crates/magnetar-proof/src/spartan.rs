@@ -406,15 +406,33 @@ pub struct LockstepProof<C: Clone + std::fmt::Debug, O: Clone + std::fmt::Debug>
     pub opening: O,
 }
 
+/// Lockstep proof without the PCS opening. The opening is deferred until all
+/// Virtual Spartan claims exist, so one commitment/opening covers the CPU `z`
+/// point and every auxiliary claim.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct LockstepClaims<C: Clone + std::fmt::Debug> {
+    pub commitment: C,
+    pub v_a0: F2_128,
+    pub v_b0: F2_128,
+    pub v_c0: F2_128,
+    pub v_a1: F2_128,
+    pub v_b1: F2_128,
+    pub v_c1: F2_128,
+    pub outer: SumcheckProof<F2_128>,
+    pub inner: SumcheckProof<F2_128>,
+    pub segments: Vec<SegmentClaim>,
+}
+
 /// Prove two relations over one shared witness with a lockstep outer
 /// sum-check and a shared inner sum-check.
-pub fn prove_lockstep<P: Pcs>(
+pub fn prove_lockstep_claims<P: Pcs>(
     system_a: &ConstraintSystem,
     system_b: &ConstraintSystem,
     witness: &Witness,
     layout: &WitnessLayout,
     pcs: &P,
-) -> Result<LockstepProof<P::Commitment, P::Opening>, SpartanError> {
+    commitment: P::Commitment,
+) -> Result<(LockstepClaims<P::Commitment>, Vec<F2_128>), SpartanError> {
     system_a.check(witness)?;
     system_b.check(witness)?;
     if system_a.num_vars != system_b.num_vars {
@@ -443,7 +461,6 @@ pub fn prove_lockstep<P: Pcs>(
     let bz1_mle = Mle::new(bz1.clone())?;
     let cz1_mle = Mle::new(cz1.clone())?;
     let row_bits = a0.rows.len().trailing_zeros() as usize;
-    let commitment = pcs.commit(&z)?;
     let transcript = RefCell::new(Sha256Transcript::new("lockstep-reference-v1"));
     let tau = {
         let mut transcript = transcript.borrow_mut();
@@ -520,18 +537,46 @@ pub fn prove_lockstep<P: Pcs>(
         });
     }
     let segments = split_segment_claims(layout, &z, &ry)?;
+    Ok((
+        LockstepClaims {
+            commitment,
+            v_a0: va0,
+            v_b0: vb0,
+            v_c0: vc0,
+            v_a1: va1,
+            v_b1: vb1,
+            v_c1: vc1,
+            outer,
+            inner,
+            segments,
+        },
+        ry,
+    ))
+}
+
+pub fn prove_lockstep<P: Pcs>(
+    system_a: &ConstraintSystem,
+    system_b: &ConstraintSystem,
+    witness: &Witness,
+    layout: &WitnessLayout,
+    pcs: &P,
+) -> Result<LockstepProof<P::Commitment, P::Opening>, SpartanError> {
+    let z = witness_vector(system_a, witness)?;
+    let commitment = pcs.commit(&z)?;
+    let (claims, ry) =
+        prove_lockstep_claims(system_a, system_b, witness, layout, pcs, commitment.clone())?;
     let opening = pcs.open(&z, &ry)?;
     Ok(LockstepProof {
-        commitment,
-        v_a0: va0,
-        v_b0: vb0,
-        v_c0: vc0,
-        v_a1: va1,
-        v_b1: vb1,
-        v_c1: vc1,
-        outer,
-        inner,
-        segments,
+        commitment: claims.commitment,
+        v_a0: claims.v_a0,
+        v_b0: claims.v_b0,
+        v_c0: claims.v_c0,
+        v_a1: claims.v_a1,
+        v_b1: claims.v_b1,
+        v_c1: claims.v_c1,
+        outer: claims.outer,
+        inner: claims.inner,
+        segments: claims.segments,
         opening,
     })
 }
@@ -861,5 +906,39 @@ mod tests {
         let mut tampered = proof;
         tampered.segments[0].value = tampered.segments[0].value + F2_128::from(1u64);
         assert!(verify_lockstep(&system_a, &system_b, &layout, &tampered, &pcs).is_err());
+    }
+    #[test]
+    fn lockstep_claims_defer_the_opening() {
+        let mut system = ConstraintSystem::new(3);
+        system.add_constraint(
+            Expr::var(0).add(Expr::var(1)),
+            Expr::constant(1u64),
+            Expr::var(2),
+        );
+        let witness = Witness::new(vec![
+            F2_128::from(1u64),
+            F2_128::from(2u64),
+            F2_128::from(3u64),
+        ]);
+        let pcs = TestPcs;
+        let layout = WitnessLayout::new(vec![
+            Segment::new("a", 0, 2, SegmentKind::Direct, SegmentOwner::Cpu),
+            Segment::new("b", 2, 2, SegmentKind::Direct, SegmentOwner::Cpu),
+        ])
+        .unwrap();
+        let z = witness_vector(&system, &witness).unwrap();
+        let commitment = pcs.commit(&z).unwrap();
+        let (claims, ry) = prove_lockstep_claims(
+            &system,
+            &system,
+            &witness,
+            &layout,
+            &pcs,
+            commitment.clone(),
+        )
+        .unwrap();
+        let vw = reconstruct_segment_claim(&layout, &claims.segments, &ry).unwrap();
+        let opening = pcs.open(&z, &ry).unwrap();
+        assert!(pcs.verify(&commitment, &ry, vw, &opening).unwrap());
     }
 }
