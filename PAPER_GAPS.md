@@ -1393,3 +1393,20 @@ This is a separate shift component, not yet fused into `GatedAluRow`; it closes 
 Test `gated_aux_proves_shout_and_shift` covers a trace with `slli` and `ecall`. Store mode is wired but not exercised in that test.
 
 These are component proofs; they are not yet fused into the gated CPU row or the bundle's claim routing.
+
+
+### P0 progress: gated bundle from a real trace
+
+`GatedBundle` now carries an optional `GatedAuxProof` (BinaryShout + shift/store BinaryRouter).
+
+`prove_gated_bundle_from_trace(trace, width, backend)`:
+
+- converts the supported trace prefix to gated rows;
+- proves the gated dual CPU batch;
+- attaches register-file BinaryTwist when ALU register events exist;
+- attaches BinaryTwist RAM when memory rows exist;
+- attaches Shout/shift/store auxiliary proofs.
+
+`verify_gated_bundle_from_trace` rebuilds the rows/events/aux witnesses and verifies every component.
+
+Test `trace_bundle_includes_aux_and_register` uses a real trace (`add`, `slli`, `ecall`): CPU, register Twist, Shout, and shift Router all verify.
