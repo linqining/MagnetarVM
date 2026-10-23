@@ -144,6 +144,13 @@ mod tests {
     }
 
     #[test]
+    fn mixed_backend_bundle_proves_alu_m4_memory_m5() {
+        let rows = rows();
+        let bundle = prove_mixed_gated_bundle(8, &rows).unwrap();
+        verify_mixed_gated_bundle(8, &rows, &bundle).unwrap();
+    }
+
+    #[test]
     fn gated_bundle_runs_with_ring_switch_backend() {
         let rows = rows();
         let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
@@ -152,4 +159,114 @@ mod tests {
         assert!(bundle.ram.is_some());
         verify_gated_bundle_with_backend(8, &rows, &bundle, &backend).unwrap();
     }
+}
+
+/// Mixed backend bundle: ALU rows use M4 DirectBitPcs, memory rows use M5
+/// RingSwitchPackedBitPcs, and the RAM consistency proof remains BinaryTwist.
+#[derive(Clone, Debug)]
+pub struct MixedGatedBundle<AO: Clone + std::fmt::Debug, MO: Clone + std::fmt::Debug> {
+    pub alu_cpu: LockstepProof<P3MosaicCommitment, AO>,
+    pub alu_layout: WitnessLayout,
+    pub memory_cpu: LockstepProof<P3MosaicCommitment, MO>,
+    pub memory_layout: WitnessLayout,
+    pub ram: BinaryTwistRamProof,
+    pub claims: Vec<Claim>,
+}
+
+pub fn prove_mixed_gated_bundle(
+    width: usize,
+    rows: &[(u64, GatedCpuRowInput)],
+) -> Result<
+    MixedGatedBundle<P3MosaicOpening, magnetar_proof::RingSwitchOpening<P3MosaicOpening>>,
+    RuntimeError,
+> {
+    use magnetar_proof::RingSwitchPackedBitPcs;
+
+    let alu_rows = rows
+        .iter()
+        .filter(|(_, input)| matches!(input, GatedCpuRowInput::Alu { .. }))
+        .copied()
+        .collect::<Vec<_>>();
+    let memory_rows = rows
+        .iter()
+        .filter(|(_, input)| matches!(input, GatedCpuRowInput::Memory { .. }))
+        .copied()
+        .collect::<Vec<_>>();
+    if alu_rows.is_empty() || memory_rows.is_empty() {
+        return Err(RuntimeError::Proof(
+            "mixed bundle needs both ALU and memory rows".into(),
+        ));
+    }
+    let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+    let direct = DirectBitPcs::new(pcs.clone());
+    let ring = RingSwitchPackedBitPcs::new(pcs);
+    let (alu_cpu, alu_layout) = prove_gated_dual_batch_bits(width, &alu_rows, &direct)?;
+    let (memory_cpu, memory_layout) = prove_gated_dual_batch_bits(width, &memory_rows, &ring)?;
+    let memory_witness = gated_memory_twist_witness(width, &memory_rows)?;
+    let ram = prove_binary_twist_ram(&memory_witness)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let claims = claims_for(rows);
+    let plan = ProtocolPlan::unified();
+    let set = ClaimSet::with_claims(claims.clone());
+    plan.check_virtual_claims(&set)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok(MixedGatedBundle {
+        alu_cpu,
+        alu_layout,
+        memory_cpu,
+        memory_layout,
+        ram,
+        claims,
+    })
+}
+
+pub fn verify_mixed_gated_bundle(
+    width: usize,
+    rows: &[(u64, GatedCpuRowInput)],
+    bundle: &MixedGatedBundle<P3MosaicOpening, magnetar_proof::RingSwitchOpening<P3MosaicOpening>>,
+) -> Result<(), RuntimeError> {
+    use magnetar_proof::RingSwitchPackedBitPcs;
+
+    let alu_rows = rows
+        .iter()
+        .filter(|(_, input)| matches!(input, GatedCpuRowInput::Alu { .. }))
+        .copied()
+        .collect::<Vec<_>>();
+    let memory_rows = rows
+        .iter()
+        .filter(|(_, input)| matches!(input, GatedCpuRowInput::Memory { .. }))
+        .copied()
+        .collect::<Vec<_>>();
+    let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+    let direct = DirectBitPcs::new(pcs.clone());
+    let ring = RingSwitchPackedBitPcs::new(pcs);
+    verify_gated_dual_batch_bits(
+        width,
+        &alu_rows,
+        &bundle.alu_cpu,
+        &bundle.alu_layout,
+        &direct,
+    )?;
+    verify_gated_dual_batch_bits(
+        width,
+        &memory_rows,
+        &bundle.memory_cpu,
+        &bundle.memory_layout,
+        &ring,
+    )?;
+    let memory_witness = gated_memory_twist_witness(width, &memory_rows)?;
+    verify_binary_twist_ram(&memory_witness, &bundle.ram)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let plan = ProtocolPlan::unified();
+    let mut set = ClaimSet::with_claims(bundle.claims.clone());
+    plan.check_virtual_claims(&set)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    plan.consume_virtual_claims(&mut set)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if set.remaining() != 0 {
+        return Err(RuntimeError::Proof(
+            "mixed bundle left unconsumed claims".into(),
+        ));
+    }
+    Ok(())
 }

@@ -1224,3 +1224,26 @@ At q=8 the ring-switch M5 proof is ~12x smaller, with comparable prover/verifier
 | M5 ring | 4,816 B | 41,041 B | 100 B | 45,957 B | 5.1 ms | 3.8 ms |
 
 The CPU proof is ~18x smaller; total bundle is ~2.8x smaller because BinaryTwist RAM (41 KB) now dominates. Next: packed Twist or larger q to amortize the ring-switch overhead.
+
+
+### Mixed backend bundle: CPU/ALU M4, memory rows M5
+
+`MixedGatedBundle` splits rows by kind:
+
+- ALU rows: `DirectBitPcs` (M4);
+- memory rows: `RingSwitchPackedBitPcs` (M5);
+- RAM consistency: BinaryTwist (unchanged, not packed).
+
+`prove_mixed_gated_bundle` / `verify_mixed_gated_bundle` prove both CPU batches, the BinaryTwist RAM witness, and the claim routing.
+
+`gated_bundle_mixed_bench` (one ALU + one memory row):
+
+| component | bytes |
+|---|---:|
+| ALU CPU M4 | 67,928 |
+| memory CPU M5 | 3,896 |
+| BinaryTwist RAM | 41,041 |
+| claims | 100 |
+| total | 112,965 |
+
+This is a simple per-component backend split. It does not yet pack the BinaryTwist RAM tables; RAM is still the memory-checking proof.
