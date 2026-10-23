@@ -1386,6 +1386,37 @@ fn row_cpu_var_groups(
             magnetar_cpu::uniform_load_row_relation(64, access.addr, row.rd_val, row.rs1_val, imm);
         return layout.var_groups();
     }
+    if let Some(branch_op) = branch_op_for(row.instruction.op) {
+        let imm = row.instruction.imm as u64;
+        let (_system, layout) = magnetar_cpu::uniform_branch_row_relation(
+            width,
+            branch_op,
+            row.pc,
+            imm,
+            row.rs1_val,
+            row.rs2_val,
+            row.next_pc,
+        );
+        return layout.var_groups();
+    }
+    if row.instruction.op == magnetar_spec::Op::Jal {
+        let imm = row.instruction.imm as u64;
+        let (_system, layout) =
+            magnetar_cpu::uniform_jal_row_relation(width, row.pc, imm, row.next_pc, row.rd_val);
+        return layout.var_groups();
+    }
+    if row.instruction.op == magnetar_spec::Op::Jalr {
+        let imm = row.instruction.imm as u64;
+        let (_system, layout) = magnetar_cpu::uniform_jalr_row_relation(
+            width,
+            row.pc,
+            row.rs1_val,
+            imm,
+            row.next_pc,
+            row.rd_val,
+        );
+        return layout.var_groups();
+    }
     let Some(step_op) = step_op_for(row.instruction.op) else {
         return Vec::new();
     };

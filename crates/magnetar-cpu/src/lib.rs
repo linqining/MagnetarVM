@@ -775,6 +775,8 @@ pub enum CpuVarKind {
     NextPc,
     RamAddr,
     RamValue,
+    Target,
+    Link,
 }
 
 #[derive(Clone, Debug)]
@@ -1334,6 +1336,23 @@ pub struct UniformJalLayout {
 }
 
 impl UniformJalLayout {
+    pub fn var_groups(&self) -> Vec<CpuVarGroup> {
+        vec![
+            CpuVarGroup {
+                kind: CpuVarKind::Pc,
+                vars: self.link.a.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::Link,
+                vars: self.link.sum.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::Target,
+                vars: self.target.sum.clone(),
+            },
+        ]
+    }
+
     pub fn witness(&self, pc: u64, imm: u64) -> Witness {
         let mut values = vec![F2_128::from(0u64); self.num_vars];
         self.link.fill_witness(&mut values, pc, self.link_increment);
@@ -1932,6 +1951,31 @@ pub struct UniformBranchLayout {
 }
 
 impl UniformBranchLayout {
+    pub fn var_groups(&self) -> Vec<CpuVarGroup> {
+        vec![
+            CpuVarGroup {
+                kind: CpuVarKind::Rs1,
+                vars: self.rs1.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::Rs2,
+                vars: self.rs2.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::Pc,
+                vars: self.link.a.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::NextPc,
+                vars: self.next_pc.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::Target,
+                vars: self.target.sum.clone(),
+            },
+        ]
+    }
+
     pub fn witness(&self, op: BranchOp, pc: u64, rs1: u64, rs2: u64, imm: u64) -> Witness {
         let mask = if self.width >= 64 {
             u64::MAX
@@ -2357,6 +2401,31 @@ pub struct UniformJalrLayout {
 }
 
 impl UniformJalrLayout {
+    pub fn var_groups(&self) -> Vec<CpuVarGroup> {
+        vec![
+            CpuVarGroup {
+                kind: CpuVarKind::Rs1,
+                vars: self.target_adder.a.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::Imm,
+                vars: self.target_adder.b.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::Pc,
+                vars: self.link_adder.a.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::Target,
+                vars: self.target_adder.sum.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::Link,
+                vars: self.link_adder.sum.clone(),
+            },
+        ]
+    }
+
     pub fn witness(&self, rs1: u64, imm: u64) -> Witness {
         let mut values = vec![F2_128::from(0u64); self.num_vars];
         self.target_adder.fill_witness(&mut values, rs1, imm);
@@ -5258,7 +5327,10 @@ mod metadata_tests {
                 CpuVarKind::Rd => rs1.wrapping_add(imm) & 0xff,
                 CpuVarKind::Pc => pc,
                 CpuVarKind::NextPc => pc.wrapping_add(4),
-                CpuVarKind::RamAddr | CpuVarKind::RamValue => unreachable!(),
+                CpuVarKind::RamAddr
+                | CpuVarKind::RamValue
+                | CpuVarKind::Target
+                | CpuVarKind::Link => unreachable!(),
             };
             for (bit, var) in group.vars.iter().enumerate() {
                 assert_eq!(
@@ -5325,6 +5397,54 @@ mod metadata_tests {
                 CpuVarKind::Imm => imm,
                 CpuVarKind::RamAddr => addr,
                 CpuVarKind::RamValue => value,
+                other => panic!("unexpected {other:?}"),
+            };
+            for (bit, var) in group.vars.iter().enumerate() {
+                assert_eq!(witness.values()[*var].value() as u64, (expected >> bit) & 1);
+            }
+        }
+    }
+    #[test]
+    fn branch_and_jump_layouts_expose_pc_groups() {
+        let width = 8;
+        let pc = 0x10u64;
+        let imm = 0x02u64;
+        let rs1 = 3u64;
+        let rs2 = 4u64;
+        let next_pc = 0x14u64;
+        let (system, branch) =
+            uniform_branch_row_relation(width, BranchOp::Beq, pc, imm, rs1, rs2, next_pc);
+        let witness = branch.witness(BranchOp::Beq, pc, rs1, rs2, imm);
+        assert_eq!(witness.values().len(), system.num_vars);
+        for group in branch.var_groups() {
+            let expected = match group.kind {
+                CpuVarKind::Rs1 => rs1,
+                CpuVarKind::Rs2 => rs2,
+                CpuVarKind::Pc => pc,
+                CpuVarKind::NextPc => next_pc,
+                CpuVarKind::Target => pc.wrapping_add(imm),
+                other => panic!("unexpected {other:?}"),
+            };
+            for (bit, var) in group.vars.iter().enumerate() {
+                assert_eq!(
+                    witness.values()[*var].value() as u64,
+                    (expected >> bit) & 1,
+                    "{:?} bit {bit}",
+                    group.kind
+                );
+            }
+        }
+
+        let link = 0x14u64;
+        let jal_target = 0x12u64;
+        let (system, jal) = uniform_jal_row_relation(width, pc, imm, jal_target, link);
+        let witness = jal.witness(pc, imm);
+        assert_eq!(witness.values().len(), system.num_vars);
+        for group in jal.var_groups() {
+            let expected = match group.kind {
+                CpuVarKind::Pc => pc,
+                CpuVarKind::Target => jal_target,
+                CpuVarKind::Link => link,
                 other => panic!("unexpected {other:?}"),
             };
             for (bit, var) in group.vars.iter().enumerate() {

@@ -465,3 +465,14 @@ The runtime `row_cpu_var_groups` uses the layout-returning function, so simple A
 - tests verify every group's variables against the load/store witness bits.
 
 AMO is still skipped in metadata because its circuit merges store layout with an op-specific sub-relation. Next: AMO, branch/jump PC groups, and shift routing groups.
+
+
+### Branch/jump groups
+
+`CpuVarKind` now carries `Target` and `Link`. Shapes:
+
+- `UniformBranchLayout`: Rs1, Rs2, Pc (link adder a), NextPc, Target (target adder sum);
+- `UniformJalLayout`: Pc (link adder a), Link (link adder sum), Target (target adder sum);
+- `UniformJalrLayout`: Rs1/Imm (target adder a/b), Pc (link adder a), Target, Link.
+
+The runtime metadata reconstructs these layouts for branch/Jal/Jalr rows. Tests verify each group against the branch and Jal witness bits; AMO/shift/bytecode groups remain.
