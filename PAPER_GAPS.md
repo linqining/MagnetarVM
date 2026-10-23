@@ -798,3 +798,14 @@ This is a genuine dual-relation lockstep over one CPU row witness. Next: extend 
 - zero rows pad s1 to the packed constraint count.
 
 Tests cover XOR and ADD lockstep over one witness. Next: SUB/shift s1 rows and the shared-matrix batch version.
+
+
+### Dual lockstep for SUB
+
+`simd_dual` adds `StepOp::Sub` s1 rows over the packed ALU's public `sub_adder` variables:
+
+```text
+(sub_a_i + sub_b_i + sub_carry_i) * 1 = sub_sum_i
+```
+
+The full packed ALU system is still s2. Test covers an 8-bit subtraction lockstep. `UniformAluLayout::sub_adder` is now public for this relation. Next: shared-matrix batching of the dual lockstep.

@@ -36,6 +36,17 @@ fn bit_relation(layout: &magnetar_cpu::simd::UniformCpuRowLayout, op: StepOp) ->
                 ));
             }
         }
+        StepOp::Sub => {
+            let adder = &layout.step.alu.sub_adder;
+            let one = layout.step.alu.selectors[StepOp::Sub.index()];
+            for bit in 0..layout.width {
+                relation.add(BitRow::new(
+                    vec![adder.a[bit], adder.b[bit], adder.carry[bit]],
+                    vec![one],
+                    vec![adder.sum[bit]],
+                ));
+            }
+        }
         StepOp::Add => {
             let adder = &layout.step.alu.adder;
             let one = layout.step.alu.selectors[StepOp::Add.index()];
@@ -141,5 +152,12 @@ mod tests {
         let (proof, layout) =
             prove_dual_cpu(8, StepOp::Add, 0b1010_1010, 0b1100_1100).expect("prove");
         verify_dual_cpu(8, StepOp::Add, &proof, &layout).expect("verify");
+    }
+
+    #[test]
+    fn f2_sub_parity_and_packed_cpu_run_in_lockstep() {
+        let (proof, layout) =
+            prove_dual_cpu(8, StepOp::Sub, 0b1010_1010, 0b0000_1100).expect("prove");
+        verify_dual_cpu(8, StepOp::Sub, &proof, &layout).expect("verify");
     }
 }
