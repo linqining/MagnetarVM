@@ -778,6 +778,36 @@ mod tests {
     }
 
     #[test]
+    fn gated_dual_uses_mosaic_pcs_adapter() {
+        use magnetar_pcs::mosaic::PackedSharedPcs;
+        use magnetar_proof::DirectBitPcs;
+
+        let rows = [
+            (
+                0x1000,
+                GatedCpuRowInput::Alu {
+                    left: 5,
+                    right: 3,
+                    op: crate::simd_f2::GatedAluOp::Add,
+                },
+            ),
+            (
+                0x1004,
+                GatedCpuRowInput::Memory {
+                    rs1: 0x10,
+                    imm: 2,
+                    value: 0x34,
+                    is_mem: true,
+                },
+            ),
+        ];
+        let pcs = PackedSharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()).unwrap();
+        let backend = DirectBitPcs::new(pcs);
+        let (proof, layout) = prove_gated_dual_batch_bits(8, &rows, &backend).unwrap();
+        verify_gated_dual_batch_bits(8, &rows, &proof, &layout, &backend).unwrap();
+    }
+
+    #[test]
     fn gated_dual_binds_public_pc_statement() {
         use magnetar_proof::DirectBitPcs;
 

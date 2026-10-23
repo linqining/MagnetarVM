@@ -1481,3 +1481,16 @@ The ALU/memory packed checks still hold on shift rows (their gated outputs are z
 - the rows are added to the s2 matrices and mirrored by zero rows on s1 so lockstep dimensions match.
 
 Test `gated_dual_binds_public_pc_statement` proves `pc=0x1000 -> next_pc=0x1008` and rejects a wrong final PC. This is the first public statement bound directly into the gated CPU proof, not just stored in the bundle.
+
+
+### P0 progress: gated dual over the Mosaic PCS adapter
+
+`test gated_dual_uses_mosaic_pcs_adapter` runs the gated dual batch with:
+
+```text
+DirectBitPcs<PackedSharedPcs>
+```
+
+`PackedSharedPcs` builds a single packed `G`, lifts the primary/aux claims, batches them into one sumcheck point, and opens with one P3 proof. With no auxiliary tables, this exercises the single-commitment/single-evaluation adapter on the gated CPU proof.
+
+This is still the reference one-field-per-bit layer; it does not yet implement the paper's MosaicPCS + ring-switch + 128-bit commitment packing composition. It does show the gated dual can run against the Mosaic adapter without changing the CPU matrices.
