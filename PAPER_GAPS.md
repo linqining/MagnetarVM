@@ -1897,3 +1897,16 @@ The trace table alone is ~87% of the committed field elements. The opening is
 therefore dominated by the trace table, not the CPU/aux tables. Replacing the
 full trace table claim with a smaller segment commitment (or binding trace rows
 through the already-public trace digest) is the next size lever.
+
+
+### Negative result: removing the trace table
+
+Removing the full trace table from the shared commitment reduced the unified
+proof only from 173,439 to 170,287 B and the opening from 163,592 to 160,472 B.
+The next largest table is the register increment table (1 column, 11 vars,
+2048 elements), and the base P3 opening remains ~160 KB. The trace claims were
+restored because a 3 KB saving does not justify dropping the trace-table
+binding.
+
+The opening is therefore dominated by the base P3 proof for this commitment
+shape, not by the number of points or the trace table alone.
