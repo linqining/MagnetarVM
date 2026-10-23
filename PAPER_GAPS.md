@@ -357,3 +357,19 @@ This is the Virtual Spartan **output side**: claims are now materialized and rou
 `ProtocolPlan::consume_virtual_claims` drains every known family and then rejects any unconsumed claim. The verifier now takes the routed `ClaimSet`, checks it against the CPU stage's produced families, and consumes it through this registry. Test coverage includes a mixed direct/register/RAM/shift/store/bytecode layout.
 
 Important boundary: this is claim **ownership bookkeeping**. The specialized reducers still verify from the shared commitment/transcript; they do not yet take the routed claim value as their cryptographic input. Doing that requires splitting the CPU `z` opening from the auxiliary `P3Mosaic` opening, which removes the circular dependency (CPU lockstep needs aux opening; aux claims need CPU segment challenge). That split is the next architectural step.
+
+### Separate CPU/aux opening: measured and rejected
+
+To break the CPU↔aux circular dependency, a prototype split the unified proof into:
+
+- CPU `z` with `P3BinaryPcs`;
+- auxiliary tables with a separate `P3Mosaic` commitment/opening.
+
+It verified correctly, but the hello proof grew from **261,695 B to 387,183 B** (CPU 198,208 B + separate aux opening), so the split was reverted. The paper avoids this by keeping one commitment `G` and deferring the PCS opening until all Virtual Spartan claims exist:
+
+1. commit `G` (z + aux) once;
+2. run the CPU lockstep sum-check and derive `ry` + segment claims **without** a PCS opening;
+3. route/consume the claims in Twist/Shout/Router;
+4. open `G` once at the z point and all aux points.
+
+The next implementation step is therefore a `LockstepClaims` API (prove/verify without opening) plus a deferred single opening, not separate PCS commitments.
