@@ -54,3 +54,22 @@ wrong. The packed Router failure is therefore in the group 5 packed table
 construction (its direct MLE is zero while the table column fold is non-zero),
 not in an empty-point convention. That table construction needs a dedicated
 debug pass before retrying packed Router.
+
+
+## Follow-up 2: group 5 bits are correct
+
+For `point 5` on the `slli` trace:
+
+```text
+column 135 = [1, 0]
+column 136 = [0, 0]
+packed group bits = [true, false, false, false]
+point 5 = [0x6496...a1]
+values 5 = [0x6496...a0, 0]
+```
+
+With a zero column challenge, the direct MLE equals the reference leaf. So the
+group-5 bits/layout are correct; the earlier failure came from the packed
+prototype's column-challenge/point construction, not from the table or an
+empty point. The next Router attempt should build the point as
+`[r_col, points[5].point]` and verify it against this known-good base case.
