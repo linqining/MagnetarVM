@@ -6,9 +6,11 @@
 //! through witness selectors. This module is the first slice of that schema
 //! (ALU + PC); load/store and the dual F2 / F2^128 split build on it.
 
-use magnetar_constraint::{ConstraintSystem, Witness};
-
-use crate::{uniform_step_relation, CpuVarGroup, StepOp, UniformStepLayout};
+use crate::{
+    bit_addition_constraints, uniform_step_relation, BitAdderLayout, CpuVarGroup, CpuVarKind,
+    StepOp, UniformStepLayout,
+};
+use magnetar_constraint::{ConstraintSystem, Expr, VarId, Witness, F2_128};
 
 /// Fixed-column CPU row. `relation` is identical for every instance; only the
 /// witness (selectors and operands) changes per cycle.
@@ -64,6 +66,100 @@ pub fn uniform_cpu_row_layout(width: usize) -> (ConstraintSystem, UniformCpuRowL
         UniformCpuRowLayout {
             width,
             step,
+            num_vars,
+            system: row_system,
+        },
+    )
+}
+
+#[derive(Clone, Debug)]
+pub struct UniformMemoryRowLayout {
+    pub width: usize,
+    pub addr: BitAdderLayout,
+    pub data: Vec<VarId>,
+    pub pc: BitAdderLayout,
+    pub is_load: VarId,
+    pub is_store: VarId,
+    pub num_vars: usize,
+    pub system: ConstraintSystem,
+}
+
+impl UniformMemoryRowLayout {
+    pub fn witness(&self, pc: u64, rs1: u64, imm: u64, data: u64, is_load: bool) -> Witness {
+        let mut values = vec![F2_128::from(0u64); self.num_vars];
+        self.addr.fill_witness(&mut values, rs1, imm);
+        self.pc.fill_witness(&mut values, pc, 4);
+        for (bit, var) in self.data.iter().enumerate() {
+            values[*var] = F2_128::from((data >> bit) & 1);
+        }
+        values[self.is_load] = F2_128::from(u64::from(is_load));
+        values[self.is_store] = F2_128::from(u64::from(!is_load));
+        Witness::new(values)
+    }
+
+    pub fn var_groups(&self) -> Vec<CpuVarGroup> {
+        vec![
+            CpuVarGroup {
+                kind: CpuVarKind::Rs1,
+                vars: self.addr.a.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::Imm,
+                vars: self.addr.b.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::RamAddr,
+                vars: self.addr.sum.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::RamValue,
+                vars: self.data.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::Pc,
+                vars: self.pc.a.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::NextPc,
+                vars: self.pc.sum.clone(),
+            },
+        ]
+    }
+}
+
+pub fn uniform_memory_row_layout(width: usize) -> (ConstraintSystem, UniformMemoryRowLayout) {
+    assert!(width > 0 && width <= 64);
+    let (mut system, addr) = bit_addition_constraints(width);
+    let data: Vec<VarId> = system.alloc(width).collect();
+    let (pc_system, pc) = bit_addition_constraints(width);
+    let pc_offset = system.merge(pc_system);
+    let pc = pc.shifted(pc_offset);
+    let is_load = system.alloc(1).start;
+    let is_store = system.alloc(1).start;
+    let one = Expr::constant(1u64);
+    for var in data.iter().chain([is_load, is_store].iter()) {
+        system.add_constraint(
+            Expr::var(*var),
+            Expr::var(*var).add(one.clone()),
+            Expr::constant(0u64),
+        );
+    }
+    system.add_constraint(
+        Expr::var(is_load).add(Expr::var(is_store)),
+        one,
+        Expr::constant(1u64),
+    );
+    let num_vars = system.num_vars;
+    let row_system = system.clone();
+    (
+        system,
+        UniformMemoryRowLayout {
+            width,
+            addr,
+            data,
+            pc,
+            is_load,
+            is_store,
             num_vars,
             system: row_system,
         },
@@ -338,5 +434,30 @@ mod batch_tests {
             .filter(|selector| witness.witness.values()[**selector].value() == 1)
             .count();
         assert_eq!(active, 1);
+    }
+    #[test]
+    fn memory_rows_share_one_uniform_schema() {
+        let (system, layout) = uniform_memory_row_layout(8);
+        let rows = [
+            layout.witness(0x1000, 0x10, 0x02, 0x34, true),
+            layout.witness(0x1004, 0x20, 0x04, 0x56, false),
+        ];
+        for row in &rows {
+            assert_eq!(row.values().len(), layout.num_vars);
+            system.check(row).expect("uniform memory row");
+        }
+        for (group, expected) in [
+            (crate::CpuVarKind::RamAddr, 0x12u64),
+            (crate::CpuVarKind::RamValue, 0x34u64),
+        ] {
+            let group = layout
+                .var_groups()
+                .into_iter()
+                .find(|candidate| candidate.kind == group)
+                .unwrap();
+            for (bit, var) in group.vars.iter().enumerate() {
+                assert_eq!(rows[0].values()[*var].value() as u64, (expected >> bit) & 1);
+            }
+        }
     }
 }

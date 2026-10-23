@@ -581,3 +581,18 @@ New `magnetar-runtime::simd_cpu`:
 - `simd_cpu_rows_from_trace(trace, width)` converts a power-of-two prefix of supported ALU rows into `UniformCpuRowWitness` (memory/AMO/control/W rows are rejected).
 
 Tests prove/verify a two-row Add/Xor batch, tamper detection, and a trace prefix ending at ecall. This is the first runtime wiring of scheme B; it is a standalone CPU slice, not yet merged into `UnifiedTraceProof`. Next: load/store columns, native F2, and unified integration.
+
+
+### Uniform memory row schema
+
+`magnetar-cpu::simd::UniformMemoryRowLayout` adds fixed load/store columns:
+
+- address adder (rs1 + imm -> addr);
+- data bits (load result / store value);
+- PC adder;
+- one-hot `is_load` / `is_store` selectors;
+- `var_groups`: Rs1, Imm, RamAddr, RamValue, Pc, NextPc.
+
+`magnetar-runtime::simd_memory` proves a q-row load/store batch with shared matrices and PC-chain rows, using the same `SharedBlockMatrix` path as the ALU slice. Test `simd_memory_rows_round_trip` proves/verifies one load and one store.
+
+The schema currently enforces the CPU-side address/data columns and selectors only; RAM consistency remains BinaryTwist's job. The next step is to add the load/store relation to the CPU schema (not a separate relation), then wire Twist claims.
