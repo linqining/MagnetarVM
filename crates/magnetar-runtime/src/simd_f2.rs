@@ -100,8 +100,81 @@ impl UniformBitAluRelation {
         }
     }
 
+    pub fn add(width: usize) -> Self {
+        assert!(width > 0);
+        let rs1 = (0..width).collect::<Vec<_>>();
+        let rs2 = (width..2 * width).collect::<Vec<_>>();
+        let rd = (2 * width..3 * width).collect::<Vec<_>>();
+        let carries = (3 * width..4 * width + 1).collect::<Vec<_>>();
+        let p1 = (4 * width + 1..5 * width + 1).collect::<Vec<_>>();
+        let p2 = (5 * width + 1..6 * width + 1).collect::<Vec<_>>();
+        let p3 = (6 * width + 1..7 * width + 1).collect::<Vec<_>>();
+        let xor_ab = (7 * width + 1..8 * width + 1).collect::<Vec<_>>();
+        let one = 8 * width + 1;
+        let mut relation = BitRelation::new(8 * width + 2);
+        relation.add(BitRow::new(vec![one], vec![one], vec![one]));
+        relation.add(BitRow::new(vec![carries[0]], vec![one], Vec::new()));
+        for bit in 0..width {
+            relation.add(BitRow::new(vec![rs1[bit]], vec![rs2[bit]], vec![p1[bit]]));
+            relation.add(BitRow::new(
+                vec![rs1[bit]],
+                vec![carries[bit]],
+                vec![p2[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![rs2[bit]],
+                vec![carries[bit]],
+                vec![p3[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![rs1[bit], rs2[bit]],
+                vec![one],
+                vec![xor_ab[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![xor_ab[bit], carries[bit]],
+                vec![one],
+                vec![rd[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![p1[bit], p2[bit], p3[bit]],
+                vec![one],
+                vec![carries[bit + 1]],
+            ));
+        }
+        Self {
+            width,
+            rs1,
+            rs2,
+            rd,
+            one,
+            relation,
+        }
+    }
+
+    pub fn add_witness(&self, left: u64, right: u64) -> Vec<bool> {
+        let width = self.width;
+        let mut bits = vec![false; 8 * width + 2];
+        bits[self.one] = true;
+        let carries = 3 * width;
+        for bit in 0..width {
+            let a = (left >> bit) & 1 == 1;
+            let b = (right >> bit) & 1 == 1;
+            let carry = bits[carries + bit];
+            bits[self.rs1[bit]] = a;
+            bits[self.rs2[bit]] = b;
+            bits[carries + bit + 1] = (a && b) || (a && carry) || (b && carry);
+            bits[4 * width + 1 + bit] = a && b;
+            bits[5 * width + 1 + bit] = a && carry;
+            bits[6 * width + 1 + bit] = b && carry;
+            bits[7 * width + 1 + bit] = a ^ b;
+            bits[self.rd[bit]] = a ^ b ^ carry;
+        }
+        bits
+    }
+
     pub fn witness(&self, rs1: u64, rs2: u64, xor: bool) -> Vec<bool> {
-        let mut bits = vec![false; 3 * self.width + 1];
+        let mut bits = vec![false; 8 * self.width + 2];
         bits[self.one] = true;
         for bit in 0..self.width {
             let a = (rs1 >> bit) & 1 == 1;
@@ -156,5 +229,31 @@ mod tests {
         };
         let proof = backend.prove(&relation.relation, &bits).unwrap();
         assert!(backend.verify(&relation.relation, &proof).unwrap());
+    }
+    #[test]
+    fn bit_adder_relation_checks_carry_chain() {
+        let add = UniformBitAluRelation::add(8);
+        let bits = add.add_witness(5, 3);
+        assert!(add.relation.check(&bits));
+        let rd = add.rd.iter().enumerate().fold(0u64, |value, (bit, var)| {
+            value | (u64::from(bits[*var]) << bit)
+        });
+        assert_eq!(rd, 8);
+
+        let mut broken = bits;
+        broken[add.rd[0]] = !broken[add.rd[0]];
+        assert!(!add.relation.check(&broken));
+    }
+    #[test]
+    fn embedded_backend_proves_bit_addition() {
+        use magnetar_pcs::P3BinaryPcs;
+
+        let add = UniformBitAluRelation::add(8);
+        let bits = add.add_witness(5, 3);
+        let backend = EmbeddedBitBackend {
+            pcs: P3BinaryPcs::new(100),
+        };
+        let proof = backend.prove(&add.relation, &bits).unwrap();
+        assert!(backend.verify(&add.relation, &proof).unwrap());
     }
 }

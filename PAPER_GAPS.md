@@ -661,3 +661,18 @@ This avoids blocking the uniform schema on the native F2 proof decision.
 - the slice must be a nonzero power of two.
 
 Test `mixed_trace_slice_round_trips` executes `lui; sw; lw; add; ecall`, takes the four supported rows, and proves/verifies them with shared matrices. This validates the combined schema on a real trace, not just hand-built witnesses.
+
+
+### F2 bit adder
+
+`UniformBitAluRelation::add(width)` adds a native F2 ripple-carry adder relation:
+
+- rs1/rs2/rd bits;
+- carry chain;
+- p1=a*b, p2=a*carry, p3=b*carry;
+- xor_ab=(a+b)*1;
+- sum=(xor_ab+carry)*1;
+- carry_next=(p1+p2+p3)*1;
+- carry0=0.
+
+Tests check 5+3=8, reject a tampered result bit, and prove/verify the relation through `EmbeddedBitBackend` + P3. This extends the s1 bit slice beyond XOR/AND while the native F2 proof backend remains a trait boundary.
