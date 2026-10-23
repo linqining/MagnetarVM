@@ -1803,3 +1803,23 @@ include PC-chain extra rows can be verified without rebuilding plain systems.
 
 This supplies both proof-generation and verification ingredients for merging
 gated claims into `UnifiedTraceProof`.
+
+
+### A: gated CPU claims merged into UnifiedTraceProof
+
+`UnifiedTraceProof` now carries `gated: Option<GatedCpuClaims>`:
+
+- the gated z vector is committed as an extra Mosaic table in the same
+  `P3MosaicCommitment` as the legacy CPU/register/RAM/Shout/Router tables;
+- gated claims are generated with `prove_lockstep_claims_bits` against that
+  shared commitment;
+- verification uses `verify_lockstep_claims_with_matrices`;
+- the gated `ry` evaluation is added to the single shared P3 opening.
+
+Test `unified_trace_merges_gated_cpu_claims` proves/verifies a two-row gated
+trace through `prove_unified_trace`/`verify_unified_trace` and checks the extra
+committed table.
+
+Also fixed the shift packed gate for widths above 42: the three shift result
+vectors are packed separately instead of concatenating into a >128-bit vector.
+`compiled_guest_elf_runs_and_proves` (width 64) passes again.

@@ -1022,10 +1022,25 @@ pub struct UnifiedTraceProof {
     pub access: TraceAccessProof,
     pub trace_commitment: [u8; 32],
     pub cpu: LockstepClaims<P3MosaicCommitment>,
+    pub gated: Option<GatedCpuClaims>,
     pub opening: P3MosaicOpening,
     pub shout: Option<crate::binary_shout::BinaryShoutProof>,
     pub shift_router: Option<crate::binary_router::BinaryRouterProof>,
     pub store_router: Option<crate::binary_router::BinaryRouterProof>,
+}
+
+pub(crate) struct GatedProveInput {
+    pub z: Vec<F2_128>,
+    pub a0: [magnetar_proof::SharedBlockMatrix; 3],
+    pub a1: [magnetar_proof::SharedBlockMatrix; 3],
+    pub layout: magnetar_constraint::WitnessLayout,
+    pub table: usize,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct GatedCpuClaims {
+    pub claims: LockstepClaims<P3MosaicCommitment>,
+    pub table: usize,
 }
 
 fn step_op_for(op: magnetar_spec::Op) -> Option<magnetar_cpu::StepOp> {
@@ -3218,6 +3233,46 @@ mod tests {
         let encoded = encode_unified_proof(&proof).unwrap();
         assert!(sizes.cpu > 0 && sizes.access > 0);
         assert!(sizes.total() <= encoded.len());
+    }
+
+    #[test]
+    fn unified_trace_merges_gated_cpu_claims() {
+        use magnetar_spec::{Instruction, Op};
+
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Add,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Add,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(&program, config()).unwrap();
+        let proof = prove_unified_trace(&trace, 8).unwrap();
+        assert!(proof.gated.is_some());
+        assert_eq!(
+            proof.cpu.commitment.tables.len(),
+            7 + usize::from(proof.shout.is_some())
+                + usize::from(proof.shift_router.is_some())
+                + usize::from(proof.store_router.is_some())
+        );
+        verify_unified_trace(&trace, &proof, 8).unwrap();
     }
 
     #[test]

@@ -1810,18 +1810,37 @@ impl GatedCpuRow {
                 .add(Expr::var(self.alu.out[0])),
             Expr::constant(0u64),
         );
-        let shift_results = self
-            .shift
-            .result_vars(BitShiftKind::Sll)
-            .into_iter()
-            .chain(self.shift.result_vars(BitShiftKind::Srl))
-            .chain(self.shift.result_vars(BitShiftKind::Sra))
-            .map(|var| var + self.shift_offset)
-            .collect::<Vec<_>>();
+        let shift_sum = packed(
+            &self
+                .shift
+                .result_vars(BitShiftKind::Sll)
+                .into_iter()
+                .map(|var| var + self.shift_offset)
+                .collect::<Vec<_>>(),
+            0,
+        )
+        .add(packed(
+            &self
+                .shift
+                .result_vars(BitShiftKind::Srl)
+                .into_iter()
+                .map(|var| var + self.shift_offset)
+                .collect::<Vec<_>>(),
+            0,
+        ))
+        .add(packed(
+            &self
+                .shift
+                .result_vars(BitShiftKind::Sra)
+                .into_iter()
+                .map(|var| var + self.shift_offset)
+                .collect::<Vec<_>>(),
+            0,
+        ));
         system.add_constraint(
             Expr::var(self.shift.is_shift + self.shift_offset),
-            packed(&shift_results, 0),
-            packed(&shift_results, 0),
+            shift_sum.clone(),
+            shift_sum,
         );
         system.add_constraint(
             Expr::var(self.memory.adder.gate + self.memory_offset),
