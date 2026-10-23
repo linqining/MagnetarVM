@@ -144,8 +144,10 @@ pub fn gated_register_events_from_trace(
         let Some(step) = crate::step_op_for(row.instruction.op) else {
             break;
         };
-        if !matches!(step, StepOp::Add | StepOp::Sub | StepOp::Xor | StepOp::And)
-            || crate::w_step_op_for(row.instruction.op).is_some()
+        if !matches!(
+            step,
+            StepOp::Add | StepOp::Sub | StepOp::Sltu | StepOp::Xor | StepOp::And
+        ) || crate::w_step_op_for(row.instruction.op).is_some()
             || crate::branch_op_for(row.instruction.op).is_some()
         {
             break;

@@ -1340,3 +1340,16 @@ Test `gated_bundle_attaches_register_twist` proves/verifies an ALU + memory bund
 - packed s2 adds `is_sub * Σ β sub_xor = Σ β sub_gated`, and the packed output check includes `sub_gated`.
 
 Tests cover 5-3=2 and 3-5=254 (8-bit wrap). The q=8 Direct/RingSwitch test now mixes ADD and SUB, and the trace adapter/register-event extractor accept `StepOp::Sub`.
+
+
+### P0 progress: unsigned SLT in the gated ALU row
+
+`GatedAluOp::Sltu` reuses the SUB carry chain:
+
+- `lt = 1 XOR sub_carry[width]`;
+- `slt_gated[0] = lt * is_slt`;
+- higher output bits forced to zero;
+- output mux includes `slt_gated`;
+- packed s2 output check includes `slt_gated`.
+
+Tests cover 3<5=1 and 5<3=0. The q=8 Direct/RingSwitch test mixes ADD/SUB/SLTU; trace adapter and register-event extraction accept `StepOp::Sltu`.
