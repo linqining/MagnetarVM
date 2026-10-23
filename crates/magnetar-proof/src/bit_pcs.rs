@@ -172,6 +172,36 @@ mod tests {
     }
 
     #[test]
+    fn ring_switch_matches_direct_for_multi_field() {
+        let bits = (0..256).map(|index| index % 11 == 0).collect::<Vec<_>>();
+        let point = (0..8)
+            .map(|bit| F2_128::from((bit * 5 + 1) as u64))
+            .collect::<Vec<_>>();
+        let direct = DirectBitPcs::new(TestPcs);
+        let ring = RingSwitchPackedBitPcs::new(TestPcs);
+        let (direct_value, _) = direct.open(&bits, &point).unwrap();
+        let packed = RingSwitchPackedBitPcs::<TestPcs>::pack(&bits).unwrap();
+        let eq_suffix = RingSwitchPackedBitPcs::<TestPcs>::eq_vector(&point[7..]);
+        let mut s_hat = vec![F2_128::from(0u64); 128];
+        for (high, &w) in eq_suffix.iter().enumerate() {
+            for (bit, slot) in s_hat.iter_mut().enumerate() {
+                if (packed[high].value() >> bit) & 1 == 1 {
+                    *slot = *slot + w;
+                }
+            }
+        }
+        let claim = RingSwitchPackedBitPcs::<TestPcs>::evaluate(&s_hat, &point[..7]);
+        eprintln!("direct={direct_value:?} claim={claim:?} packed={packed:?}");
+        let (value, opening) = ring.open(&bits, &point).unwrap();
+        assert_eq!(direct_value, value);
+        let commitment = ring.commit(&bits).unwrap();
+        assert!(ring.verify(&commitment, &point, value, &opening).unwrap());
+        let mut tampered = opening.clone();
+        tampered.s_hat_v[0] = tampered.s_hat_v[0] + F2_128::from(1u64);
+        assert!(!ring.verify(&commitment, &point, value, &tampered).unwrap());
+    }
+
+    #[test]
     fn direct_bit_pcs_opens_bit_mle() {
         let backend = DirectBitPcs::new(TestPcs);
         let bits = [true, false, true, true];
@@ -467,5 +497,276 @@ mod reveal_tests {
         assert_eq!(direct_value, value);
         let commitment = reveal.commit(&bits).unwrap();
         assert!(reveal.verify(&commitment, &point, value, &opening).unwrap());
+    }
+}
+
+/// Ring-switching opening for multi-field packed witnesses.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RingSwitchOpening<O> {
+    pub s_hat_v: Vec<F2_128>,
+    pub sumcheck: crate::SumcheckProof<F2_128>,
+    pub packed_value: F2_128,
+    pub pcs_opening: O,
+}
+
+/// Multi-field packed backend implementing the DP24/Binius ring-switch
+/// reduction. Witnesses are packed 128 bits per field element; the final
+/// evaluation is reduced to a product sum-check against the packed table.
+#[derive(Clone, Copy, Debug)]
+pub struct RingSwitchPackedBitPcs<P: Pcs> {
+    pub pcs: P,
+}
+
+impl<P: Pcs> RingSwitchPackedBitPcs<P> {
+    pub fn new(pcs: P) -> Self {
+        Self { pcs }
+    }
+
+    fn pack(bits: &[bool]) -> Result<Vec<F2_128>, ProofError> {
+        if bits.len() < 256 || !bits.len().is_power_of_two() {
+            return Err(ProofError::Pcs(
+                "ring-switch packing requires at least 256 bits".into(),
+            ));
+        }
+        let low_bits = 7;
+        let low_len = 1usize << low_bits;
+        let high_len = bits.len() / low_len;
+        let mut packed = vec![F2_128::from(0u64); high_len];
+        for high in 0..high_len {
+            let mut value = F2_128::from(0u64);
+            for low in 0..low_len {
+                if bits[high * low_len + low] {
+                    value = value + F2_128::from(1u128 << low);
+                }
+            }
+            packed[high] = value;
+        }
+        Ok(packed)
+    }
+
+    fn transpose128(values: &[F2_128]) -> Vec<F2_128> {
+        let mut output = vec![F2_128::from(0u64); 128];
+        for (row, value) in values.iter().enumerate() {
+            let bits = value.value();
+            for (column, out) in output.iter_mut().enumerate() {
+                if (bits >> column) & 1 == 1 {
+                    *out = *out + F2_128::from(1u128 << row);
+                }
+            }
+        }
+        output
+    }
+
+    fn scale_vertical(values: &[F2_128], scalar: F2_128) -> Vec<F2_128> {
+        values.iter().map(|value| *value * scalar).collect()
+    }
+
+    fn scale_horizontal(values: &[F2_128], scalar: F2_128) -> Vec<F2_128> {
+        let transposed = Self::transpose128(values);
+        let scaled = Self::scale_vertical(&transposed, scalar);
+        Self::transpose128(&scaled)
+    }
+
+    fn eval_rs_eq(z_vals: &[F2_128], query: &[F2_128], row_batch: &[F2_128]) -> F2_128 {
+        let mut eval = vec![F2_128::from(0u64); 128];
+        eval[0] = F2_128::from(1u64);
+        for (vertical, horizontal) in z_vals.iter().zip(query) {
+            let vertical_scaled = Self::scale_vertical(&eval, *vertical);
+            let horizontal_scaled = Self::scale_horizontal(&eval, *horizontal);
+            for index in 0..128 {
+                eval[index] = eval[index] + vertical_scaled[index] + horizontal_scaled[index];
+            }
+        }
+        let transposed = Self::transpose128(&eval);
+        transposed
+            .iter()
+            .zip(row_batch)
+            .fold(F2_128::from(0u64), |sum, (value, coeff)| {
+                sum + *value * *coeff
+            })
+    }
+
+    fn eq_vector(point: &[F2_128]) -> Vec<F2_128> {
+        (0..1usize << point.len())
+            .map(|index| {
+                let bits = (0..point.len())
+                    .map(|bit| F2_128::from(((index >> bit) & 1) as u64))
+                    .collect::<Vec<_>>();
+                crate::eq(point, &bits)
+            })
+            .collect()
+    }
+
+    fn evaluate(values: &[F2_128], point: &[F2_128]) -> F2_128 {
+        assert_eq!(values.len(), 1 << point.len());
+        let mut current = values.to_vec();
+        for challenge in point.iter().rev() {
+            let half = current.len() / 2;
+            for index in 0..half {
+                current[index] = current[index] * (F2_128::from(1u64) + *challenge)
+                    + current[index + half] * *challenge;
+            }
+            current.truncate(half);
+        }
+        current[0]
+    }
+
+    fn transpose_components(values: &[F2_128]) -> Vec<F2_128> {
+        Self::transpose128(values)
+    }
+
+    fn challenge_field(
+        transcript: &mut magnetar_transcript::Sha256Transcript,
+        label: &str,
+    ) -> F2_128 {
+        let bytes = transcript.challenge_bytes(label, 16);
+        F2_128::from_bits(u128::from_le_bytes(bytes.try_into().expect("16 bytes")))
+    }
+
+    fn sumcheck_challenge(
+        transcript: &mut magnetar_transcript::Sha256Transcript,
+        round: usize,
+        values: &[F2_128],
+    ) -> F2_128 {
+        transcript.absorb("round", &(round as u64).to_le_bytes());
+        for value in values {
+            transcript.absorb("round-poly", &value.value().to_le_bytes());
+        }
+        Self::challenge_field(transcript, "sumcheck")
+    }
+}
+
+impl<P: Pcs> BitPcs for RingSwitchPackedBitPcs<P> {
+    type Commitment = P::Commitment;
+    type Opening = RingSwitchOpening<P::Opening>;
+
+    fn commit(&self, bits: &[bool]) -> Result<Self::Commitment, ProofError> {
+        self.pcs.commit(&Self::pack(bits)?)
+    }
+
+    fn open(&self, bits: &[bool], point: &[F2_128]) -> Result<(F2_128, Self::Opening), ProofError> {
+        use magnetar_transcript::Sha256Transcript;
+
+        let packed = Self::pack(bits)?;
+        let high_bits = point.len() - 7;
+        if high_bits == 0 || packed.len() != 1 << high_bits {
+            return Err(ProofError::Pcs("ring-switch point size mismatch".into()));
+        }
+        let prefix = &point[..7];
+        let suffix = &point[7..];
+        let eq_suffix = Self::eq_vector(suffix);
+        let mut s_hat_v = vec![F2_128::from(0u64); 128];
+        for (high, &weight) in eq_suffix.iter().enumerate() {
+            let packed_value = packed[high].value();
+            for (bit, value) in s_hat_v.iter_mut().enumerate() {
+                if (packed_value >> bit) & 1 == 1 {
+                    *value = *value + weight;
+                }
+            }
+        }
+        let claim = Self::evaluate(&s_hat_v, prefix);
+
+        let commitment = self.pcs.commit(&packed)?;
+        let mut transcript = Sha256Transcript::new("magnetar-ring-switch-v1");
+        transcript.absorb("commitment", &self.pcs.commitment_bytes(&commitment));
+        for value in point {
+            transcript.absorb("point", &value.value().to_le_bytes());
+        }
+        for value in &s_hat_v {
+            transcript.absorb("s-hat-v", &value.value().to_le_bytes());
+        }
+        let r_double = (0..7)
+            .map(|_| Self::challenge_field(&mut transcript, "row-batch"))
+            .collect::<Vec<_>>();
+        let eq_double = Self::eq_vector(&r_double);
+        let s_hat_u = Self::transpose_components(&s_hat_v);
+        let sumcheck_claim = s_hat_u
+            .iter()
+            .zip(&eq_double)
+            .fold(F2_128::from(0u64), |sum, (a, b)| sum + *a * *b);
+        let a_values = (0..1usize << high_bits)
+            .map(|index| {
+                let query = (0..high_bits)
+                    .map(|bit| F2_128::from(((index >> bit) & 1) as u64))
+                    .collect::<Vec<_>>();
+                Self::eval_rs_eq(suffix, &query, &eq_double)
+            })
+            .collect::<Vec<_>>();
+        let (sumcheck, ry, _) =
+            crate::prove_product2(packed.clone(), a_values, |round, values| {
+                Self::sumcheck_challenge(&mut transcript, round, values)
+            })?;
+        if sumcheck.claimed_sum != sumcheck_claim {
+            return Err(ProofError::Pcs(
+                "ring-switch sumcheck claim mismatch".into(),
+            ));
+        }
+        let packed_value = Self::evaluate(&packed, &ry);
+        let pcs_opening = self.pcs.open(&packed, &ry)?;
+        Ok((
+            claim,
+            RingSwitchOpening {
+                s_hat_v,
+                sumcheck,
+                packed_value,
+                pcs_opening,
+            },
+        ))
+    }
+
+    fn verify(
+        &self,
+        commitment: &Self::Commitment,
+        point: &[F2_128],
+        value: F2_128,
+        opening: &Self::Opening,
+    ) -> Result<bool, ProofError> {
+        use magnetar_transcript::Sha256Transcript;
+
+        let high_bits = point.len() - 7;
+        if high_bits == 0 || opening.s_hat_v.len() != 128 || (1usize << high_bits) < 2 {
+            return Ok(false);
+        }
+        let prefix = &point[..7];
+        let suffix = &point[7..];
+        if Self::evaluate(&opening.s_hat_v, prefix) != value {
+            return Ok(false);
+        }
+        let mut transcript = Sha256Transcript::new("magnetar-ring-switch-v1");
+        transcript.absorb("commitment", &self.pcs.commitment_bytes(commitment));
+        for value in point {
+            transcript.absorb("point", &value.value().to_le_bytes());
+        }
+        for value in &opening.s_hat_v {
+            transcript.absorb("s-hat-v", &value.value().to_le_bytes());
+        }
+        let r_double = (0..7)
+            .map(|_| Self::challenge_field(&mut transcript, "row-batch"))
+            .collect::<Vec<_>>();
+        let eq_double = Self::eq_vector(&r_double);
+        let s_hat_u = Self::transpose_components(&opening.s_hat_v);
+        let sumcheck_claim = s_hat_u
+            .iter()
+            .zip(&eq_double)
+            .fold(F2_128::from(0u64), |sum, (a, b)| sum + *a * *b);
+        if opening.sumcheck.claimed_sum != sumcheck_claim {
+            return Ok(false);
+        }
+        let (ry, product) =
+            crate::verify_rounds(&opening.sumcheck, high_bits, 2, |round, values| {
+                Self::sumcheck_challenge(&mut transcript, round, values)
+            })?;
+        if !self
+            .pcs
+            .verify(commitment, &ry, opening.packed_value, &opening.pcs_opening)?
+        {
+            return Ok(false);
+        }
+        let a_at = Self::eval_rs_eq(suffix, &ry, &eq_double);
+        Ok(product == opening.packed_value * a_at)
+    }
+
+    fn commitment_bytes(&self, commitment: &Self::Commitment) -> Vec<u8> {
+        self.pcs.commitment_bytes(commitment)
     }
 }

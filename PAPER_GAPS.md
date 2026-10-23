@@ -1165,3 +1165,33 @@ Scaling (`bit_pcs_scaling_bench`, P3, release):
 | 512 | 106,104 B | unsupported | 1,528 B |
 
 The reveal backend's small proofs come from revealing O(len/128) packed elements; they are not comparable to M5 single-field succinct openings. True multi-field M5 still needs ring switching.
+
+
+### DP24 ring switching (multi-field M5)
+
+`RingSwitchPackedBitPcs` implements the DP24/Binius ring-switch reduction:
+
+- pack 128 bits per field element;
+- prover computes and sends `s_hat_v` (128 field elements) by folding the packed table against the evaluation-point suffix;
+- verifier checks `evaluate(s_hat_v, prefix) == claim`;
+- derive row-batching challenges, basis-transpose `s_hat_v` to `s_hat_u`, and compute `sumcheck_claim = <s_hat_u, eq(r'')>`;
+- build the ring-switch indicator `A` with the Binius `eval_rs_eq` formula (tensor algebra: vertical/horizontal scaling, basis transpose, vertical fold);
+- run `prove_product2` / `verify_rounds` for `Σ P(x)·A(x)`;
+- open the packed table at the sumcheck point and check `P(r*)·A(r*)`.
+
+Tests:
+
+- `ring_switch_matches_direct_for_multi_field` (256 bits) matches `DirectBitPcs`, and rejects a tampered `s_hat_v`;
+- `gated_dual_ring_switch_handles_width8` runs the width-8 gated dual relation through the ring-switch backend.
+
+Scaling (`bit_pcs_scaling_bench`, P3, release):
+
+| bits | M4 | M5 single-field | M5 ring |
+|---:|---:|---:|---:|
+| 64 | 53,712 B | 1,488 B | — |
+| 96 | 53,784 B | 1,560 B | — |
+| 128 | 67,848 B | unsupported | — |
+| 256 | 84,576 B | unsupported | 4,600 B |
+| 512 | 106,104 B | unsupported | 6,408 B |
+
+Ring-switch proof overhead is about 2 KB for `s_hat_v` plus the sum-check and PCS opening; it is still 16-18x smaller than M4 in this benchmark.

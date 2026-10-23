@@ -477,6 +477,7 @@ pub mod spartan;
 pub mod virtual_spartan;
 pub use bit_pcs::{
     BitPcs, DirectBitPcs, PackedBitPcs, PackedOpening, PackedTableOpening, RevealingPackedBitPcs,
+    RingSwitchOpening, RingSwitchPackedBitPcs,
 };
 pub use simd::SharedBlockMatrix;
 pub use spartan::{

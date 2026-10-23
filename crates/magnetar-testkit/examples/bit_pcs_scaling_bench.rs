@@ -5,7 +5,7 @@ use magnetar_pcs::P3SharedPcs;
 use magnetar_proof::spartan::MatrixPart;
 use magnetar_proof::{
     prove_spartan_bits, verify_spartan_bits, BitPcs, DirectBitPcs, PackedBitPcs,
-    RevealingPackedBitPcs, SparseMatrix,
+    RevealingPackedBitPcs, RingSwitchPackedBitPcs, SparseMatrix,
 };
 
 fn system(bits: usize) -> (ConstraintSystem, Vec<bool>) {
@@ -43,7 +43,8 @@ fn main() {
     let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
     let direct = DirectBitPcs::new(pcs.clone());
     let packed = PackedBitPcs::new(pcs.clone());
-    let reveal = RevealingPackedBitPcs::new(pcs);
+    let reveal = RevealingPackedBitPcs::new(pcs.clone());
+    let ring = RingSwitchPackedBitPcs::new(pcs);
     for bits in [64usize, 96, 128, 256, 512] {
         run("M4", bits, &direct);
         if bits <= 96 {
@@ -52,5 +53,8 @@ fn main() {
             println!("M5 bits={bits}: unsupported (single-field limit)");
         }
         run("M5-reveal", bits, &reveal);
+        if bits >= 256 {
+            run("M5-ring", bits, &ring);
+        }
     }
 }
