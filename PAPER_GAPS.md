@@ -1133,3 +1133,16 @@ M4 vs M5 benchmark (`bit_pcs_m4_m5_bench`, 63-bit packed select, P3, release):
 | M5 PackedBitPcs | 1,488 B | 0.20 ms | 0.22 ms |
 
 This is the first measurable M5 proof-size result: ~36x smaller and ~6x faster to prove in this microbenchmark. It is a 128-bit-witness prototype, not yet a full multi-field ring-switching backend.
+
+
+### M4/M5 scaling: 64 / 96 / 128 witness bits
+
+`bit_pcs_scaling_bench` (P3, release; booleanity R1CS, padded witness):
+
+| bits | M4 proof | M4 prove | M5 proof | M5 prove |
+|---:|---:|---:|---:|---:|
+| 64 | 53,712 B | 1.16 ms | 1,488 B | 0.20 ms |
+| 96 | 53,784 B | 0.86 ms | 1,560 B | 0.28 ms |
+| 128 | 67,848 B | 1.28 ms | unsupported | unsupported |
+
+M5 is ~34-36x smaller at 64/96 bits. 128 logical bits need a 256-cell padded Spartan witness in this system (`num_vars + 1`), which crosses the current single-field M5 limit; multi-field ring switching is still required. The benchmark prints the unsupported boundary instead of panicking.
