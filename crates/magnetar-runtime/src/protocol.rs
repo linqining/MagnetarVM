@@ -475,6 +475,15 @@ mod tests {
                     shamt: 0,
                 }
                 .encode(),
+                Instruction {
+                    op: Op::Xor,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
                 Instruction::new(Op::Ecall).encode(),
             ],
         );

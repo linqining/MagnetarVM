@@ -1312,6 +1312,7 @@ pub struct CpuWitnessSegment {
     pub owner: SegmentOwner,
     pub kind: SegmentKind,
     pub row_kind: CpuRowKind,
+    pub vars: Vec<magnetar_cpu::CpuVarGroup>,
 }
 
 fn cpu_row_kind(op: magnetar_spec::Op) -> CpuRowKind {
@@ -1362,6 +1363,42 @@ impl CpuWitnessMetadata {
     }
 }
 
+fn row_cpu_var_groups(
+    row: &magnetar_spec::TraceRow,
+    width: usize,
+) -> Vec<magnetar_cpu::CpuVarGroup> {
+    let Some(step_op) = step_op_for(row.instruction.op) else {
+        return Vec::new();
+    };
+    let imm = match row.instruction.op {
+        magnetar_spec::Op::Slli | magnetar_spec::Op::Srli | magnetar_spec::Op::Srai => {
+            u64::from(row.instruction.shamt)
+        }
+        _ => row.instruction.imm as u64,
+    };
+    if magnetar_cpu::simple_alu_row_relation(
+        width,
+        step_op,
+        row.rs1_val,
+        row.rs2_val,
+        row.rd_val,
+        imm,
+    )
+    .is_some()
+    {
+        return Vec::new();
+    }
+    let (_system, layout) = magnetar_cpu::uniform_alu_row_relation(
+        width,
+        step_op,
+        row.rs1_val,
+        row.rs2_val,
+        row.rd_val,
+        imm,
+    );
+    layout.var_groups()
+}
+
 pub(crate) fn merged_cpu_system_with_metadata(
     trace: &Trace,
     width: usize,
@@ -1380,6 +1417,13 @@ pub(crate) fn merged_cpu_system_with_metadata(
             let len = witness.values().len();
             values.extend_from_slice(witness.values());
             if len != 0 {
+                let vars = row_cpu_var_groups(row, width)
+                    .into_iter()
+                    .map(|group| magnetar_cpu::CpuVarGroup {
+                        kind: group.kind,
+                        vars: group.vars.iter().map(|var| var + offset).collect(),
+                    })
+                    .collect();
                 metadata.segments.push(CpuWitnessSegment {
                     cycle: row.cycle,
                     offset,
@@ -1387,6 +1431,7 @@ pub(crate) fn merged_cpu_system_with_metadata(
                     owner: SegmentOwner::Cpu,
                     kind: SegmentKind::Direct,
                     row_kind: cpu_row_kind(row.instruction.op),
+                    vars,
                 });
             }
         }

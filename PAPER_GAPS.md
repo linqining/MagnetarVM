@@ -437,3 +437,8 @@ First variable-level metadata landed in `magnetar-cpu`:
 - `UniformStepLayout::var_groups()` adds PC and next-PC groups from the PC adder.
 
 Test `uniform_step_var_groups_match_witness_bits` checks every variable against the corresponding bit of the witness. The runtime metadata still uses row-level `CpuRowKind`; connecting these groups to merged offsets requires `row_cpu_relation` to return the layout/var groups, which is the next increment.
+
+
+### Runtime var-group hook
+
+`CpuWitnessSegment` now carries optional `vars: Vec<CpuVarGroup>` translated into merged offsets. `merged_cpu_system_with_metadata` fills them for rows that take the uniform ALU relation path; rows handled by `simple_alu_row_relation` have no layout object and therefore no groups yet. Test coverage verifies segment coverage; the ALU var-group test in `magnetar-cpu` verifies the variable semantics independently. Extending groups to simple ALU/load/store/RAM is the remaining metadata work.
