@@ -1903,5 +1903,9 @@ mod metadata_tests {
             .segments
             .iter()
             .any(|segment| segment.row_kind == crate::CpuRowKind::Alu));
+        assert!(metadata
+            .segments
+            .iter()
+            .any(|segment| !segment.vars.is_empty()));
     }
 }

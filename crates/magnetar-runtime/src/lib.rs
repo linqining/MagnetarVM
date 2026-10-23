@@ -1376,17 +1376,15 @@ fn row_cpu_var_groups(
         }
         _ => row.instruction.imm as u64,
     };
-    if magnetar_cpu::simple_alu_row_relation(
+    if let Some((_system, _witness, layout)) = magnetar_cpu::simple_alu_row_relation_with_layout(
         width,
         step_op,
         row.rs1_val,
         row.rs2_val,
         row.rd_val,
         imm,
-    )
-    .is_some()
-    {
-        return Vec::new();
+    ) {
+        return layout.var_groups();
     }
     let (_system, layout) = magnetar_cpu::uniform_alu_row_relation(
         width,

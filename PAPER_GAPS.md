@@ -442,3 +442,14 @@ Test `uniform_step_var_groups_match_witness_bits` checks every variable against 
 ### Runtime var-group hook
 
 `CpuWitnessSegment` now carries optional `vars: Vec<CpuVarGroup>` translated into merged offsets. `merged_cpu_system_with_metadata` fills them for rows that take the uniform ALU relation path; rows handled by `simple_alu_row_relation` have no layout object and therefore no groups yet. Test coverage verifies segment coverage; the ALU var-group test in `magnetar-cpu` verifies the variable semantics independently. Extending groups to simple ALU/load/store/RAM is the remaining metadata work.
+
+
+### simple ALU layout
+
+`simple_alu_row_relation_with_layout` now returns a `SimpleAluLayout` alongside the system/witness:
+
+- `rs1`, `rhs`, `rd` variable groups;
+- `rhs_is_imm` distinguishes immediate from register rhs;
+- `simple_alu_row_relation` remains as a compatibility wrapper returning only system/witness.
+
+The runtime `row_cpu_var_groups` uses the layout-returning function, so simple ALU rows (Add/Addi/Sub/Lui/Xor/Xori/And/Andi/Or/Ori) now contribute `CpuVarGroup`s to `CpuWitnessMetadata`. Tests verify `Addi` groups match the witness bits. This confirms the two directions are independent: simple row gadgets keep their smaller circuits while still exposing component metadata.

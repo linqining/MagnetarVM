@@ -3441,14 +3441,51 @@ fn alloc_pinned_bits(
 /// in every ALU row; this path covers add/sub/logic/lui rows with a few hundred
 /// variables instead. Shifts and comparisons return `None` and use the uniform
 /// relation.
-pub fn simple_alu_row_relation(
+#[derive(Clone, Debug)]
+pub struct SimpleAluLayout {
+    pub rs1: Vec<VarId>,
+    pub rhs: Vec<VarId>,
+    pub rd: Vec<VarId>,
+    pub rhs_is_imm: bool,
+}
+
+impl SimpleAluLayout {
+    pub fn var_groups(&self) -> Vec<CpuVarGroup> {
+        let mut groups = Vec::new();
+        if !self.rs1.is_empty() {
+            groups.push(CpuVarGroup {
+                kind: CpuVarKind::Rs1,
+                vars: self.rs1.clone(),
+            });
+        }
+        if !self.rhs.is_empty() {
+            groups.push(CpuVarGroup {
+                kind: if self.rhs_is_imm {
+                    CpuVarKind::Imm
+                } else {
+                    CpuVarKind::Rs2
+                },
+                vars: self.rhs.clone(),
+            });
+        }
+        if !self.rd.is_empty() {
+            groups.push(CpuVarGroup {
+                kind: CpuVarKind::Rd,
+                vars: self.rd.clone(),
+            });
+        }
+        groups
+    }
+}
+
+pub fn simple_alu_row_relation_with_layout(
     width: usize,
     op: StepOp,
     rs1: u64,
     rs2: u64,
     rd: u64,
     imm: u64,
-) -> Option<(ConstraintSystem, Witness)> {
+) -> Option<(ConstraintSystem, Witness, SimpleAluLayout)> {
     assert!(width > 0 && width <= 64);
     let mask = if width >= 64 {
         u64::MAX
@@ -3479,7 +3516,17 @@ pub fn simple_alu_row_relation(
                     system.add_constraint(Expr::var(var), one.clone(), Expr::constant(bit));
                 }
             }
-            Some((system, layout.witness(rs1, rhs)))
+            let groups = SimpleAluLayout {
+                rs1: layout.a.clone(),
+                rhs: if op == StepOp::Sub {
+                    Vec::new()
+                } else {
+                    layout.b.clone()
+                },
+                rd: layout.sum.clone(),
+                rhs_is_imm: op == StepOp::Addi,
+            };
+            Some((system, layout.witness(rs1, rhs), groups))
         }
         StepOp::Lui => {
             let mut system = ConstraintSystem::new(0);
@@ -3492,7 +3539,13 @@ pub fn simple_alu_row_relation(
                     Expr::constant((imm >> index) & 1),
                 );
             }
-            Some((system, Witness::new(values)))
+            let groups = SimpleAluLayout {
+                rs1: Vec::new(),
+                rhs: Vec::new(),
+                rd: result,
+                rhs_is_imm: false,
+            };
+            Some((system, Witness::new(values), groups))
         }
         StepOp::Xor | StepOp::Xori | StepOp::And | StepOp::Andi | StepOp::Or | StepOp::Ori => {
             let rhs = match op {
@@ -3543,10 +3596,29 @@ pub fn simple_alu_row_relation(
                     _ => unreachable!(),
                 }
             }
-            Some((system, Witness::new(values)))
+            let groups = SimpleAluLayout {
+                rs1: a,
+                rhs: b,
+                rd: result,
+                rhs_is_imm: matches!(op, StepOp::Xori | StepOp::Andi | StepOp::Ori),
+            };
+            Some((system, Witness::new(values), groups))
         }
         _ => None,
     }
+}
+
+/// Compatibility wrapper: the reference prover uses the system/witness only.
+pub fn simple_alu_row_relation(
+    width: usize,
+    op: StepOp,
+    rs1: u64,
+    rs2: u64,
+    rd: u64,
+    imm: u64,
+) -> Option<(ConstraintSystem, Witness)> {
+    simple_alu_row_relation_with_layout(width, op, rs1, rs2, rd, imm)
+        .map(|(system, witness, _layout)| (system, witness))
 }
 
 /// Row relation for RV64 `*W` integer operations.
@@ -5150,6 +5222,28 @@ mod metadata_tests {
                     "{:?} bit {bit}",
                     group.kind
                 );
+            }
+        }
+    }
+    #[test]
+    fn simple_alu_layout_exposes_operand_groups() {
+        let width = 8;
+        let rs1 = 5u64;
+        let imm = 3u64;
+        let rd = 8u64;
+        let (system, witness, layout) =
+            simple_alu_row_relation_with_layout(width, StepOp::Addi, rs1, 0, rd, imm)
+                .expect("simple ALU");
+        assert_eq!(witness.values().len(), system.num_vars);
+        for group in layout.var_groups() {
+            let expected = match group.kind {
+                CpuVarKind::Rs1 => rs1,
+                CpuVarKind::Imm => imm,
+                CpuVarKind::Rd => rd,
+                other => panic!("unexpected {other:?}"),
+            };
+            for (bit, var) in group.vars.iter().enumerate() {
+                assert_eq!(witness.values()[*var].value() as u64, (expected >> bit) & 1);
             }
         }
     }
