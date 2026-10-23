@@ -36,3 +36,21 @@ The unified proof is ~173 KB, of which ~160 KB is the base P3 opening for the
 current commitment shape. Point coalescing, one-point batched Mosaic opening,
 and trace-table removal were all measured and gave negligible savings. A
 different opening backend is required for a large size reduction.
+
+
+## Execution order
+
+Chosen order:
+
+1. **A: branch rows** — add a second datapath for branch comparison/target.
+2. **B: opening backend spike** — target the ~160 KB P3 opening, not claim routing.
+3. **C: M / AMO** — deferred until A lands.
+4. **D: recursive verifier** — deferred until the commitment/opening interface is stable.
+
+A starts as an isolated `GatedBranchRow` (BEQ/BNE first), with:
+
+- XOR/OR equality reduction;
+- `pc + imm` target adder;
+- `pc + 4` sequential value;
+- `next_pc = taken ? target : sequential`;
+- tests across 8-bit pc/imm/operands before fusing into `GatedCpuRow`.
