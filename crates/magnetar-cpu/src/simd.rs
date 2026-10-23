@@ -84,6 +84,7 @@ pub struct UniformCpuFullLayout {
     pub alu: UniformCpuRowLayout,
     pub memory: UniformMemoryRowLayout,
     pub memory_offset: usize,
+    pub is_alu: VarId,
     pub num_vars: usize,
     pub system: ConstraintSystem,
 }
@@ -92,19 +93,21 @@ impl UniformCpuFullLayout {
     pub fn alu_witness(&self, op: StepOp, pc: u64, rs1: u64, rs2: u64, imm: u64) -> Witness {
         let alu = self.alu.witness(op, pc, rs1, rs2, imm);
         let memory = self.memory.inactive_witness(pc, rs1, imm);
-        self.combine(&alu.witness, &memory)
+        self.combine(&alu.witness, &memory, true)
     }
 
     pub fn memory_witness(&self, pc: u64, rs1: u64, imm: u64, data: u64, is_load: bool) -> Witness {
         let alu = self.alu.witness(StepOp::Addi, pc, rs1, 0, imm);
         let memory = self.memory.witness(pc, rs1, imm, data, is_load);
-        self.combine(&alu.witness, &memory)
+        self.combine(&alu.witness, &memory, false)
     }
 
-    fn combine(&self, alu: &Witness, memory: &Witness) -> Witness {
+    fn combine(&self, alu: &Witness, memory: &Witness, is_alu: bool) -> Witness {
         let mut values = alu.values().to_vec();
         values.resize(self.memory_offset, F2_128::from(0u64));
         values.extend_from_slice(memory.values());
+        values.resize(self.num_vars, F2_128::from(0u64));
+        values[self.is_alu] = F2_128::from(u64::from(is_alu));
         Witness::new(values)
     }
 
@@ -134,6 +137,17 @@ pub fn uniform_cpu_full_layout(width: usize) -> (ConstraintSystem, UniformCpuFul
             );
         }
     }
+    let is_alu = system.alloc(1).start;
+    system.add_constraint(
+        Expr::var(is_alu).add(Expr::var(memory_offset + memory.is_mem)),
+        one.clone(),
+        Expr::constant(1u64),
+    );
+    system.add_constraint(
+        Expr::var(is_alu),
+        Expr::var(is_alu).add(one.clone()),
+        Expr::constant(0u64),
+    );
     let num_vars = system.num_vars;
     let row_system = system.clone();
     (
@@ -143,6 +157,7 @@ pub fn uniform_cpu_full_layout(width: usize) -> (ConstraintSystem, UniformCpuFul
             alu,
             memory,
             memory_offset,
+            is_alu,
             num_vars,
             system: row_system,
         },
@@ -568,5 +583,11 @@ mod batch_tests {
         assert_eq!(memory.values().len(), layout.num_vars);
         system.check(&alu).expect("ALU row");
         system.check(&memory).expect("memory row");
+        assert_eq!(alu.values()[layout.is_alu].value(), 1);
+        assert_eq!(memory.values()[layout.is_alu].value(), 0);
+        assert_eq!(
+            memory.values()[layout.memory_offset + layout.memory.is_mem].value(),
+            1
+        );
     }
 }

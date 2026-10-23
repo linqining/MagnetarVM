@@ -737,3 +737,14 @@ Tests cover 5<<2=20, 20>>2=5, -8>>1=-4 (8-bit), and shift-by-zero. This complete
 - `gate = 1` computes the operation.
 
 Tests cover enabled and disabled XOR/AND. This is the gadget needed to gate ALU/memory sub-relations without turning the R1CS degree above two; applying it across the full CPU schema is the next step.
+
+
+### Row-kind selector in the combined schema
+
+`UniformCpuFullLayout` now allocates `is_alu` and ties it to the memory side's `is_mem`:
+
+```text
+is_alu + is_mem = 1
+```
+
+`alu_witness` sets `is_alu=1`/memory inactive; `memory_witness` sets `is_alu=0`/memory active. Tests assert the selector values and that both row kinds satisfy the same system. This gives the CPU schema an explicit row-kind selector for future claim routing and gated constraint blocks, without yet gating the always-active address/data sub-relations.
