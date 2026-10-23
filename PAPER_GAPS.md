@@ -1427,3 +1427,15 @@ This closes the store-Router test gap and puts SLL/SRL/SRA proofs into the trace
 `gated_aux_claims(trace)` builds Shift/Store/Bytecode claims from the trace and checks them against `ProtocolPlan::unified()`; `verify_gated_aux_claims` also runs the standard claim consumers.
 
 Test `aux_claims_route_through_protocol` uses a shift + ecall trace and verifies the Shift/Bytecode claims are accepted and consumed. This connects the auxiliary proofs to the claim graph; it is still separate from proof-object claim extraction.
+
+
+### P0 progress: fused shift row
+
+`GatedShiftRow` combines SLL/SRL/SRA under one row relation:
+
+- three native barrel-shift relations in disjoint variable ranges;
+- `is_sll / is_srl / is_sra / is_shift` selectors;
+- one predicate row `is_sll + is_srl + is_sra = is_shift`;
+- a single witness can select one shift kind while all three relations are present.
+
+Test `fused_shift_row_selects_kind` checks 5<<2=20, 20>>2=5, -8>>1=-4 in one row. This is the row-level fusion needed for the CPU schema; wiring it into `GatedCpuRow` (and its one-hot ALU/memory/shift selector) is the remaining integration step.

@@ -2307,3 +2307,115 @@ mod gated_memory_packed_tests {
         }
     }
 }
+
+/// Fused shift row: three native barrel-shift relations with row selectors.
+#[derive(Clone, Debug)]
+pub struct GatedShiftRow {
+    pub width: usize,
+    pub sll: UniformBitShiftRelation,
+    pub srl: UniformBitShiftRelation,
+    pub sra: UniformBitShiftRelation,
+    pub is_sll: VarId,
+    pub is_srl: VarId,
+    pub is_sra: VarId,
+    pub is_shift: VarId,
+    pub one: VarId,
+    pub srl_offset: usize,
+    pub sra_offset: usize,
+    pub relation: BitRelation,
+}
+
+fn append_shift_relation(target: &mut BitRelation, source: &BitRelation) {
+    let offset = target.num_vars;
+    target.num_vars += source.num_vars;
+    for row in &source.rows {
+        let shift = |vars: &[VarId]| vars.iter().map(|var| *var + offset).collect::<Vec<_>>();
+        target.add(BitRow::new(shift(&row.a), shift(&row.b), shift(&row.c)));
+    }
+}
+
+impl GatedShiftRow {
+    pub fn new(width: usize) -> Self {
+        let sll = UniformBitShiftRelation::shift(width, BitShiftKind::Sll);
+        let srl = UniformBitShiftRelation::shift(width, BitShiftKind::Srl);
+        let sra = UniformBitShiftRelation::shift(width, BitShiftKind::Sra);
+        let mut relation = BitRelation::new(0);
+        append_shift_relation(&mut relation, &sll.relation);
+        append_shift_relation(&mut relation, &srl.relation);
+        append_shift_relation(&mut relation, &sra.relation);
+        let is_sll = relation.num_vars;
+        let is_srl = relation.num_vars + 1;
+        let is_sra = relation.num_vars + 2;
+        let is_shift = relation.num_vars + 3;
+        let one = relation.num_vars + 4;
+        relation.num_vars += 5;
+        relation.add(BitRow::new(vec![one], vec![one], vec![one]));
+        for selector in [is_sll, is_srl, is_sra] {
+            relation.add(BitRow::new(vec![selector], vec![selector, one], Vec::new()));
+        }
+        relation.add(BitRow::new(
+            vec![is_sll, is_srl, is_sra],
+            vec![one],
+            vec![is_shift],
+        ));
+        let srl_offset = sll.relation.num_vars;
+        let sra_offset = srl_offset + srl.relation.num_vars;
+        Self {
+            width,
+            sll,
+            srl,
+            sra,
+            is_sll,
+            is_srl,
+            is_sra,
+            is_shift,
+            one,
+            srl_offset,
+            sra_offset,
+            relation,
+        }
+    }
+
+    pub fn witness(&self, left: u64, shamt: u64, kind: BitShiftKind) -> Vec<bool> {
+        let mut bits = vec![false; self.relation.num_vars];
+        let sll = self.sll.witness(left, shamt);
+        let srl = self.srl.witness(left, shamt);
+        let sra = self.sra.witness(left, shamt);
+        bits[..sll.len()].copy_from_slice(&sll);
+        bits[self.srl_offset..self.srl_offset + srl.len()].copy_from_slice(&srl);
+        bits[self.sra_offset..self.sra_offset + sra.len()].copy_from_slice(&sra);
+        bits[self.is_sll] = kind == BitShiftKind::Sll;
+        bits[self.is_srl] = kind == BitShiftKind::Srl;
+        bits[self.is_sra] = kind == BitShiftKind::Sra;
+        bits[self.is_shift] = true;
+        bits[self.one] = true;
+        bits
+    }
+}
+
+#[cfg(test)]
+mod gated_shift_row_tests {
+    use super::*;
+
+    #[test]
+    fn fused_shift_row_selects_kind() {
+        let row = GatedShiftRow::new(8);
+        for (kind, left, shamt, expected) in [
+            (BitShiftKind::Sll, 5u64, 2u64, 20u64),
+            (BitShiftKind::Srl, 20, 2, 5),
+            (BitShiftKind::Sra, 248, 1, 252),
+        ] {
+            let bits = row.witness(left, shamt, kind);
+            assert!(row.relation.check(&bits), "{kind:?}");
+            let (rd, offset) = match kind {
+                BitShiftKind::Sll => (&row.sll.rd, 0),
+                BitShiftKind::Srl => (&row.srl.rd, row.srl_offset),
+                BitShiftKind::Sra => (&row.sra.rd, row.sra_offset),
+            };
+            let value = rd.iter().enumerate().fold(0u64, |value, (bit, var)| {
+                value | (u64::from(bits[*var + offset]) << bit)
+            });
+            assert_eq!(value, expected);
+        }
+    }
+}
