@@ -501,3 +501,21 @@ Starting point landed in `magnetar-cpu::simd`:
 This is the first SIMD schema slice (ALU + PC). It deliberately reuses `uniform_step_relation` rather than `simple_alu`: fixed columns and selectors, one system, multiple instances. Legacy per-row `simple_alu` remains only as a reference path. Next: batch instances into SIMD witness/matrix, then add load/store and the native F2 relation.
 
 Per-row witness repacking is frozen; metadata work remains as legacy/reference support.
+
+
+### Uniform SIMD row batch
+
+`magnetar-cpu::simd` now has:
+
+- `UniformCpuBatchLayout { row, cycles }` with cycle-major witness layout;
+- `batch_witness` checks cycle count and per-row width, concatenates instances;
+- `row_values` slices one instance;
+- `validate_pc_chain` enforces `pc_{i+1} = pc_i + 4` for the ALU/PC slice;
+- selector test checks exactly one operation selector is active per row.
+
+Tests cover batch layout, out-of-range cycles, selector activation, and PC-chain acceptance/rejection. This is still a batched-instance schema (not yet the shared-matrix SIMD relation).
+
+Blocking decision for the next step: choose between
+
+1. **block-diagonal batched runtime baseline** (fast to wire, validates claims/proof metrics), or
+2. **true shared-matrix SIMD relation** (paper target; larger upfront rewrite, needs memory columns and dual-field design).
