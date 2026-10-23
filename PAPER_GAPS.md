@@ -327,4 +327,4 @@ Phase 3 (orchestration boundary):
 - `prove_unified_trace`/`verify_unified_trace` are now thin wrappers around the orchestrator, so callers no longer own sequencing;
 - test confirms `Orchestrator` proof bytes equal the previous `prove_unified_inner` bytes and still verify.
 
-The inner prover/verifier body is still one function: the plan is declarative and enforced at the boundary, but full plan-driven dispatch (splitting the shared commitment/witness context into per-stage runners) remains the next refactor. This does not change the proof format or proof size.
+Phase 3b now splits the inner bodies into `UnifiedProveContext`/`UnifiedVerifyContext` with one method per stage. The execution order lives in `UNIFIED_PROVER_STAGES`/`UNIFIED_VERIFIER_STAGES` and is dispatched by a loop; `ProtocolPlan` remains the separate claim-routing/security plan. Proof bytes are unchanged. Next: unify the execution stage list with the claim plan, and move the contexts into the protocol module once the remaining private CPU helpers are public(crate).

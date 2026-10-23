@@ -911,3 +911,47 @@ mod phase_tests {
         );
     }
 }
+
+/// Execution plan for the current unified prover context. This is separate
+/// from `ProtocolPlan` (which declares claim routing/security order): the
+/// prover must commit before it can create commitment-bound claims, and it
+/// only runs the lockstep CPU reduction after all auxiliary claims exist.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProverStage {
+    Commit,
+    Access,
+    Shout,
+    ShiftRouter,
+    StoreRouter,
+    RegisterAndTrace,
+    Cpu,
+}
+
+pub(crate) const UNIFIED_PROVER_STAGES: &[ProverStage] = &[
+    ProverStage::Commit,
+    ProverStage::Access,
+    ProverStage::Shout,
+    ProverStage::ShiftRouter,
+    ProverStage::StoreRouter,
+    ProverStage::RegisterAndTrace,
+    ProverStage::Cpu,
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum VerifierStage {
+    Access,
+    Shout,
+    ShiftRouter,
+    StoreRouter,
+    RegisterAndTrace,
+    Cpu,
+}
+
+pub(crate) const UNIFIED_VERIFIER_STAGES: &[VerifierStage] = &[
+    VerifierStage::Access,
+    VerifierStage::Shout,
+    VerifierStage::ShiftRouter,
+    VerifierStage::StoreRouter,
+    VerifierStage::RegisterAndTrace,
+    VerifierStage::Cpu,
+];
