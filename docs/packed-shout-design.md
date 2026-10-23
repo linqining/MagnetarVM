@@ -69,3 +69,32 @@ Consequence: batching packed Shout columns requires a new sum-check that
 evaluates the address-bit product from packed coefficients, not a standard 2D
 MLE. The per-column packed prototype remains (correct, but 48,481 B vs 17,273 B
 reference on the small trace).
+
+
+## Packed address-product sum-check: proposed direction
+
+The address evaluation is a product, not an MLE:
+
+```text
+A = Π_{i=0}^{a-1} (1 + m_i + k_i)
+m_i = fold_cycle(address_bit_i, r_j)
+```
+
+A viable route is a GKR-style product sum-check:
+
+1. Commit the address-bit matrix as a packed column table (columns are the
+   independent address bits; cycles are the packed vector dimension).
+2. Prover sends the leaf values `m_i` and a product-tree of the factors.
+3. GKR checks the product tree layer by layer with random linear combinations.
+4. At the leaves, batch the `m_i` claims:
+   ```text
+   Σ_i eq(r_col, i) · m_i = MLE(address_table)(r_col, r_j)
+   ```
+   for a random column point `r_col`.
+5. Prove the batched leaf evaluation with one ring-switch opening of the packed
+   address table, instead of one opening per column.
+
+This gives one packed table commitment and one ring-switch leaf claim for the
+address product, while the Shout boolean/read sum-checks stay unchanged.
+It needs new GKR product-tree messages and verifier equations; it is not
+implemented yet.
