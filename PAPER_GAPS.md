@@ -1683,3 +1683,22 @@ implemented and measured at **68,400 B**, larger than the two independent field
 openings (**54,568 B**). The Mosaic batching/lift overhead for one small code
 table plus a 64-column hq table outweighs the saved opening. The prototype was
 reverted; field groups remain independent.
+
+
+### Negative result: PackedSharedPcs for BinaryTwist opening
+
+Register BinaryTwist proof breakdown on a small trace:
+
+```text
+boolean    536 B
+read     1,208 B
+write    1,240 B
+update     560 B
+opening 38,713 B
+total   42,257 B
+```
+
+The opening dominates. Replacing it with a `PackedSharedPcs::from_mosaic` opening
+over the same Twist points produced **67,248 B**, larger than the original
+38,713 B opening. The prototype was reverted. Packing the register opening needs
+a different claim-batching/ring-switch construction, not `PackedSharedPcs`.
