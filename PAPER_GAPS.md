@@ -1026,3 +1026,25 @@ Key finding: packing reduces s2 rows from 64 to 2, but proof size stays PCS/vari
 over the same bit witness as the gated ALU s1 relation. `prove_gated_alu_packed` runs the s1 bit relation and this packed s2 companion in one lockstep proof (s2 zero-padded to s1's row count).
 
 Test covers XOR/AND/ADD. This is a real packed linear check over the gated CPU row, but proof size is still variable-bound because the commitment remains one F2^128 cell per bit.
+
+
+### Milestone 2b: packed companion is now the gated dual s2
+
+`GatedCpuRow::packed_companion_system()` contains two real packed checks over the same bit witness:
+
+- ALU: `Σ β out = Σ β xor_prod + Σ β and_gated + Σ β add_gated`;
+- memory: `is_mem * Σ β data_in = Σ β data`.
+
+`prove_gated_dual_batch` / `verify_gated_dual_batch` now use this companion as s2 instead of the s1 embedding, zero-padded to the bit relation's row count.
+
+This is the first gated dual batch with a genuinely different s2: s1 is the full bit relation, s2 is the packed linear/select companion, both over one witness.
+
+Release q=2/4/8 (`simd_gated_dual_scaling`, mixed ALU/memory):
+
+| cycles | proof | prove | verify |
+|---:|---:|---:|---:|
+| 2 | 85,752 B | 5.1 ms | 2.9 ms |
+| 4 | 105,392 B | 7.8 ms | 4.1 ms |
+| 8 | 132,200 B | 15.2 ms | 7.2 ms |
+
+Proof size is still variable/commitment-bound, so the s2 row reduction does not change it materially. Test `gated_alu_packed_companion_verifies` covers XOR/AND/ADD; `gated_memory_packed_select_verifies` covers active/inactive memory data.

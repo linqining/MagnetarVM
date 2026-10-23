@@ -1378,6 +1378,35 @@ impl GatedCpuRow {
         self.relation.to_system()
     }
 
+    /// The paper-style s2 companion over the same bit witness: packed ALU
+    /// output linear check plus packed memory data select.
+    pub fn packed_companion_system(&self) -> magnetar_constraint::ConstraintSystem {
+        use magnetar_constraint::{ConstraintSystem, Expr};
+
+        let packed = |vars: &[VarId], offset: usize| {
+            vars.iter()
+                .enumerate()
+                .fold(Expr::constant(0u64), |expr, (bit, var)| {
+                    expr.add(Expr::var(*var + offset).scale(F2_128::from(1u128 << bit)))
+                })
+        };
+        let mut system = ConstraintSystem::new(self.relation.num_vars);
+        system.add_constraint(
+            packed(&self.alu.out, 0)
+                .add(packed(&self.alu.xor_prod, 0))
+                .add(packed(&self.alu.and_gated, 0))
+                .add(packed(&self.alu.add_gated, 0)),
+            Expr::var(self.alu.one),
+            Expr::constant(0u64),
+        );
+        system.add_constraint(
+            Expr::var(self.memory.adder.gate + self.memory_offset),
+            packed(&self.memory.data_in, self.memory_offset),
+            packed(&self.memory.data, self.memory_offset),
+        );
+        system
+    }
+
     fn finish(&self, mut bits: Vec<bool>, pc: u64) -> Vec<bool> {
         bits.resize(self.relation.num_vars, false);
         for bit in 0..self.width {
@@ -1426,11 +1455,20 @@ mod gated_cpu_row_tests {
         let row = GatedCpuRow::new(8);
         let alu = row.alu_witness(0b1010_1010, 0b1100_1100, GatedAluOp::Xor);
         assert!(row.relation.check(&alu));
+        let companion = row.packed_companion_system();
+        let alu_witness = row.relation.to_witness(&alu);
+        if let Err(error) = companion.check(&alu_witness) {
+            panic!("ALU companion check failed: {error:?}");
+        }
         assert!(alu[row.alu.is_alu]);
         assert!(!alu[row.memory_offset + row.memory.adder.gate]);
 
         let memory = row.memory_witness(0x10, 2, 0x34, true);
         assert!(row.relation.check(&memory));
+        let memory_witness = row.relation.to_witness(&memory);
+        if let Err(error) = companion.check(&memory_witness) {
+            panic!("memory companion check failed: {error:?}");
+        }
         assert!(!memory[row.alu.is_alu]);
         assert!(memory[row.memory_offset + row.memory.adder.gate]);
     }
@@ -1884,6 +1922,107 @@ mod gated_alu_packed_tests {
             let witness = row.relation.to_witness(&row.witness(0x12, 0x34, op));
             let s1 = row.relation.to_system();
             let mut s2 = gated_alu_packed_system(&row);
+            for _ in s2.constraints.len()..s1.constraints.len() {
+                s2.add_constraint(
+                    magnetar_constraint::Expr::constant(0u64),
+                    magnetar_constraint::Expr::constant(1u64),
+                    magnetar_constraint::Expr::constant(0u64),
+                );
+            }
+            let _ = witness_vector(&s2, &witness).unwrap();
+            let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+            verify_lockstep(&s1, &s2, &layout, &proof, &pcs).unwrap();
+        }
+    }
+}
+
+/// Packed s2 companion for a gated memory row: one word-wide data select,
+/// `is_mem * Σ β_i data_in_i = Σ β_i data_i`.
+pub fn gated_memory_packed_system(row: &GatedMemoryRow) -> magnetar_constraint::ConstraintSystem {
+    use magnetar_constraint::{ConstraintSystem, Expr};
+    let packed = |vars: &[VarId]| {
+        vars.iter()
+            .enumerate()
+            .fold(Expr::constant(0u64), |expr, (bit, var)| {
+                expr.add(Expr::var(*var).scale(F2_128::from(1u128 << bit)))
+            })
+    };
+    let mut system = ConstraintSystem::new(row.relation.num_vars);
+    system.add_constraint(
+        Expr::var(row.adder.gate),
+        packed(&row.data_in),
+        packed(&row.data),
+    );
+    system
+}
+
+pub fn prove_gated_memory_packed(
+    width: usize,
+    rs1: u64,
+    imm: u64,
+    value: u64,
+    is_mem: bool,
+) -> Result<
+    (
+        magnetar_proof::LockstepProof<
+            magnetar_pcs::P3MosaicCommitment,
+            magnetar_pcs::P3MosaicOpening,
+        >,
+        magnetar_constraint::WitnessLayout,
+    ),
+    RuntimeError,
+> {
+    use magnetar_constraint::{Segment, SegmentKind, SegmentOwner, WitnessLayout};
+    use magnetar_pcs::P3SharedPcs;
+    use magnetar_proof::{prove_lockstep, witness_vector};
+
+    let row = GatedMemoryRow::new(width);
+    let bits = row.witness(rs1, imm, value, is_mem);
+    let witness = row.relation.to_witness(&bits);
+    let s1 = row.relation.to_system();
+    let mut s2 = gated_memory_packed_system(&row);
+    for _ in s2.constraints.len()..s1.constraints.len() {
+        s2.add_constraint(
+            magnetar_constraint::Expr::constant(0u64),
+            magnetar_constraint::Expr::constant(1u64),
+            magnetar_constraint::Expr::constant(0u64),
+        );
+    }
+    let z =
+        witness_vector(&s2, &witness).map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let total = z.len().trailing_zeros() as usize;
+    let half = total - 1;
+    let layout = WitnessLayout::new(vec![
+        Segment::new("lo", 0, 1 << half, SegmentKind::Direct, SegmentOwner::Cpu),
+        Segment::new(
+            "hi",
+            1 << half,
+            1 << half,
+            SegmentKind::Direct,
+            SegmentOwner::Cpu,
+        ),
+    ])
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+    let proof = prove_lockstep(&s1, &s2, &witness, &layout, &pcs)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok((proof, layout))
+}
+
+#[cfg(test)]
+mod gated_memory_packed_tests {
+    use super::*;
+    use magnetar_pcs::P3SharedPcs;
+    use magnetar_proof::{verify_lockstep, witness_vector};
+
+    #[test]
+    fn gated_memory_packed_select_verifies() {
+        for is_mem in [true, false] {
+            let (proof, layout) = prove_gated_memory_packed(8, 0x10, 2, 0x34, is_mem).unwrap();
+            let row = GatedMemoryRow::new(8);
+            let witness = row.relation.to_witness(&row.witness(0x10, 2, 0x34, is_mem));
+            let s1 = row.relation.to_system();
+            let mut s2 = gated_memory_packed_system(&row);
             for _ in s2.constraints.len()..s1.constraints.len() {
                 s2.add_constraint(
                     magnetar_constraint::Expr::constant(0u64),

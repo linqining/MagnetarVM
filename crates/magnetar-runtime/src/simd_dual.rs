@@ -351,7 +351,14 @@ pub fn prove_gated_dual_batch(
     }
     let row = GatedCpuRow::new(width);
     let s1_system = row.relation.to_system();
-    let s2_system = row.packed_system();
+    let mut s2_system = row.packed_companion_system();
+    for _ in s2_system.constraints.len()..s1_system.constraints.len() {
+        s2_system.add_constraint(
+            magnetar_constraint::Expr::constant(0u64),
+            magnetar_constraint::Expr::constant(1u64),
+            magnetar_constraint::Expr::constant(0u64),
+        );
+    }
     let base_cols = (row.relation.num_vars + 1).next_power_of_two();
     let mut extra_a = Vec::new();
     let mut extra_b = Vec::new();
@@ -428,7 +435,14 @@ pub fn verify_gated_dual_batch(
 
     let row = GatedCpuRow::new(width);
     let s1_system = row.relation.to_system();
-    let s2_system = row.packed_system();
+    let mut s2_system = row.packed_companion_system();
+    for _ in s2_system.constraints.len()..s1_system.constraints.len() {
+        s2_system.add_constraint(
+            magnetar_constraint::Expr::constant(0u64),
+            magnetar_constraint::Expr::constant(1u64),
+            magnetar_constraint::Expr::constant(0u64),
+        );
+    }
     let base_cols = (row.relation.num_vars + 1).next_power_of_two();
     let mut extra_a = Vec::new();
     let mut extra_b = Vec::new();
