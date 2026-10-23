@@ -1313,6 +1313,8 @@ pub struct CpuWitnessSegment {
     pub kind: SegmentKind,
     pub row_kind: CpuRowKind,
     pub vars: Vec<magnetar_cpu::CpuVarGroup>,
+    pub fetch_pc: u64,
+    pub rom_word: Option<u32>,
 }
 
 fn cpu_row_kind(op: magnetar_spec::Op) -> CpuRowKind {
@@ -1368,7 +1370,15 @@ fn row_cpu_var_groups(
     width: usize,
 ) -> Vec<magnetar_cpu::CpuVarGroup> {
     if row.instruction.op.amo_width().is_some() {
-        return Vec::new();
+        let Some(access) = row.mem else {
+            return Vec::new();
+        };
+        return magnetar_cpu::uniform_amo_row_groups(
+            access.addr,
+            access.value,
+            row.rs1_val,
+            row.instruction.imm as u64,
+        );
     }
     if let Some(access) = row.mem {
         let imm = row.instruction.imm as u64;
@@ -1444,7 +1454,19 @@ fn row_cpu_var_groups(
         row.rd_val,
         imm,
     );
-    layout.var_groups()
+    if matches!(
+        row.instruction.op,
+        magnetar_spec::Op::Sll
+            | magnetar_spec::Op::Srl
+            | magnetar_spec::Op::Sra
+            | magnetar_spec::Op::Slli
+            | magnetar_spec::Op::Srli
+            | magnetar_spec::Op::Srai
+    ) {
+        layout.shift_var_groups()
+    } else {
+        layout.var_groups()
+    }
 }
 
 pub(crate) fn merged_cpu_system_with_metadata(
@@ -1472,6 +1494,7 @@ pub(crate) fn merged_cpu_system_with_metadata(
                         vars: group.vars.iter().map(|var| var + offset).collect(),
                     })
                     .collect();
+                let word_index = ((row.pc.saturating_sub(trace.config.rom_base)) / 4) as usize;
                 metadata.segments.push(CpuWitnessSegment {
                     cycle: row.cycle,
                     offset,
@@ -1480,6 +1503,8 @@ pub(crate) fn merged_cpu_system_with_metadata(
                     kind: SegmentKind::Direct,
                     row_kind: cpu_row_kind(row.instruction.op),
                     vars,
+                    fetch_pc: row.pc,
+                    rom_word: trace.rom.get(word_index).copied(),
                 });
             }
         }

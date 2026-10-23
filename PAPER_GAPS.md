@@ -476,3 +476,14 @@ AMO is still skipped in metadata because its circuit merges store layout with an
 - `UniformJalrLayout`: Rs1/Imm (target adder a/b), Pc (link adder a), Target, Link.
 
 The runtime metadata reconstructs these layouts for branch/Jal/Jalr rows. Tests verify each group against the branch and Jal witness bits; AMO/shift/bytecode groups remain.
+
+
+### CPU metadata: AMO, shift, bytecode, alignment
+
+- `CpuVarKind` adds ShiftSource/ShiftAmount/ShiftOutput and Target/Link;
+- `UniformAluLayout::shift_var_groups()` exposes source (rs1), shamt, output (rd);
+- runtime uses these for Sll/Srl/Sra/Slli/Srli/Srai rows;
+- `uniform_amo_row_groups` exposes the store-shaped part of AMO rows (Rs1/Imm/RamAddr/RamValue); op-specific AMO sub-relation variables are not yet exposed;
+- `CpuWitnessSegment` now carries `fetch_pc` and `rom_word` from the trace/ROM.
+
+Attempting to switch `cpu_segment_layout` exposed a hard alignment constraint: many CPU var groups are not one power-of-two aligned segment. `CpuVarGroup::is_segment_aligned` tests this; e.g. shift source is aligned but shamt (3 bits) is not. A component-aware `WitnessLayout` therefore requires repacking/aligning the CPU witness (or padding each component to an aligned segment), not just translating VarIds. The current 2-segment layout remains until that repacking is designed.

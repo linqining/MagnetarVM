@@ -777,6 +777,9 @@ pub enum CpuVarKind {
     RamValue,
     Target,
     Link,
+    ShiftSource,
+    ShiftAmount,
+    ShiftOutput,
 }
 
 #[derive(Clone, Debug)]
@@ -785,7 +788,41 @@ pub struct CpuVarGroup {
     pub vars: Vec<VarId>,
 }
 
+impl CpuVarGroup {
+    /// Whether the group can be represented as one `WitnessLayout` segment.
+    /// CPU rows are bit-level allocations, so several groups (e.g. shamt) are
+    /// intentionally not power-of-two aligned and cannot become segments
+    /// without repacking the witness.
+    pub fn is_segment_aligned(&self) -> bool {
+        if self.vars.is_empty() || !self.vars.len().is_power_of_two() {
+            return false;
+        }
+        let start = self.vars[0];
+        if !start.is_multiple_of(self.vars.len()) {
+            return false;
+        }
+        self.vars.windows(2).all(|pair| pair[0] + 1 == pair[1])
+    }
+}
+
 impl UniformAluLayout {
+    pub fn shift_var_groups(&self) -> Vec<CpuVarGroup> {
+        vec![
+            CpuVarGroup {
+                kind: CpuVarKind::ShiftSource,
+                vars: self.adder.a.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::ShiftAmount,
+                vars: self.shamt_sel.clone(),
+            },
+            CpuVarGroup {
+                kind: CpuVarKind::ShiftOutput,
+                vars: self.rd.clone(),
+            },
+        ]
+    }
+
     pub fn var_groups(&self) -> Vec<CpuVarGroup> {
         vec![
             CpuVarGroup {
@@ -5330,7 +5367,10 @@ mod metadata_tests {
                 CpuVarKind::RamAddr
                 | CpuVarKind::RamValue
                 | CpuVarKind::Target
-                | CpuVarKind::Link => unreachable!(),
+                | CpuVarKind::Link
+                | CpuVarKind::ShiftSource
+                | CpuVarKind::ShiftAmount
+                | CpuVarKind::ShiftOutput => unreachable!(),
             };
             for (bit, var) in group.vars.iter().enumerate() {
                 assert_eq!(
@@ -5452,4 +5492,48 @@ mod metadata_tests {
             }
         }
     }
+    #[test]
+    fn shift_layout_exposes_source_amount_and_output() {
+        let width = 8;
+        let rs1 = 0x12u64;
+        let shamt = 2u64;
+        let (system, layout) = uniform_alu_row_relation(width, StepOp::Sll, rs1, shamt, 0, 0);
+        let witness = layout.witness(StepOp::Sll, rs1, shamt, 0);
+        assert_eq!(witness.values().len(), system.num_vars);
+        for group in layout.shift_var_groups() {
+            let expected = match group.kind {
+                CpuVarKind::ShiftSource => rs1,
+                CpuVarKind::ShiftAmount => shamt,
+                CpuVarKind::ShiftOutput => (rs1 << shamt) & 0xff,
+                other => panic!("unexpected {other:?}"),
+            };
+            for (bit, var) in group.vars.iter().enumerate() {
+                assert_eq!(witness.values()[*var].value() as u64, (expected >> bit) & 1);
+            }
+        }
+    }
+    #[test]
+    fn shift_amount_group_needs_repacking_for_a_segment() {
+        let width = 8;
+        let (_system, layout) = uniform_alu_row_relation(width, StepOp::Sll, 0x12, 2, 0, 0);
+        let groups = layout.shift_var_groups();
+        let source = groups
+            .iter()
+            .find(|group| group.kind == CpuVarKind::ShiftSource)
+            .unwrap();
+        let amount = groups
+            .iter()
+            .find(|group| group.kind == CpuVarKind::ShiftAmount)
+            .unwrap();
+        assert!(source.is_segment_aligned());
+        assert!(!amount.is_segment_aligned());
+    }
+}
+
+/// Component groups for an AMO row's store-shaped part. The op-specific
+/// ALU/minmax sub-relation is merged after the store layout; exposing those
+/// variables requires a combined layout and is tracked separately.
+pub fn uniform_amo_row_groups(addr: u64, new_value: u64, rs1: u64, imm: u64) -> Vec<CpuVarGroup> {
+    let (_system, layout) = uniform_store_row_relation(64, addr, new_value, rs1, imm);
+    layout.var_groups()
 }
