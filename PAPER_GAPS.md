@@ -1953,3 +1953,25 @@ BEQ/BNE branch row extended to all six RV64 branches:
 - all six selectors are one-hot and feed the same `next_pc` mux.
 
 `branch_row_selects_all_kinds` covers taken/not-taken cases for all six.
+
+
+### Branch cost and B opening spike
+
+Adding all six branch kinds to `GatedCpuRow` increased the unified proof:
+
+```text
+before branches 173,439 B
+after branches  209,719 B  (opening 199,744 B)
+```
+
+The branch row adds four ALU datapaths per row, so the gated witness table grows.
+
+B spike results:
+
+- `P3BinaryPcs` security 64: unified 148,119 B (opening 138,144 B);
+- `P3BinaryPcs` security 40: unified 107,207 B (opening 97,232 B);
+- `LigeritoPcs` is an index-opening PCS, not a multilinear point-evaluation
+  opening, so it cannot replace the unified opening.
+
+Lowering security to 64/40 is not acceptable as the default. A new
+point-evaluation PCS backend is required for B; one is not present in the repo.
