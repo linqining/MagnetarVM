@@ -732,7 +732,9 @@ pub fn verify_gated_dual_batch_bits_with_pc<B: magnetar_proof::BitPcs>(
 mod shared_claim_tests {
     use super::*;
     use magnetar_pcs::{P3BinaryPcs, P3MosaicTable, P3SharedPcs};
-    use magnetar_proof::spartan::prove_lockstep_claims_bits;
+    use magnetar_proof::spartan::{
+        prove_lockstep_claims_bits, verify_lockstep_claims_with_matrices,
+    };
     use magnetar_proof::DirectBitPcs;
 
     #[test]
@@ -777,6 +779,13 @@ mod shared_claim_tests {
         .unwrap();
         assert_eq!(claims.commitment, commitment);
         assert!(!claims.segments.is_empty());
+        let verifier = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+        let (_ry, segments, value) = verify_lockstep_claims_with_matrices(
+            &a0[0], &a0[1], &a0[2], &a1[0], &a1[1], &a1[2], &layout, &claims, &verifier,
+        )
+        .unwrap();
+        assert!(!segments.is_empty());
+        let _ = value;
     }
 }
 #[cfg(test)]

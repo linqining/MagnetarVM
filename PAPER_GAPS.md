@@ -1788,3 +1788,18 @@ and non-empty segments.
 
 This is the proof-generation ingredient needed to merge gated CPU claims into
 `UnifiedTraceProof`; verification/opening integration is the next step.
+
+
+### A: verifying gated claims against shared matrices
+
+Added `verify_lockstep_claims_with_matrices` so gated claims whose matrices
+include PC-chain extra rows can be verified without rebuilding plain systems.
+`gated_claims_use_shared_commitment` now:
+
+- commits gated z as a Mosaic table;
+- generates `LockstepClaims` with `prove_lockstep_claims_bits`;
+- verifies them with the new matrix-based verifier and the shared commitment;
+- checks non-empty segments.
+
+This supplies both proof-generation and verification ingredients for merging
+gated claims into `UnifiedTraceProof`.
