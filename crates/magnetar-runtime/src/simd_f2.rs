@@ -101,33 +101,55 @@ impl UniformBitAluRelation {
     }
 
     pub fn add(width: usize) -> Self {
+        Self::add_sub(width, false)
+    }
+
+    pub fn sub(width: usize) -> Self {
+        Self::add_sub(width, true)
+    }
+
+    fn add_sub(width: usize, subtract: bool) -> Self {
         assert!(width > 0);
         let rs1 = (0..width).collect::<Vec<_>>();
         let rs2 = (width..2 * width).collect::<Vec<_>>();
-        let rd = (2 * width..3 * width).collect::<Vec<_>>();
-        let carries = (3 * width..4 * width + 1).collect::<Vec<_>>();
-        let p1 = (4 * width + 1..5 * width + 1).collect::<Vec<_>>();
-        let p2 = (5 * width + 1..6 * width + 1).collect::<Vec<_>>();
-        let p3 = (6 * width + 1..7 * width + 1).collect::<Vec<_>>();
-        let xor_ab = (7 * width + 1..8 * width + 1).collect::<Vec<_>>();
-        let one = 8 * width + 1;
-        let mut relation = BitRelation::new(8 * width + 2);
+        let b_eff = (2 * width..3 * width).collect::<Vec<_>>();
+        let rd = (3 * width..4 * width).collect::<Vec<_>>();
+        let carries = (4 * width..5 * width + 1).collect::<Vec<_>>();
+        let p1 = (5 * width + 1..6 * width + 1).collect::<Vec<_>>();
+        let p2 = (6 * width + 1..7 * width + 1).collect::<Vec<_>>();
+        let p3 = (7 * width + 1..8 * width + 1).collect::<Vec<_>>();
+        let xor_ab = (8 * width + 1..9 * width + 1).collect::<Vec<_>>();
+        let one = 9 * width + 1;
+        let mut relation = BitRelation::new(9 * width + 2);
         relation.add(BitRow::new(vec![one], vec![one], vec![one]));
-        relation.add(BitRow::new(vec![carries[0]], vec![one], Vec::new()));
+        relation.add(BitRow::new(
+            vec![carries[0]],
+            vec![one],
+            if subtract { vec![one] } else { Vec::new() },
+        ));
         for bit in 0..width {
-            relation.add(BitRow::new(vec![rs1[bit]], vec![rs2[bit]], vec![p1[bit]]));
+            relation.add(BitRow::new(
+                if subtract {
+                    vec![rs2[bit], one]
+                } else {
+                    vec![rs2[bit]]
+                },
+                vec![one],
+                vec![b_eff[bit]],
+            ));
+            relation.add(BitRow::new(vec![rs1[bit]], vec![b_eff[bit]], vec![p1[bit]]));
             relation.add(BitRow::new(
                 vec![rs1[bit]],
                 vec![carries[bit]],
                 vec![p2[bit]],
             ));
             relation.add(BitRow::new(
-                vec![rs2[bit]],
+                vec![b_eff[bit]],
                 vec![carries[bit]],
                 vec![p3[bit]],
             ));
             relation.add(BitRow::new(
-                vec![rs1[bit], rs2[bit]],
+                vec![rs1[bit], b_eff[bit]],
                 vec![one],
                 vec![xor_ab[bit]],
             ));
@@ -153,22 +175,33 @@ impl UniformBitAluRelation {
     }
 
     pub fn add_witness(&self, left: u64, right: u64) -> Vec<bool> {
+        self.add_sub_witness(left, right, false)
+    }
+
+    pub fn sub_witness(&self, left: u64, right: u64) -> Vec<bool> {
+        self.add_sub_witness(left, right, true)
+    }
+
+    fn add_sub_witness(&self, left: u64, right: u64, subtract: bool) -> Vec<bool> {
         let width = self.width;
-        let mut bits = vec![false; 8 * width + 2];
+        let mut bits = vec![false; 9 * width + 2];
         bits[self.one] = true;
-        let carries = 3 * width;
+        let carries = 4 * width;
+        bits[carries] = subtract;
         for bit in 0..width {
             let a = (left >> bit) & 1 == 1;
             let b = (right >> bit) & 1 == 1;
+            let b_eff = b ^ subtract;
             let carry = bits[carries + bit];
             bits[self.rs1[bit]] = a;
             bits[self.rs2[bit]] = b;
-            bits[carries + bit + 1] = (a && b) || (a && carry) || (b && carry);
-            bits[4 * width + 1 + bit] = a && b;
-            bits[5 * width + 1 + bit] = a && carry;
-            bits[6 * width + 1 + bit] = b && carry;
-            bits[7 * width + 1 + bit] = a ^ b;
-            bits[self.rd[bit]] = a ^ b ^ carry;
+            bits[2 * width + bit] = b_eff;
+            bits[carries + bit + 1] = (a && b_eff) || (a && carry) || (b_eff && carry);
+            bits[5 * width + 1 + bit] = a && b_eff;
+            bits[6 * width + 1 + bit] = a && carry;
+            bits[7 * width + 1 + bit] = b_eff && carry;
+            bits[8 * width + 1 + bit] = a ^ b_eff;
+            bits[self.rd[bit]] = a ^ b_eff ^ carry;
         }
         bits
     }
@@ -255,5 +288,22 @@ mod tests {
         };
         let proof = backend.prove(&add.relation, &bits).unwrap();
         assert!(backend.verify(&add.relation, &proof).unwrap());
+    }
+    #[test]
+    fn bit_subtract_relation_uses_twos_complement_carry() {
+        let sub = UniformBitAluRelation::sub(8);
+        let bits = sub.sub_witness(5, 3);
+        assert!(sub.relation.check(&bits));
+        let rd = sub.rd.iter().enumerate().fold(0u64, |value, (bit, var)| {
+            value | (u64::from(bits[*var]) << bit)
+        });
+        assert_eq!(rd, 2);
+
+        let wrapped = sub.sub_witness(3, 5);
+        assert!(sub.relation.check(&wrapped));
+        let rd = sub.rd.iter().enumerate().fold(0u64, |value, (bit, var)| {
+            value | (u64::from(wrapped[*var]) << bit)
+        });
+        assert_eq!(rd, 254);
     }
 }

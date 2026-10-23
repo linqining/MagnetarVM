@@ -676,3 +676,15 @@ Test `mixed_trace_slice_round_trips` executes `lui; sw; lw; add; ecall`, takes t
 - carry0=0.
 
 Tests check 5+3=8, reject a tampered result bit, and prove/verify the relation through `EmbeddedBitBackend` + P3. This extends the s1 bit slice beyond XOR/AND while the native F2 proof backend remains a trait boundary.
+
+
+### F2 bit subtraction
+
+`UniformBitAluRelation::sub(width)` shares the ripple-carry layout with `add`:
+
+- `b_eff = rs2 XOR subtract`;
+- `carry0 = subtract` (1 for subtraction);
+- same sum/majority rows;
+- `sub_witness(left, right)` computes two's-complement subtraction.
+
+Tests check 5 - 3 = 2 and 3 - 5 = 254 (8-bit wraparound). `add` remains the same public API with `subtract = false`. The relation still proves through `EmbeddedBitBackend`.
