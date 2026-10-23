@@ -1511,3 +1511,17 @@ Composition:
 - the gated CPU matrices are unchanged.
 
 This composes the two key proof-system layers (ring switching + single-commitment Mosaic adapter) on a real gated CPU batch. It is still not full Virtual Spartan claim reduction across auxiliary components.
+
+
+### P1 progress: trace bundle benchmark and shift-proof deduplication
+
+Because shift rows are now fused into `GatedCpuRow`, the trace bundle no longer attaches per-row standalone shift proofs. `shift_proofs` remains in the wire type but is empty on the fused path; the test now asserts that.
+
+`gated_trace_bundle_m4_m5_bench` (add, xor, slli, ecall; register + aux included):
+
+| backend | CPU | register | aux | claims | total | prove |
+|---|---:|---:|---:|---:|---:|---:|
+| M4 direct | 107,880 | 42,257 | 19,561 | 54 | 169,760 | 14.9 ms |
+| M5 ring | 6,552 | 42,257 | 19,561 | 54 | 68,432 | 11.3 ms |
+
+M5 CPU drops to 6.5 KB; register Twist and auxiliary Shout/Router now dominate the bundle. The aux byte count is a debug-format estimate because `GatedAuxProof` is not serialized yet.
