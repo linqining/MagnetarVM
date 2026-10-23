@@ -471,8 +471,10 @@ pub enum ProofError {
 
 pub mod dual_field;
 pub mod f2_protocol;
+pub mod simd;
 pub mod spartan;
 pub mod virtual_spartan;
+pub use simd::SharedBlockMatrix;
 pub use spartan::{
     prove_lockstep, prove_lockstep_claims, prove_spartan, verify_lockstep, verify_lockstep_claims,
     verify_lockstep_segments, verify_spartan, witness_vector, LockstepClaims, LockstepProof,

@@ -22,7 +22,7 @@ use std::cell::RefCell;
 use thiserror::Error;
 
 #[derive(Clone, Copy, Debug)]
-enum MatrixPart {
+pub enum MatrixPart {
     A,
     B,
     C,
@@ -39,13 +39,16 @@ impl MatrixPart {
 }
 
 #[derive(Clone, Debug)]
-struct SparseMatrix {
-    rows: Vec<Vec<(usize, F2_128)>>,
-    cols: usize,
+pub(crate) struct SparseMatrix {
+    pub(crate) rows: Vec<Vec<(usize, F2_128)>>,
+    pub(crate) cols: usize,
 }
 
 impl SparseMatrix {
-    fn from_system(system: &ConstraintSystem, part: MatrixPart) -> Result<Self, SpartanError> {
+    pub(crate) fn from_system(
+        system: &ConstraintSystem,
+        part: MatrixPart,
+    ) -> Result<Self, SpartanError> {
         let rows_padded = system.constraints.len().next_power_of_two().max(1);
         let cols = (system.num_vars + 1).next_power_of_two().max(1);
         let mut rows = Vec::with_capacity(rows_padded);
@@ -60,7 +63,7 @@ impl SparseMatrix {
         Ok(Self { rows, cols })
     }
 
-    fn mul_vec(&self, z: &[F2_128]) -> Result<Vec<F2_128>, SpartanError> {
+    pub(crate) fn mul_vec(&self, z: &[F2_128]) -> Result<Vec<F2_128>, SpartanError> {
         if z.len() != self.cols {
             return Err(SpartanError::Dimensions);
         }
@@ -76,7 +79,10 @@ impl SparseMatrix {
             .collect())
     }
 
-    fn row_combination(&self, row_point: &[F2_128]) -> Result<Vec<F2_128>, SpartanError> {
+    pub(crate) fn row_combination(
+        &self,
+        row_point: &[F2_128],
+    ) -> Result<Vec<F2_128>, SpartanError> {
         let row_bits = self.rows.len().trailing_zeros() as usize;
         if row_point.len() != row_bits {
             return Err(SpartanError::Dimensions);
@@ -93,7 +99,11 @@ impl SparseMatrix {
         Ok(result)
     }
 
-    fn eval_mle(&self, row_point: &[F2_128], col_point: &[F2_128]) -> Result<F2_128, SpartanError> {
+    pub(crate) fn eval_mle(
+        &self,
+        row_point: &[F2_128],
+        col_point: &[F2_128],
+    ) -> Result<F2_128, SpartanError> {
         let row_bits = self.rows.len().trailing_zeros() as usize;
         let col_bits = self.cols.trailing_zeros() as usize;
         if row_point.len() != row_bits || col_point.len() != col_bits {
@@ -115,7 +125,7 @@ impl SparseMatrix {
     }
 }
 
-fn bits(mut index: usize, count: usize) -> Vec<F2_128> {
+pub(crate) fn bits(mut index: usize, count: usize) -> Vec<F2_128> {
     (0..count)
         .map(|_| {
             let bit = index & 1;

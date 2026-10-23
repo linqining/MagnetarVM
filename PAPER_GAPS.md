@@ -530,3 +530,15 @@ Blocking decision for the next step: choose between
 - a concatenated witness.
 
 Tests verify a contiguous PC chain satisfies the batch system and a broken chain is rejected. This is the block-diagonal baseline, not yet the paper's shared-matrix SIMD relation; it gives a runnable comparison point and exercises selector/PC semantics.
+
+
+### Shared-matrix representation
+
+`magnetar-proof::simd::SharedBlockMatrix` is the first true shared-matrix piece:
+
+- stores one base `SparseMatrix` plus an instance count;
+- `mul_vec` applies the base matrix to each instance block;
+- `row_combination` / `eval_mle` compute block-diagonal results from the base matrix plus `eq(instance, point)` factors, without materializing q copies;
+- test compares it against an explicitly assembled two-instance block matrix for `mul_vec`, `row_combination`, and `eval_mle`.
+
+This is the matrix representation target for scheme B. Spartan still constructs `SparseMatrix` from a `ConstraintSystem`; the next step is genericizing the sum-check over a matrix trait so `SharedBlockMatrix` can be proved directly, then wiring the uniform CPU batch.
