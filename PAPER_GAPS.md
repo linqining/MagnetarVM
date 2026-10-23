@@ -834,3 +834,8 @@ This is the API prerequisite for the dual shared-matrix batch (F2 s1 + packed s2
 - one `prove_lockstep_with_matrices` proof.
 
 `verify_dual_batch` rebuilds the same shared matrices and verifies the lockstep. Test covers XOR/ADD/SUB with q=2, all with PC-chain constraints. This is the first q-instance dual shared-matrix CPU proof.
+
+
+### Dual batch shift coverage
+
+The dual batch now includes SLL/SRL/SRA (and immediate forms). The packed s2 relation is the full packed shift; the s1 bit relation is currently only **booleanity of the rd bits** (`rd_i * rd_i = rd_i`), because the packed shift's internal barrel variables are private. This is a valid necessary condition, but not yet a bit-level shift relation. Next: expose the packed shift layout's stage/result variables and build a real bit-level shift parity relation.

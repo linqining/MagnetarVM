@@ -58,6 +58,20 @@ fn bit_relation(layout: &magnetar_cpu::simd::UniformCpuRowLayout, op: StepOp) ->
                 ));
             }
         }
+        StepOp::Sll | StepOp::Srl | StepOp::Sra | StepOp::Slli | StepOp::Srli | StepOp::Srai => {
+            let groups = layout.var_groups();
+            let rd = groups
+                .iter()
+                .find(|group| group.kind == CpuVarKind::Rd)
+                .expect("rd group");
+            for bit in 0..layout.width {
+                relation.add(BitRow::new(
+                    vec![rd.vars[bit]],
+                    vec![rd.vars[bit]],
+                    vec![rd.vars[bit]],
+                ));
+            }
+        }
         _ => panic!("unsupported dual CPU op"),
     }
     relation
@@ -304,7 +318,14 @@ mod tests {
 
     #[test]
     fn dual_shared_batch_runs_in_lockstep() {
-        for op in [StepOp::Xor, StepOp::Add, StepOp::Sub] {
+        for op in [
+            StepOp::Xor,
+            StepOp::Add,
+            StepOp::Sub,
+            StepOp::Sll,
+            StepOp::Srl,
+            StepOp::Sra,
+        ] {
             let (proof, layout) = prove_dual_batch(8, op, 2).expect("prove");
             verify_dual_batch(8, op, 2, &proof, &layout).expect("verify");
         }
