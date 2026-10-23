@@ -563,6 +563,51 @@ mod tests {
     }
 
     #[test]
+    fn gated_dual_revealing_backend_handles_width8() {
+        use magnetar_proof::spartan::MatrixPart;
+        use magnetar_proof::{
+            prove_lockstep_bits, verify_lockstep_bits, RevealingPackedBitPcs, SparseMatrix,
+        };
+
+        let row = GatedCpuRow::new(8);
+        let bits = row.alu_witness_at(0x1004, 5, 3, crate::simd_f2::GatedAluOp::Add);
+        let base_cols = (row.relation.num_vars + 1).next_power_of_two();
+        let mut packed_bits = vec![false; base_cols];
+        packed_bits[..bits.len()].copy_from_slice(&bits);
+        let s1 = row.relation.to_system();
+        let mut s2 = row.packed_companion_system();
+        for _ in s2.constraints.len()..s1.constraints.len() {
+            s2.add_constraint(
+                magnetar_constraint::Expr::constant(0u64),
+                magnetar_constraint::Expr::constant(1u64),
+                magnetar_constraint::Expr::constant(0u64),
+            );
+        }
+        let a0 = SparseMatrix::from_system(&s1, MatrixPart::A).unwrap();
+        let b0 = SparseMatrix::from_system(&s1, MatrixPart::B).unwrap();
+        let c0 = SparseMatrix::from_system(&s1, MatrixPart::C).unwrap();
+        let a1 = SparseMatrix::from_system(&s2, MatrixPart::A).unwrap();
+        let b1 = SparseMatrix::from_system(&s2, MatrixPart::B).unwrap();
+        let c1 = SparseMatrix::from_system(&s2, MatrixPart::C).unwrap();
+        let layout = segment_layout(base_cols).unwrap();
+        let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+        let backend = RevealingPackedBitPcs::new(pcs);
+        let proof = prove_lockstep_bits(
+            &packed_bits,
+            &a0,
+            &b0,
+            &c0,
+            &a1,
+            &b1,
+            &c1,
+            &layout,
+            &backend,
+        )
+        .unwrap();
+        verify_lockstep_bits(&a0, &b0, &c0, &a1, &b1, &c1, &layout, &proof, &backend).unwrap();
+    }
+
+    #[test]
     fn gated_dual_batch_runs_in_lockstep() {
         let rows = [
             (

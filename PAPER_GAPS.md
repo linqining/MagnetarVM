@@ -1146,3 +1146,22 @@ This is the first measurable M5 proof-size result: ~36x smaller and ~6x faster t
 | 128 | 67,848 B | 1.28 ms | unsupported | unsupported |
 
 M5 is ~34-36x smaller at 64/96 bits. 128 logical bits need a 256-cell padded Spartan witness in this system (`num_vars + 1`), which crosses the current single-field M5 limit; multi-field ring switching is still required. The benchmark prints the unsupported boundary instead of panicking.
+
+
+### Multi-field fallback: RevealingPackedBitPcs
+
+`RevealingPackedBitPcs<P>` supports arbitrary bit lengths by packing all 128-bit chunks and revealing the packed table in the opening. The verifier recomputes the deterministic commitment and evaluates the bit MLE from the packed table.
+
+This is **not** ring switching and **not succinct**: proof size grows as `len/128` field elements. It is a correctness fallback used to run the same CPU/gated/dual tests above 128 bits; test `gated_dual_revealing_backend_handles_width8` proves a width-8 gated dual relation with it.
+
+Scaling (`bit_pcs_scaling_bench`, P3, release):
+
+| bits | M4 proof | M5 single-field | M5 reveal |
+|---:|---:|---:|---:|
+| 64 | 53,712 B | 1,488 B | 1,048 B |
+| 96 | 53,784 B | 1,560 B | 1,120 B |
+| 128 | 67,848 B | unsupported | 1,176 B |
+| 256 | 84,576 B | unsupported | 1,336 B |
+| 512 | 106,104 B | unsupported | 1,528 B |
+
+The reveal backend's small proofs come from revealing O(len/128) packed elements; they are not comparable to M5 single-field succinct openings. True multi-field M5 still needs ring switching.

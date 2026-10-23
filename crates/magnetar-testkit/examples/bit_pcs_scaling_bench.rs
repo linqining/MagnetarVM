@@ -4,7 +4,8 @@ use magnetar_constraint::{ConstraintSystem, Expr};
 use magnetar_pcs::P3SharedPcs;
 use magnetar_proof::spartan::MatrixPart;
 use magnetar_proof::{
-    prove_spartan_bits, verify_spartan_bits, BitPcs, DirectBitPcs, PackedBitPcs, SparseMatrix,
+    prove_spartan_bits, verify_spartan_bits, BitPcs, DirectBitPcs, PackedBitPcs,
+    RevealingPackedBitPcs, SparseMatrix,
 };
 
 fn system(bits: usize) -> (ConstraintSystem, Vec<bool>) {
@@ -41,13 +42,15 @@ where
 fn main() {
     let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
     let direct = DirectBitPcs::new(pcs.clone());
-    let packed = PackedBitPcs::new(pcs);
-    for bits in [64usize, 96, 128] {
+    let packed = PackedBitPcs::new(pcs.clone());
+    let reveal = RevealingPackedBitPcs::new(pcs);
+    for bits in [64usize, 96, 128, 256, 512] {
         run("M4", bits, &direct);
         if bits <= 96 {
             run("M5", bits, &packed);
         } else {
-            println!("M5 bits=128: unsupported (multi-field ring switching not implemented)");
+            println!("M5 bits={bits}: unsupported (single-field limit)");
         }
+        run("M5-reveal", bits, &reveal);
     }
 }

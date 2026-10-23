@@ -475,7 +475,9 @@ pub mod f2_protocol;
 pub mod simd;
 pub mod spartan;
 pub mod virtual_spartan;
-pub use bit_pcs::{BitPcs, DirectBitPcs, PackedBitPcs, PackedOpening};
+pub use bit_pcs::{
+    BitPcs, DirectBitPcs, PackedBitPcs, PackedOpening, PackedTableOpening, RevealingPackedBitPcs,
+};
 pub use simd::SharedBlockMatrix;
 pub use spartan::{
     prove_lockstep, prove_lockstep_bits, prove_lockstep_claims, prove_lockstep_with_matrices,
