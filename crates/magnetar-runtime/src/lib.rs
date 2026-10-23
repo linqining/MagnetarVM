@@ -1291,6 +1291,19 @@ fn row_cpu_relation(
 /// One contiguous variable range contributed by a trace row to the merged CPU
 /// system. This is the metadata hook for component-aware Virtual Spartan
 /// segments; the initial version tags each row as CPU-owned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CpuRowKind {
+    Alu,
+    MulDiv,
+    Load,
+    Store,
+    Amo,
+    Branch,
+    Jump,
+    Auipc,
+    System,
+}
+
 #[derive(Clone, Debug)]
 pub struct CpuWitnessSegment {
     pub cycle: u64,
@@ -1298,6 +1311,41 @@ pub struct CpuWitnessSegment {
     pub len: usize,
     pub owner: SegmentOwner,
     pub kind: SegmentKind,
+    pub row_kind: CpuRowKind,
+}
+
+fn cpu_row_kind(op: magnetar_spec::Op) -> CpuRowKind {
+    use magnetar_spec::Op;
+    match op {
+        Op::Mul | Op::Mulh | Op::Mulhsu | Op::Mulhu | Op::Div | Op::Divu | Op::Rem | Op::Remu => {
+            CpuRowKind::MulDiv
+        }
+        Op::Lb | Op::Lbu | Op::Lh | Op::Lhu | Op::Lw | Op::Lwu | Op::Ld => CpuRowKind::Load,
+        Op::Sb | Op::Sh | Op::Sw | Op::Sd => CpuRowKind::Store,
+        Op::AmoswapW
+        | Op::AmoswapD
+        | Op::AmoaddW
+        | Op::AmoaddD
+        | Op::AmoxorW
+        | Op::AmoxorD
+        | Op::AmoandW
+        | Op::AmoandD
+        | Op::AmoorW
+        | Op::AmoorD
+        | Op::AmominW
+        | Op::AmominD
+        | Op::AmomaxW
+        | Op::AmomaxD
+        | Op::AmominuW
+        | Op::AmominuD
+        | Op::AmomaxuW
+        | Op::AmomaxuD => CpuRowKind::Amo,
+        Op::Beq | Op::Bne | Op::Blt | Op::Bge | Op::Bltu | Op::Bgeu => CpuRowKind::Branch,
+        Op::Jal | Op::Jalr => CpuRowKind::Jump,
+        Op::Auipc => CpuRowKind::Auipc,
+        Op::Ecall | Op::Ebreak => CpuRowKind::System,
+        _ => CpuRowKind::Alu,
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1338,6 +1386,7 @@ pub(crate) fn merged_cpu_system_with_metadata(
                     len,
                     owner: SegmentOwner::Cpu,
                     kind: SegmentKind::Direct,
+                    row_kind: cpu_row_kind(row.instruction.op),
                 });
             }
         }

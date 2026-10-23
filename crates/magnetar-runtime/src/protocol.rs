@@ -1890,5 +1890,9 @@ mod metadata_tests {
             assert_eq!(segment.offset, expected_offset);
             expected_offset += segment.len;
         }
+        assert!(metadata
+            .segments
+            .iter()
+            .any(|segment| segment.row_kind == crate::CpuRowKind::Alu));
     }
 }

@@ -424,4 +424,4 @@ First component-layout hook landed:
 - `merged_cpu_system` delegates to it and discards the metadata, so existing proof bytes are unchanged;
 - test verifies the segments are contiguous and cover the witness.
 
-Current segments are still `SegmentOwner::Cpu`/`Direct`; the next increment is to tag the semantic ranges inside each row relation (register index/value, RAM address/value, shift source/output, bytecode fields) so `cpu_segment_layout` can emit real Register/RAM/Shift/Store claims for Virtual Spartan consumption.
+Each segment now also carries a `CpuRowKind` (Alu, MulDiv, Load, Store, Amo, Branch, Jump, Auipc, System) derived from the trace opcode. Segments are still `SegmentOwner::Cpu`/`Direct`; the next increment is to tag semantic variable ranges inside each row relation (register index/value, RAM address/value, shift source/output, bytecode fields) so `cpu_segment_layout` can emit real Register/RAM/Shift/Store claims for Virtual Spartan consumption.
