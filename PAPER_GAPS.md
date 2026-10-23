@@ -1674,3 +1674,12 @@ total      87,201 B
 The two field-valued groups (`shift_code`, `hq`) dominate because each uses a
 full P3 field-table opening. Batching both into one Mosaic/PackedSharedPcs
 opening is the next Router optimization.
+
+
+### Negative result: batching Router field groups
+
+Batching `shift_code` and `hq` into one `PackedSharedPcs` opening was
+implemented and measured at **68,400 B**, larger than the two independent field
+openings (**54,568 B**). The Mosaic batching/lift overhead for one small code
+table plus a 64-column hq table outweighs the saved opening. The prototype was
+reverted; field groups remain independent.
