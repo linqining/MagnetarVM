@@ -871,3 +871,5 @@ First B-scheme row-level gadget landed:
 - test checks active address/data and all-zero inactive outputs.
 
 This is still an F2 bit-level gadget, not the packed CPU schema. It establishes the row-level composition pattern (gated adder + gated columns) that the packed rebuild will follow.
+
+`prove_gated_memory_batch` / `verify_gated_memory_batch` batch q gated memory rows through `prove_shared_simd_spartan`; test proves two rows (active + inactive) with P3.

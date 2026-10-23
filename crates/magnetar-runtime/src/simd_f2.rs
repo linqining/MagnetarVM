@@ -1043,6 +1043,46 @@ impl GatedMemoryRow {
     }
 }
 
+pub fn prove_gated_memory_batch(
+    width: usize,
+    rows: &[(u64, u64, u64, bool)],
+) -> Result<
+    magnetar_proof::SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>,
+    RuntimeError,
+> {
+    use magnetar_proof::{prove_shared_simd_spartan, witness_vector};
+    if rows.is_empty() || !rows.len().is_power_of_two() {
+        return Err(RuntimeError::Proof(
+            "gated memory batch must be a nonzero power of two".into(),
+        ));
+    }
+    let row = GatedMemoryRow::new(width);
+    let system = row.relation.to_system();
+    let mut witnesses = Vec::new();
+    for (rs1, imm, value, is_mem) in rows {
+        let bits = row.witness(*rs1, *imm, *value, *is_mem);
+        witnesses.push(row.relation.to_witness(&bits));
+    }
+    let _ = witness_vector(&system, &witnesses[0])
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let pcs = magnetar_pcs::P3BinaryPcs::new(100);
+    prove_shared_simd_spartan(&system, &witnesses, &pcs)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))
+}
+
+pub fn verify_gated_memory_batch(
+    width: usize,
+    instances: usize,
+    proof: &magnetar_proof::SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>,
+) -> Result<(), RuntimeError> {
+    use magnetar_proof::verify_shared_simd_spartan;
+    let row = GatedMemoryRow::new(width);
+    let system = row.relation.to_system();
+    let pcs = magnetar_pcs::P3BinaryPcs::new(100);
+    verify_shared_simd_spartan(&system, instances, proof, &pcs)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))
+}
+
 #[cfg(test)]
 mod gated_memory_tests {
     use super::*;
@@ -1058,5 +1098,16 @@ mod gated_memory_tests {
             assert!(!inactive[row.adder.out[bit]], "addr bit {bit}");
             assert!(!inactive[row.data[bit]], "data bit {bit}");
         }
+
+        use magnetar_pcs::P3BinaryPcs;
+        let backend = EmbeddedBitBackend {
+            pcs: P3BinaryPcs::new(100),
+        };
+        let proof = backend.prove(&row.relation, &active).unwrap();
+        assert!(backend.verify(&row.relation, &proof).unwrap());
+
+        let batch =
+            prove_gated_memory_batch(8, &[(0x10, 2, 0x34, true), (0x20, 4, 0x56, false)]).unwrap();
+        verify_gated_memory_batch(8, 2, &batch).unwrap();
     }
 }
