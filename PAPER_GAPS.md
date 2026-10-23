@@ -846,3 +846,16 @@ The dual batch includes SLL/SRL/SRA (and immediate forms). `UniformAluLayout` no
 ```
 
 SLL/SRL/SRA all use the real packed stage variables, so the shift dual relation is no longer only booleanity.
+
+
+### Dual batch scaling (q = 2/4/8)
+
+`cargo run --release -p magnetar-testkit --example simd_dual_scaling` measures the dual shared-matrix ADD batch:
+
+| cycles | proof bytes | prove | verify |
+|---:|---:|---:|---:|
+| 2 | 133,128 | 17.5 ms | 10.1 ms |
+| 4 | 159,776 | 31.8 ms | 15.4 ms |
+| 8 | 199,128 | 68.9 ms | 26.6 ms |
+
+Proof size grows sublinearly (roughly +20% per doubling), while prover time grows roughly linearly with q. This is the first scaling evidence for the dual shared-matrix path.

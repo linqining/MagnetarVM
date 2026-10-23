@@ -19,3 +19,6 @@ magnetar-transcript.workspace = true
 magnetar-runtime.workspace = true
 magnetar-recursion.workspace = true
 magnetar-privacy.workspace = true
+
+[dev-dependencies]
+bincode.workspace = true

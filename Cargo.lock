@@ -853,6 +853,7 @@ dependencies = [
 name = "magnetar-testkit"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "magnetar-constraint",
  "magnetar-cpu",
  "magnetar-executor",
