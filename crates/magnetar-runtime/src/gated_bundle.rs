@@ -3,11 +3,14 @@
 
 use magnetar_constraint::{WitnessLayout, F2_128};
 use magnetar_pcs::{P3MosaicCommitment, P3MosaicOpening, P3SharedPcs};
-use magnetar_proof::{BitPcs, DirectBitPcs, LockstepProof};
+use magnetar_proof::{BitPcs, DirectBitPcs, LockstepProof, SpartanProof};
 
 use crate::binary_twist::{prove_binary_twist_ram, verify_binary_twist_ram, BinaryTwistRamProof};
 use crate::gated_aux::{prove_gated_aux, verify_gated_aux, GatedAuxProof};
 use crate::gated_register::{gated_register_twist_witness, GatedRegisterEvent};
+use crate::gated_shift::{
+    gated_shift_events_from_trace, prove_gated_shift_row, verify_gated_shift_row, GatedShiftEvent,
+};
 use crate::protocol::{Claim, ClaimKind, ClaimSet, ProtocolPlan, SegmentId};
 use crate::simd_dual::{prove_gated_dual_batch_bits, verify_gated_dual_batch_bits};
 use crate::simd_f2::{gated_memory_twist_witness, GatedCpuRowInput};
@@ -22,6 +25,8 @@ pub struct GatedBundle<C: Clone + std::fmt::Debug, O: Clone + std::fmt::Debug> {
     pub register_events: Vec<GatedRegisterEvent>,
     pub register_initial: [u64; 32],
     pub aux: Option<GatedAuxProof>,
+    pub shift_events: Vec<GatedShiftEvent>,
+    pub shift_proofs: Vec<SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>>,
     pub claims: Vec<Claim>,
 }
 
@@ -70,6 +75,8 @@ pub fn prove_gated_bundle_with_backend<B: BitPcs>(
         register_events: Vec::new(),
         register_initial: [0u64; 32],
         aux: None,
+        shift_events: Vec::new(),
+        shift_proofs: Vec::new(),
         claims,
     })
 }
@@ -347,6 +354,14 @@ pub fn prove_gated_bundle_from_trace<B: BitPcs>(
         bundle.register_initial = initial;
     }
     bundle.aux = Some(prove_gated_aux(trace)?);
+    if let Ok(events) = gated_shift_events_from_trace(trace) {
+        let mut proofs = Vec::new();
+        for event in &events {
+            proofs.push(prove_gated_shift_row(width, *event)?);
+        }
+        bundle.shift_events = events;
+        bundle.shift_proofs = proofs;
+    }
     Ok(bundle)
 }
 
@@ -360,6 +375,9 @@ pub fn verify_gated_bundle_from_trace<B: BitPcs>(
     verify_gated_bundle_with_backend(width, &rows, bundle, backend)?;
     if let Some(aux) = &bundle.aux {
         verify_gated_aux(trace, aux)?;
+    }
+    for (event, proof) in bundle.shift_events.iter().zip(&bundle.shift_proofs) {
+        verify_gated_shift_row(width, *event, proof)?;
     }
     Ok(())
 }
@@ -414,6 +432,7 @@ mod trace_tests {
         let bundle = prove_gated_bundle_from_trace(&trace, 8, &backend).unwrap();
         assert!(bundle.aux.is_some());
         assert!(bundle.register.is_some());
+        assert!(!bundle.shift_proofs.is_empty());
         verify_gated_bundle_from_trace(&trace, 8, &bundle, &backend).unwrap();
     }
 }

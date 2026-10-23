@@ -63,7 +63,8 @@ pub fn gated_shift_events_from_trace(
             Op::Sll | Op::Slli => BitShiftKind::Sll,
             Op::Srl | Op::Srli => BitShiftKind::Srl,
             Op::Sra | Op::Srai => BitShiftKind::Sra,
-            _ => break,
+            Op::Ecall => break,
+            _ => continue,
         };
         let shamt = match row.instruction.op {
             Op::Slli | Op::Srli | Op::Srai => u64::from(row.instruction.shamt),

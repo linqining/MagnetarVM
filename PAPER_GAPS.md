@@ -1410,3 +1410,13 @@ These are component proofs; they are not yet fused into the gated CPU row or the
 `verify_gated_bundle_from_trace` rebuilds the rows/events/aux witnesses and verifies every component.
 
 Test `trace_bundle_includes_aux_and_register` uses a real trace (`add`, `slli`, `ecall`): CPU, register Twist, Shout, and shift Router all verify.
+
+
+### P0 progress: store Router and shift proofs in the trace bundle
+
+- `gated_aux_proves_store_router` now covers a real `Lui/Slli/Sw` trace, including BinaryRouter store mode.
+- `gated_shift_events_from_trace` now skips non-shift rows and collects shift rows across the trace instead of stopping at the first non-shift ALU row.
+- `GatedBundle` carries `shift_events` and per-row shift proofs; `prove_gated_bundle_from_trace` attaches them, and `verify_gated_bundle_from_trace` verifies each.
+- The trace bundle test asserts CPU, register, aux, and shift proofs are all present.
+
+This closes the store-Router test gap and puts SLL/SRL/SRA proofs into the traced bundle, while shift is still a separate component rather than fused into `GatedAluRow`.
