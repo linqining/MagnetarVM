@@ -39,3 +39,16 @@ datapath alone is insufficient: the PC+4 rows still fire and reject the jump.
 
 The first JAL attempt only added the ALU selector and was reverted because the
 PC+4 constraints and `finish()` helper still assumed sequential execution.
+
+
+## Validated minimal row
+
+`pc_row::SequentialPcRow` now passes for all 256 8-bit pc values and for free
+(`sequential=0`) next-PC values. Key fixes found while isolating:
+
+- bit PC and next-PC boolean rows must use an explicit `one` variable, not
+  `sequential`;
+- carry bits are unconditional ANDs `carry[bit] = pc[bit] & carry[bit-1]`;
+- only the next-PC sum rows are gated by `sequential`.
+
+These formulas are ready to be lifted into `GatedCpuRow`.

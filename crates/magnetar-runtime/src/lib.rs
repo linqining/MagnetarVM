@@ -16,6 +16,7 @@ pub mod gated_shift;
 pub mod packed_router;
 pub mod packed_select;
 pub mod packed_shout;
+pub mod pc_row;
 pub mod protocol;
 pub mod register_twist;
 pub mod simd_cpu;
