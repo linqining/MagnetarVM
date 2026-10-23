@@ -339,3 +339,21 @@ Phase 3b splits the inner bodies into `UnifiedProveContext`/`UnifiedVerifyContex
 - Tests cover the owner→claim-kind mapping and routed ids/points.
 
 This is the Virtual Spartan **output side**: claims are now materialized and routed. The specialized reducers still verify from the commitment/transcript rather than consuming this `ClaimSet`; wiring Twist/Shout/Router to consume it is the next step.
+
+
+### Claim consumer registry
+
+`protocol::CLAIM_CONSUMERS` assigns every routed claim family to a sink:
+
+| claim family | sink |
+|---|---|
+| Direct, Increment, FetchAddress | MosaicPCS |
+| Register | BinaryTwist registers |
+| Ram | BinaryTwist RAM |
+| Shift | BinaryRouter shifts |
+| Store | BinaryRouter stores |
+| Bytecode, RegisterIndex, Selector | BinaryShout |
+
+`ProtocolPlan::consume_virtual_claims` drains every known family and then rejects any unconsumed claim. The verifier now takes the routed `ClaimSet`, checks it against the CPU stage's produced families, and consumes it through this registry. Test coverage includes a mixed direct/register/RAM/shift/store/bytecode layout.
+
+Important boundary: this is claim **ownership bookkeeping**. The specialized reducers still verify from the shared commitment/transcript; they do not yet take the routed claim value as their cryptographic input. Doing that requires splitting the CPU `z` opening from the auxiliary `P3Mosaic` opening, which removes the circular dependency (CPU lockstep needs aux opening; aux claims need CPU segment challenge). That split is the next architectural step.

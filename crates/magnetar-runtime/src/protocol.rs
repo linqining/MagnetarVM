@@ -287,6 +287,29 @@ pub enum ProtocolError {
     UnroutedClaim(ClaimKind),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClaimSink {
+    MosaicPcs,
+    TwistRegisters,
+    TwistRam,
+    RouterShift,
+    RouterStore,
+    Shout,
+}
+
+pub const CLAIM_CONSUMERS: &[(ClaimKind, ClaimSink)] = &[
+    (ClaimKind::Direct, ClaimSink::MosaicPcs),
+    (ClaimKind::Register, ClaimSink::TwistRegisters),
+    (ClaimKind::Increment, ClaimSink::MosaicPcs),
+    (ClaimKind::Ram, ClaimSink::TwistRam),
+    (ClaimKind::Shift, ClaimSink::RouterShift),
+    (ClaimKind::Store, ClaimSink::RouterStore),
+    (ClaimKind::Bytecode, ClaimSink::Shout),
+    (ClaimKind::RegisterIndex, ClaimSink::Shout),
+    (ClaimKind::Selector, ClaimSink::Shout),
+    (ClaimKind::FetchAddress, ClaimSink::MosaicPcs),
+];
+
 /// Serializable proof bundle. `from_unified`/`into_unified` preserve the
 /// existing `UnifiedTraceProof` wire format exactly (same proof structs, same
 /// commitment), they only expose the component boundaries.
@@ -804,6 +827,25 @@ impl ProtocolPlan {
             }
         }
         Ok(())
+    }
+
+    /// Claim sinks corresponding to the specialized arguments. This is the
+    /// bookkeeping side of consumption: the cryptographic reducers still have
+    /// their own inputs until the CPU/aux openings are split, but every routed
+    /// claim must have an owner.
+    pub fn consume_virtual_claims(&self, claims: &mut ClaimSet) -> Result<(), ProtocolError> {
+        for (kind, _sink) in CLAIM_CONSUMERS {
+            let _ = claims.take_all(*kind);
+        }
+        claims.expect_consumed().map_err(|_| {
+            ProtocolError::UnroutedClaim(
+                claims
+                    .unconsumed()
+                    .next()
+                    .map(|claim| claim.kind)
+                    .unwrap_or(ClaimKind::Direct),
+            )
+        })
     }
 
     pub fn check_virtual_claims(&self, claims: &ClaimSet) -> Result<(), ProtocolError> {
@@ -1569,8 +1611,8 @@ impl<'a> UnifiedVerifyContext<'a> {
         Ok(())
     }
 
-    pub(crate) fn routed_claims(&self) -> Option<&ClaimSet> {
-        self.routed_claims.as_ref()
+    pub(crate) fn take_routed_claims(&mut self) -> Option<ClaimSet> {
+        self.routed_claims.take()
     }
 }
 
@@ -1717,5 +1759,9 @@ mod routing_tests {
         );
         assert_eq!(routed.remaining(), 3);
         assert!(routed.take(ClaimKind::Direct).is_some());
+        let mut routed = route_segment_claims(&layout, &point, &claims, &catalog).expect("route");
+        ProtocolPlan::unified()
+            .consume_virtual_claims(&mut routed)
+            .expect("all claims have a consumer");
     }
 }

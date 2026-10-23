@@ -1962,8 +1962,10 @@ pub(crate) fn verify_unified_with_plan(
             crate::protocol::ExecutionStage::Cpu => context.verify_cpu()?,
         }
     }
-    if let Some(routed) = context.routed_claims() {
-        plan.check_virtual_claims(routed)
+    if let Some(mut routed) = context.take_routed_claims() {
+        plan.check_virtual_claims(&routed)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        plan.consume_virtual_claims(&mut routed)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     }
     Ok(())
