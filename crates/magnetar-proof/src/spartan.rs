@@ -667,6 +667,95 @@ fn verify_lockstep_internal<P: Pcs>(
     Ok((ry, proof.segments.clone()))
 }
 
+pub fn verify_lockstep_claims<P: Pcs>(
+    system_a: &ConstraintSystem,
+    system_b: &ConstraintSystem,
+    layout: &WitnessLayout,
+    claims: &LockstepClaims<P::Commitment>,
+    pcs: &P,
+) -> Result<(Vec<F2_128>, Vec<SegmentClaim>, F2_128), SpartanError> {
+    if system_a.num_vars != system_b.num_vars {
+        return Err(SpartanError::Dimensions);
+    }
+    let a0 = SparseMatrix::from_system(system_a, MatrixPart::A)?;
+    let b0 = SparseMatrix::from_system(system_a, MatrixPart::B)?;
+    let c0 = SparseMatrix::from_system(system_a, MatrixPart::C)?;
+    let a1 = SparseMatrix::from_system(system_b, MatrixPart::A)?;
+    let b1 = SparseMatrix::from_system(system_b, MatrixPart::B)?;
+    let c1 = SparseMatrix::from_system(system_b, MatrixPart::C)?;
+    if a0.rows.len() != a1.rows.len() || a0.cols != a1.cols {
+        return Err(SpartanError::Dimensions);
+    }
+    let row_bits = a0.rows.len().trailing_zeros() as usize;
+    let transcript = RefCell::new(Sha256Transcript::new("lockstep-reference-v1"));
+    let tau = {
+        let mut transcript = transcript.borrow_mut();
+        transcript.absorb("commitment", &pcs.commitment_bytes(&claims.commitment));
+        transcript.absorb("rows", &(a0.rows.len() as u64).to_le_bytes());
+        transcript.absorb("cols", &(a0.cols as u64).to_le_bytes());
+        (0..row_bits)
+            .map(|_| challenge_field(&mut transcript, "tau"))
+            .collect::<Vec<_>>()
+    };
+    let alpha = {
+        let mut transcript = transcript.borrow_mut();
+        challenge_field(&mut transcript, "relation-batch")
+    };
+    let (rx, outer_final) = verify_rounds(&claims.outer, row_bits, 3, |round, values| {
+        round_challenge(&transcript, "outer-round", round, values)
+    })?;
+    let expected_outer = eq(&tau, &rx)
+        * (claims.v_a0 * claims.v_b0 - claims.v_c0
+            + alpha * (claims.v_a1 * claims.v_b1 - claims.v_c1));
+    if outer_final != expected_outer {
+        return Err(SpartanError::Verification("lockstep outer mismatch"));
+    }
+    let (r0, r1) = {
+        let mut transcript = transcript.borrow_mut();
+        for value in [
+            claims.v_a0,
+            claims.v_b0,
+            claims.v_c0,
+            claims.v_a1,
+            claims.v_b1,
+            claims.v_c1,
+        ] {
+            absorb_field(&mut transcript, "claim", value);
+        }
+        (
+            challenge_field(&mut transcript, "batch0"),
+            challenge_field(&mut transcript, "batch1"),
+        )
+    };
+    let expected_inner_claim = claims.v_a0
+        + r0 * claims.v_b0
+        + r0 * r0 * claims.v_c0
+        + alpha * (claims.v_a1 + r1 * claims.v_b1 + r1 * r1 * claims.v_c1);
+    if claims.inner.claimed_sum != expected_inner_claim {
+        return Err(SpartanError::Verification("lockstep inner claim mismatch"));
+    }
+    let (ry, inner_final) = verify_rounds(
+        &claims.inner,
+        a0.cols.trailing_zeros() as usize,
+        2,
+        |round, values| round_challenge(&transcript, "inner-round", round, values),
+    )?;
+    let vw = reconstruct_segment_claim(layout, &claims.segments, &ry)?;
+    let a0_at = a0.eval_mle(&rx, &ry)?;
+    let b0_at = b0.eval_mle(&rx, &ry)?;
+    let c0_at = c0.eval_mle(&rx, &ry)?;
+    let a1_at = a1.eval_mle(&rx, &ry)?;
+    let b1_at = b1.eval_mle(&rx, &ry)?;
+    let c1_at = c1.eval_mle(&rx, &ry)?;
+    let expected_inner =
+        (a0_at + r0 * b0_at + r0 * r0 * c0_at + alpha * (a1_at + r1 * b1_at + r1 * r1 * c1_at))
+            * vw;
+    if inner_final != expected_inner {
+        return Err(SpartanError::Verification("lockstep inner mismatch"));
+    }
+    Ok((ry, claims.segments.clone(), vw))
+}
+
 pub fn verify_lockstep<P: Pcs>(
     system_a: &ConstraintSystem,
     system_b: &ConstraintSystem,
@@ -937,7 +1026,12 @@ mod tests {
             commitment.clone(),
         )
         .unwrap();
+        let (verified_ry, verified_segments, verified_vw) =
+            verify_lockstep_claims(&system, &system, &layout, &claims, &pcs).unwrap();
+        assert_eq!(verified_ry, ry);
+        assert_eq!(verified_segments, claims.segments);
         let vw = reconstruct_segment_claim(&layout, &claims.segments, &ry).unwrap();
+        assert_eq!(verified_vw, vw);
         let opening = pcs.open(&z, &ry).unwrap();
         assert!(pcs.verify(&commitment, &ry, vw, &opening).unwrap());
     }

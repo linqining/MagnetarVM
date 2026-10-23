@@ -386,3 +386,15 @@ The next implementation step is therefore a `LockstepClaims` API (prove/verify w
 Test `lockstep_claims_defer_the_opening` proves the claim proof and manually opens/verifies at `ry`, confirming the deferred API is sound.
 
 Next: `verify_lockstep_claims` (verify equations without the PCS opening), then make `UnifiedTraceProof` use `LockstepClaims` + one final `P3Mosaic` opening that includes the z point at `ry` and all aux points.
+
+
+### Deferred single opening landed
+
+`UnifiedTraceProof` now stores:
+
+- `cpu: LockstepClaims<P3MosaicCommitment>` (CPU sum-check claims, segment claims, no opening);
+- `opening: P3MosaicOpening` (one P3 mosaic opening for the z point at `ry` plus every auxiliary claim).
+
+`prove_unified_inner` runs the CPU claim stage, adds the z point `(table 0, ry, W(ry))`, sorts all points by table, and opens the single commitment once. The verifier verifies the CPU claim equations without an opening, routes the segment claims, adds the z point, and verifies the one opening.
+
+Proof bytes are unchanged: **261,695 B** at width 64, split as access 12,778 / CPU claims 2,032 / opening 239,208 / Shout 2,298 / routers 5,347. The separate-opening prototype (387,183 B) remains rejected.

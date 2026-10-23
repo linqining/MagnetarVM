@@ -36,8 +36,8 @@ use magnetar_pcs::{
 };
 use magnetar_preprocess::{preprocess, PreprocessError, PreprocessedProgram};
 use magnetar_proof::{
-    prove_lockstep, prove_spartan, verify_lockstep, verify_spartan, witness_vector, LockstepProof,
-    Pcs, SpartanError, SpartanProof,
+    prove_lockstep, prove_spartan, verify_lockstep, verify_spartan, witness_vector, LockstepClaims,
+    LockstepProof, Pcs, SpartanError, SpartanProof,
 };
 use magnetar_recursion::{ChainedChunk, ChainedProof, ChainedRecursion, ChunkPlan, RecursionError};
 use magnetar_spec::{decode, decode_compressed, MachineConfig, MachineState, ProgramImage, Trace};
@@ -1006,7 +1006,8 @@ pub struct TraceProof {
 pub struct UnifiedTraceProof {
     pub access: TraceAccessProof,
     pub trace_commitment: [u8; 32],
-    pub cpu: MosaicSpartanProof,
+    pub cpu: LockstepClaims<P3MosaicCommitment>,
+    pub opening: P3MosaicOpening,
     pub shout: Option<crate::binary_shout::BinaryShoutProof>,
     pub shift_router: Option<crate::binary_router::BinaryRouterProof>,
     pub store_router: Option<crate::binary_router::BinaryRouterProof>,
@@ -1925,6 +1926,7 @@ pub(crate) fn prove_unified_with_plan(
                 context.prove_register_and_trace()?
             }
             crate::protocol::ExecutionStage::Cpu => context.prove_cpu()?,
+            crate::protocol::ExecutionStage::Opening => context.prove_opening()?,
         }
     }
     context.finish()
@@ -1960,6 +1962,7 @@ pub(crate) fn verify_unified_with_plan(
                 context.verify_register_and_trace()?
             }
             crate::protocol::ExecutionStage::Cpu => context.verify_cpu()?,
+            crate::protocol::ExecutionStage::Opening => context.verify_opening()?,
         }
     }
     if let Some(mut routed) = context.take_routed_claims() {
@@ -2037,6 +2040,7 @@ pub fn encode_unified_proof(proof: &UnifiedTraceProof) -> Result<Vec<u8>, Runtim
 pub struct UnifiedProofSizes {
     pub access: usize,
     pub cpu: usize,
+    pub opening: usize,
     pub shout: usize,
     pub shift_router: usize,
     pub store_router: usize,
@@ -2044,7 +2048,7 @@ pub struct UnifiedProofSizes {
 
 impl UnifiedProofSizes {
     pub fn total(&self) -> usize {
-        self.access + self.cpu + self.shout + self.shift_router + self.store_router
+        self.access + self.cpu + self.opening + self.shout + self.shift_router + self.store_router
     }
 }
 
@@ -2057,6 +2061,7 @@ pub fn unified_proof_sizes(proof: &UnifiedTraceProof) -> Result<UnifiedProofSize
     Ok(UnifiedProofSizes {
         access: size(bincode::serialize(&proof.access))?,
         cpu: size(bincode::serialize(&proof.cpu))?,
+        opening: size(bincode::serialize(&proof.opening))?,
         shout: size(bincode::serialize(&proof.shout))?,
         shift_router: size(bincode::serialize(&proof.shift_router))?,
         store_router: size(bincode::serialize(&proof.store_router))?,

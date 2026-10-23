@@ -17,12 +17,12 @@ use thiserror::Error;
 use crate::binary_router::BinaryRouterProof;
 use crate::binary_shout::BinaryShoutProof;
 use crate::binary_twist::BinaryTwistRamProof;
-use crate::{MosaicSpartanProof, UnifiedTraceProof};
+use crate::UnifiedTraceProof;
 
 use magnetar_memory::BinaryTwistWitness;
 use magnetar_pcs::{P3BinaryPcs, P3MosaicCommitment, P3MosaicPoint, P3MosaicTable, P3SharedPcs};
 use magnetar_proof::virtual_spartan::SegmentClaim;
-use magnetar_proof::{verify_lockstep_segments, witness_vector, Mle};
+use magnetar_proof::{verify_lockstep_claims, witness_vector, LockstepClaims, Mle};
 use magnetar_spec::Trace;
 
 use crate::binary_router::{
@@ -257,7 +257,7 @@ impl SegmentCatalog {
 /// the serializable wire format used by the orchestrator.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum StageProof {
-    Cpu(MosaicSpartanProof),
+    Cpu(LockstepClaims<magnetar_pcs::P3MosaicCommitment>),
     Registers(BinaryTwistRamProof),
     Ram(BinaryTwistRamProof),
     Shout(BinaryShoutProof),
@@ -316,6 +316,7 @@ pub const CLAIM_CONSUMERS: &[(ClaimKind, ClaimSink)] = &[
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ProofBundle {
     pub trace_commitment: [u8; 32],
+    pub opening: magnetar_pcs::P3MosaicOpening,
     pub stages: Vec<(StageId, StageProof)>,
 }
 
@@ -346,6 +347,7 @@ impl ProofBundle {
         }
         Self {
             trace_commitment: proof.trace_commitment,
+            opening: proof.opening.clone(),
             stages,
         }
     }
@@ -380,6 +382,7 @@ impl ProofBundle {
                 ram: ram.ok_or(ProtocolError::MissingStage(StageId::Ram))?,
             },
             trace_commitment: self.trace_commitment,
+            opening: self.opening,
             cpu: cpu.ok_or(ProtocolError::MissingStage(StageId::Cpu))?,
             shout,
             shift_router,
@@ -1012,6 +1015,7 @@ pub enum ExecutionStage {
     StoreRouter,
     RegisterAndTrace,
     Cpu,
+    Opening,
 }
 
 pub const UNIFIED_EXECUTION_STAGES: &[ExecutionStage] = &[
@@ -1022,6 +1026,7 @@ pub const UNIFIED_EXECUTION_STAGES: &[ExecutionStage] = &[
     ExecutionStage::StoreRouter,
     ExecutionStage::RegisterAndTrace,
     ExecutionStage::Cpu,
+    ExecutionStage::Opening,
 ];
 
 #[cfg(test)]
@@ -1095,7 +1100,9 @@ pub(crate) struct UnifiedProveContext<'a> {
     shout: Option<crate::binary_shout::BinaryShoutProof>,
     shift_router: Option<crate::binary_router::BinaryRouterProof>,
     store_router: Option<crate::binary_router::BinaryRouterProof>,
-    cpu: Option<MosaicSpartanProof>,
+    cpu: Option<LockstepClaims<magnetar_pcs::P3MosaicCommitment>>,
+    cpu_ry: Option<Vec<F2_128>>,
+    opening: Option<magnetar_pcs::P3MosaicOpening>,
 }
 
 impl<'a> UnifiedProveContext<'a> {
@@ -1195,6 +1202,8 @@ impl<'a> UnifiedProveContext<'a> {
             shift_router: None,
             store_router: None,
             cpu: None,
+            cpu_ry: None,
+            opening: None,
         })
     }
 
@@ -1320,24 +1329,55 @@ impl<'a> UnifiedProveContext<'a> {
     pub(crate) fn prove_cpu(&mut self) -> Result<(), RuntimeError> {
         let commitment = self
             .commitment
-            .as_ref()
+            .clone()
             .ok_or_else(|| RuntimeError::Proof("CPU stage before commit".into()))?;
-        let points = std::mem::take(&mut self.points);
-        let values = std::mem::take(&mut self.values);
-        let aux_tables = std::mem::take(&mut self.aux_tables);
-        let shared_pcs = P3SharedPcs::new(100, aux_tables, points, values);
+        let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
         let (system_a, system_b) = split_cpu_relations(&self.system);
         let layout = cpu_segment_layout(self.z.len())?;
-        let cpu = prove_lockstep(
+        let (claims, ry) = magnetar_proof::prove_lockstep_claims(
             &system_a,
             &system_b,
             &self.cpu_witness,
             &layout,
-            &shared_pcs,
+            &pcs,
+            commitment,
         )
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        debug_assert_eq!(cpu.commitment, *commitment);
-        self.cpu = Some(cpu);
+        self.cpu = Some(claims);
+        self.cpu_ry = Some(ry);
+        Ok(())
+    }
+
+    pub(crate) fn prove_opening(&mut self) -> Result<(), RuntimeError> {
+        let ry = self
+            .cpu_ry
+            .as_ref()
+            .ok_or_else(|| RuntimeError::Proof("opening stage before CPU".into()))?;
+        let value = Mle::new(self.z.clone())
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?
+            .eval(ry)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        self.points.push(P3MosaicPoint {
+            table: 0,
+            point: ry.clone(),
+            columns: vec![0],
+            next_columns: Vec::new(),
+        });
+        self.values.push(vec![value]);
+        let mut pairs = self
+            .points
+            .drain(..)
+            .zip(self.values.drain(..))
+            .collect::<Vec<_>>();
+        pairs.sort_by_key(|(point, _)| point.table);
+        let (points, values): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+        self.points = points;
+        self.values = values;
+        let opening = self
+            .pcs
+            .open_mosaic(&self.mosaic_tables, &self.points)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        self.opening = Some(opening);
         Ok(())
     }
 
@@ -1350,6 +1390,9 @@ impl<'a> UnifiedProveContext<'a> {
             cpu: self
                 .cpu
                 .ok_or_else(|| RuntimeError::Proof("missing CPU proof".into()))?,
+            opening: self
+                .opening
+                .ok_or_else(|| RuntimeError::Proof("missing opening".into()))?,
             shout: self.shout,
             shift_router: self.shift_router,
             store_router: self.store_router,
@@ -1597,17 +1640,42 @@ impl<'a> UnifiedVerifyContext<'a> {
         let z = witness_vector(&system, &cpu_witness)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         let layout = cpu_segment_layout(z.len())?;
-        let points = std::mem::take(&mut self.points);
-        let values = std::mem::take(&mut self.values);
-        let shared_pcs = P3SharedPcs::new(100, Vec::new(), points, values);
-        let (ry, segments) =
-            verify_lockstep_segments(&system_a, &system_b, &layout, &self.proof.cpu, &shared_pcs)
+        let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+        let (ry, segments, value) =
+            verify_lockstep_claims(&system_a, &system_b, &layout, &self.proof.cpu, &pcs)
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        self.points.push(P3MosaicPoint {
+            table: 0,
+            point: ry.clone(),
+            columns: vec![0],
+            next_columns: Vec::new(),
+        });
+        self.values.push(vec![value]);
         let catalog = SegmentCatalog::from_layout(&layout);
         self.routed_claims = Some(
             route_segment_claims(&layout, &ry, &segments, &catalog)
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?,
         );
+        Ok(())
+    }
+
+    pub(crate) fn verify_opening(&mut self) -> Result<(), RuntimeError> {
+        let mut pairs = self
+            .points
+            .drain(..)
+            .zip(self.values.drain(..))
+            .collect::<Vec<_>>();
+        pairs.sort_by_key(|(point, _)| point.table);
+        let (points, values): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+        self.points = points;
+        self.values = values;
+        let pcs = P3BinaryPcs::new(100);
+        if !pcs
+            .verify_mosaic(&self.proof.opening, &self.points, &self.values)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        {
+            return Err(RuntimeError::Proof("unified P3 opening rejected".into()));
+        }
         Ok(())
     }
 
