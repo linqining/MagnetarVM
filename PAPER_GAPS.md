@@ -1863,3 +1863,18 @@ identical `(table, point, next_columns)` claims found no duplicates, so point
 merging alone cannot reduce the 163 KB opening. Reducing it requires a batched
 Mosaic opening (one final point) or fewer claim families, which is a PCS-level
 change rather than claim routing.
+
+
+### Negative result: batched Mosaic opening
+
+A one-point batched Mosaic opening (`PackedMosaic` + `batch_claims` + one P3
+opening) was prototyped over the unified tables/points. Result:
+
+```text
+old P3MosaicOpening 163,592 B
+batched opening     159,936 B
+```
+
+Only a ~2% reduction. The packed G polynomial is as large as the sum of all
+table columns, so the final one-point P3 opening plus batching sumcheck nearly
+cancels the point-count savings. The prototype was reverted.
