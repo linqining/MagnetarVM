@@ -773,3 +773,16 @@ First dual-relation lockstep landed:
 - test proves and verifies the pair.
 
 This is a real dual-relation lockstep over one witness, not yet the paper's full F2 / F2^128 CPU relations. It establishes the wiring: bit relation + packed companion + shared witness + one lockstep proof.
+
+
+### F2 s1 + packed CPU s2 lockstep
+
+`magnetar-runtime::simd_dual` proves the F2 bit XOR relation and the packed CPU ALU system in lockstep over **one witness**:
+
+- s1: bit XOR rows over the packed row's rs1/rs2/rd variable groups, using the row's XOR selector as the constant-one bit;
+- s2: the full `uniform_cpu_row_layout` packed ALU system;
+- s1 is padded with zero rows to the packed row's constraint count;
+- one `LockstepProof` with `P3SharedPcs`;
+- test proves/verifies the pair.
+
+This is a genuine dual-relation lockstep over one CPU row witness. Next: extend s1 to ADD/SUB/shift and combine with the shared-matrix CPU batch.

@@ -672,7 +672,7 @@ pub enum StepOp {
 }
 
 impl StepOp {
-    fn index(self) -> usize {
+    pub fn index(self) -> usize {
         match self {
             StepOp::Add => 0,
             StepOp::Addi => 1,
