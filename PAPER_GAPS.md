@@ -296,3 +296,15 @@ Measured a CPU-only lockstep proof for an 18-row trace: **233,488 B**, versus th
 ### Why Ligerito is not a drop-in CPU PCS here
 
 The vendored `LigeritoPcs` wrapper is an **index-opening** commitment: it proves values at chosen indices, not a multilinear evaluation at an arbitrary point. The CPU Spartan/lockstep reduction needs `W(r)` for a challenge point `r`, so it cannot directly use this wrapper without an additional evaluation-to-index reduction. This is why the CPU proof remains P3-based and dominates the proof size; using Ligerito for the CPU requires implementing the paper's polynomial-evaluation interface (or a sum-check reduction to index openings), not just swapping the PCS.
+
+
+## Trait refactor Phase 1
+
+New `magnetar-runtime::protocol` module:
+
+- `SegmentId`, `ClaimKind`, `Claim`, `ClaimSet` with explicit consumption (`take`, `take_all`, `expect_consumed`);
+- `SegmentCatalog` maps existing `WitnessLayout` names to stable ids without changing the constraint layout;
+- `StageProof` enum + `ProofBundle` with `from_unified`/`into_unified`;
+- `ClaimReducer<W>` trait with `TwistReducer`, `ShoutReducer`, and `RouterReducer` implementations.
+
+Tests verify claim consumption, segment-id mapping, the reducer boundary, and that `ProofBundle` round-trips the existing `UnifiedTraceProof` **byte-for-byte**. No protocol bytes changed. Next: Phase 2 (`CpuReduction`, `MosaicPcs`, orchestrator), then Phase 3 wiring.
