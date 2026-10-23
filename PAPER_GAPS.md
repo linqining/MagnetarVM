@@ -1702,3 +1702,16 @@ The opening dominates. Replacing it with a `PackedSharedPcs::from_mosaic` openin
 over the same Twist points produced **67,248 B**, larger than the original
 38,713 B opening. The prototype was reverted. Packing the register opening needs
 a different claim-batching/ring-switch construction, not `PackedSharedPcs`.
+
+
+### P0 progress: LUI in the gated ALU row
+
+`GatedAluOp::Lui` is now part of `GatedAluRow`:
+
+- `is_lui` selector and `lui_gated` bits;
+- output mux `out = Σ gated ops + lui_gated`;
+- packed s2 gate `is_lui · packed(b) = packed(lui_gated)`;
+- trace adapter maps `StepOp::Lui` to the gated ALU row.
+
+Test `gated_alu_selects_xor_and_and` includes `LUI 0x1234` in an 8-bit row and
+checks the truncated output `0x34`.

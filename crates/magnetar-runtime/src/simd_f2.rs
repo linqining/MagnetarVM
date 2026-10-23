@@ -1125,6 +1125,7 @@ pub enum GatedAluOp {
     Sub,
     Sltu,
     Slt,
+    Lui,
     Inactive,
 }
 
@@ -1156,6 +1157,8 @@ pub struct GatedAluRow {
     pub b_s: Vec<VarId>,
     pub lt: VarId,
     pub slt_gated: Vec<VarId>,
+    pub is_lui: VarId,
+    pub lui_gated: Vec<VarId>,
     pub relation: BitRelation,
 }
 
@@ -1197,13 +1200,17 @@ impl GatedAluRow {
         let b_s = (24 * width + 10..25 * width + 10).collect::<Vec<_>>();
         let is_slts = 25 * width + 10;
         let slt_mode = 25 * width + 11;
-        let mut relation = BitRelation::new(25 * width + 12);
+        let is_lui = 25 * width + 12;
+        let lui_gated = (25 * width + 13..26 * width + 13).collect::<Vec<_>>();
+        let mut relation = BitRelation::new(26 * width + 13);
         relation.add(BitRow::new(vec![one], vec![one], vec![one]));
-        for selector in [is_alu, is_xor, is_and, is_add, is_sub, is_slt, is_slts] {
+        for selector in [
+            is_alu, is_xor, is_and, is_add, is_sub, is_slt, is_slts, is_lui,
+        ] {
             relation.add(BitRow::new(vec![selector], vec![selector, one], Vec::new()));
         }
         relation.add(BitRow::new(
-            vec![is_xor, is_and, is_add, is_sub, is_slt, is_slts],
+            vec![is_xor, is_and, is_add, is_sub, is_slt, is_slts, is_lui],
             vec![one],
             vec![is_alu],
         ));
@@ -1326,12 +1333,18 @@ impl GatedAluRow {
                 relation.add(BitRow::new(vec![slt_gated[bit]], vec![one], Vec::new()));
             }
             relation.add(BitRow::new(
+                vec![b[bit]],
+                vec![is_lui],
+                vec![lui_gated[bit]],
+            ));
+            relation.add(BitRow::new(
                 vec![
                     xor_prod[bit],
                     and_gated[bit],
                     add_gated[bit],
                     sub_gated[bit],
                     slt_gated[bit],
+                    lui_gated[bit],
                 ],
                 vec![one],
                 vec![out[bit]],
@@ -1368,6 +1381,8 @@ impl GatedAluRow {
             b_s,
             lt,
             slt_gated,
+            is_lui,
+            lui_gated,
             relation,
         }
     }
@@ -1382,15 +1397,18 @@ impl GatedAluRow {
             GatedAluOp::Sub => (false, false, false, true, false, false),
             GatedAluOp::Sltu => (false, false, false, false, true, false),
             GatedAluOp::Slt => (false, false, false, false, false, true),
+            GatedAluOp::Lui => (false, false, false, false, false, false),
             GatedAluOp::Inactive => (false, false, false, false, false, false),
         };
-        bits[self.is_alu] = is_xor || is_and || is_add || is_sub || is_slt || is_slts;
+        let is_lui = op == GatedAluOp::Lui;
+        bits[self.is_alu] = is_xor || is_and || is_add || is_sub || is_slt || is_slts || is_lui;
         bits[self.is_xor] = is_xor;
         bits[self.is_and] = is_and;
         bits[self.is_add] = is_add;
         bits[self.is_sub] = is_sub;
         bits[self.is_slt] = is_slt;
         bits[self.is_slts] = is_slts;
+        bits[self.is_lui] = is_lui;
         bits[self.slt_mode] = is_slt || is_slts;
         let add_carries = 7 * self.width + 6;
         let sub_b_eff = 14 * self.width + 7;
@@ -1413,6 +1431,7 @@ impl GatedAluRow {
             bits[4 * self.width + 6 + bit] = is_xor && (a ^ b);
             bits[5 * self.width + 6 + bit] = a && b;
             bits[6 * self.width + 6 + bit] = is_and && (a && b);
+            bits[self.lui_gated[bit]] = is_lui && b;
 
             bits[11 * self.width + 7 + bit] = a ^ b;
             bits[12 * self.width + 7 + bit] = a ^ b ^ add_carry;
@@ -1438,6 +1457,7 @@ impl GatedAluRow {
                 GatedAluOp::Add => a ^ b ^ add_carry,
                 GatedAluOp::Sub => a ^ b_eff ^ sub_carry,
                 GatedAluOp::Sltu | GatedAluOp::Slt => false,
+                GatedAluOp::Lui => b,
                 GatedAluOp::Inactive => false,
             };
         }
@@ -1484,6 +1504,13 @@ mod gated_alu_tests {
             value | (u64::from(wrapped[*var]) << bit)
         });
         assert_eq!(wrapped_rd, 254);
+        let lui = row.witness(0, 0x1234, GatedAluOp::Lui);
+        assert!(row.relation.check(&lui));
+        let lui_rd = row.out.iter().enumerate().fold(0u64, |value, (bit, var)| {
+            value | (u64::from(lui[*var]) << bit)
+        });
+        assert_eq!(lui_rd, 0x34);
+
         let sltu = row.witness(3, 5, GatedAluOp::Sltu);
         assert!(row.relation.check(&sltu));
         let sltu_rd = row.out.iter().enumerate().fold(0u64, |value, (bit, var)| {
@@ -1656,7 +1683,8 @@ impl GatedCpuRow {
                 .add(packed(&self.alu.and_gated, 0))
                 .add(packed(&self.alu.add_gated, 0))
                 .add(packed(&self.alu.sub_gated, 0))
-                .add(packed(&self.alu.slt_gated, 0)),
+                .add(packed(&self.alu.slt_gated, 0))
+                .add(packed(&self.alu.lui_gated, 0)),
             Expr::var(self.alu.one),
             Expr::constant(0u64),
         );

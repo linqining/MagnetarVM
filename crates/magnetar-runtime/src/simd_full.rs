@@ -278,6 +278,7 @@ pub fn gated_rows_from_trace(
             StepOp::Sub => GatedAluOp::Sub,
             StepOp::Sltu => GatedAluOp::Sltu,
             StepOp::Slt => GatedAluOp::Slt,
+            StepOp::Lui => GatedAluOp::Lui,
             _ => break,
         };
         if crate::w_step_op_for(row.instruction.op).is_some()
