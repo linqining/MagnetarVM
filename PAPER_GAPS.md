@@ -542,3 +542,15 @@ Tests verify a contiguous PC chain satisfies the batch system and a broken chain
 - test compares it against an explicitly assembled two-instance block matrix for `mul_vec`, `row_combination`, and `eval_mle`.
 
 This is the matrix representation target for scheme B. Spartan still constructs `SparseMatrix` from a `ConstraintSystem`; the next step is genericizing the sum-check over a matrix trait so `SharedBlockMatrix` can be proved directly, then wiring the uniform CPU batch.
+
+
+### Shared-matrix Spartan proof
+
+`SpartanMatrix` is now a trait implemented by both `SparseMatrix` and `SharedBlockMatrix`. New entry points:
+
+- `prove_spartan_with_matrices(z, a, b, c, pcs)`;
+- `verify_spartan_with_matrices(a, b, c, proof, pcs)`;
+- `prove_shared_simd_spartan(base, witnesses, pcs)`;
+- `verify_shared_simd_spartan(base, instances, proof, pcs)`.
+
+The shared SIMD entry builds q `SharedBlockMatrix` views over one base system, assembles a block-padded `z`, and runs the same sum-check. Tests prove and verify a two-instance batch without materializing q matrices, and the direct matrix API round-trips. This is a true shared-matrix proof prototype (local rows only; cross-cycle PC constraints still need to be added as extra rows).

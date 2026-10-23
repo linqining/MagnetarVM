@@ -44,6 +44,39 @@ pub(crate) struct SparseMatrix {
     pub(crate) cols: usize,
 }
 
+/// Matrix interface consumed by the Spartan reduction. `SparseMatrix` is the
+/// materialized form; `SharedBlockMatrix` represents q block-diagonal
+/// instances with one base matrix.
+pub trait SpartanMatrix {
+    fn rows(&self) -> usize;
+    fn cols(&self) -> usize;
+    fn mul_vec(&self, z: &[F2_128]) -> Result<Vec<F2_128>, SpartanError>;
+    fn row_combination(&self, row_point: &[F2_128]) -> Result<Vec<F2_128>, SpartanError>;
+    fn eval_mle(&self, row_point: &[F2_128], col_point: &[F2_128]) -> Result<F2_128, SpartanError>;
+}
+
+impl SpartanMatrix for SparseMatrix {
+    fn rows(&self) -> usize {
+        self.rows.len()
+    }
+
+    fn cols(&self) -> usize {
+        self.cols
+    }
+
+    fn mul_vec(&self, z: &[F2_128]) -> Result<Vec<F2_128>, SpartanError> {
+        SparseMatrix::mul_vec(self, z)
+    }
+
+    fn row_combination(&self, row_point: &[F2_128]) -> Result<Vec<F2_128>, SpartanError> {
+        SparseMatrix::row_combination(self, row_point)
+    }
+
+    fn eval_mle(&self, row_point: &[F2_128], col_point: &[F2_128]) -> Result<F2_128, SpartanError> {
+        SparseMatrix::eval_mle(self, row_point, col_point)
+    }
+}
+
 impl SparseMatrix {
     pub(crate) fn from_system(
         system: &ConstraintSystem,
@@ -301,6 +334,136 @@ pub fn prove_spartan<P: Pcs>(
     })
 }
 
+/// Prove a Spartan relation given matrix implementations. This is the entry
+/// point used by the shared-matrix SIMD path; `z` is already padded to
+/// `a.cols()`.
+pub fn prove_spartan_with_matrices<P: Pcs>(
+    z: &[F2_128],
+    a: &dyn SpartanMatrix,
+    b: &dyn SpartanMatrix,
+    c: &dyn SpartanMatrix,
+    pcs: &P,
+) -> Result<SpartanProof<P::Commitment, P::Opening>, SpartanError> {
+    if z.len() != a.cols() || b.cols() != a.cols() || c.cols() != a.cols() {
+        return Err(SpartanError::Dimensions);
+    }
+    let az = a.mul_vec(z)?;
+    let bz = b.mul_vec(z)?;
+    let cz = c.mul_vec(z)?;
+    let z_mle = Mle::new(z.to_vec())?;
+    let az_mle = Mle::new(az.to_vec())?;
+    let bz_mle = Mle::new(bz.to_vec())?;
+    let cz_mle = Mle::new(cz.to_vec())?;
+
+    let row_bits = a.rows().trailing_zeros() as usize;
+    let commitment = pcs.commit(z)?;
+    let transcript = RefCell::new(Sha256Transcript::new("spartan-reference-v1"));
+    let tau = {
+        let mut transcript = transcript.borrow_mut();
+        transcript.absorb("commitment", &pcs.commitment_bytes(&commitment));
+        transcript.absorb("rows", &(a.rows() as u64).to_le_bytes());
+        transcript.absorb("cols", &(a.cols() as u64).to_le_bytes());
+        (0..row_bits)
+            .map(|_| challenge_field(&mut transcript, "tau"))
+            .collect::<Vec<_>>()
+    };
+
+    let eq_values: Vec<F2_128> = (0..a.rows())
+        .map(|index| eq(&tau, &bits(index, row_bits)))
+        .collect();
+    let (outer, rx, _) = prove_product4(eq_values, az, bz, cz, |round, values| {
+        round_challenge(&transcript, "outer-round", round, values)
+    })?;
+    if outer.claimed_sum != F2_128::from(0u64) {
+        return Err(SpartanError::ClaimMismatch {
+            expected: F2_128::from(0u64),
+            actual: outer.claimed_sum,
+        });
+    }
+
+    let v_a = az_mle.eval(&rx)?;
+    let v_b = bz_mle.eval(&rx)?;
+    let v_c = cz_mle.eval(&rx)?;
+    {
+        let mut transcript = transcript.borrow_mut();
+        absorb_field(&mut transcript, "va", v_a);
+        absorb_field(&mut transcript, "vb", v_b);
+        absorb_field(&mut transcript, "vc", v_c);
+    }
+    let r = {
+        let mut transcript = transcript.borrow_mut();
+        challenge_field(&mut transcript, "batch")
+    };
+    let expected_inner_claim = v_a + r * v_b + r * r * v_c;
+
+    let a_values = a.row_combination(&rx)?;
+    let b_values = b.row_combination(&rx)?;
+    let c_values = c.row_combination(&rx)?;
+    let left_values: Vec<F2_128> = (0..z.len())
+        .map(|index| a_values[index] + r * b_values[index] + r * r * c_values[index])
+        .collect();
+    let (inner, ry, _) = prove_product2(left_values, z.to_vec(), |round, values| {
+        round_challenge(&transcript, "inner-round", round, values)
+    })?;
+    if inner.claimed_sum != expected_inner_claim {
+        return Err(SpartanError::ClaimMismatch {
+            expected: expected_inner_claim,
+            actual: inner.claimed_sum,
+        });
+    }
+
+    let vw = z_mle.eval(&ry)?;
+    let opening = pcs.open(z, &ry)?;
+    Ok(SpartanProof {
+        commitment,
+        v_a,
+        v_b,
+        v_c,
+        outer,
+        inner,
+        vw,
+        opening,
+    })
+}
+
+/// Prove q instances of one base row relation using the shared-matrix
+/// representation (no q-fold materialized matrices).
+pub fn prove_shared_simd_spartan<P: Pcs>(
+    base: &ConstraintSystem,
+    witnesses: &[Witness],
+    pcs: &P,
+) -> Result<SpartanProof<P::Commitment, P::Opening>, SpartanError> {
+    if witnesses.is_empty() || !witnesses.len().is_power_of_two() {
+        return Err(SpartanError::EmptySimd);
+    }
+    let a = crate::SharedBlockMatrix::from_system(base, MatrixPart::A, witnesses.len())?;
+    let b = crate::SharedBlockMatrix::from_system(base, MatrixPart::B, witnesses.len())?;
+    let c = crate::SharedBlockMatrix::from_system(base, MatrixPart::C, witnesses.len())?;
+    let mut z = Vec::with_capacity(a.cols());
+    for witness in witnesses {
+        z.extend(witness_vector(base, witness)?);
+    }
+    if z.len() != a.cols() {
+        return Err(SpartanError::Dimensions);
+    }
+    prove_spartan_with_matrices(&z, &a, &b, &c, pcs)
+}
+
+pub fn verify_shared_simd_spartan<P: Pcs>(
+    base: &ConstraintSystem,
+    instances: usize,
+    proof: &SpartanProof<P::Commitment, P::Opening>,
+    pcs: &P,
+) -> Result<(), SpartanError> {
+    if instances == 0 || !instances.is_power_of_two() {
+        return Err(SpartanError::EmptySimd);
+    }
+    let a = crate::SharedBlockMatrix::from_system(base, MatrixPart::A, instances)?;
+    let b = crate::SharedBlockMatrix::from_system(base, MatrixPart::B, instances)?;
+    let c = crate::SharedBlockMatrix::from_system(base, MatrixPart::C, instances)?;
+    verify_spartan_with_matrices(&a, &b, &c, proof, pcs)
+}
+
 /// Prove `q` instances of one base constraint system with a reference
 /// block-diagonal SIMD encoding. The verifier rebuilds the same system.
 pub fn prove_simd_spartan<P: Pcs>(
@@ -320,6 +483,74 @@ pub fn prove_simd_spartan<P: Pcs>(
         values.extend_from_slice(witness.values());
     }
     prove_spartan(&combined, &Witness::new(values), pcs)
+}
+
+/// Verify a Spartan proof against matrix implementations (shared-matrix SIMD
+/// path).
+pub fn verify_spartan_with_matrices<P: Pcs>(
+    a: &dyn SpartanMatrix,
+    b: &dyn SpartanMatrix,
+    c: &dyn SpartanMatrix,
+    proof: &SpartanProof<P::Commitment, P::Opening>,
+    pcs: &P,
+) -> Result<(), SpartanError> {
+    if b.cols() != a.cols() || c.cols() != a.cols() || b.rows() != a.rows() || c.rows() != a.rows()
+    {
+        return Err(SpartanError::Dimensions);
+    }
+    let row_bits = a.rows().trailing_zeros() as usize;
+    let col_bits = a.cols().trailing_zeros() as usize;
+
+    let transcript = RefCell::new(Sha256Transcript::new("spartan-reference-v1"));
+    let tau = {
+        let mut transcript = transcript.borrow_mut();
+        transcript.absorb("commitment", &pcs.commitment_bytes(&proof.commitment));
+        transcript.absorb("rows", &(a.rows() as u64).to_le_bytes());
+        transcript.absorb("cols", &(a.cols() as u64).to_le_bytes());
+        (0..row_bits)
+            .map(|_| challenge_field(&mut transcript, "tau"))
+            .collect::<Vec<_>>()
+    };
+
+    if proof.outer.claimed_sum != F2_128::from(0u64) {
+        return Err(SpartanError::Verification("outer claim is not zero"));
+    }
+    let (rx, outer_final) = verify_rounds(&proof.outer, row_bits, 3, |round, values| {
+        round_challenge(&transcript, "outer-round", round, values)
+    })?;
+    let expected_outer = eq(&tau, &rx) * (proof.v_a * proof.v_b - proof.v_c);
+    if outer_final != expected_outer {
+        return Err(SpartanError::Verification("outer sumcheck mismatch"));
+    }
+
+    {
+        let mut transcript = transcript.borrow_mut();
+        absorb_field(&mut transcript, "va", proof.v_a);
+        absorb_field(&mut transcript, "vb", proof.v_b);
+        absorb_field(&mut transcript, "vc", proof.v_c);
+    }
+    let r = {
+        let mut transcript = transcript.borrow_mut();
+        challenge_field(&mut transcript, "batch")
+    };
+    let expected_inner_claim = proof.v_a + r * proof.v_b + r * r * proof.v_c;
+    if proof.inner.claimed_sum != expected_inner_claim {
+        return Err(SpartanError::Verification("inner claim mismatch"));
+    }
+    let (ry, inner_final) = verify_rounds(&proof.inner, col_bits, 2, |round, values| {
+        round_challenge(&transcript, "inner-round", round, values)
+    })?;
+    let a = a.eval_mle(&rx, &ry)?;
+    let b = b.eval_mle(&rx, &ry)?;
+    let c = c.eval_mle(&rx, &ry)?;
+    let expected_inner = (a + r * b + r * r * c) * proof.vw;
+    if inner_final != expected_inner {
+        return Err(SpartanError::Verification("inner sumcheck mismatch"));
+    }
+    if !pcs.verify(&proof.commitment, &ry, proof.vw, &proof.opening)? {
+        return Err(SpartanError::Verification("PCS opening rejected"));
+    }
+    Ok(())
 }
 
 pub fn verify_simd_spartan<P: Pcs>(
@@ -1044,5 +1275,51 @@ mod tests {
         assert_eq!(verified_vw, vw);
         let opening = pcs.open(&z, &ry).unwrap();
         assert!(pcs.verify(&commitment, &ry, vw, &opening).unwrap());
+    }
+    #[test]
+    fn shared_block_spartan_proves_a_two_instance_batch() {
+        let base = system_and_witness().0;
+        let witnesses = [
+            Witness::new(vec![
+                F2_128::from(1u64),
+                F2_128::from(2u64),
+                F2_128::from(2u64),
+            ]),
+            Witness::new(vec![
+                F2_128::from(3u64),
+                F2_128::from(4u64),
+                F2_128::from(12u64),
+            ]),
+        ];
+        let a = crate::SharedBlockMatrix::from_system(&base, MatrixPart::A, 2).unwrap();
+        let b = crate::SharedBlockMatrix::from_system(&base, MatrixPart::B, 2).unwrap();
+        let c = crate::SharedBlockMatrix::from_system(&base, MatrixPart::C, 2).unwrap();
+        let mut z = Vec::new();
+        for witness in &witnesses {
+            z.extend(witness_vector(&base, witness).unwrap());
+        }
+        assert_eq!(z.len(), a.cols());
+        let pcs = TestPcs;
+        let proof = prove_spartan_with_matrices(&z, &a, &b, &c, &pcs).unwrap();
+        verify_spartan_with_matrices(&a, &b, &c, &proof, &pcs).unwrap();
+    }
+    #[test]
+    fn shared_simd_api_round_trips() {
+        let base = system_and_witness().0;
+        let witnesses = [
+            Witness::new(vec![
+                F2_128::from(1u64),
+                F2_128::from(2u64),
+                F2_128::from(2u64),
+            ]),
+            Witness::new(vec![
+                F2_128::from(3u64),
+                F2_128::from(4u64),
+                F2_128::from(12u64),
+            ]),
+        ];
+        let pcs = TestPcs;
+        let proof = prove_shared_simd_spartan(&base, &witnesses, &pcs).unwrap();
+        verify_shared_simd_spartan(&base, witnesses.len(), &proof, &pcs).unwrap();
     }
 }

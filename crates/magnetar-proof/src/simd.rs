@@ -7,13 +7,35 @@
 
 use magnetar_constraint::{ConstraintSystem, F2_128};
 
-use crate::spartan::{bits, MatrixPart, SparseMatrix};
+use crate::spartan::{bits, MatrixPart, SparseMatrix, SpartanMatrix};
 use crate::{eq, SpartanError};
 
 #[derive(Clone, Debug)]
 pub struct SharedBlockMatrix {
     base: SparseMatrix,
     instances: usize,
+}
+
+impl SpartanMatrix for SharedBlockMatrix {
+    fn rows(&self) -> usize {
+        SharedBlockMatrix::rows(self)
+    }
+
+    fn cols(&self) -> usize {
+        SharedBlockMatrix::cols(self)
+    }
+
+    fn mul_vec(&self, z: &[F2_128]) -> Result<Vec<F2_128>, SpartanError> {
+        SharedBlockMatrix::mul_vec(self, z)
+    }
+
+    fn row_combination(&self, row_point: &[F2_128]) -> Result<Vec<F2_128>, SpartanError> {
+        SharedBlockMatrix::row_combination(self, row_point)
+    }
+
+    fn eval_mle(&self, row_point: &[F2_128], col_point: &[F2_128]) -> Result<F2_128, SpartanError> {
+        SharedBlockMatrix::eval_mle(self, row_point, col_point)
+    }
 }
 
 impl SharedBlockMatrix {
