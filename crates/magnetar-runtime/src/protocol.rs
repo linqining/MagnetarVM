@@ -7,7 +7,10 @@
 
 use std::collections::HashSet;
 
-use magnetar_constraint::{ConstraintSystem, Witness, WitnessLayout, F2_128};
+use magnetar_constraint::{
+    ConstraintSystem, MemoryKind, RoutingKind, Segment, SegmentKind, SegmentOwner, Witness,
+    WitnessLayout, F2_128,
+};
 use magnetar_proof::{prove_lockstep, verify_lockstep, LockstepProof, Pcs, SpartanError};
 use thiserror::Error;
 
@@ -18,7 +21,8 @@ use crate::{MosaicSpartanProof, UnifiedTraceProof};
 
 use magnetar_memory::BinaryTwistWitness;
 use magnetar_pcs::{P3BinaryPcs, P3MosaicCommitment, P3MosaicPoint, P3MosaicTable, P3SharedPcs};
-use magnetar_proof::{witness_vector, Mle};
+use magnetar_proof::virtual_spartan::SegmentClaim;
+use magnetar_proof::{verify_lockstep_segments, witness_vector, Mle};
 use magnetar_spec::Trace;
 
 use crate::binary_router::{
@@ -279,6 +283,8 @@ pub enum ProtocolError {
     DuplicateStage(StageId),
     #[error("unexpected stage {0:?}")]
     UnexpectedStage(StageId),
+    #[error("Virtual Spartan produced an unrouted claim {0:?}")]
+    UnroutedClaim(ClaimKind),
 }
 
 /// Serializable proof bundle. `from_unified`/`into_unified` preserve the
@@ -800,6 +806,19 @@ impl ProtocolPlan {
         Ok(())
     }
 
+    pub fn check_virtual_claims(&self, claims: &ClaimSet) -> Result<(), ProtocolError> {
+        let produced: HashSet<ClaimKind> = self
+            .stage(StageId::Cpu)
+            .map(|stage| stage.produces.iter().copied().collect())
+            .unwrap_or_default();
+        for claim in claims.claims() {
+            if !produced.contains(&claim.kind) {
+                return Err(ProtocolError::UnroutedClaim(claim.kind));
+            }
+        }
+        Ok(())
+    }
+
     pub fn check_bundle(&self, bundle: &ProofBundle) -> Result<(), ProtocolError> {
         let mut seen = HashSet::new();
         for (stage, _) in &bundle.stages {
@@ -1312,6 +1331,7 @@ pub(crate) struct UnifiedVerifyContext<'a> {
     points: Vec<P3MosaicPoint>,
     values: Vec<Vec<F2_128>>,
     register_claims: Option<crate::binary_twist::MosaicClaims>,
+    routed_claims: Option<ClaimSet>,
 }
 
 impl<'a> UnifiedVerifyContext<'a> {
@@ -1405,6 +1425,7 @@ impl<'a> UnifiedVerifyContext<'a> {
             points: Vec::new(),
             values: Vec::new(),
             register_claims: None,
+            routed_claims: None,
         })
     }
 
@@ -1537,8 +1558,164 @@ impl<'a> UnifiedVerifyContext<'a> {
         let points = std::mem::take(&mut self.points);
         let values = std::mem::take(&mut self.values);
         let shared_pcs = P3SharedPcs::new(100, Vec::new(), points, values);
-        verify_lockstep(&system_a, &system_b, &layout, &self.proof.cpu, &shared_pcs)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        let (ry, segments) =
+            verify_lockstep_segments(&system_a, &system_b, &layout, &self.proof.cpu, &shared_pcs)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        let catalog = SegmentCatalog::from_layout(&layout);
+        self.routed_claims = Some(
+            route_segment_claims(&layout, &ry, &segments, &catalog)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?,
+        );
         Ok(())
+    }
+
+    pub(crate) fn routed_claims(&self) -> Option<&ClaimSet> {
+        self.routed_claims.as_ref()
+    }
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ClaimRouteError {
+    #[error("segment {0:?} is missing from the catalog")]
+    MissingSegment(String),
+    #[error("claim count {claims} does not match layout segment count {segments}")]
+    Shape { claims: usize, segments: usize },
+    #[error("claim point has {actual} coordinates, segment {segment:?} needs {expected}")]
+    PointLength {
+        segment: String,
+        expected: usize,
+        actual: usize,
+    },
+}
+
+/// Map a public witness-layout segment to the claim family consumed by the
+/// specialized argument that owns it.
+pub fn segment_claim_kind(segment: &Segment) -> ClaimKind {
+    match segment.owner {
+        SegmentOwner::Memory(MemoryKind::Registers) => ClaimKind::Register,
+        SegmentOwner::Memory(MemoryKind::Ram) => ClaimKind::Ram,
+        SegmentOwner::Memory(MemoryKind::Rom) => ClaimKind::Bytecode,
+        SegmentOwner::Routing(RoutingKind::Shifts) => ClaimKind::Shift,
+        SegmentOwner::Routing(RoutingKind::Stores) => ClaimKind::Store,
+        SegmentOwner::Cpu | SegmentOwner::Pcs => match segment.kind {
+            SegmentKind::Direct => ClaimKind::Direct,
+            SegmentKind::Virtual => ClaimKind::Direct,
+        },
+    }
+}
+
+/// Convert lockstep/Virtual-Spartan segment claims into routed claims.
+///
+/// `point` is the inner sum-check challenge (`ry`), and each segment's local
+/// point is its low `log2(len)` coordinates. The returned `ClaimSet` is keyed
+/// by the layout names so specialized reducers can consume the families they
+/// own.
+pub fn route_segment_claims(
+    layout: &WitnessLayout,
+    point: &[F2_128],
+    claims: &[SegmentClaim],
+    catalog: &SegmentCatalog,
+) -> Result<ClaimSet, ClaimRouteError> {
+    if claims.len() != layout.segments.len() {
+        return Err(ClaimRouteError::Shape {
+            claims: claims.len(),
+            segments: layout.segments.len(),
+        });
+    }
+    let mut routed = ClaimSet::new();
+    for (segment, claim) in layout.segments.iter().zip(claims) {
+        let size_bits = segment.len.trailing_zeros() as usize;
+        if point.len() < size_bits {
+            return Err(ClaimRouteError::PointLength {
+                segment: segment.name.clone(),
+                expected: size_bits,
+                actual: point.len(),
+            });
+        }
+        let id = catalog
+            .id(&segment.name)
+            .ok_or_else(|| ClaimRouteError::MissingSegment(segment.name.clone()))?;
+        routed.push(Claim::new(
+            segment_claim_kind(segment),
+            id,
+            point[..size_bits].to_vec(),
+            claim.value,
+        ));
+    }
+    Ok(routed)
+}
+
+#[cfg(test)]
+mod routing_tests {
+    use super::*;
+    use magnetar_constraint::{MemoryKind, RoutingKind, SegmentKind, SegmentOwner};
+    use magnetar_proof::virtual_spartan::SegmentClaim;
+
+    fn segment(name: &str, offset: usize, owner: SegmentOwner, kind: SegmentKind) -> Segment {
+        Segment::new(name, offset, 2, kind, owner)
+    }
+
+    #[test]
+    fn virtual_spartan_segment_claims_route_to_components() {
+        let layout = WitnessLayout::new(vec![
+            segment("cpu.pc", 0, SegmentOwner::Cpu, SegmentKind::Direct),
+            segment(
+                "regs.read",
+                2,
+                SegmentOwner::Memory(MemoryKind::Registers),
+                SegmentKind::Virtual,
+            ),
+            segment(
+                "ram.read",
+                4,
+                SegmentOwner::Memory(MemoryKind::Ram),
+                SegmentKind::Virtual,
+            ),
+            segment(
+                "shift.out",
+                6,
+                SegmentOwner::Routing(RoutingKind::Shifts),
+                SegmentKind::Virtual,
+            ),
+            segment(
+                "store.out",
+                8,
+                SegmentOwner::Routing(RoutingKind::Stores),
+                SegmentKind::Virtual,
+            ),
+            segment(
+                "rom.fetch",
+                10,
+                SegmentOwner::Memory(MemoryKind::Rom),
+                SegmentKind::Virtual,
+            ),
+            segment("cpu.rd", 12, SegmentOwner::Cpu, SegmentKind::Direct),
+            segment("cpu.rs1", 14, SegmentOwner::Cpu, SegmentKind::Direct),
+        ])
+        .expect("layout");
+        let catalog = SegmentCatalog::from_layout(&layout);
+        let claims = (0..layout.segments.len())
+            .map(|index| SegmentClaim {
+                value: F2_128::from(index as u64 + 1),
+            })
+            .collect::<Vec<_>>();
+        let point = (0..4)
+            .map(|index| F2_128::from(index as u64 + 7))
+            .collect::<Vec<_>>();
+        let mut routed = route_segment_claims(&layout, &point, &claims, &catalog).expect("route");
+        assert_eq!(routed.len(), layout.segments.len());
+        assert_eq!(
+            routed.take(ClaimKind::Register).unwrap().segment,
+            SegmentId(1)
+        );
+        assert_eq!(routed.take(ClaimKind::Ram).unwrap().segment, SegmentId(2));
+        assert_eq!(routed.take(ClaimKind::Shift).unwrap().segment, SegmentId(3));
+        assert_eq!(routed.take(ClaimKind::Store).unwrap().segment, SegmentId(4));
+        assert_eq!(
+            routed.take(ClaimKind::Bytecode).unwrap().segment,
+            SegmentId(5)
+        );
+        assert_eq!(routed.remaining(), 3);
+        assert!(routed.take(ClaimKind::Direct).is_some());
     }
 }

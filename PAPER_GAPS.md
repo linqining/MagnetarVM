@@ -328,3 +328,14 @@ Phase 3 (orchestration boundary):
 - test confirms `Orchestrator` proof bytes equal the previous `prove_unified_inner` bytes and still verify.
 
 Phase 3b splits the inner bodies into `UnifiedProveContext`/`UnifiedVerifyContext` with one method per stage. `ProtocolPlan` now owns both the claim-routing specs and the `execution` stage list (`ExecutionStage`), and `Orchestrator::prove/verify` pass that plan into `prove_unified_with_plan`/`verify_unified_with_plan`; the verifier skips `Commit`. Proof bytes are unchanged. The prover/verifier contexts now live in `protocol.rs`; `merged_cpu_system`, `split_cpu_relations`, `cpu_segment_layout`, and `check_trace_linkage` are `pub(crate)`. `lib.rs` keeps the thin `prove_unified_with_plan`/`verify_unified_with_plan` dispatch functions and the public façade. Proof bytes are unchanged.
+
+
+## Virtual Spartan claim routing
+
+- `verify_lockstep_segments` (magnetar-proof) verifies the lockstep proof and returns the inner challenge `ry` plus the per-segment `SegmentClaim`s, instead of discarding them.
+- `protocol::segment_claim_kind` maps a `Segment` owner/kind to a `ClaimKind`: CPU direct, registers, RAM, ROM/bytecode, shift, store.
+- `protocol::route_segment_claims` converts `(layout, ry, SegmentClaims, SegmentCatalog)` into a `ClaimSet` with local points and stable `SegmentId`s.
+- `UnifiedVerifyContext::verify_cpu` now uses `verify_lockstep_segments`, routes the claims, and stores them; `verify_unified_with_plan` checks them against the CPU stage's produced claim families via `ProtocolPlan::check_virtual_claims`.
+- Tests cover the owner→claim-kind mapping and routed ids/points.
+
+This is the Virtual Spartan **output side**: claims are now materialized and routed. The specialized reducers still verify from the commitment/transcript rather than consuming this `ClaimSet`; wiring Twist/Shout/Router to consume it is the next step.

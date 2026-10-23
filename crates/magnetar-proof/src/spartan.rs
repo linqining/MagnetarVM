@@ -536,13 +536,13 @@ pub fn prove_lockstep<P: Pcs>(
     })
 }
 
-pub fn verify_lockstep<P: Pcs>(
+fn verify_lockstep_internal<P: Pcs>(
     system_a: &ConstraintSystem,
     system_b: &ConstraintSystem,
     layout: &WitnessLayout,
     proof: &LockstepProof<P::Commitment, P::Opening>,
     pcs: &P,
-) -> Result<(), SpartanError> {
+) -> Result<(Vec<F2_128>, Vec<SegmentClaim>), SpartanError> {
     if system_a.num_vars != system_b.num_vars {
         return Err(SpartanError::Dimensions);
     }
@@ -619,7 +619,30 @@ pub fn verify_lockstep<P: Pcs>(
     if !pcs.verify(&proof.commitment, &ry, vw, &proof.opening)? {
         return Err(SpartanError::Verification("lockstep PCS opening rejected"));
     }
-    Ok(())
+    Ok((ry, proof.segments.clone()))
+}
+
+pub fn verify_lockstep<P: Pcs>(
+    system_a: &ConstraintSystem,
+    system_b: &ConstraintSystem,
+    layout: &WitnessLayout,
+    proof: &LockstepProof<P::Commitment, P::Opening>,
+    pcs: &P,
+) -> Result<(), SpartanError> {
+    verify_lockstep_internal(system_a, system_b, layout, proof, pcs).map(|_| ())
+}
+
+/// Verify a lockstep proof and expose the inner challenge plus the per-segment
+/// Virtual Spartan claims. This is the routing point where CPU segment claims
+/// can be handed to BinaryTwist/BinaryShout/BinaryRouter.
+pub fn verify_lockstep_segments<P: Pcs>(
+    system_a: &ConstraintSystem,
+    system_b: &ConstraintSystem,
+    layout: &WitnessLayout,
+    proof: &LockstepProof<P::Commitment, P::Opening>,
+    pcs: &P,
+) -> Result<(Vec<F2_128>, Vec<SegmentClaim>), SpartanError> {
+    verify_lockstep_internal(system_a, system_b, layout, proof, pcs)
 }
 
 #[cfg(test)]

@@ -474,8 +474,8 @@ pub mod f2_protocol;
 pub mod spartan;
 pub mod virtual_spartan;
 pub use spartan::{
-    prove_lockstep, prove_spartan, verify_lockstep, verify_spartan, witness_vector, LockstepProof,
-    SpartanError, SpartanProof,
+    prove_lockstep, prove_spartan, verify_lockstep, verify_lockstep_segments, verify_spartan,
+    witness_vector, LockstepProof, SpartanError, SpartanProof,
 };
 
 /// Sum-check for `eq(x) * (a0*b0 - c0 + alpha * (a1*b1 - c1))`, degree three.
