@@ -1823,3 +1823,20 @@ committed table.
 Also fixed the shift packed gate for widths above 42: the three shift result
 vectors are packed separately instead of concatenating into a >128-bit vector.
 `compiled_guest_elf_runs_and_proves` (width 64) passes again.
+
+
+### A: single unified proof object
+
+`UnifiedGatedProof` now contains only `UnifiedTraceProof`; the duplicate
+`P3GatedBundle` was removed. Since `UnifiedTraceProof` already carries the gated
+claims and shares the opening, the old wrapper's second proof/opening is gone.
+
+`unified_gated_bench` (two gated rows) measures:
+
+```text
+UnifiedTraceProof: 173,439 B
+gated claims present: true
+```
+
+This replaces the previous two-proof wrapper (legacy unified plus a separate
+gated bundle).
