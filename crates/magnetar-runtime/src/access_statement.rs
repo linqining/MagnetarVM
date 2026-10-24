@@ -58,6 +58,8 @@ impl AccessStatement {
             .map(|(index, op)| TraceRow {
                 cycle: index as u64,
                 pc: 0,
+                micro_pc: 0,
+                micro_op: magnetar_spec::MicroOpKind::Execute,
                 next_pc: 0,
                 instruction_word: 0,
                 instruction_len: 4,

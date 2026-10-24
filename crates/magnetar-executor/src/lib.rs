@@ -187,6 +187,8 @@ pub fn execute_with_io(
 
         rows.push(TraceRow {
             cycle,
+            micro_pc: state.pc,
+            micro_op: magnetar_spec::MicroOpKind::Execute,
             pc: state.pc,
             next_pc: outcome.next_pc,
             instruction_word,

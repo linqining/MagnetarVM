@@ -21,6 +21,14 @@ pub struct SyscallTrace {
     pub args: [u64; 3],
 }
 
+/// Scheduled micro-op kind. The current executor emits one `Execute` row per
+/// instruction; `Fetch` is reserved for C1 instruction expansion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum MicroOpKind {
+    Fetch,
+    Execute,
+}
+
 /// One executed instruction, including the operands the CPU relation needs.
 ///
 /// This is the reference trace shape. A production prover will columnarize it
@@ -30,6 +38,9 @@ pub struct SyscallTrace {
 pub struct TraceRow {
     pub cycle: u64,
     pub pc: Word,
+    /// Bytecode/Shout row key for this micro-op.
+    pub micro_pc: Word,
+    pub micro_op: MicroOpKind,
     pub next_pc: Word,
     pub instruction_word: u32,
     pub instruction_len: u8,

@@ -19,4 +19,4 @@ pub use floating::{decode_fp, FpDecodeError, FpFormat, FpInstruction, FpOp};
 pub use instruction::{decode, DecodeError, Instruction, Op};
 pub use machine::{Addr, MachineConfig, MachineState, RegIdx, Word, NUM_REGS, XLEN};
 pub use program::ProgramImage;
-pub use trace::{MemoryAccess, MemoryEvent, SyscallTrace, Trace, TraceRow};
+pub use trace::{MemoryAccess, MemoryEvent, MicroOpKind, SyscallTrace, Trace, TraceRow};

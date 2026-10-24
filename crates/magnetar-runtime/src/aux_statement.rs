@@ -70,6 +70,8 @@ impl AuxStatement {
             .map(|(index, row)| TraceRow {
                 cycle: index as u64,
                 pc: row.pc,
+                micro_pc: row.pc,
+                micro_op: magnetar_spec::MicroOpKind::Execute,
                 next_pc: row.pc.wrapping_add(u64::from(row.instruction_len)),
                 instruction_word: row.instruction_word,
                 instruction_len: row.instruction_len,

@@ -3197,10 +3197,12 @@ mod tests {
         let outcome = ReferencePipeline::run(&program(), config(), 2).unwrap();
         let prepared = preprocess(&program(), config()).unwrap();
         for row in &outcome.trace.rows {
+            assert_eq!(row.micro_op, magnetar_spec::MicroOpKind::Execute);
+            assert_eq!(row.micro_pc, row.pc);
             let bytecode = prepared
-                .bytecode_row(row.pc)
-                .expect("trace PC must be a bytecode micro-PC");
-            assert_eq!(bytecode.micro_pc, row.pc);
+                .bytecode_row(row.micro_pc)
+                .expect("trace micro-PC must be a bytecode row");
+            assert_eq!(bytecode.micro_pc, row.micro_pc);
             assert_eq!(bytecode.instruction, row.instruction);
         }
     }

@@ -158,7 +158,7 @@ E5/E6 单 packed PCS/Ligerito 集成。
 
 | # | 论文要求（§） | 当前实现 | 状态 | 剩余工作 |
 |---|---|---|---|---|
-| C1 | fetch-decode-execute，一个 micro-PC 对应 bytecode 表一行（§2、§5.5） | executor 支持 RV64I/M/A/C；preprocess 仍是“一 instruction = 一 micro-op”；`trace_rows_fetch_the_bytecode_micro_pc` 验证每个 trace row 的 PC 都对应一条 bytecode 行且 `micro_pc == pc`；Shout 读取该 bytecode 表；`preprocess::expand_bytecode` 输出 `MicroOpKind::Fetch/Execute` 调度结构，当前为 identity expansion（每指令一个 Execute micro-op），executor 尚未产生多 micro-op trace | 🟡 | instruction expansion（一条 instruction -> 多条 micro-op）仍未实现 |
+| C1 | fetch-decode-execute，一个 micro-PC 对应 bytecode 表一行（§2、§5.5） | executor 支持 RV64I/M/A/C；preprocess 仍是“一 instruction = 一 micro-op”；`trace_rows_fetch_the_bytecode_micro_pc` 验证每个 trace row 的 PC 都对应一条 bytecode 行且 `micro_pc == pc`；Shout 读取该 bytecode 表；`preprocess::expand_bytecode` 输出 `MicroOpKind::Fetch/Execute` 调度结构，当前为 identity expansion；`TraceRow` 已增加 `micro_pc`/`micro_op`，executor 写入 `micro_pc=pc` 且 `micro_op=Execute`，`trace_rows_fetch_the_bytecode_micro_pc` 同时检查这两个字段 | 🟡 | instruction expansion（一条 instruction -> 多条 micro-op）仍未实现 |
 | C2 | 每个 SIMD instance 覆盖若干连续 cycle，cross-step constraints 在 instance 内/间链接（§5.1） | 每行 relation 或 merged system；无 SIMD instance 概念 | ❌ | 与 B1/B3 一起实现 |
 | C3 | PC linkage 在 proof 内检查（§5.5） | gated CPU row 约束 `next_pc=pc+4`/jump/branch target，shared matrix 链接 `next_pc(i)->pc(i+1)`；`gated_bundle_rejects_tampered_pc` 验证 verifier 绑定 rows 到 commitment | 🟡 | gated/shared 路径已在 proof 内；chunked/trace 路径仍做 trace linkage |
 | C4 | reservation chain 在 proof 内检查（§5.1/§5.5） | `ReservationCpuRow` 把 reservation transition 并入 shared CPU relation；shared-CPU 路径的 witness 绑定已修复 | 🟡 | shared-CPU 路径在 proof 内；standalone reservation bundle 仍可独立验证 |

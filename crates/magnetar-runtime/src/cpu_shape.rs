@@ -99,6 +99,8 @@ impl CpuShape {
             let row = TraceRow {
                 cycle: 0,
                 pc: shape.pc,
+                micro_pc: shape.pc,
+                micro_op: magnetar_spec::MicroOpKind::Execute,
                 next_pc: shape.pc.wrapping_add(4),
                 instruction_word: 0,
                 instruction_len: 4,

@@ -8,8 +8,8 @@ use magnetar_routing::{
     RoutingError, RoutingTables, ShiftKind, ShiftRoute, StoreRoute, StoreWidth,
 };
 use magnetar_spec::{
-    decode, decode_compressed, Addr, CompressedError, DecodeError, Instruction, MachineConfig, Op,
-    ProgramImage, Word,
+    decode, decode_compressed, Addr, CompressedError, DecodeError, Instruction, MachineConfig,
+    MicroOpKind, Op, ProgramImage, Word,
 };
 use thiserror::Error;
 
@@ -51,14 +51,6 @@ pub struct BytecodeRow {
     pub instruction_word: u32,
     pub instruction: Instruction,
     pub selectors: Selectors,
-}
-
-/// Kind of a scheduled micro-op. The current executor emits one `Execute`
-/// micro-op per instruction; `Fetch` is reserved for instruction expansion.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MicroOpKind {
-    Fetch,
-    Execute,
 }
 
 /// A scheduled micro-op. `rv_pc` is the architectural instruction address;
