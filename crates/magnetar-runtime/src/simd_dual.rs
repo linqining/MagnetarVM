@@ -711,7 +711,54 @@ pub(crate) fn gated_claim_inputs(
     Ok((z, systems0, systems1, layout))
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(dead_code, clippy::type_complexity)]
+/// C2 building block: one SIMD instance covering several consecutive cycles.
+///
+/// The base relation is replicated block-diagonally for `group` rows and
+/// cross-step rows force `next_pc(row i) == pc(row i+1)` using the per-row
+/// constant-one variable. This is the intra-instance part of the paper's
+/// multi-cycle SIMD instance; boundary links between instances are still the
+/// existing extra rows in `gated_shared_matrices`.
+pub(crate) fn grouped_gated_system(
+    width: usize,
+    rows: &[(u64, crate::reservation_cpu_row::ReservationCpuInput)],
+    group: usize,
+) -> Result<(magnetar_constraint::ConstraintSystem, Vec<F2_128>, usize), RuntimeError> {
+    use magnetar_constraint::{ConstraintSystem, Expr};
+    if group == 0 || !group.is_power_of_two() || !rows.len().is_multiple_of(group) {
+        return Err(RuntimeError::Proof(
+            "SIMD group must divide the cycle count".into(),
+        ));
+    }
+    let row = crate::reservation_cpu_row::ReservationCpuRow::new(width);
+    let base = row.cpu.relation.to_system();
+    let base_cols = base.num_vars;
+    let mut combined = ConstraintSystem::new(0);
+    let mut offsets = Vec::with_capacity(group);
+    for _ in 0..group {
+        offsets.push(combined.merge(base.clone()));
+    }
+    for index in 0..group - 1 {
+        for bit in 0..width {
+            combined.add_constraint(
+                Expr::var(offsets[index] + row.cpu.next_pc[bit]),
+                Expr::var(offsets[index] + row.cpu.alu.one),
+                Expr::var(offsets[index + 1] + row.cpu.pc[bit]),
+            );
+        }
+    }
+    let (z, _, _, _) = reservation_claim_inputs(width, rows)?;
+    let row_stride = (row.cpu.relation.num_vars + 1).next_power_of_two();
+    let mut witness = Vec::with_capacity(rows.len() * base_cols);
+    for group_start in (0..rows.len()).step_by(group) {
+        for local in 0..group {
+            let start = (group_start + local) * row_stride;
+            witness.extend_from_slice(&z[start..start + base_cols]);
+        }
+    }
+    Ok((combined, witness, base_cols))
+}
+
 pub(crate) fn reservation_claim_matrices(
     width: usize,
     cycles: usize,
@@ -1865,6 +1912,26 @@ mod virtual_spec_tests {
             }
         }
         assert_eq!(padded.unpad_values(&virtual_values), z);
+    }
+
+    #[test]
+    fn grouped_gated_system_links_consecutive_cycles() {
+        let width = 8usize;
+        let trace = simple_trace();
+        let rows = crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, width)
+            .unwrap();
+        let (system, witness, base_cols) = super::grouped_gated_system(width, &rows, 2).unwrap();
+        magnetar_constraint::Witness::new(witness.clone());
+        system
+            .check(&magnetar_constraint::Witness::new(witness.clone()))
+            .unwrap();
+        let row = crate::reservation_cpu_row::ReservationCpuRow::new(width);
+        let mut broken = witness;
+        let index = base_cols + row.cpu.pc[0];
+        broken[index] = broken[index] + F2_128::from(1u64);
+        assert!(system
+            .check(&magnetar_constraint::Witness::new(broken))
+            .is_err());
     }
 
     #[test]

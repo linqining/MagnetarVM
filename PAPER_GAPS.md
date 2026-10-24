@@ -3904,3 +3904,14 @@ Both are fixed; indexes now come from `mosaic_tables.len()`. The shift Router is
 back in the shared Mosaic opening, its Shout link is restored, and the standalone
 fallback/placeholder is removed. The shift workload drops from 217,168 to
 128,600 B (width 16) and `shift_program_unified_proof_round_trips` passes.
+
+
+### C2: intra-instance cross-step constraints
+
+`grouped_gated_system` builds one SIMD instance over `group` consecutive cycles:
+the per-row relation is replicated block-diagonally (tight block stride), and
+cross-step rows enforce `next_pc(row i) == pc(row i+1)` with the per-row
+constant-one variable. `grouped_gated_system_links_consecutive_cycles` checks
+that the grouped witness satisfies the combined system and that flipping the
+next row's PC is rejected. Boundary links between instances, PCS/witness layout
+integration, and the runtime grouping policy remain open.
