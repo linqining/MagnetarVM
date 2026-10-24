@@ -2669,3 +2669,14 @@ present and passes without a trace.
 and then verifies CPU + gated claims using only `CpuStatement { width, shape }`.
 The gated reservation chain is included in those claims. Access/aux/opening are
 still outside this API.
+
+
+### A2a: CoreStatement verifies CPU + gated + access without a trace
+
+Added `AccessStatement` (config, initial RAM/registers, memory events, compact
+register ops) and `verify_access`, which builds synthetic witnesses and checks
+the BinaryTwist access claims against the shared commitment. `CoreStatement`
+combines it with `CpuStatement`; `verify_core_statement` verifies CPU, gated, and
+access claims without passing a `Trace`. The new
+`core_statement_verifies_without_trace` test proves a LUI/ADDI/SD/LD trace and
+verifies with the statement. Shout/Router/opening remain outside.

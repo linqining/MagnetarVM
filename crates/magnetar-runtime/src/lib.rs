@@ -4,6 +4,7 @@
 //! prover: `UnimplementedBackend` makes the missing cryptographic backend
 //! explicit rather than returning a misleading "proof".
 
+pub mod access_statement;
 pub mod amo_add_row;
 pub mod amo_bundle;
 pub mod amo_logic_row;
@@ -1045,6 +1046,7 @@ pub struct UnifiedTraceProof {
     pub store_router: Option<crate::binary_router::BinaryRouterProof>,
     pub amo: Option<crate::amo_bundle::AmoBundleProof>,
     pub shape: crate::cpu_shape::CpuShape,
+    pub register_index: usize,
 }
 
 pub(crate) struct GatedProveInput {
@@ -2213,6 +2215,27 @@ pub fn prove_unified_revealed(
 pub struct CpuStatement {
     pub width: usize,
     pub shape: crate::cpu_shape::CpuShape,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct CoreStatement {
+    pub width: usize,
+    pub shape: crate::cpu_shape::CpuShape,
+    pub access: crate::access_statement::AccessStatement,
+}
+
+/// Verify CPU, gated, and access claims without a trace.
+pub fn verify_core_statement(
+    proof: &UnifiedTraceProof,
+    statement: &CoreStatement,
+) -> Result<(), RuntimeError> {
+    let cpu = CpuStatement {
+        width: statement.width,
+        shape: statement.shape.clone(),
+    };
+    verify_cpu_statement(proof, &cpu)?;
+    statement.access.verify_access(proof)?;
+    Ok(())
 }
 
 /// Verify only the CPU lockstep claims, without a trace.
@@ -5474,6 +5497,74 @@ mod tests {
 #[cfg(test)]
 mod cpu_statement_tests {
     use super::*;
+
+    #[test]
+    fn core_statement_verifies_without_trace() {
+        use magnetar_executor::execute;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Lui,
+                    rd: 4,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x1000_0000,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Sd,
+                    rd: 0,
+                    rs1: 4,
+                    rs2: 1,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Ld,
+                    rd: 2,
+                    rs1: 4,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let proof = prove_unified_trace(&trace, 8).unwrap();
+        let statement = CoreStatement {
+            width: 8,
+            shape: proof.shape.clone(),
+            access: crate::access_statement::AccessStatement::from_trace(&trace),
+        };
+        verify_core_statement(&proof, &statement).unwrap();
+    }
 
     #[test]
     fn lr_sc_cpu_statement_verifies_without_trace() {

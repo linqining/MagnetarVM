@@ -322,6 +322,7 @@ pub struct ProofBundle {
     pub amo: Option<crate::amo_bundle::AmoBundleProof>,
     pub gated: Option<crate::GatedCpuClaims>,
     pub shape: crate::cpu_shape::CpuShape,
+    pub register_index: usize,
 }
 
 impl ProofBundle {
@@ -356,6 +357,7 @@ impl ProofBundle {
             amo: proof.amo.clone(),
             gated: proof.gated.clone(),
             shape: proof.shape.clone(),
+            register_index: proof.register_index,
         }
     }
 
@@ -393,6 +395,7 @@ impl ProofBundle {
             amo: self.amo,
             gated: self.gated,
             shape: self.shape,
+            register_index: self.register_index,
             cpu: cpu.ok_or(ProtocolError::MissingStage(StageId::Cpu))?,
             shout,
             shift_router,
@@ -1482,6 +1485,7 @@ impl<'a> UnifiedProveContext<'a> {
         };
         Ok(UnifiedTraceProof {
             shape: crate::cpu_shape::CpuShape::from_trace(self.trace).zeroed(),
+            register_index: self.register_index,
             access: self
                 .access
                 .ok_or_else(|| RuntimeError::Proof("missing access proof".into()))?,
