@@ -2280,6 +2280,15 @@ pub(crate) fn point_sort_key(point: &magnetar_pcs::P3MosaicPoint) -> (usize, Vec
     )
 }
 
+/// Verify a unified proof without a trace or caller statement.
+///
+/// This is the proof-only entry point for the shared CPU path: CPU/gated,
+/// access, auxiliary, packed Shout, and the shared Mosaic opening all verify
+/// from proof-carried data.
+pub fn verify_unified_proof(proof: &UnifiedTraceProof) -> Result<(), RuntimeError> {
+    verify_core_proof(proof)
+}
+
 pub(crate) fn verify_table_batch_claims(
     proof: &UnifiedTraceProof,
     points: &[(magnetar_pcs::P3MosaicPoint, Vec<F2_128>)],
@@ -3246,7 +3255,7 @@ mod tests {
         let bundle = crate::gated_bundle::prove_gated_bundle(8, &rows).unwrap();
         crate::gated_bundle::verify_gated_bundle(8, &rows, &bundle).unwrap();
         let proof = prove_unified_trace(&expanded, 8).unwrap();
-        verify_core_proof(&proof).unwrap();
+        verify_unified_proof(&proof).unwrap();
         eprintln!(
             "fetch-expanded unified bytes {}",
             bincode::serialize(&proof).unwrap().len()
