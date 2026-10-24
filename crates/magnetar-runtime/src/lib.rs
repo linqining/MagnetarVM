@@ -1143,65 +1143,33 @@ fn row_cpu_relation(
         .ok_or_else(|| RuntimeError::UnsupportedRow(row.instruction.op.name()));
     }
     if matches!(row.instruction.op, magnetar_spec::Op::Mul) {
-        let (system, layout) =
-            magnetar_cpu::uniform_mul_row_relation(width, row.rs1_val, row.rs2_val, row.rd_val);
+        let (system, layout) = magnetar_cpu::uniform_mul_relation(width);
         return Ok(Some((system, layout.witness(row.rs1_val, row.rs2_val))));
     }
     if matches!(row.instruction.op, magnetar_spec::Op::Mulh) {
-        let (system, layout) = magnetar_cpu::uniform_mulh_row_relation(
-            width,
-            true,
-            true,
-            row.rs1_val,
-            row.rs2_val,
-            row.rd_val,
-        );
+        let (system, layout) = magnetar_cpu::uniform_mulh_relation(width, true, true);
         return Ok(Some((system, layout.witness(row.rs1_val, row.rs2_val))));
     }
     if matches!(row.instruction.op, magnetar_spec::Op::Mulhsu) {
-        let (system, layout) = magnetar_cpu::uniform_mulh_row_relation(
-            width,
-            true,
-            false,
-            row.rs1_val,
-            row.rs2_val,
-            row.rd_val,
-        );
+        let (system, layout) = magnetar_cpu::uniform_mulh_relation(width, true, false);
         return Ok(Some((system, layout.witness(row.rs1_val, row.rs2_val))));
     }
     if matches!(row.instruction.op, magnetar_spec::Op::Mulhu) {
-        let (system, layout) =
-            magnetar_cpu::uniform_mulhu_row_relation(width, row.rs1_val, row.rs2_val, row.rd_val);
+        let (system, layout) = magnetar_cpu::uniform_mulh_relation(width, false, false);
         return Ok(Some((system, layout.witness(row.rs1_val, row.rs2_val))));
     }
     if matches!(
         row.instruction.op,
         magnetar_spec::Op::Divu | magnetar_spec::Op::Remu
     ) {
-        if matches!(row.instruction.op, magnetar_spec::Op::Divu) {
-            let (system, layout) = magnetar_cpu::uniform_divu_row_relation(
-                width,
-                row.rs1_val,
-                row.rs2_val,
-                row.rd_val,
-            );
-            return Ok(Some((system, layout.witness(row.rs1_val, row.rs2_val))));
-        }
-        let (system, layout) =
-            magnetar_cpu::uniform_remu_row_relation(width, row.rs1_val, row.rs2_val, row.rd_val);
+        let (system, layout) = magnetar_cpu::uniform_div_relation(width);
         return Ok(Some((system, layout.witness(row.rs1_val, row.rs2_val))));
     }
     if matches!(
         row.instruction.op,
         magnetar_spec::Op::Div | magnetar_spec::Op::Rem
     ) {
-        if matches!(row.instruction.op, magnetar_spec::Op::Div) {
-            let (system, layout) =
-                magnetar_cpu::uniform_div_row_relation(width, row.rs1_val, row.rs2_val, row.rd_val);
-            return Ok(Some((system, layout.witness(row.rs1_val, row.rs2_val))));
-        }
-        let (system, layout) =
-            magnetar_cpu::uniform_rem_row_relation(width, row.rs1_val, row.rs2_val, row.rd_val);
+        let (system, layout) = magnetar_cpu::uniform_signed_div_relation(width);
         return Ok(Some((system, layout.witness(row.rs1_val, row.rs2_val))));
     }
     if let Some(step_op) = w_step_op_for(row.instruction.op) {
@@ -3600,6 +3568,86 @@ mod tests {
         .unwrap();
         let proof = prove_unified_trace(&trace, 8).unwrap();
         verify_unified_trace(&trace, &proof, 8).unwrap();
+    }
+
+    #[test]
+    fn unified_mul_div_round_trips() {
+        use magnetar_executor::execute;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+        let mul_program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 6,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Mul,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 1,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let div_program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 17,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 2,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 5,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Divu,
+                    rd: 3,
+                    rs1: 1,
+                    rs2: 2,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        for program in [mul_program, div_program] {
+            let trace = execute(
+                &program,
+                MachineConfig {
+                    entry: 0x1000,
+                    rom_base: 0x1000,
+                    ram_base: 0x1000_0000,
+                    ram_size: 0x40,
+                    stack_top: 0x1000_0040,
+                    max_cycles: 100,
+                },
+            )
+            .unwrap();
+            let proof = prove_unified_trace(&trace, 8).unwrap();
+            verify_unified_trace(&trace, &proof, 8).unwrap();
+        }
     }
 
     #[test]

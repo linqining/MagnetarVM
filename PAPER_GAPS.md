@@ -2560,3 +2560,12 @@ rows with `layout.witness(branch_op, pc, rs1, rs2, imm)`. `uniform_branch_relati
 keeps the pinned variant for existing callers. New
 `unified_branch_round_trips` proves a taken BEQ. ALU, memory, and branch CPU
 systems are now value-independent; MUL/DIV/JAL/JALR/AUIPC still pin values.
+
+
+### A2a: fixed MUL/DIV CPU systems
+
+MUL now uses `uniform_mul_relation(width)` + `layout.witness`; MULH/MULHSU/MULHU
+use `uniform_mulh_relation(width, signed_a, signed_b)`; DIVU/REMU use
+`uniform_div_relation(width)`; DIV/REM use `uniform_signed_div_relation(width)`.
+The row systems no longer pin operands/results. New `unified_mul_div_round_trips`
+proves MUL and DIVU traces.
