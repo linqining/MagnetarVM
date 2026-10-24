@@ -4,6 +4,7 @@
 //! prover: `UnimplementedBackend` makes the missing cryptographic backend
 //! explicit rather than returning a misleading "proof".
 
+pub mod amo_add_row;
 pub mod binary_router;
 pub mod binary_shout;
 pub mod binary_twist;

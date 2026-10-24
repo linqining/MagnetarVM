@@ -2156,3 +2156,11 @@ new succinct backend.
 halves and sign-extends the 32-bit result to 64 bits. Tests cover `100/7` for
 both signedness and the `0x8000_0000 / 0xffff_ffff` overflow/magnitude cases.
 CPU fusion for DIVW/REMW/DIVUW/REMUW is the next step.
+
+
+### C: isolated AMOADD row
+
+`amo_add_row::AmoAddRow` constrains `new = old + operand` by binding a single
+`GatedAluRow` ADD to old/operand/new. Tests cover `5+3`, `255+1`, `0+7`,
+`17+13` at width 8. Memory read/write binding and the other AMO operations are
+the next step.
