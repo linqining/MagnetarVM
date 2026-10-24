@@ -909,6 +909,7 @@ impl Pcs for P3SharedPcs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use magnetar_proof::Mle;
 
     fn values(size: usize) -> Vec<F2_128> {
         (0..size)
@@ -1149,5 +1150,85 @@ mod tests {
             bincode::serialize(&shared_commitment).unwrap(),
             bincode::serialize(&mosaic_commitment).unwrap()
         );
+    }
+    #[test]
+    fn router_shape_plus_large_table_round_trips() {
+        let pcs = P3BinaryPcs::with_params(100, 4, 16, 3);
+        let mut router = Vec::with_capacity(276);
+        for column in 0..276usize {
+            router.push(
+                (0..8)
+                    .map(|row| F2_128::from(((row * 17 + column * 5 + 1) & 1) as u64))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        let mut large = Vec::with_capacity(3);
+        for column in 0..3usize {
+            large.push(
+                (0..512)
+                    .map(|row| F2_128::from(((row * 13 + column * 7 + 2) & 1) as u64))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        let tables = vec![
+            P3MosaicTable {
+                columns: router.clone(),
+            },
+            P3MosaicTable {
+                columns: large.clone(),
+            },
+        ];
+        let point_a = vec![F2_128::from(1u64), F2_128::from(0u64), F2_128::from(1u64)];
+        let point_link = vec![F2_128::from(0u64), F2_128::from(1u64), F2_128::from(1u64)];
+        let point_b = (0..9)
+            .map(|bit| F2_128::from(((bit * 3 + 1) & 1) as u64))
+            .collect::<Vec<_>>();
+        let groups = [201usize, 128, 3, 4, 1, 2, 3, 4, 1, 2, 64, 64];
+        let mut points = Vec::new();
+        let mut values = Vec::new();
+        let mut cursor = 0usize;
+        for (group, size) in groups.into_iter().enumerate() {
+            let row_point = if group == 0 { &point_link } else { &point_a };
+            let columns = (0..size)
+                .map(|offset| (cursor + offset) % 276)
+                .collect::<Vec<_>>();
+            cursor += size;
+            let expected = columns
+                .iter()
+                .map(|column| {
+                    Mle::new(router[*column].clone())
+                        .unwrap()
+                        .eval(row_point)
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            points.push(P3MosaicPoint {
+                table: 0,
+                point: row_point.clone(),
+                columns,
+                next_columns: Vec::new(),
+            });
+            values.push(expected);
+        }
+        points.push(P3MosaicPoint {
+            table: 1,
+            point: point_b.clone(),
+            columns: vec![0, 1, 2],
+            next_columns: Vec::new(),
+        });
+        values.push(
+            (0..3)
+                .map(|column| {
+                    Mle::new(large[column].clone())
+                        .unwrap()
+                        .eval(&point_b)
+                        .unwrap()
+                })
+                .collect(),
+        );
+        let commitment = pcs.commit_mosaic(&tables).unwrap();
+        let opening = pcs.open_mosaic(&tables, &points).unwrap();
+        assert!(pcs.verify_mosaic(&opening, &points, &values).unwrap());
+        let _ = commitment;
     }
 }

@@ -3863,3 +3863,13 @@ workloads through the unified path (width 16):
 
 The shifts row exercises the standalone shift-Router fallback. This is a
 stepping stone toward the paper's 15-workload suite, not a replacement.
+
+
+### P3 shift-Router shared opening: isolation status
+
+`router_shape_plus_large_table_round_trips` reproduces the shift Router table
+shape (3 vars x 276 columns), two distinct row points, 12 opening batches and a
+second 9-var table. P3 opens and verifies this synthetic schedule. The real
+failure therefore depends on additional unified tables/schedule state, not just
+the router table shape or multi-point batches; the standalone shift-Router
+fallback stays in place until the exact combined schedule is minimized.
