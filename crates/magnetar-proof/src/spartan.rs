@@ -1634,6 +1634,22 @@ pub fn verify_lockstep_bits<B: BitPcs>(
     proof: &LockstepProof<B::Commitment, B::Opening>,
     backend: &B,
 ) -> Result<(), SpartanError> {
+    verify_lockstep_bits_with_replacements(a0, b0, c0, a1, b1, c1, layout, proof, backend, &[])
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn verify_lockstep_bits_with_replacements<B: BitPcs>(
+    a0: &dyn SpartanMatrix,
+    b0: &dyn SpartanMatrix,
+    c0: &dyn SpartanMatrix,
+    a1: &dyn SpartanMatrix,
+    b1: &dyn SpartanMatrix,
+    c1: &dyn SpartanMatrix,
+    layout: &WitnessLayout,
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    backend: &B,
+    replacements: &[Option<F2_128>],
+) -> Result<(), SpartanError> {
     if a0.rows() != a1.rows()
         || b0.rows() != a1.rows()
         || c0.rows() != a1.rows()
@@ -1691,7 +1707,21 @@ pub fn verify_lockstep_bits<B: BitPcs>(
         2,
         |round, values| round_challenge(&transcript, "inner-round", round, values),
     )?;
-    let vw = reconstruct_segment_claim(layout, &proof.segments, &ry)?;
+    let vw = if replacements.is_empty() {
+        reconstruct_segment_claim(layout, &proof.segments, &ry)?
+    } else {
+        if replacements.len() != layout.segments.len() || proof.segments.len() != replacements.len()
+        {
+            return Err(SpartanError::Verification("segment replacement shape"));
+        }
+        let mut claims = proof.segments.clone();
+        for (claim, replacement) in claims.iter_mut().zip(replacements) {
+            if let Some(value) = replacement {
+                claim.value = *value;
+            }
+        }
+        reconstruct_segment_claim(layout, &claims, &ry)?
+    };
     let a0_at = a0.eval_mle(&rx, &ry)?;
     let b0_at = b0.eval_mle(&rx, &ry)?;
     let c0_at = c0.eval_mle(&rx, &ry)?;
@@ -1905,6 +1935,26 @@ mod tests {
         let direct = crate::DirectBitPcs::new(TestPcs);
         let proof = prove_lockstep_bits(&bits, &a, &b, &c, &a, &b, &c, &layout, &direct).unwrap();
         verify_lockstep_bits(&a, &b, &c, &a, &b, &c, &layout, &proof, &direct).unwrap();
+        let replacements = vec![None; layout.segments.len()];
+        verify_lockstep_bits_with_replacements(
+            &a,
+            &b,
+            &c,
+            &a,
+            &b,
+            &c,
+            &layout,
+            &proof,
+            &direct,
+            &replacements,
+        )
+        .unwrap();
+        let mut bad = replacements;
+        bad[0] = Some(F2_128::from(2u64));
+        assert!(verify_lockstep_bits_with_replacements(
+            &a, &b, &c, &a, &b, &c, &layout, &proof, &direct, &bad,
+        )
+        .is_err());
 
         let packed = crate::PackedBitPcs::new(TestPcs);
         let proof = prove_lockstep_bits(&bits, &a, &b, &c, &a, &b, &c, &layout, &packed).unwrap();

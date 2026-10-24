@@ -3645,3 +3645,12 @@ projection matches.
 point, and verifies the opening against computed column evaluations. This shows
 the component bit columns are PCS-ready; the remaining step is to add their
 proof-carried evaluations to the CPU claim reconstruction.
+
+
+### B5: lockstep segment replacement API
+
+Added `verify_lockstep_bits_with_replacements`: the verifier can override
+individual layout segment claims (for example with component bit-column
+evaluations) before reconstructing the full witness claim and checking the
+lockstep inner product/PCS opening. The existing verifier calls it with no
+replacements; a tampered replacement is rejected in the DirectBitPcs test.
