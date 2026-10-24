@@ -3130,3 +3130,11 @@ to a power of two and the row/column point layout is derived from that padded
 shape, so the simple column append does not preserve the packed-point layout.
 Reverted. A correct integration must pack the metadata region with the same
 column padding used by `table_bits`, or use a region suffix in the row point.
+
+
+Follow-up debug: after appending 12 metadata columns the Shout table has 18
+columns, `col_bits=5` (32 padded columns), leaves=18, and packed bits are padded
+from 128 to 256 entries. The leaf batch still disagrees, so the mismatch is in
+how the padded row/column point is formed for the packed table, not in the
+metadata values themselves. A region suffix in the point (or a packed layout
+helper shared by prove/verify) is still required.
