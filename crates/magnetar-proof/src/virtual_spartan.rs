@@ -25,6 +25,8 @@ pub enum VirtualSpartanError {
     ClaimShape,
     #[error("full witness claim does not match segment claims")]
     ClaimMismatch,
+    #[error("routed segment claims do not match the layout owners")]
+    RoutingShape,
     #[error(transparent)]
     Proof(#[from] ProofError),
 }
@@ -86,6 +88,49 @@ pub fn route_segment_claims_by_owner(
         }
     }
     Ok(groups)
+}
+
+/// Expected owner -> segment-count table for a witness layout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VirtualClaimRouter {
+    pub expected: Vec<(SegmentOwner, usize)>,
+}
+
+impl VirtualClaimRouter {
+    pub fn new(layout: &WitnessLayout) -> Self {
+        let mut expected: Vec<(SegmentOwner, usize)> = Vec::new();
+        for segment in &layout.segments {
+            if let Some(group) = expected
+                .iter_mut()
+                .find(|(owner, _)| *owner == segment.owner)
+            {
+                group.1 += 1;
+            } else {
+                expected.push((segment.owner, 1));
+            }
+        }
+        Self { expected }
+    }
+
+    /// Verify that every routed group is present exactly once with the expected
+    /// segment count. This is the consumption check for Virtual Spartan claims.
+    pub fn verify(
+        &self,
+        groups: &[(SegmentOwner, Vec<RoutedSegmentClaim>)],
+    ) -> Result<(), VirtualSpartanError> {
+        if groups.len() != self.expected.len() {
+            return Err(VirtualSpartanError::RoutingShape);
+        }
+        for (owner, count) in &self.expected {
+            let Some((_, claims)) = groups.iter().find(|(group, _)| group == owner) else {
+                return Err(VirtualSpartanError::RoutingShape);
+            };
+            if claims.len() != *count {
+                return Err(VirtualSpartanError::RoutingShape);
+            }
+        }
+        Ok(())
+    }
 }
 
 pub fn split_segment_claims(
@@ -166,6 +211,23 @@ mod tests {
             Segment::new("c", 8, 8, SegmentKind::Direct, SegmentOwner::Cpu),
         ])
         .unwrap()
+    }
+
+    #[test]
+    fn virtual_claim_router_consumes_all_owner_groups() {
+        let layout = layout();
+        let values = (0..layout.total_bits)
+            .map(|index| F2_128::from(index as u64 + 1))
+            .collect::<Vec<_>>();
+        let point = (0..layout.total_bits.trailing_zeros() as usize)
+            .map(|bit| F2_128::from((bit + 1) as u64))
+            .collect::<Vec<_>>();
+        let claims = split_segment_claims(&layout, &values, &point).unwrap();
+        let groups = route_segment_claims_by_owner(&layout, &claims).unwrap();
+        VirtualClaimRouter::new(&layout).verify(&groups).unwrap();
+        let mut bad = groups.clone();
+        bad[0].1.pop();
+        assert!(VirtualClaimRouter::new(&layout).verify(&bad).is_err());
     }
 
     #[test]

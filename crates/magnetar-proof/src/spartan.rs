@@ -9,7 +9,8 @@
 
 use crate::bit_pcs::BitPcs;
 use crate::virtual_spartan::{
-    reconstruct_segment_claim, split_segment_claims, SegmentClaim, VirtualSpartanError,
+    reconstruct_segment_claim, route_segment_claims_by_owner, split_segment_claims,
+    RoutedSegmentClaim, SegmentClaim, VirtualSpartanError,
 };
 use crate::{
     eq, prove_product2, prove_product4, prove_product6, verify_rounds, Mle, Pcs, ProofError,
@@ -857,6 +858,20 @@ pub struct LockstepClaims<C: Clone + std::fmt::Debug> {
     pub outer: SumcheckProof<F2_128>,
     pub inner: SumcheckProof<F2_128>,
     pub segments: Vec<SegmentClaim>,
+}
+
+impl<C: Clone + std::fmt::Debug> LockstepClaims<C> {
+    /// Route the per-segment claims to their layout owners for component
+    /// consumers (Twist, Shout, Router, ...).
+    pub fn routed_segments(
+        &self,
+        layout: &WitnessLayout,
+    ) -> Result<
+        Vec<(magnetar_constraint::SegmentOwner, Vec<RoutedSegmentClaim>)>,
+        VirtualSpartanError,
+    > {
+        route_segment_claims_by_owner(layout, &self.segments)
+    }
 }
 
 /// Prove two relations over one shared witness with a lockstep outer
@@ -2108,6 +2123,10 @@ mod tests {
         assert_eq!(verified_segments, claims.segments);
         let vw = reconstruct_segment_claim(&layout, &claims.segments, &ry).unwrap();
         assert_eq!(verified_vw, vw);
+        let groups = claims.routed_segments(&layout).unwrap();
+        crate::virtual_spartan::VirtualClaimRouter::new(&layout)
+            .verify(&groups)
+            .unwrap();
         let opening = pcs.open(&z, &ry).unwrap();
         assert!(pcs.verify(&commitment, &ry, vw, &opening).unwrap());
     }
