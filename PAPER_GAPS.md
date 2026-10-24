@@ -2285,3 +2285,7 @@ chained in the CPU.
 
 A tampered LR `reservation_after` is rejected. This is still verifier-side trace
 checking, not a CPU-row chained constraint.
+
+
+`unified_lr_sc_bundle_round_trips` executes LUI/ADDI/SD/LR.D/ADDI/SC.D and
+verifies the unified proof with both LR and SC batches present.
