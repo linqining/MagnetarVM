@@ -3606,3 +3606,12 @@ Memory(Ram) segments containing exactly the gated adder-out and data bits, with
 the remaining memory relation variables tagged Cpu. `memory_subsegment_is_filled_from_twist`
 fills these subsegments from BinaryTwist `read_address`/`read_value` and still
 reconstructs the original CPU z after pad/unpad.
+
+
+### B5 aggregate segments design
+
+Per-cycle owner subsegments have a different claim shape from component bit
+columns over cycles. `docs/b5-aggregate-segments.md` describes the aggregate
+virtual segment (`sources` gather, cycle-major field vectors) that makes
+segment claims and component column evals identical at the same local point.
+This is the next B5 schema step.
