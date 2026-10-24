@@ -29,6 +29,11 @@ pub struct AuxStatement {
 }
 
 impl AuxStatement {
+    pub fn digest(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(bincode::serialize(self).expect("aux statement serializes")).into()
+    }
+
     pub fn from_trace(trace: &Trace) -> Self {
         Self {
             config: trace.config.clone(),
