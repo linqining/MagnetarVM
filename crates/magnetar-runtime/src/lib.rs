@@ -1040,6 +1040,14 @@ pub struct TraceProof {
 /// This removes the per-row proof overhead but keeps the same reference trust
 /// model: the verifier reconstructs the merged system from the trace.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct TableBatchProof {
+    pub table: usize,
+    pub row_point: Vec<F2_128>,
+    pub values: Vec<F2_128>,
+    pub batch: magnetar_pcs::mosaic::MosaicBatchingProof,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct UnifiedTraceProof {
     pub access: TraceAccessProof,
     pub trace_commitment: [u8; 32],
@@ -1059,6 +1067,7 @@ pub struct UnifiedTraceProof {
     pub store_router_index: Option<usize>,
     pub trace_index: usize,
     pub trace_claims: Vec<(magnetar_pcs::P3MosaicPoint, Vec<F2_128>)>,
+    pub table_batches: Vec<TableBatchProof>,
     pub width: usize,
     pub commitment: P3MosaicCommitment,
     pub packed_shout: Option<crate::packed_shout::PackedShoutProof>,
@@ -2225,6 +2234,70 @@ pub fn prove_unified_revealed(
     Ok(proof)
 }
 
+pub(crate) fn point_sort_key(point: &magnetar_pcs::P3MosaicPoint) -> (usize, Vec<usize>, Vec<u8>) {
+    (
+        point.table,
+        point.columns.clone(),
+        bincode::serialize(&point.point).unwrap_or_default(),
+    )
+}
+
+pub(crate) fn verify_table_batch_claims(
+    proof: &UnifiedTraceProof,
+    points: &[(magnetar_pcs::P3MosaicPoint, Vec<F2_128>)],
+) -> Result<(), RuntimeError> {
+    for batch in &proof.table_batches {
+        let shape = &proof.commitment.tables[batch.table];
+        let table = magnetar_pcs::P3MosaicTable {
+            columns: (0..shape.num_columns)
+                .map(|_| vec![F2_128::from(0u64); 1usize << shape.num_variables])
+                .collect(),
+        };
+        let mosaic = magnetar_pcs::mosaic::PackedMosaic::new(&table.columns)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        let mut claims = Vec::new();
+        for (point, values) in points {
+            if point.table != batch.table {
+                continue;
+            }
+            for (offset, column) in point.columns.iter().enumerate() {
+                if let Some(value) = values.get(offset) {
+                    claims.push((
+                        mosaic
+                            .lift(*column, &point.point)
+                            .map_err(|error| RuntimeError::Proof(error.to_string()))?,
+                        *value,
+                    ));
+                }
+            }
+        }
+        let mut transcript = magnetar_transcript::Sha256Transcript::new("table-batch");
+        transcript.absorb(
+            "commitment",
+            &bincode::serialize(&proof.commitment).unwrap_or_default(),
+        );
+        transcript.absorb("table", &(batch.table as u64).to_le_bytes());
+        magnetar_pcs::mosaic::verify_batching(
+            &batch.batch,
+            &claims,
+            mosaic.total_bits,
+            &mut transcript,
+        )
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        let row_bits = batch.row_point.len();
+        let suffix = &batch.batch.point[row_bits..];
+        let mut rebuilt = F2_128::from(0u64);
+        for (column, value) in batch.values.iter().enumerate() {
+            let component = &mosaic.components[column];
+            rebuilt = rebuilt + magnetar_proof::eq(suffix, &component.suffix) * *value;
+        }
+        if rebuilt != batch.batch.value {
+            return Err(RuntimeError::Proof("table batch value mismatch".into()));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn shout_router_link_claims(
     commitment: &P3MosaicCommitment,
     rom_index: usize,
@@ -2379,8 +2452,34 @@ pub fn verify_core_statement(
         }
     }
     let mut pairs = points.into_iter().zip(values).collect::<Vec<_>>();
-    pairs.sort_by_key(|(point, _)| point.table);
-    let (points, values): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+    pairs.sort_by_key(|(point, _)| crate::point_sort_key(point));
+    let original = pairs.clone();
+    let (points, values): (Vec<_>, Vec<_>) = if proof.table_batches.is_empty() {
+        pairs.into_iter().unzip()
+    } else {
+        let selected = proof
+            .table_batches
+            .iter()
+            .map(|batch| batch.table)
+            .collect::<std::collections::HashSet<_>>();
+        let mut filtered = pairs
+            .into_iter()
+            .filter(|(point, _)| !selected.contains(&point.table))
+            .collect::<Vec<_>>();
+        for batch in &proof.table_batches {
+            filtered.push((
+                magnetar_pcs::P3MosaicPoint {
+                    table: batch.table,
+                    point: batch.row_point.clone(),
+                    columns: (0..batch.values.len()).collect(),
+                    next_columns: Vec::new(),
+                },
+                batch.values.clone(),
+            ));
+        }
+        filtered.sort_by_key(|(point, _)| crate::point_sort_key(point));
+        filtered.into_iter().unzip()
+    };
     if let Some(opening) = &proof.opening {
         let pcs = magnetar_pcs::P3BinaryPcs::with_params(100, 4, 16, 3);
         if !pcs
@@ -2390,6 +2489,7 @@ pub fn verify_core_statement(
             return Err(RuntimeError::Proof("core opening rejected".into()));
         }
     }
+    crate::verify_table_batch_claims(proof, &original)?;
     Ok(())
 }
 

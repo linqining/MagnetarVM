@@ -3270,3 +3270,15 @@ Batching only tables with at least 4 points reduced the opening from 67,809 to
 65,249 B, but stored claims/batch proofs raised the total to 148,464 B. Raising
 the threshold to 8 points gave 148,352 B (opening 66,241). In both cases the
 claim storage outweighs the saved opening points; reverted.
+
+
+### Compact batched opening
+
+Verifier-side claims are now rebuilt from the existing claim points instead of
+being stored in `TableBatchProof`. Points are ordered by a deterministic
+`(table, columns, point-bytes)` key so prover and verifier build the same claim
+list. Only tables with at least 6 points and at most 3 row bits are batched.
+
+Benchmark: 138,064 -> 137,120 B; opening 67,809 -> 65,537 B. The size win is
+real but prove/verify time on the benchmark rose from ~2-5 s to ~10-26 s, because
+each batched table adds a batching sumcheck and an all-column opening point.

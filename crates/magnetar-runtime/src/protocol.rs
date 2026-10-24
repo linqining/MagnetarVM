@@ -329,6 +329,7 @@ pub struct ProofBundle {
     pub store_router_index: Option<usize>,
     pub trace_index: usize,
     pub trace_claims: Vec<(magnetar_pcs::P3MosaicPoint, Vec<F2_128>)>,
+    pub table_batches: Vec<crate::TableBatchProof>,
     pub width: usize,
     pub commitment: P3MosaicCommitment,
     pub packed_shout: Option<crate::packed_shout::PackedShoutProof>,
@@ -375,6 +376,7 @@ impl ProofBundle {
             store_router_index: proof.store_router_index,
             trace_index: proof.trace_index,
             trace_claims: proof.trace_claims.clone(),
+            table_batches: proof.table_batches.clone(),
             width: proof.width,
             commitment: proof.commitment.clone(),
             packed_shout: proof.packed_shout.clone(),
@@ -423,6 +425,7 @@ impl ProofBundle {
             store_router_index: self.store_router_index,
             trace_index: self.trace_index,
             trace_claims: self.trace_claims,
+            table_batches: self.table_batches,
             width: self.width,
             commitment: self.commitment,
             packed_shout: self.packed_shout,
@@ -1165,6 +1168,7 @@ pub(crate) struct UnifiedProveContext<'a> {
     gated_claims: Option<crate::GatedCpuClaims>,
     gated_ry: Option<Vec<F2_128>>,
     packed_shout: Option<crate::packed_shout::PackedShoutProof>,
+    table_batches: Vec<crate::TableBatchProof>,
     opening: Option<magnetar_pcs::P3MosaicOpening>,
 }
 
@@ -1310,6 +1314,7 @@ impl<'a> UnifiedProveContext<'a> {
             gated_claims: None,
             gated_ry: None,
             packed_shout: None,
+            table_batches: Vec::new(),
             opening: None,
         })
     }
@@ -1552,10 +1557,93 @@ impl<'a> UnifiedProveContext<'a> {
             .drain(..)
             .zip(self.values.drain(..))
             .collect::<Vec<_>>();
-        pairs.sort_by_key(|(point, _)| point.table);
-        let (points, values): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
-        self.points = points;
-        self.values = values;
+        pairs.sort_by_key(|(point, _)| crate::point_sort_key(point));
+        let mut counts = vec![0usize; self.mosaic_tables.len()];
+        for (point, _) in &pairs {
+            counts[point.table] += 1;
+        }
+        let selected = counts
+            .iter()
+            .enumerate()
+            .filter(|(index, count)| {
+                **count >= 6
+                    && (self.mosaic_tables[*index].columns[0].len().trailing_zeros() as usize) <= 3
+            })
+            .map(|(index, _)| index)
+            .collect::<std::collections::HashSet<_>>();
+        if selected.is_empty() {
+            let (points, values): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+            self.points = points;
+            self.values = values;
+        } else {
+            let commitment = self
+                .commitment
+                .as_ref()
+                .ok_or_else(|| RuntimeError::Proof("missing commitment".into()))?;
+            let mut grouped = vec![Vec::new(); self.mosaic_tables.len()];
+            let mut kept_points = Vec::new();
+            let mut kept_values = Vec::new();
+            for (point, values) in pairs {
+                if selected.contains(&point.table) {
+                    for (offset, column) in point.columns.iter().enumerate() {
+                        if let Some(value) = values.get(offset) {
+                            grouped[point.table].push((point.point.clone(), *column, *value));
+                        }
+                    }
+                } else {
+                    kept_points.push(point);
+                    kept_values.push(values);
+                }
+            }
+            for index in selected {
+                let table = &self.mosaic_tables[index];
+                let mosaic = magnetar_pcs::mosaic::PackedMosaic::new(&table.columns)
+                    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+                let claims = grouped[index]
+                    .iter()
+                    .map(|(row, column, value)| Ok((mosaic.lift(*column, row)?, *value)))
+                    .collect::<Result<Vec<_>, magnetar_pcs::mosaic::MosaicError>>()
+                    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+                let mut transcript = magnetar_transcript::Sha256Transcript::new("table-batch");
+                transcript.absorb(
+                    "commitment",
+                    &bincode::serialize(commitment).unwrap_or_default(),
+                );
+                transcript.absorb("table", &(index as u64).to_le_bytes());
+                let batch =
+                    magnetar_pcs::mosaic::batch_claims(&mosaic.values, &claims, &mut transcript)
+                        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+                let row_bits = table.columns[0].len().trailing_zeros() as usize;
+                let row_point = batch.point[..row_bits].to_vec();
+                let column_values = table
+                    .columns
+                    .iter()
+                    .map(|column| {
+                        Mle::new(column.clone())
+                            .and_then(|mle| mle.eval(&row_point))
+                            .map_err(|error| RuntimeError::Proof(error.to_string()))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                kept_points.push(P3MosaicPoint {
+                    table: index,
+                    point: row_point.clone(),
+                    columns: (0..table.columns.len()).collect(),
+                    next_columns: Vec::new(),
+                });
+                kept_values.push(column_values.clone());
+                self.table_batches.push(crate::TableBatchProof {
+                    table: index,
+                    row_point,
+                    values: column_values,
+                    batch,
+                });
+            }
+            let mut pairs = kept_points.into_iter().zip(kept_values).collect::<Vec<_>>();
+            pairs.sort_by_key(|(point, _)| crate::point_sort_key(point));
+            let (points, values): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+            self.points = points;
+            self.values = values;
+        }
         let opening = self
             .pcs
             .open_mosaic(&self.mosaic_tables, &self.points)
@@ -1584,6 +1672,7 @@ impl<'a> UnifiedProveContext<'a> {
             store_router_index: self.store_router_table.as_ref().map(|(index, _)| *index),
             trace_index: self.trace_index,
             trace_claims,
+            table_batches: self.table_batches,
             width: self.width,
             commitment: self
                 .commitment
@@ -1944,7 +2033,29 @@ impl<'a> UnifiedVerifyContext<'a> {
             .drain(..)
             .zip(self.values.drain(..))
             .collect::<Vec<_>>();
-        pairs.sort_by_key(|(point, _)| point.table);
+        pairs.sort_by_key(|(point, _)| crate::point_sort_key(point));
+        let original = pairs.clone();
+        if !self.proof.table_batches.is_empty() {
+            let selected = self
+                .proof
+                .table_batches
+                .iter()
+                .map(|batch| batch.table)
+                .collect::<std::collections::HashSet<_>>();
+            pairs.retain(|(point, _)| !selected.contains(&point.table));
+            for batch in &self.proof.table_batches {
+                pairs.push((
+                    P3MosaicPoint {
+                        table: batch.table,
+                        point: batch.row_point.clone(),
+                        columns: (0..batch.values.len()).collect(),
+                        next_columns: Vec::new(),
+                    },
+                    batch.values.clone(),
+                ));
+            }
+        }
+        pairs.sort_by_key(|(point, _)| crate::point_sort_key(point));
         let (points, values): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
         self.points = points;
         self.values = values;
@@ -1957,6 +2068,7 @@ impl<'a> UnifiedVerifyContext<'a> {
                 return Err(RuntimeError::Proof("unified opening rejected".into()));
             }
         }
+        crate::verify_table_batch_claims(self.proof, &original)?;
         Ok(())
     }
 
