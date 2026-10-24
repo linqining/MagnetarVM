@@ -2170,3 +2170,10 @@ the next step.
 at the same address, with the address adder inputs bound together and the
 memory gate forced high. The isolated relation checks read-modify-write
 consistency for AMOADD.
+
+
+### C: AMO logic operations
+
+`amo_logic_row::AmoLogicRow` covers AMOXOR, AMOAND, AMOOR, and AMOSWAP with the
+same two-memory-row read-modify-write binding as AMOADD. Tests cover
+`0b1100`/`0b1010` for each operation.
