@@ -3247,3 +3247,8 @@ both core and unified paths add the same link/ROM points before verification.
 
 All targeted tests pass. Benchmark: 138,064 B (from 124,568 B); the +13.5 KB is
 the cost of committing/opening the ROM table. Packed Shout component 5,226 B.
+
+
+Added tamper tests for the committed Shout metadata: flipping a Shout
+`link_evals` entry (Router-Shout link) and flipping a `column_evals` entry (ROM
+claim) are both rejected by `verify_core_proof`.

@@ -5746,9 +5746,19 @@ mod cpu_statement_tests {
         let mut bad = statement.clone();
         bad.shape.rows[0].pc = bad.shape.rows[0].pc.wrapping_add(4);
         assert!(verify_core_statement(&proof, &bad).is_err());
-        let mut bad = statement;
+        let mut bad = statement.clone();
         bad.shape.rows[0].pc = bad.shape.rows[0].pc.wrapping_add(4);
         assert!(verify_core_statement(&proof, &bad).is_err());
+        let mut bad_proof = proof.clone();
+        if let Some(packed) = &mut bad_proof.packed_shout {
+            packed.claims.link_evals[0] = packed.claims.link_evals[0] + F2_128::from(1u64);
+        }
+        assert!(verify_core_proof(&bad_proof).is_err());
+        let mut bad_proof = proof.clone();
+        if let Some(packed) = &mut bad_proof.packed_shout {
+            packed.claims.column_evals[0] = packed.claims.column_evals[0] + F2_128::from(1u64);
+        }
+        assert!(verify_core_proof(&bad_proof).is_err());
     }
 
     #[test]
