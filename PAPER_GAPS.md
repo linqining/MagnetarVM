@@ -2988,3 +2988,12 @@ separately, and all access/aux/opening code reads `proof.commitment` instead of
 `proof.cpu.commitment`. The CPU proof is still present, so the benchmark grows
 to 161,607 B (+264 B) from the duplicated commitment. This is preparation for
 making `cpu` optional and removing the per-row CPU table.
+
+
+### B groundwork: Cpu stage is optional in protocol plan
+
+`ProtocolPlan::unified` marks the Cpu stage optional, and
+`check_virtual_claims` falls back to the union of all stage outputs when the Cpu
+stage is absent. This removes the "missing stage Cpu" bundle check that blocked
+making `UnifiedTraceProof.cpu` optional. The proof still emits the CPU claims,
+so behavior and size are unchanged.

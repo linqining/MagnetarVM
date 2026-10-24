@@ -811,7 +811,7 @@ impl ProtocolPlan {
                         ClaimKind::Store,
                         ClaimKind::Bytecode,
                     ],
-                    optional: false,
+                    optional: true,
                 },
                 StageSpec {
                     id: StageId::Registers,
@@ -898,10 +898,14 @@ impl ProtocolPlan {
     }
 
     pub fn check_virtual_claims(&self, claims: &ClaimSet) -> Result<(), ProtocolError> {
-        let produced: HashSet<ClaimKind> = self
-            .stage(StageId::Cpu)
-            .map(|stage| stage.produces.iter().copied().collect())
-            .unwrap_or_default();
+        let produced: HashSet<ClaimKind> = if let Some(stage) = self.stage(StageId::Cpu) {
+            stage.produces.iter().copied().collect()
+        } else {
+            self.stages
+                .iter()
+                .flat_map(|stage| stage.produces.iter().copied())
+                .collect()
+        };
         for claim in claims.claims() {
             if !produced.contains(&claim.kind) {
                 return Err(ProtocolError::UnroutedClaim(claim.kind));
