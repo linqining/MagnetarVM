@@ -691,6 +691,24 @@ pub(crate) fn gated_claim_inputs(
 }
 
 #[allow(clippy::type_complexity)]
+pub(crate) fn reservation_claim_matrices(
+    width: usize,
+    cycles: usize,
+) -> Result<
+    (
+        [magnetar_proof::SharedBlockMatrix; 3],
+        [magnetar_proof::SharedBlockMatrix; 3],
+        magnetar_constraint::WitnessLayout,
+    ),
+    RuntimeError,
+> {
+    let row = crate::reservation_cpu_row::ReservationCpuRow::new(width);
+    let (base_cols, systems0, systems1) = gated_shared_matrices(&row, cycles, None)?;
+    let layout = segment_layout(cycles * base_cols)?;
+    Ok((systems0, systems1, layout))
+}
+
+#[allow(clippy::type_complexity)]
 pub(crate) fn reservation_claim_inputs(
     width: usize,
     rows: &[(u64, crate::reservation_cpu_row::ReservationCpuInput)],

@@ -2515,3 +2515,11 @@ passes.
 at the verification point. The verifier uses this value directly instead of
 rebuilding the gated `z` and evaluating it. Prover still needs `z`; this removes
 one witness dependency from verification.
+
+
+### A2: gated verification no longer builds gated z
+
+`reservation_claim_matrices` builds the gated matrices/layout from width and row
+count only; the verifier constructs `GatedProveInput` with an empty `z`. Combined
+with the proof-carried gated value, gated claim verification no longer depends
+on gated witness values.

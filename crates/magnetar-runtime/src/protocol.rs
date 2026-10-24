@@ -1565,9 +1565,9 @@ impl<'a> UnifiedVerifyContext<'a> {
         }
         let gated_input = gated_rows
             .as_ref()
-            .and_then(|rows| crate::simd_dual::reservation_claim_inputs(width, rows).ok())
-            .map(|(z, a0, a1, layout)| crate::GatedProveInput {
-                z,
+            .and_then(|rows| crate::simd_dual::reservation_claim_matrices(width, rows.len()).ok())
+            .map(|(a0, a1, layout)| crate::GatedProveInput {
+                z: Vec::new(),
                 a0,
                 a1,
                 layout,
