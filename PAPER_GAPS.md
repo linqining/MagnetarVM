@@ -2753,3 +2753,12 @@ shifted accordingly. `unified_lr_sc`, `core_statement`, `aux_statement`, and
 This is the commitment prerequisite for proof-carried access evaluations. The
 verifier still reads these vectors from the witness until the new eval fields
 and points are added.
+
+
+An attempt to add initial/read/write eval points directly to
+`prove_binary_twist_claims` and `verify_binary_twist_claims` caused the shared P3
+opening to reject. The prover and verifier point multisets did not match
+(duplicate/missing register and RAM value-table points), so the experiment was
+reverted to the committed table-extension state. The next attempt should derive
+the points once in a shared helper used by both sides instead of editing each
+side independently.
