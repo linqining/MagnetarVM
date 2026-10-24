@@ -2236,3 +2236,9 @@ events. `ProveContext::finish` generates it, `ProofBundle` preserves it, and
 `unified_amo_bundle_round_trips` test executes AMOADD.D and verifies the unified
 proof. AMO events are not yet bound to CPU/memory claims or the reservation
 chain.
+
+
+`verify_amo_bundle` now recomputes each AMO row's new value and requires a
+matching write in `trace.memory_events` at the same address. Executor traces do
+not emit a separate read event for AMO, so the old value is bound through the
+trace commitment and `rd_val` rather than a read event.

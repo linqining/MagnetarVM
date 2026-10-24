@@ -139,11 +139,111 @@ pub fn prove_amo_bundle(trace: &Trace, width: usize) -> Result<AmoBundleProof, R
 }
 
 #[allow(clippy::type_complexity)]
+fn check_memory_events(trace: &Trace) -> Result<(), RuntimeError> {
+    for row in &trace.rows {
+        let Some(mem) = row.mem else {
+            continue;
+        };
+        if !matches!(
+            row.instruction.op,
+            Op::AmoaddW
+                | Op::AmoaddD
+                | Op::AmoxorW
+                | Op::AmoxorD
+                | Op::AmoandW
+                | Op::AmoandD
+                | Op::AmoorW
+                | Op::AmoorD
+                | Op::AmoswapW
+                | Op::AmoswapD
+                | Op::AmominW
+                | Op::AmominD
+                | Op::AmomaxW
+                | Op::AmomaxD
+                | Op::AmominuW
+                | Op::AmominuD
+                | Op::AmomaxuW
+                | Op::AmomaxuD
+        ) {
+            continue;
+        }
+        let bits = u32::from(mem.width) * 8;
+        let mask = if bits >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << bits) - 1
+        };
+        let old = row.rd_val & mask;
+        let operand = row.rs2_val & mask;
+        let new = match row.instruction.op {
+            Op::AmoaddW | Op::AmoaddD => old.wrapping_add(operand),
+            Op::AmoxorW | Op::AmoxorD => old ^ operand,
+            Op::AmoandW | Op::AmoandD => old & operand,
+            Op::AmoorW | Op::AmoorD => old | operand,
+            Op::AmoswapW | Op::AmoswapD => operand,
+            Op::AmominW | Op::AmominD => {
+                let (a, b) = (
+                    if bits == 32 {
+                        (old as u32 as i32) as i64
+                    } else {
+                        old as i64
+                    },
+                    if bits == 32 {
+                        (operand as u32 as i32) as i64
+                    } else {
+                        operand as i64
+                    },
+                );
+                if a < b {
+                    old
+                } else {
+                    operand
+                }
+            }
+            Op::AmomaxW | Op::AmomaxD => {
+                let (a, b) = (
+                    if bits == 32 {
+                        (old as u32 as i32) as i64
+                    } else {
+                        old as i64
+                    },
+                    if bits == 32 {
+                        (operand as u32 as i32) as i64
+                    } else {
+                        operand as i64
+                    },
+                );
+                if a < b {
+                    operand
+                } else {
+                    old
+                }
+            }
+            Op::AmominuW | Op::AmominuD => old.min(operand),
+            Op::AmomaxuW | Op::AmomaxuD => old.max(operand),
+            _ => continue,
+        } & mask;
+        let write_ok = trace.memory_events.iter().any(|event| {
+            event.access.addr == mem.addr
+                && event.access.is_write
+                && (event.access.value & mask) == new
+        });
+        if !write_ok {
+            return Err(RuntimeError::Proof(
+                "AMO event is not consistent with memory_events".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::type_complexity)]
 pub fn verify_amo_bundle(
     trace: &Trace,
     width: usize,
     proof: &AmoBundleProof,
 ) -> Result<(), RuntimeError> {
+    check_memory_events(trace)?;
     let rows = collect(trace);
     let expected =
         |rows: &Vec<(u64, u64, u64)>, present: bool, label: &str| -> Result<usize, RuntimeError> {
