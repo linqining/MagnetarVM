@@ -411,17 +411,6 @@ fn gated_rows_from_trace_impl(
             ));
             continue;
         };
-        let (op, right) = match step {
-            StepOp::Xor => (GatedAluOp::Xor, row.rs2_val),
-            StepOp::And => (GatedAluOp::And, row.rs2_val),
-            StepOp::Add => (GatedAluOp::Add, row.rs2_val),
-            StepOp::Sub => (GatedAluOp::Sub, row.rs2_val),
-            StepOp::Sltu => (GatedAluOp::Sltu, row.rs2_val),
-            StepOp::Slt => (GatedAluOp::Slt, row.rs2_val),
-            StepOp::Lui => (GatedAluOp::Lui, row.rs2_val),
-            StepOp::Addi => (GatedAluOp::Add, row.instruction.imm as u64),
-            _ => break,
-        };
         if crate::w_step_op_for(row.instruction.op).is_some()
             || row.instruction.op.amo_width().is_some()
             || crate::branch_op_for(row.instruction.op).is_some()
@@ -436,6 +425,24 @@ fn gated_rows_from_trace_impl(
             ));
             continue;
         }
+        let imm = row.instruction.imm as u64;
+        let (op, right) = match step {
+            StepOp::Xor => (GatedAluOp::Xor, row.rs2_val),
+            StepOp::And => (GatedAluOp::And, row.rs2_val),
+            StepOp::Or => (GatedAluOp::Or, row.rs2_val),
+            StepOp::Add => (GatedAluOp::Add, row.rs2_val),
+            StepOp::Sub => (GatedAluOp::Sub, row.rs2_val),
+            StepOp::Sltu => (GatedAluOp::Sltu, row.rs2_val),
+            StepOp::Slt => (GatedAluOp::Slt, row.rs2_val),
+            StepOp::Lui => (GatedAluOp::Lui, row.rs2_val),
+            StepOp::Addi => (GatedAluOp::Add, imm),
+            StepOp::Xori => (GatedAluOp::Xor, imm),
+            StepOp::Ori => (GatedAluOp::Or, imm),
+            StepOp::Andi => (GatedAluOp::And, imm),
+            StepOp::Slti => (GatedAluOp::Slt, imm),
+            StepOp::Sltiu => (GatedAluOp::Sltu, imm),
+            _ => break,
+        };
         rows.push((
             row.pc,
             GatedCpuRowInput::Alu {

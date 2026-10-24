@@ -4086,3 +4086,16 @@ claims keeps the ~6 KB workload saving (loop 210,749 -> 209,621; mem-loop
 383,974 -> 380,038; shifts 249,960 -> 249,024) without the AMO latency blowup:
 AMO stays at 5.6 s. Row bits <= 3 remain always batchable; row bits 4 requires
 count <= 8.
+
+
+### Gated CPU ALU coverage: OR and immediate logical ops
+
+The gated ALU now has an `Or` selector (one selector bit plus a gated output
+vector; `OR = XOR + AND` at each bit), and `gated_rows_from_trace` maps `Or`,
+`Xori`, `Ori`, `Andi`, `Slti` and `Sltiu` instead of silently truncating the
+gated row stream. The word-width multiply/divide/AMO/branch guard now runs before
+the step-op match, so those rows are no longer dropped. `op_probe` verifies
+xor/and/or/slli/srli/srai/mul/div/rem/mulh end to end; the workload suite adds
+bitops, muldiv and mixedmem (11 workloads total). Gated ALU rows grow by one
+selector plus width gated-output bits; the workload total stays within ~1 KB of
+the previous layout after table-packing changes.
