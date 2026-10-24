@@ -135,6 +135,82 @@ mod tests {
     }
 
     #[test]
+    fn shape_reconstructs_sparse_matrices() {
+        use magnetar_proof::spartan::{MatrixPart, SparseMatrix};
+
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Lui,
+                    rd: 4,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x1000_0000,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::LrD,
+                    rd: 2,
+                    rs1: 4,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::ScD,
+                    rd: 5,
+                    rs1: 4,
+                    rs2: 2,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Add,
+                    rd: 7,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(&program, config()).unwrap();
+        let (real, _) = crate::merged_cpu_system(&trace, 8).unwrap();
+        let shape = CpuShape::from_trace(&trace).zeroed();
+        let (synthetic, _) = shape.system_with_len(&trace, 8).unwrap();
+        assert_eq!(
+            format!("{:?}", real.constraints),
+            format!("{:?}", synthetic.constraints)
+        );
+        for part in [MatrixPart::A, MatrixPart::B, MatrixPart::C] {
+            let a = SparseMatrix::from_system(&real, part).unwrap();
+            let b = SparseMatrix::from_system(&synthetic, part).unwrap();
+            let ea = a.entries();
+            let eb = b.entries();
+            eprintln!("part {:?} real {} synthetic {}", part, ea.len(), eb.len());
+            if ea != eb {
+                for i in 0..ea.len().max(eb.len()) {
+                    if ea.get(i) != eb.get(i) {
+                        eprintln!(
+                            "first diff at {i}: real {:?} synthetic {:?}",
+                            ea.get(i),
+                            eb.get(i)
+                        );
+                        break;
+                    }
+                }
+            }
+            assert_eq!(ea, eb, "part {:?}", part);
+        }
+    }
+
+    #[test]
     fn shape_reconstructs_cpu_system() {
         let program = ProgramImage::new(
             0x1000,

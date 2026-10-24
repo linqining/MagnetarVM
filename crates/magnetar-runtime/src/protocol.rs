@@ -321,6 +321,7 @@ pub struct ProofBundle {
     pub stages: Vec<(StageId, StageProof)>,
     pub amo: Option<crate::amo_bundle::AmoBundleProof>,
     pub gated: Option<crate::GatedCpuClaims>,
+    pub shape: crate::cpu_shape::CpuShape,
 }
 
 impl ProofBundle {
@@ -354,6 +355,7 @@ impl ProofBundle {
             stages,
             amo: proof.amo.clone(),
             gated: proof.gated.clone(),
+            shape: proof.shape.clone(),
         }
     }
 
@@ -390,6 +392,7 @@ impl ProofBundle {
             opening: self.opening,
             amo: self.amo,
             gated: self.gated,
+            shape: self.shape,
             cpu: cpu.ok_or(ProtocolError::MissingStage(StageId::Cpu))?,
             shout,
             shift_router,
@@ -1471,6 +1474,7 @@ impl<'a> UnifiedProveContext<'a> {
             None
         };
         Ok(UnifiedTraceProof {
+            shape: crate::cpu_shape::CpuShape::from_trace(self.trace).zeroed(),
             access: self
                 .access
                 .ok_or_else(|| RuntimeError::Proof("missing access proof".into()))?,
@@ -1518,6 +1522,11 @@ impl<'a> UnifiedVerifyContext<'a> {
         width: usize,
     ) -> Result<Self, RuntimeError> {
         check_trace_linkage(trace)?;
+        if !proof.shape.matches_structure(trace) {
+            return Err(RuntimeError::Proof(
+                "CPU shape does not match the trace".into(),
+            ));
+        }
         if proof.trace_commitment != trace_digest(trace) {
             return Err(RuntimeError::Proof(
                 "unified proof does not match the supplied trace".into(),
@@ -1753,11 +1762,21 @@ impl<'a> UnifiedVerifyContext<'a> {
     }
 
     pub(crate) fn verify_cpu(&mut self) -> Result<(), RuntimeError> {
-        let (system, cpu_witness) = merged_cpu_system(self.trace, self.width)?;
+        let (system, witness_len) = if self
+            .trace
+            .rows
+            .iter()
+            .any(|row| row.instruction.op.amo_width().is_some())
+        {
+            let (system, witness) = merged_cpu_system(self.trace, self.width)?;
+            let z = witness_vector(&system, &witness)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            (system, z.len())
+        } else {
+            self.proof.shape.system_with_len(self.trace, self.width)?
+        };
         let (system_a, system_b) = split_cpu_relations(&system);
-        let z = witness_vector(&system, &cpu_witness)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        let layout = cpu_segment_layout(z.len())?;
+        let layout = cpu_segment_layout(witness_len)?;
         let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
         let (ry, segments, value) =
             verify_lockstep_claims(&system_a, &system_b, &layout, &self.proof.cpu, &pcs)

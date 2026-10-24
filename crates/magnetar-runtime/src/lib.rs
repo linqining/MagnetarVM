@@ -1044,6 +1044,7 @@ pub struct UnifiedTraceProof {
     pub shift_router: Option<crate::binary_router::BinaryRouterProof>,
     pub store_router: Option<crate::binary_router::BinaryRouterProof>,
     pub amo: Option<crate::amo_bundle::AmoBundleProof>,
+    pub shape: crate::cpu_shape::CpuShape,
 }
 
 pub(crate) struct GatedProveInput {
@@ -1215,14 +1216,11 @@ fn row_cpu_relation(
         let Some(access) = row.mem else {
             return Ok(None);
         };
-        let (system, layout) = magnetar_cpu::uniform_store_row_relation(
-            64,
-            access.addr,
-            access.value,
-            row.rs1_val,
-            imm,
-        );
-        return Ok(Some((system, layout.witness(row.rs1_val, imm))));
+        let (system, layout) = magnetar_cpu::simd::uniform_memory_row_layout(64);
+        return Ok(Some((
+            system,
+            layout.witness(row.pc, row.rs1_val, imm, access.value, false),
+        )));
     }
     if matches!(
         row.instruction.op,

@@ -2629,3 +2629,16 @@ mismatch". This rules out shape/system reconstruction as the cause and points at
 how `verify_lockstep_claims` consumes the system matrices or layout in this
 path. The failing test was removed from the committed suite; the shape-system
 equality test remains.
+
+
+### A2a milestone: proof-carried value-free CPU shape
+
+The root cause of the lockstep mismatch was the SC row: `row_cpu_relation` still
+used `uniform_store_row_relation`, which pins address/value. Switching SC to the
+fixed memory layout made the zeroed-shape system and the real system produce
+identical SparseMatrix entries.
+
+`UnifiedTraceProof.shape` now carries the zeroed `CpuShape`; the verifier rebuilds
+the CPU system and witness length from it, with an AMO trace fallback. Proofs for
+branch, MUL/DIV, JAL, AUIPC, JALR, and LR/SC all pass. The gated benchmark is
+156,184 B (+95 B vs before the shape field).

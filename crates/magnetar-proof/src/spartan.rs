@@ -79,6 +79,16 @@ impl SpartanMatrix for SparseMatrix {
 }
 
 impl SparseMatrix {
+    pub fn entries(&self) -> Vec<(usize, usize, F2_128)> {
+        let mut entries = Vec::new();
+        for (row, values) in self.rows.iter().enumerate() {
+            for (column, coefficient) in values {
+                entries.push((row, *column, *coefficient));
+            }
+        }
+        entries
+    }
+
     pub fn from_system(system: &ConstraintSystem, part: MatrixPart) -> Result<Self, SpartanError> {
         let rows_padded = system.constraints.len().next_power_of_two().max(1);
         let cols = (system.num_vars + 1).next_power_of_two().max(1);
