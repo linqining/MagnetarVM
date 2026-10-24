@@ -173,6 +173,25 @@ fn merkle_layers(values: &[F2]) -> Vec<Vec<[u8; 32]>> {
 /// without storing a large matrix. The codeword is committed with
 /// [`F2NativePcs`]; the remaining Ligero work is the random linear-combination
 /// test that turns index openings into an extension-point evaluation.
+const PARITY_DEGREE: usize = 12;
+
+fn parity_positions(row: usize, message_columns: usize) -> Vec<usize> {
+    if message_columns == 0 {
+        return Vec::new();
+    }
+    (0..PARITY_DEGREE)
+        .map(|slot| {
+            let mut label = Vec::with_capacity(24);
+            label.extend_from_slice(&(row as u64).to_le_bytes());
+            label.extend_from_slice(&(slot as u64).to_le_bytes());
+            let hash = magnetar_transcript::sha256_labeled(b"f2-ligero-parity-position", &label);
+            let mut value = [0u8; 8];
+            value.copy_from_slice(&hash[..8]);
+            (u64::from_le_bytes(value) as usize) % message_columns
+        })
+        .collect()
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct BinaryLigeroCode {
     pub message_bits: usize,
@@ -193,26 +212,16 @@ impl BinaryLigeroCode {
 
     pub fn parity(&self, row: usize, message: &[F2]) -> F2 {
         let mut bit = 0u8;
-        for (column, value) in message.iter().enumerate() {
-            let mut label = Vec::with_capacity(24);
-            label.extend_from_slice(&(row as u64).to_le_bytes());
-            label.extend_from_slice(&(column as u64).to_le_bytes());
-            let hash = magnetar_transcript::sha256_labeled(b"f2-ligero-parity", &label);
-            bit ^= value.value() & (hash[0] & 1);
+        for column in parity_positions(row, message.len()) {
+            bit ^= message[column].value();
         }
         F2::from_u64(u64::from(bit))
     }
 
     pub fn parity_ext(&self, row: usize, message: &[F2_128]) -> F2_128 {
         let mut sum = F2_128::from(0u64);
-        for (column, value) in message.iter().enumerate() {
-            let mut label = Vec::with_capacity(24);
-            label.extend_from_slice(&(row as u64).to_le_bytes());
-            label.extend_from_slice(&(column as u64).to_le_bytes());
-            let hash = magnetar_transcript::sha256_labeled(b"f2-ligero-parity", &label);
-            if hash[0] & 1 == 1 {
-                sum = sum + *value;
-            }
+        for column in parity_positions(row, message.len()) {
+            sum = sum + message[column];
         }
         sum
     }

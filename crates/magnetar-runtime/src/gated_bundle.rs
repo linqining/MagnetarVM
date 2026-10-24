@@ -236,7 +236,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "slow native F2 Ligero proof; run explicitly"]
     fn gated_bundle_runs_with_native_f2_backend() {
         use magnetar_pcs::f2::NativeF2BitPcs;
         let rows = rows();

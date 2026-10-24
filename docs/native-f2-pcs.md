@@ -35,11 +35,13 @@ Systematic encoding:
 
 ```text
 codeword = message || parity
-parity_j = Σ_i H[j][i] · message_i        over F2
+parity_j = XOR of 12 pseudorandom message positions   over F2
 ```
 
-`H` is derived deterministically from SHA-256 labels. This avoids storing a
-large parity matrix and is reproducible by the verifier. The prototype lives in
+Positions are derived deterministically from SHA-256 labels. The sparse
+degree-12 parity keeps encoding linear-time; the distance/proximity-gap analysis
+of this sparse code is still open (the dense version was O(k²) and made the
+native gated-bundle test take ~205 s). The prototype lives in
 `BinaryLigeroCode` in `crates/magnetar-pcs/src/f2.rs`.
 
 ### Commitment

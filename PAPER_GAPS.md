@@ -3364,3 +3364,12 @@ commitment instead of the packed `F2^128` backend. The gated CPU bundle proves
 and verifies with `NativeF2BitPcs` (test marked ignored because the prototype
 Ligero opening takes ~205 s in debug). This is the lockstep integration point;
 the unified CPU path still uses `RingSwitchPackedBitPcs`.
+
+
+### Native F2 Ligero speedup: sparse parity
+
+The dense parity matrix made encoding O(k²): the native gated-bundle test took
+~205 s. Replacing each parity row with the XOR of 12 SHA-256-derived message
+positions makes encoding linear and the same test runs in ~1.1 s. The test is no
+longer ignored. The distance/proximity gap of this sparse code still needs
+analysis; the dense construction is the fallback reference.
