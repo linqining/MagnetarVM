@@ -2344,3 +2344,11 @@ next = (next_pc == pc+4) ? pc+4 : next_pc
 
 This proves the per-row PC transition. The branch target value is still bound by
 the gated CPU row and the public PC statement, not by the PC batch itself.
+
+
+### C: PC target binding
+
+`pc_target_row::PcTargetRow` proves `target = base + imm`, with an optional
+JALR low-bit clear. `PcBatchProof.targets` proves every trace row whose
+`next_pc != pc+4`, using `pc` as base for branches/JAL and `rs1_val` for JALR.
+A test executes a taken BEQ and verifies the target batch.

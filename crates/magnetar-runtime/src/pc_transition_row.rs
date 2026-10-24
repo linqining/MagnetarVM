@@ -140,6 +140,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pc_batch_binds_branch_target() {
+        use magnetar_executor::execute;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 1,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Beq,
+                    rd: 0,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 4,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let batch = prove_pc_batch(&trace, 16).unwrap().unwrap();
+        assert!(batch.targets.is_some());
+        verify_pc_batch(&trace, 16, Some(&batch)).unwrap();
+    }
+
+    #[test]
     fn pc_transition_selects_target() {
         let row = PcTransitionRow::new(16);
         for (pc, target, sequential, expected) in [
@@ -170,6 +215,9 @@ mod tests {
 pub struct PcBatchProof {
     pub proof: magnetar_proof::SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>,
     pub instances: usize,
+    pub targets:
+        Option<magnetar_proof::SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>>,
+    pub target_instances: usize,
 }
 
 pub fn prove_pc_batch(
@@ -191,9 +239,40 @@ pub fn prove_pc_batch(
         rows.push((0, 0, true));
     }
     let proof = prove_pc_transition_batch(width, &rows)?;
+    let mut targets = trace
+        .rows
+        .iter()
+        .filter(|row| row.next_pc != row.pc.wrapping_add(4))
+        .map(|row| {
+            let jalr = matches!(row.instruction.op, magnetar_spec::Op::Jalr);
+            (
+                if jalr { row.rs1_val } else { row.pc },
+                row.instruction.imm as u64,
+                jalr,
+                row.next_pc,
+            )
+        })
+        .collect::<Vec<_>>();
+    let target_instances = if targets.is_empty() {
+        0
+    } else {
+        while !targets.len().is_power_of_two() {
+            targets.push((0, 0, false, 0));
+        }
+        targets.len()
+    };
+    let targets = if targets.is_empty() {
+        None
+    } else {
+        Some(crate::pc_target_row::prove_pc_target_batch(
+            width, &targets,
+        )?)
+    };
     Ok(Some(PcBatchProof {
         proof,
         instances: rows.len(),
+        targets,
+        target_instances,
     }))
 }
 
@@ -217,6 +296,31 @@ pub fn verify_pc_batch(
     }
     if count != batch.instances {
         return Err(crate::RuntimeError::Proof("PC batch instance count".into()));
+    }
+    let target_count = trace
+        .rows
+        .iter()
+        .filter(|row| row.next_pc != row.pc.wrapping_add(4))
+        .count();
+    let target_count = if target_count == 0 {
+        0
+    } else {
+        target_count.next_power_of_two()
+    };
+    if target_count != batch.target_instances {
+        return Err(crate::RuntimeError::Proof(
+            "PC target instance count".into(),
+        ));
+    }
+    if target_count > 0 {
+        let Some(proof) = &batch.targets else {
+            return Err(crate::RuntimeError::Proof("missing PC target proof".into()));
+        };
+        crate::pc_target_row::verify_pc_target_batch(width, target_count, proof)?;
+    } else if batch.targets.is_some() {
+        return Err(crate::RuntimeError::Proof(
+            "unexpected PC target proof".into(),
+        ));
     }
     verify_pc_transition_batch(width, count, &batch.proof)
 }
