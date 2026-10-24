@@ -1596,6 +1596,8 @@ pub struct GatedCpuRow {
     pub branch_offset: usize,
     pub mul: GatedMulRow,
     pub mul_offset: usize,
+    pub mul_high: VarId,
+    pub mul_out: Vec<VarId>,
     pub pc: Vec<VarId>,
     pub next_pc: Vec<VarId>,
     pub sequential: VarId,
@@ -1657,6 +1659,24 @@ impl GatedCpuRow {
                 shift_vars(&row.a),
                 shift_vars(&row.b),
                 shift_vars(&row.c),
+            ));
+        }
+        let mul_high = relation.num_vars;
+        relation.num_vars += 1;
+        let mul_out = (relation.num_vars..relation.num_vars + width).collect::<Vec<_>>();
+        relation.num_vars += width;
+        relation.add(BitRow::new(
+            vec![mul_high],
+            vec![mul_high, alu.one],
+            Vec::new(),
+        ));
+        for (bit, out_bit) in mul_out.iter().enumerate() {
+            let low = mul_offset + mul.product[bit];
+            let high = mul_offset + mul.product[width + bit];
+            relation.add(BitRow::new(
+                vec![mul_high],
+                vec![low, high],
+                vec![*out_bit, low],
             ));
         }
         relation.add(BitRow::new(
@@ -1801,6 +1821,8 @@ impl GatedCpuRow {
             branch_offset,
             mul,
             mul_offset,
+            mul_high,
+            mul_out,
             pc,
             next_pc,
             sequential,
@@ -1955,13 +1977,25 @@ impl GatedCpuRow {
         self.finish(bits, pc, next_pc, false)
     }
 
-    pub fn mul_witness_at(&self, pc: u64, left: u64, right: u64) -> Vec<bool> {
+    pub fn mul_witness_at(
+        &self,
+        pc: u64,
+        left: u64,
+        right: u64,
+        out: u64,
+        high: bool,
+    ) -> Vec<bool> {
         let mut bits = self.alu.witness(0, 0, GatedAluOp::Inactive);
         bits.extend(self.memory.witness(0, 0, 0, false));
         bits.extend(self.shift.inactive_witness());
         bits.extend(self.branch.inactive_witness());
         bits.extend(self.mul.witness(left, right));
-        self.finish(bits, pc, pc.wrapping_add(4), true)
+        let mut bits = self.finish(bits, pc, pc.wrapping_add(4), true);
+        bits[self.mul_high] = high;
+        for bit in 0..self.width {
+            bits[self.mul_out[bit]] = (out >> bit) & 1 == 1;
+        }
+        bits
     }
 
     fn finish(&self, mut bits: Vec<bool>, pc: u64, next_pc: u64, sequential: bool) -> Vec<bool> {
@@ -2150,16 +2184,14 @@ mod gated_cpu_row_tests {
         let branch_witness = row.relation.to_witness(&branch);
         assert!(row.packed_companion_system().check(&branch_witness).is_ok());
 
-        let mul = row.mul_witness_at(0x1000, 5, 3);
+        let mul = row.mul_witness_at(0x1000, 5, 3, 15, false);
         assert!(row.relation.check(&mul));
         let mul_product = row
-            .mul
-            .product
+            .mul_out
             .iter()
-            .take(8)
             .enumerate()
             .fold(0u64, |value, (bit, var)| {
-                value | (u64::from(mul[*var + row.mul_offset]) << bit)
+                value | (u64::from(mul[*var]) << bit)
             });
         assert_eq!(mul_product, 15);
         let mul_witness = row.relation.to_witness(&mul);
@@ -2211,6 +2243,8 @@ pub enum GatedCpuRowInput {
     Mul {
         left: u64,
         right: u64,
+        out: u64,
+        high: bool,
     },
 }
 
@@ -2249,7 +2283,12 @@ pub fn prove_gated_cpu_batch(
                 imm,
                 kind,
             } => row.branch_witness_at(0, *left, *right, *imm, *kind),
-            GatedCpuRowInput::Mul { left, right } => row.mul_witness_at(0, *left, *right),
+            GatedCpuRowInput::Mul {
+                left,
+                right,
+                out,
+                high,
+            } => row.mul_witness_at(0, *left, *right, *out, *high),
         };
         witnesses.push(row.relation.to_witness(&bits));
     }
@@ -2368,7 +2407,12 @@ pub fn prove_gated_cpu_batch_pc(
                 imm,
                 kind,
             } => row.branch_witness_at(*pc, *left, *right, *imm, *kind),
-            GatedCpuRowInput::Mul { left, right } => row.mul_witness_at(*pc, *left, *right),
+            GatedCpuRowInput::Mul {
+                left,
+                right,
+                out,
+                high,
+            } => row.mul_witness_at(*pc, *left, *right, *out, *high),
         };
         z.extend(
             witness_vector(&system, &row.relation.to_witness(&bits))

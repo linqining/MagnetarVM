@@ -2038,3 +2038,17 @@ is_alu + is_mem + is_shift + is_branch + is_mul = 1
 
 `mul_trace_proves_through_gated_dual` executes `lui x1,5; mul x2,x1,x1`
 and proves/verifies through the gated dual backend.
+
+
+### C: MUL output binding and MULHU
+
+`GatedCpuRow` now ties the multiplier product to a row output:
+
+- `mul_high` selects low vs high product bits;
+- `mul_out = mul_high ? product[width..] : product[..width]`;
+- trace adapter supplies `rd_val` as `mul_out`.
+
+`MUL` and `MULHU` both work end-to-end. `mulhu_trace_proves_through_gated_dual`
+executes `lui x1,255; mulhu x2,x1,x1` and verifies the high product.
+
+MULH/MULHSU still need signed correction and are the next C item.
