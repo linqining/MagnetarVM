@@ -3998,3 +3998,13 @@ executor threads the loop cycle into `execute_one`; `clock_syscall_returns_the_
 cycle_count` checks the value. The workload suite now includes a clock program
 (4 rows, 94,743 B at width 16), which proves and verifies through the grouped
 unified path.
+
+
+### P3 opening parameters: 145.5 KB unified benchmark
+
+The unified P3 opening now uses `(security=100, log_inv_rate=3, pow_bits=16,
+log_folding_factor=2)` instead of `(100, 4, 16, 3)`. `p3_param_sweep` showed
+this point is near the size minimum. The no-shift benchmark drops from
+152,687 to 145,551 B (opening 66,577 -> 59,441 B). Workload sizes at width 16:
+fibonacci 111,255; memory 124,920; shifts 125,800; branchy 111,031; loop 95,783;
+clock 93,911; alu 128,159. All core, grouped, chunked and workload tests pass.
