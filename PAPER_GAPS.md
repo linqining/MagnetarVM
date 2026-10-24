@@ -2084,3 +2084,16 @@ It reuses `GatedMulRow` for `q*den`, an ADD ALU for `product_low + rem`, and a
 SUB ALU for `rem - den`. Tests cover `17/5`, `255/7`, `100/10`, `1/3` with the
 expected quotient and remainder. Integration into `GatedCpuRow` (DIVU/REMU
 selectors and trace adapter) is next.
+
+
+### C: DIVU/REMU fused into GatedCpuRow
+
+`GatedDivRow` is now part of the CPU row:
+
+- `is_alu + is_mem + is_shift + is_branch + is_mul + is_div = 1`;
+- `div_rem` selects quotient vs remainder;
+- trace adapter maps DIVU/REMU with `rd_val` as the selected output.
+
+`divu_trace_proves_through_gated_dual` runs LUI/SRLI/DIVU/REMU and proves the
+quotient/remainder. Width-64 `compiled_guest_elf_runs_and_proves` still passes;
+the product fold now takes only the low width bits.

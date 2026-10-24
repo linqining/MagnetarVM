@@ -117,6 +117,12 @@ impl GatedDivRow {
         }
     }
 
+    pub fn inactive_witness(&self) -> Vec<bool> {
+        let mut bits = self.witness(0, 1);
+        bits[self.is_div] = false;
+        bits
+    }
+
     pub fn witness(&self, num: u64, den: u64) -> Vec<bool> {
         let q = num / den;
         let r = num % den;
@@ -128,6 +134,7 @@ impl GatedDivRow {
             .mul
             .product
             .iter()
+            .take(self.width)
             .enumerate()
             .fold(0u64, |value, (bit, var)| {
                 value | (u64::from(bits[*var]) << bit)
