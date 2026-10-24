@@ -165,3 +165,58 @@ mod tests {
         verify_pc_transition_batch(16, rows.len(), &proof).unwrap();
     }
 }
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct PcBatchProof {
+    pub proof: magnetar_proof::SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>,
+    pub instances: usize,
+}
+
+pub fn prove_pc_batch(
+    trace: &magnetar_spec::Trace,
+    width: usize,
+) -> Result<Option<PcBatchProof>, crate::RuntimeError> {
+    if trace.rows.is_empty() {
+        return Ok(None);
+    }
+    let mut rows = trace
+        .rows
+        .iter()
+        .map(|row| {
+            let sequential = row.next_pc == row.pc.wrapping_add(4);
+            (row.pc, if sequential { 0 } else { row.next_pc }, sequential)
+        })
+        .collect::<Vec<_>>();
+    while !rows.len().is_power_of_two() {
+        rows.push((0, 0, true));
+    }
+    let proof = prove_pc_transition_batch(width, &rows)?;
+    Ok(Some(PcBatchProof {
+        proof,
+        instances: rows.len(),
+    }))
+}
+
+pub fn verify_pc_batch(
+    trace: &magnetar_spec::Trace,
+    width: usize,
+    batch: Option<&PcBatchProof>,
+) -> Result<(), crate::RuntimeError> {
+    if trace.rows.is_empty() {
+        if batch.is_some() {
+            return Err(crate::RuntimeError::Proof("unexpected PC batch".into()));
+        }
+        return Ok(());
+    }
+    let Some(batch) = batch else {
+        return Err(crate::RuntimeError::Proof("missing PC batch".into()));
+    };
+    let mut count = trace.rows.len();
+    while !count.is_power_of_two() {
+        count += 1;
+    }
+    if count != batch.instances {
+        return Err(crate::RuntimeError::Proof("PC batch instance count".into()));
+    }
+    verify_pc_transition_batch(width, count, &batch.proof)
+}

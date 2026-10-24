@@ -2334,3 +2334,13 @@ with an ADD ALU and a select mux. It has a batch prover/verifier
 (`prove_pc_transition_batch`, `verify_pc_transition_batch`). Tests cover
 sequential and branch-target transitions. It is not yet part of the unified
 proof.
+
+
+`UnifiedTraceProof.pc` now carries a `PcBatchProof` over all trace rows:
+
+```text
+next = (next_pc == pc+4) ? pc+4 : next_pc
+```
+
+This proves the per-row PC transition. The branch target value is still bound by
+the gated CPU row and the public PC statement, not by the PC batch itself.
