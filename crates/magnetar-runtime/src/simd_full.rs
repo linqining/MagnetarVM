@@ -388,7 +388,15 @@ pub fn gated_rows_from_trace(
             continue;
         }
         let Some(step) = crate::step_op_for(row.instruction.op) else {
-            break;
+            rows.push((
+                row.pc,
+                GatedCpuRowInput::Alu {
+                    left: 0,
+                    right: 0,
+                    op: GatedAluOp::Add,
+                },
+            ));
+            continue;
         };
         let (op, right) = match step {
             StepOp::Xor => (GatedAluOp::Xor, row.rs2_val),
@@ -405,7 +413,15 @@ pub fn gated_rows_from_trace(
             || row.instruction.op.amo_width().is_some()
             || crate::branch_op_for(row.instruction.op).is_some()
         {
-            break;
+            rows.push((
+                row.pc,
+                GatedCpuRowInput::Alu {
+                    left: 0,
+                    right: 0,
+                    op: GatedAluOp::Add,
+                },
+            ));
+            continue;
         }
         rows.push((
             row.pc,
@@ -426,9 +442,93 @@ pub fn gated_rows_from_trace(
     Ok(rows)
 }
 
+/// Full gated row batch padded to the next power of two with Nop ALU rows.
+pub fn gated_rows_from_trace_padded(
+    trace: &Trace,
+    width: usize,
+) -> Result<Vec<(u64, crate::simd_f2::GatedCpuRowInput)>, RuntimeError> {
+    let mut rows = gated_rows_from_trace(trace, width)?;
+    let target = trace.rows.len().next_power_of_two().max(2);
+    let last_pc = rows.last().map(|(pc, _)| *pc).unwrap_or(0);
+    while rows.len() < target {
+        let offset = (rows.len() - trace.rows.len() + 1) as u64 * 4;
+        rows.push((
+            last_pc.wrapping_add(offset),
+            crate::simd_f2::GatedCpuRowInput::Alu {
+                left: 0,
+                right: 0,
+                op: crate::simd_f2::GatedAluOp::Add,
+            },
+        ));
+    }
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod gated_trace_tests {
     use super::*;
+
+    #[test]
+    fn padded_trace_covers_ecall() {
+        use magnetar_executor::execute;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 5,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Add,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 1,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Xor,
+                    rd: 3,
+                    rs1: 2,
+                    rs2: 1,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let rows = gated_rows_from_trace_padded(&trace, 8).unwrap();
+        assert_eq!(rows.len(), 4);
+        assert!(matches!(
+            rows.last().unwrap().1,
+            crate::simd_f2::GatedCpuRowInput::Alu {
+                left: 0,
+                right: 0,
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn supported_trace_prefix_proves_through_gated_dual() {

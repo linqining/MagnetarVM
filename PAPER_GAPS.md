@@ -2938,3 +2938,16 @@ per-row `merged_cpu_system` is used. This is the first direct B1 evidence.
 Unified CPU integration is still blocked by coverage: `gated_rows_from_trace`
 breaks/truncates at unsupported rows (Ecall, AMO, LR/SC), so the shared matrix
 cannot yet replace the full per-row CPU system.
+
+
+### B: Ecall/Nop coverage fallback
+
+`gated_rows_from_trace` now maps unsupported ALU/AMO fallbacks to a zero ALU row
+instead of breaking, and `gated_rows_from_trace_padded` pads the batch to the
+next power of two with zero ALU rows. `padded_trace_covers_ecall` checks that an
+Ecall tail is represented.
+
+The padded batch does **not** yet prove successfully through
+`prove_gated_dual_batch_bits` (sumcheck claim mismatch), so this is coverage-only;
+the shared-matrix relation needs a real Nop selector or consistent PC/next-PC
+witness before unified CPU integration.
