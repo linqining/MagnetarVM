@@ -2048,6 +2048,7 @@ impl GatedCpuRow {
             packed(&self.alu.out, 0)
                 .add(packed(&self.alu.xor_prod, 0))
                 .add(packed(&self.alu.and_gated, 0))
+                .add(packed(&self.alu.or_gated, 0))
                 .add(packed(&self.alu.add_gated, 0))
                 .add(packed(&self.alu.sub_gated, 0))
                 .add(packed(&self.alu.slt_gated, 0))
@@ -2064,6 +2065,11 @@ impl GatedCpuRow {
             Expr::var(self.alu.is_and),
             packed(&self.alu.and_prod, 0),
             packed(&self.alu.and_gated, 0),
+        );
+        system.add_constraint(
+            Expr::var(self.alu.is_or),
+            packed(&self.alu.xor_diff, 0).add(packed(&self.alu.and_prod, 0)),
+            packed(&self.alu.or_gated, 0),
         );
         system.add_constraint(
             Expr::var(self.alu.is_add),

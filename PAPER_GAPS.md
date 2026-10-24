@@ -4117,3 +4117,15 @@ Slti/Sltiu through prove/verify, guarding the gated-row mapping fixes.
 `op_probe` now covers 58 cases: all 16 AMO variants plus LrW/ScW, in addition to
 the ALU/word/control/branch/load/store set. All verify through the unified path;
 this exercises the gated AMO/LR/SC mappings and the word-width behavior.
+
+
+### B1 restored in the grouped path
+
+The grouped multi-cycle path was using the bit-level relation `s1` for both sides
+of the lockstep proof, accidentally dropping the packed `F2_128` companion
+relation. `grouped_gated_system` now returns both systems, adds the intra-instance
+PC links to the packed system, and `reservation_grouped_lockstep` builds
+`a1/b1/c1` from it. The OR gate was also added to the packed companion (output
+sum plus `is_or * (xor + and) = or_gated`). Grouped tests, unified core/shift/
+group=4 and the 58-case op probe all pass, so grouped instances again prove the
+paper's dual bit-level + packed-field relations over one witness.

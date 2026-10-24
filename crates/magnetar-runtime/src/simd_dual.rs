@@ -723,7 +723,15 @@ pub(crate) fn grouped_gated_system(
     width: usize,
     rows: &[(u64, crate::reservation_cpu_row::ReservationCpuInput)],
     group: usize,
-) -> Result<(magnetar_constraint::ConstraintSystem, Vec<F2_128>, usize), RuntimeError> {
+) -> Result<
+    (
+        magnetar_constraint::ConstraintSystem,
+        magnetar_constraint::ConstraintSystem,
+        Vec<F2_128>,
+        usize,
+    ),
+    RuntimeError,
+> {
     use magnetar_constraint::{ConstraintSystem, Expr};
     if group == 0 || !group.is_power_of_two() || !rows.len().is_multiple_of(group) {
         return Err(RuntimeError::Proof(
@@ -733,14 +741,24 @@ pub(crate) fn grouped_gated_system(
     let row = crate::reservation_cpu_row::ReservationCpuRow::new(width);
     let base = row.cpu.relation.to_system();
     let base_cols = base.num_vars;
+    let mut base2 = row.cpu.packed_companion_system();
+    while base2.constraints.len() < base.constraints.len() {
+        base2.add_constraint(
+            magnetar_constraint::Expr::constant(0u64),
+            magnetar_constraint::Expr::constant(1u64),
+            magnetar_constraint::Expr::constant(0u64),
+        );
+    }
     let mut combined = ConstraintSystem::new(0);
+    let mut combined2 = ConstraintSystem::new(0);
     let mut offsets = Vec::with_capacity(group);
     for _ in 0..group {
         offsets.push(combined.merge(base.clone()));
+        combined2.merge(base2.clone());
     }
     for index in 0..group - 1 {
         for bit in 0..width {
-            combined.add_constraint(
+            combined2.add_constraint(
                 Expr::var(offsets[index] + row.cpu.next_pc[bit]),
                 Expr::var(offsets[index] + row.cpu.alu.one),
                 Expr::var(offsets[index + 1] + row.cpu.pc[bit]),
@@ -749,6 +767,7 @@ pub(crate) fn grouped_gated_system(
     }
     let padded_cols = (combined.num_vars + 1).next_power_of_two();
     combined.num_vars = padded_cols - 1;
+    combined2.num_vars = padded_cols - 1;
     let (z, _, _, _) = reservation_claim_inputs(width, rows)?;
     let row_stride = (row.cpu.relation.num_vars + 1).next_power_of_two();
     let mut witness = Vec::with_capacity(rows.len() / group * padded_cols);
@@ -762,7 +781,7 @@ pub(crate) fn grouped_gated_system(
             F2_128::from(0u64),
         );
     }
-    Ok((combined, witness, base_cols))
+    Ok((combined, combined2, witness, base_cols))
 }
 
 pub(crate) fn reservation_claim_matrices(
@@ -956,7 +975,7 @@ pub(crate) fn reservation_grouped_lockstep(
     use magnetar_proof::SharedBlockMatrix;
     let cycles = rows.len();
     let groups = cycles / group;
-    let (system, z, row_cols) = grouped_gated_system(width, rows, group)?;
+    let (system, system2, z, row_cols) = grouped_gated_system(width, rows, group)?;
     let block_cols = (system.num_vars + 1).next_power_of_two();
     let row = crate::reservation_cpu_row::ReservationCpuRow::new(width);
     let mut extra_a = Vec::new();
@@ -988,13 +1007,13 @@ pub(crate) fn reservation_grouped_lockstep(
     let c0 = SharedBlockMatrix::from_system(&system, MatrixPart::C, groups)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?
         .with_extra_rows(zero);
-    let a1 = SharedBlockMatrix::from_system(&system, MatrixPart::A, groups)
+    let a1 = SharedBlockMatrix::from_system(&system2, MatrixPart::A, groups)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?
         .with_extra_rows(extra_a);
-    let b1 = SharedBlockMatrix::from_system(&system, MatrixPart::B, groups)
+    let b1 = SharedBlockMatrix::from_system(&system2, MatrixPart::B, groups)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?
         .with_extra_rows(extra_b);
-    let c1 = SharedBlockMatrix::from_system(&system, MatrixPart::C, groups)
+    let c1 = SharedBlockMatrix::from_system(&system2, MatrixPart::C, groups)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?
         .with_extra_rows(extra_c);
     let segments = (0..groups)
@@ -2156,16 +2175,20 @@ mod virtual_spec_tests {
         let trace = simple_trace();
         let rows = crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, width)
             .unwrap();
-        let (system, witness, base_cols) = super::grouped_gated_system(width, &rows, 2).unwrap();
+        let (system, system2, witness, base_cols) =
+            super::grouped_gated_system(width, &rows, 2).unwrap();
         magnetar_constraint::Witness::new(witness.clone());
         system
+            .check(&magnetar_constraint::Witness::new(witness.clone()))
+            .unwrap();
+        system2
             .check(&magnetar_constraint::Witness::new(witness.clone()))
             .unwrap();
         let row = crate::reservation_cpu_row::ReservationCpuRow::new(width);
         let mut broken = witness;
         let index = base_cols + row.cpu.pc[0];
         broken[index] = broken[index] + F2_128::from(1u64);
-        assert!(system
+        assert!(system2
             .check(&magnetar_constraint::Witness::new(broken))
             .is_err());
     }
@@ -2229,12 +2252,9 @@ mod virtual_spec_tests {
         let cycles = rows.len();
         let group = 2usize;
         let groups = cycles / group;
-        let (system, z, row_cols) = super::grouped_gated_system(width, &rows, group).unwrap();
+        let (system, system2, z, row_cols) =
+            super::grouped_gated_system(width, &rows, group).unwrap();
         let block_cols = (system.num_vars + 1).next_power_of_two();
-        eprintln!(
-            "cycles {cycles} groups {groups} block {block_cols} z {}",
-            z.len()
-        );
         let row = crate::reservation_cpu_row::ReservationCpuRow::new(width);
         let mut extra_a = Vec::new();
         let mut extra_b = Vec::new();
@@ -2265,13 +2285,13 @@ mod virtual_spec_tests {
         let c0 = SharedBlockMatrix::from_system(&system, MatrixPart::C, groups)
             .unwrap()
             .with_extra_rows(zero);
-        let a1 = SharedBlockMatrix::from_system(&system, MatrixPart::A, groups)
+        let a1 = SharedBlockMatrix::from_system(&system2, MatrixPart::A, groups)
             .unwrap()
             .with_extra_rows(extra_a);
-        let b1 = SharedBlockMatrix::from_system(&system, MatrixPart::B, groups)
+        let b1 = SharedBlockMatrix::from_system(&system2, MatrixPart::B, groups)
             .unwrap()
             .with_extra_rows(extra_b);
-        let c1 = SharedBlockMatrix::from_system(&system, MatrixPart::C, groups)
+        let c1 = SharedBlockMatrix::from_system(&system2, MatrixPart::C, groups)
             .unwrap()
             .with_extra_rows(extra_c);
         let layout = WitnessLayout::new(vec![Segment::new(
