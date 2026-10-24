@@ -4151,3 +4151,12 @@ mem-loop 379,590 -> 372,326. Proving time rises ~10-20% (fibonacci 5.7 -> 6.6 s,
 mem-loop 24.5 -> 27.0 s) and AMO stays ~5.7 s. `pow_bits=24` saved another
 4-9 KB but pushed mem-loop to 58 s, so 20 bits is the chosen point. The no-shift benchmark drops 145,199 -> 142,927
 B (gated 71,108 -> 68,580 B).
+
+
+### Adaptive gated bit-PCS parameters
+
+`P3SharedPcs` now uses `(rate=3, pow=20, fold=2)` for 9-variable tables and
+`(rate=4, pow=20, fold=3)` for larger tables. The unified no-shift benchmark
+drops from 142,927 to 135,263 B (gated 68,580 -> 61,652 B); the 11 workload sizes
+are unchanged from the pow=20 setting. Core, LR/SC, AMO, shift, grouped and
+clang/clippy checks pass.
