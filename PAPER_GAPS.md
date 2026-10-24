@@ -3566,3 +3566,13 @@ scatters it back with `unpad_values`; the result equals the original z. This
 verifies the segment-to-CPU reconstruction mapping. The PC subsegments are now filled from the `PcTransitionRow` component witness
 (not from z), padded, and unpad-rounded back to z; the reconstruction still
 equals z. Other owners are still copied from z.
+
+
+### B5: PC and RAM subsegments are component-filled
+
+`reservation_specs_cover_each_gated_instance` fills the PC subsegment from the
+`PcTransitionRow` component witness; `memory_subsegment_is_filled_from_twist`
+fills the gated memory `data` and `adder.out` bits from the BinaryTwist
+`read_value`/`read_address` (affine `ram_base + 8*word`). Both then pad the
+virtual witness and unpad back to the original CPU z; the reconstruction equals
+z. This is component-driven z reconstruction for PC and RAM; Router fill is next.

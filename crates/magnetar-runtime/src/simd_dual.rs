@@ -1491,11 +1491,79 @@ mod tests {
 #[cfg(test)]
 mod virtual_spec_tests {
     use super::*;
+    use magnetar_executor::execute;
+    use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+    fn config() -> MachineConfig {
+        MachineConfig {
+            entry: 0x10,
+            rom_base: 0x10,
+            ram_base: 0x40,
+            ram_size: 0x40,
+            stack_top: 0x80,
+            max_cycles: 8,
+        }
+    }
+
+    fn simple_trace() -> magnetar_spec::Trace {
+        let program = ProgramImage::new(
+            0x10,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        execute(&program, config()).unwrap()
+    }
+
+    fn load_trace() -> magnetar_spec::Trace {
+        let mut data = vec![0u8; 8];
+        data.copy_from_slice(&0x1122_3344_5566_7788u64.to_le_bytes());
+        let program = ProgramImage::new(
+            0x10,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x40,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Ld,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        )
+        .with_data(data);
+        execute(&program, config()).unwrap()
+    }
 
     #[test]
     fn reservation_specs_cover_each_gated_instance() {
-        let cycles = 4usize;
         let width = 8usize;
+        let rows = crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(
+            &simple_trace(),
+            width,
+        )
+        .unwrap();
+        let cycles = rows.len();
         let (_, _, layout) = reservation_claim_matrices(width, cycles).unwrap();
         let base_cols = layout.total_bits / cycles;
         let specs = reservation_virtual_specs(width, cycles, base_cols);
@@ -1514,6 +1582,90 @@ mod virtual_spec_tests {
             .iter()
             .any(|spec| spec.owner == SegmentOwner::Routing(RoutingKind::Shifts)));
         assert!(specs.iter().any(|spec| spec.owner == SegmentOwner::Pcs));
+
+        let (z, _, _, _) = reservation_claim_inputs(width, &rows).unwrap();
+        let padded = crate::build_padded_virtual_layout(&specs).unwrap();
+        let mut virtual_values = vec![F2_128::from(0u64); padded.layout.total_bits];
+        let pc_row = crate::pc_transition_row::PcTransitionRow::new(width);
+        for spec in &specs {
+            let map = padded
+                .mapping
+                .iter()
+                .find(|map| map.original_offset == spec.offset && map.len == spec.len)
+                .unwrap();
+            if let Some(cycle) = spec
+                .name
+                .strip_prefix("pc")
+                .and_then(|suffix| suffix.parse::<usize>().ok())
+            {
+                let (pc, _) = &rows[cycle];
+                let component = pc_row.witness(*pc, *pc, true);
+                for bit in 0..spec.len {
+                    virtual_values[map.padded_offset + bit] =
+                        F2_128::from(u64::from(component[pc_row.pc[bit]]));
+                }
+            } else {
+                virtual_values[map.padded_offset..map.padded_offset + spec.len]
+                    .copy_from_slice(&z[spec.offset..spec.offset + spec.len]);
+            }
+        }
+        assert_eq!(padded.unpad_values(&virtual_values), z);
+    }
+
+    #[test]
+    fn memory_subsegment_is_filled_from_twist() {
+        let width = 16usize;
+        let trace = load_trace();
+        let rows = crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, width)
+            .unwrap();
+        let cycles = rows.len();
+        let (_, _, layout) = reservation_claim_matrices(width, cycles).unwrap();
+        let base_cols = layout.total_bits / cycles;
+        let specs = reservation_virtual_specs(width, cycles, base_cols);
+        let padded = crate::build_padded_virtual_layout(&specs).unwrap();
+        let (z, _, _, _) = reservation_claim_inputs(width, &rows).unwrap();
+        let cpu = crate::reservation_cpu_row::ReservationCpuRow::new(width);
+        let twist = magnetar_memory::BinaryTwistWitness::from_trace(&trace).unwrap();
+        let mut virtual_values = vec![F2_128::from(0u64); padded.layout.total_bits];
+        let mut event = 0usize;
+        for spec in &specs {
+            let map = padded
+                .mapping
+                .iter()
+                .find(|map| map.original_offset == spec.offset && map.len == spec.len)
+                .unwrap();
+            virtual_values[map.padded_offset..map.padded_offset + spec.len]
+                .copy_from_slice(&z[spec.offset..spec.offset + spec.len]);
+            if spec.name.starts_with("memory") {
+                let cycle = spec
+                    .name
+                    .strip_prefix("memory")
+                    .and_then(|suffix| suffix.parse::<usize>().ok())
+                    .unwrap();
+                if !matches!(
+                    rows[cycle].1.cpu,
+                    crate::simd_f2::GatedCpuRowInput::Memory { .. }
+                ) {
+                    continue;
+                }
+                let value = twist.read_value[event].value();
+                for bit in 0..width {
+                    virtual_values[map.padded_offset + cpu.cpu.memory.data[bit]] =
+                        F2_128::from((value >> bit) & 1);
+                }
+                let word = twist.read_address[event]
+                    .iter()
+                    .position(|bit| bit.value() == 1)
+                    .unwrap_or(0);
+                let address = trace.config.ram_base + 8 * word as u64;
+                for bit in 0..width {
+                    virtual_values[map.padded_offset + cpu.cpu.memory.adder.out[bit]] =
+                        F2_128::from((address >> bit) & 1);
+                }
+                event += 1;
+            }
+        }
+        assert_eq!(padded.unpad_values(&virtual_values), z);
     }
 }
 
