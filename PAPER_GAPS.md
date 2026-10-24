@@ -2997,3 +2997,12 @@ making `cpu` optional and removing the per-row CPU table.
 stage is absent. This removes the "missing stage Cpu" bundle check that blocked
 making `UnifiedTraceProof.cpu` optional. The proof still emits the CPU claims,
 so behavior and size are unchanged.
+
+
+### B: cpu claims are optional in the proof type
+
+`UnifiedTraceProof.cpu` is now `Option<LockstepClaims<P3MosaicCommitment>>`.
+`ProofBundle` only emits a Cpu stage when present; `cpu_statement_claims`,
+`verify_cpu`, and `verify_core_statement` skip the CPU lockstep/opening point
+when it is absent. The prover still emits CPU claims, so existing tests and size
+are unchanged; this makes the skip path compile and testable.

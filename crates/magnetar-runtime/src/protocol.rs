@@ -335,14 +335,15 @@ pub struct ProofBundle {
 
 impl ProofBundle {
     pub fn from_unified(proof: &UnifiedTraceProof) -> Self {
-        let mut stages = vec![
-            (StageId::Cpu, StageProof::Cpu(proof.cpu.clone())),
-            (
-                StageId::Registers,
-                StageProof::Registers(proof.access.registers.clone()),
-            ),
-            (StageId::Ram, StageProof::Ram(proof.access.ram.clone())),
-        ];
+        let mut stages = Vec::new();
+        if let Some(cpu) = &proof.cpu {
+            stages.push((StageId::Cpu, StageProof::Cpu(cpu.clone())));
+        }
+        stages.push((
+            StageId::Registers,
+            StageProof::Registers(proof.access.registers.clone()),
+        ));
+        stages.push((StageId::Ram, StageProof::Ram(proof.access.ram.clone())));
         if let Some(shout) = &proof.shout {
             stages.push((StageId::Shout, StageProof::Shout(shout.clone())));
         }
@@ -420,7 +421,7 @@ impl ProofBundle {
             width: self.width,
             commitment: self.commitment,
             packed_shout: self.packed_shout,
-            cpu: cpu.ok_or(ProtocolError::MissingStage(StageId::Cpu))?,
+            cpu,
             shout: None,
             shift_router,
             store_router,
@@ -1536,9 +1537,7 @@ impl<'a> UnifiedProveContext<'a> {
                 .access
                 .ok_or_else(|| RuntimeError::Proof("missing access proof".into()))?,
             trace_commitment: trace_digest(self.trace),
-            cpu: self
-                .cpu
-                .ok_or_else(|| RuntimeError::Proof("missing CPU proof".into()))?,
+            cpu: self.cpu,
             gated: self.gated_claims,
             opening: self.opening,
             shout: self.shout,
@@ -1822,32 +1821,34 @@ impl<'a> UnifiedVerifyContext<'a> {
     }
 
     pub(crate) fn verify_cpu(&mut self) -> Result<(), RuntimeError> {
-        let (system, witness_len) = if self
-            .trace
-            .rows
-            .iter()
-            .any(|row| row.instruction.op.amo_width().is_some())
-        {
-            let (system, witness) = merged_cpu_system(self.trace, self.width)?;
-            let z = witness_vector(&system, &witness)
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-            (system, z.len())
-        } else {
-            self.proof.shape.system_with_len(self.trace, self.width)?
-        };
-        let (system_a, system_b) = split_cpu_relations(&system);
-        let layout = cpu_segment_layout(witness_len)?;
         let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
-        let (ry, segments, value) =
-            verify_lockstep_claims(&system_a, &system_b, &layout, &self.proof.cpu, &pcs)
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        self.cpu_ry = Some(ry.clone());
-        self.cpu_value = Some(value);
-        let catalog = SegmentCatalog::from_layout(&layout);
-        self.routed_claims = Some(
-            route_segment_claims(&layout, &ry, &segments, &catalog)
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?,
-        );
+        if let Some(cpu) = &self.proof.cpu {
+            let (system, witness_len) = if self
+                .trace
+                .rows
+                .iter()
+                .any(|row| row.instruction.op.amo_width().is_some())
+            {
+                let (system, witness) = merged_cpu_system(self.trace, self.width)?;
+                let z = witness_vector(&system, &witness)
+                    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+                (system, z.len())
+            } else {
+                self.proof.shape.system_with_len(self.trace, self.width)?
+            };
+            let (system_a, system_b) = split_cpu_relations(&system);
+            let layout = cpu_segment_layout(witness_len)?;
+            let (ry, segments, value) =
+                verify_lockstep_claims(&system_a, &system_b, &layout, cpu, &pcs)
+                    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            self.cpu_ry = Some(ry.clone());
+            self.cpu_value = Some(value);
+            let catalog = SegmentCatalog::from_layout(&layout);
+            self.routed_claims = Some(
+                route_segment_claims(&layout, &ry, &segments, &catalog)
+                    .map_err(|error| RuntimeError::Proof(error.to_string()))?,
+            );
+        }
         if let (Some(input), Some(gated)) = (&self.gated_input, &self.proof.gated) {
             if gated.claims.commitment != self.proof.commitment {
                 return Err(RuntimeError::Proof(

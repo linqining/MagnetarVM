@@ -139,7 +139,7 @@ impl AuxStatement {
         crate::binary_shout::verify_binary_shout_claims(
             &witness,
             shout,
-            &proof.cpu.commitment,
+            &proof.commitment,
             index,
             b"",
         )
@@ -181,7 +181,7 @@ impl AuxStatement {
         crate::binary_router::verify_binary_router_claims(
             &witness,
             router,
-            &proof.cpu.commitment,
+            &proof.commitment,
             index,
             b"",
         )

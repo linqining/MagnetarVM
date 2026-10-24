@@ -121,7 +121,7 @@ impl AccessStatement {
             &synthetic,
             &proof.access,
             &memory,
-            &proof.cpu.commitment,
+            &proof.commitment,
             &registers,
             proof.register_index,
         )
@@ -155,14 +155,14 @@ pub fn access_claims_from_proof(
 > {
     let ram = crate::binary_twist::verify_binary_twist_from_proof(
         &proof.access.ram,
-        &proof.cpu.commitment,
+        &proof.commitment,
         1,
     )
     .map_err(|error| crate::RuntimeError::Proof(error.to_string()))?
     .ok_or_else(|| crate::RuntimeError::Proof("RAM access claims rejected".into()))?;
     let registers = crate::binary_twist::verify_binary_twist_from_proof(
         &proof.access.registers,
-        &proof.cpu.commitment,
+        &proof.commitment,
         proof.register_index,
     )
     .map_err(|error| crate::RuntimeError::Proof(error.to_string()))?

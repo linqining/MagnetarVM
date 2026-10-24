@@ -1039,7 +1039,7 @@ pub struct TraceProof {
 pub struct UnifiedTraceProof {
     pub access: TraceAccessProof,
     pub trace_commitment: [u8; 32],
-    pub cpu: LockstepClaims<P3MosaicCommitment>,
+    pub cpu: Option<LockstepClaims<P3MosaicCommitment>>,
     pub gated: Option<GatedCpuClaims>,
     pub opening: Option<P3MosaicOpening>,
     pub shout: Option<crate::binary_shout::BinaryShoutProof>,
@@ -2255,13 +2255,15 @@ pub fn verify_core_statement(
     let (mut points, mut values) = ram_claims;
     points.extend(register_claims.0);
     values.extend(register_claims.1);
-    points.push(magnetar_pcs::P3MosaicPoint {
-        table: 0,
-        point: ry,
-        columns: vec![0],
-        next_columns: Vec::new(),
-    });
-    values.push(vec![cpu_value]);
+    if let (Some(cpu_ry), Some(cpu_value)) = (ry, cpu_value) {
+        points.push(magnetar_pcs::P3MosaicPoint {
+            table: 0,
+            point: cpu_ry,
+            columns: vec![0],
+            next_columns: Vec::new(),
+        });
+        values.push(vec![cpu_value]);
+    }
     if let (Some(gated), Some(gated_ry)) = (&proof.gated, gated_ry) {
         points.push(magnetar_pcs::P3MosaicPoint {
             table: gated.table,
@@ -2337,17 +2339,22 @@ pub fn verify_cpu_statement(
 pub(crate) fn cpu_statement_claims(
     proof: &UnifiedTraceProof,
     statement: &CpuStatement,
-) -> Result<(Vec<F2_128>, F2_128, Option<Vec<F2_128>>), RuntimeError> {
+) -> Result<(Option<Vec<F2_128>>, Option<F2_128>, Option<Vec<F2_128>>), RuntimeError> {
     if proof.shape != statement.shape {
         return Err(RuntimeError::Proof("CPU statement shape mismatch".into()));
     }
-    let (system, witness_len) = statement.shape.system_without_trace(statement.width)?;
-    let (system_a, system_b) = split_cpu_relations(&system);
-    let layout = cpu_segment_layout(witness_len)?;
     let pcs = magnetar_pcs::P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
-    let (ry, _segments, value) =
-        magnetar_proof::verify_lockstep_claims(&system_a, &system_b, &layout, &proof.cpu, &pcs)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let (ry, value) = if let Some(cpu) = &proof.cpu {
+        let (system, witness_len) = statement.shape.system_without_trace(statement.width)?;
+        let (system_a, system_b) = split_cpu_relations(&system);
+        let layout = cpu_segment_layout(witness_len)?;
+        let (ry, _segments, value) =
+            magnetar_proof::verify_lockstep_claims(&system_a, &system_b, &layout, cpu, &pcs)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        (Some(ry), Some(value))
+    } else {
+        (None, None)
+    };
     let gated_ry = if let Some(gated) = &proof.gated {
         let (a0, a1, gated_layout) =
             crate::simd_dual::reservation_claim_matrices(statement.width, gated.cycles)?;
@@ -3966,7 +3973,7 @@ mod tests {
         assert!(proof.opening.is_none());
         verify_unified_trace(&trace, &proof, 8).unwrap();
         let mut tampered = proof;
-        tampered.cpu.commitment.tables[0].num_columns += 1;
+        tampered.commitment.tables[0].num_columns += 1;
         assert!(verify_unified_trace(&trace, &tampered, 8).is_err());
     }
 
@@ -4051,7 +4058,8 @@ mod tests {
         assert!(verify_unified_trace_statement(&wrong_state, &trace, &proof, 8).is_err());
 
         let mut tampered = proof.clone();
-        tampered.cpu.segments[0].value = tampered.cpu.segments[0].value + F2_128::from(1u64);
+        tampered.cpu.as_mut().unwrap().segments[0].value =
+            tampered.cpu.as_mut().unwrap().segments[0].value + F2_128::from(1u64);
         assert!(verify_unified_trace(&trace, &tampered, 8).is_err());
 
         let mut tampered = proof.clone();
@@ -4213,7 +4221,8 @@ mod tests {
         let unified = prove_unified_trace(&trace, 8).unwrap();
         verify_unified_trace(&trace, &unified, 8).unwrap();
         let mut tampered = unified;
-        tampered.cpu.segments[0].value = tampered.cpu.segments[0].value + F2_128::from(1u64);
+        tampered.cpu.as_mut().unwrap().segments[0].value =
+            tampered.cpu.as_mut().unwrap().segments[0].value + F2_128::from(1u64);
         assert!(verify_unified_trace(&trace, &tampered, 8).is_err());
     }
 
