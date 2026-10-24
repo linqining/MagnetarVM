@@ -2454,4 +2454,42 @@ mod projection_tests {
             }
         }
     }
+    #[test]
+    fn p3_component_table_multi_column_point() {
+        use magnetar_pcs::{P3BinaryPcs, P3MosaicPoint, P3MosaicTable};
+        use magnetar_proof::Mle;
+        let cycles = 4usize;
+        let width = 8usize;
+        let len = cycles * width;
+        let data = (0..len)
+            .map(|index| F2_128::from((index as u64 * 3 + 1) & 1))
+            .collect::<Vec<_>>();
+        let address = (0..len)
+            .map(|index| F2_128::from((index as u64 * 5 + 2) & 1))
+            .collect::<Vec<_>>();
+        let table = P3MosaicTable {
+            columns: vec![data.clone(), address.clone()],
+        };
+        let other = P3MosaicTable {
+            columns: vec![vec![F2_128::from(7u64); len]],
+        };
+        let point = (0..len.trailing_zeros() as usize)
+            .map(|bit| F2_128::from((bit * 9 + 3) as u64))
+            .collect::<Vec<_>>();
+        let values = vec![
+            Mle::new(data).unwrap().eval(&point).unwrap(),
+            Mle::new(address).unwrap().eval(&point).unwrap(),
+        ];
+        let pcs = P3BinaryPcs::with_params(100, 4, 16, 3);
+        let commitment = pcs.commit_mosaic(&[other.clone(), table.clone()]).unwrap();
+        let points = [P3MosaicPoint {
+            table: 1,
+            point: point.clone(),
+            columns: vec![0, 1],
+            next_columns: Vec::new(),
+        }];
+        let opening = pcs.open_mosaic(&[other, table], &points).unwrap();
+        assert!(pcs.verify_mosaic(&opening, &points, &[values]).unwrap());
+        let _ = commitment;
+    }
 }

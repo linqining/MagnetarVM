@@ -3740,3 +3740,11 @@ Two follow-up attempts were reverted:
 
 The stable state remains the separate component P3 opening (188,616 B) with
 load-only data/address replacement.
+
+
+### B5 shared opening isolation
+
+`p3_component_table_multi_column_point` shows P3 handles a component table with
+two columns opened at one point, even alongside a second table. Therefore the
+shared-commitment failure is not a P3 multi-column limitation; it is in the
+integration point list or table indexing.
