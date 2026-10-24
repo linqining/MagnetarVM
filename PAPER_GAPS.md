@@ -4099,3 +4099,12 @@ xor/and/or/slli/srli/srai/mul/div/rem/mulh end to end; the workload suite adds
 bitops, muldiv and mixedmem (11 workloads total). Gated ALU rows grow by one
 selector plus width gated-output bits; the workload total stays within ~1 KB of
 the previous layout after table-packing changes.
+
+
+### Operation coverage probe
+
+`op_probe` now runs 41 programs through the unified prove/verify path: all base
+ALU ops, shifts, mul/div/rem/mulh, word ops, Auipc/Jal/Jalr, the six branches,
+all load widths/signedness, all store widths, AmoswapD, and an LrD/ScD pair. All
+pass. This exercises the gated ALU/memory/branch mappings end to end and guards
+the OR/immediate-op fixes.
