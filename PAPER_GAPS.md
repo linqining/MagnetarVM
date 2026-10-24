@@ -3450,3 +3450,21 @@ chunk CPU system from the shape (`system_without_trace`) instead of from the
 trace rows, while still checking that the shape matches the supplied trace and
 that the chunk witness commitment matches `ChunkCpuProof.cpu.commitment`.
 Tampering a chunk shape is rejected.
+
+
+### B5: CPU segment owners
+
+`CpuWitnessSegment.owner` is now derived from the row kind:
+
+```text
+Load/Amo        -> Memory(Ram)
+Store           -> Routing(Stores)
+Branch/Jump     -> Pcs
+Shift           -> Routing(Shifts)
+other           -> Cpu
+```
+
+`cpu_segments_are_tagged_with_their_owner` covers the mapping. A direct
+`WitnessLayout` from these row segments is not possible yet: merged row system
+lengths are not powers of two (observed 511), so a future virtual layout needs
+padded/aligned subcubes and a mapping back to the merged witness.

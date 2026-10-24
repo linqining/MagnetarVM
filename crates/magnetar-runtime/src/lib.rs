@@ -57,8 +57,8 @@ use crate::binary_twist::{
 };
 
 use magnetar_constraint::{
-    Constraint, ConstraintSystem, Expr, LayoutError, Segment, SegmentKind, SegmentOwner, Witness,
-    WitnessLayout, F2_128,
+    Constraint, ConstraintSystem, Expr, LayoutError, MemoryKind, RoutingKind, Segment, SegmentKind,
+    SegmentOwner, Witness, WitnessLayout, F2_128,
 };
 use magnetar_cpu::{check_trace, CpuError};
 use magnetar_executor::{execute_with_io, ExecError, ExecutionIo};
@@ -1325,6 +1325,23 @@ pub struct CpuWitnessSegment {
     pub rom_word: Option<u32>,
 }
 
+fn segment_owner_for(row_kind: CpuRowKind, op: magnetar_spec::Op) -> SegmentOwner {
+    use magnetar_spec::Op;
+    match row_kind {
+        CpuRowKind::Load | CpuRowKind::Amo => SegmentOwner::Memory(MemoryKind::Ram),
+        CpuRowKind::Store => SegmentOwner::Routing(RoutingKind::Stores),
+        CpuRowKind::Branch | CpuRowKind::Jump => SegmentOwner::Pcs,
+        _ if matches!(
+            op,
+            Op::Sll | Op::Srl | Op::Sra | Op::Slli | Op::Srli | Op::Srai
+        ) =>
+        {
+            SegmentOwner::Routing(RoutingKind::Shifts)
+        }
+        _ => SegmentOwner::Cpu,
+    }
+}
+
 fn cpu_row_kind(op: magnetar_spec::Op) -> CpuRowKind {
     use magnetar_spec::Op;
     match op {
@@ -1507,7 +1524,7 @@ pub(crate) fn merged_cpu_system_with_metadata(
                     cycle: row.cycle,
                     offset,
                     len,
-                    owner: SegmentOwner::Cpu,
+                    owner: segment_owner_for(cpu_row_kind(row.instruction.op), row.instruction.op),
                     kind: SegmentKind::Direct,
                     row_kind: cpu_row_kind(row.instruction.op),
                     vars,
@@ -3251,6 +3268,31 @@ mod tests {
             stack_top: 0x1000_1000,
             max_cycles: 100,
         }
+    }
+
+    #[test]
+    fn cpu_segments_are_tagged_with_their_owner() {
+        use magnetar_constraint::{MemoryKind, RoutingKind, SegmentOwner};
+        assert_eq!(
+            segment_owner_for(CpuRowKind::Load, Op::Lw),
+            SegmentOwner::Memory(MemoryKind::Ram)
+        );
+        assert_eq!(
+            segment_owner_for(CpuRowKind::Store, Op::Sd),
+            SegmentOwner::Routing(RoutingKind::Stores)
+        );
+        assert_eq!(
+            segment_owner_for(CpuRowKind::Branch, Op::Beq),
+            SegmentOwner::Pcs
+        );
+        assert_eq!(
+            segment_owner_for(CpuRowKind::Alu, Op::Sll),
+            SegmentOwner::Routing(RoutingKind::Shifts)
+        );
+        assert_eq!(
+            segment_owner_for(CpuRowKind::Alu, Op::Add),
+            SegmentOwner::Cpu
+        );
     }
 
     #[test]
