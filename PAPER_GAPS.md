@@ -2320,3 +2320,17 @@ The reservation batch now contains only rows where `reservation_before !=
 reservation_after`, instead of every trace row. Non-changing rows are covered by
 the verifier-side chain check, so this avoids proving trivial transitions on
 long traces.
+
+
+### C: PC transition row
+
+`pc_transition_row::PcTransitionRow` proves
+
+```text
+next = sequential ? pc + 4 : target
+```
+
+with an ADD ALU and a select mux. It has a batch prover/verifier
+(`prove_pc_transition_batch`, `verify_pc_transition_batch`). Tests cover
+sequential and branch-target transitions. It is not yet part of the unified
+proof.
