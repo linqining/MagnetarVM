@@ -182,6 +182,23 @@ fn cases() -> Vec<(&'static str, ProgramImage)> {
             ]),
         ));
     }
+    for (name, value, load, offset) in [
+        ("lb_neg", 0xffi64, Op::Lb, 0i64),
+        ("lh_neg", 0x8000, Op::Lh, 0),
+        ("lw_neg", 0x8000_0000, Op::Lw, 0),
+        ("unaligned_lw2", 0x1122_3344, Op::Lw, 2),
+        ("unaligned_lw4", 0x1122_3344, Op::Lw, 4),
+    ] {
+        cases.push((
+            name,
+            program(vec![
+                ins(Op::Lui, 20, 0, 0, 0x1000_0000, 0),
+                ins(Op::Addi, 1, 0, 0, value, 0),
+                ins(Op::Sd, 0, 20, 1, 0, 0),
+                ins(load, 2, 20, 0, offset, 0),
+            ]),
+        ));
+    }
     for (name, store) in [
         ("sb", Op::Sb),
         ("sh", Op::Sh),

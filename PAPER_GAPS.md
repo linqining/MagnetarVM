@@ -4129,3 +4129,8 @@ PC links to the packed system, and `reservation_grouped_lockstep` builds
 sum plus `is_or * (xor + and) = or_gated`). Grouped tests, unified core/shift/
 group=4 and the 58-case op probe all pass, so grouped instances again prove the
 paper's dual bit-level + packed-field relations over one witness.
+
+
+`op_probe` now covers 64 cases, adding signed/unsigned sub-word sign-extension
+loads (Lb/Lh/Lw vs Lbu/Lhu/Lwu) and unaligned-within-word Lw at offsets 2 and 4.
+All verify.
