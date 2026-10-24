@@ -2432,6 +2432,52 @@ pub fn prove_unified_revealed(
     Ok(proof)
 }
 
+/// Merge opening points that address the same table row point, combining their
+/// column lists. This reduces the number of P3 opening batches without changing
+/// the claims.
+pub(crate) fn merge_point_claims(
+    pairs: Vec<(magnetar_pcs::P3MosaicPoint, Vec<F2_128>)>,
+    skip: &std::collections::HashSet<usize>,
+) -> Vec<(magnetar_pcs::P3MosaicPoint, Vec<F2_128>)> {
+    use std::collections::BTreeMap;
+    let mut merged: Vec<(magnetar_pcs::P3MosaicPoint, Vec<F2_128>)> = Vec::new();
+    let mut index: BTreeMap<(usize, Vec<u8>, Vec<u8>), usize> = BTreeMap::new();
+    for (point, values) in pairs {
+        if !point.next_columns.is_empty() || skip.contains(&point.table) {
+            merged.push((point, values));
+            continue;
+        }
+        let key = (
+            point.table,
+            bincode::serialize(&point.point).unwrap_or_default(),
+            Vec::new(),
+        );
+        if let Some(position) = index.get(&key).copied() {
+            let entry = &mut merged[position];
+            for (column, value) in point.columns.into_iter().zip(values) {
+                if let Some(offset) = entry.0.columns.iter().position(|seen| *seen == column) {
+                    // Keep the first value for a repeated claim.
+                    let _ = offset;
+                } else {
+                    entry.0.columns.push(column);
+                    entry.1.push(value);
+                }
+            }
+            let mut order = (0..entry.0.columns.len()).collect::<Vec<_>>();
+            order.sort_by_key(|offset| entry.0.columns[*offset]);
+            entry.0.columns = order
+                .iter()
+                .map(|offset| entry.0.columns[*offset])
+                .collect();
+            entry.1 = order.iter().map(|offset| entry.1[*offset]).collect();
+        } else {
+            index.insert(key, merged.len());
+            merged.push((point, values));
+        }
+    }
+    merged
+}
+
 pub(crate) fn point_sort_key(point: &magnetar_pcs::P3MosaicPoint) -> (usize, Vec<usize>, Vec<u8>) {
     (
         point.table,
@@ -2719,15 +2765,17 @@ pub fn verify_core_statement(
     }
     let mut pairs = points.into_iter().zip(values).collect::<Vec<_>>();
     pairs.sort_by_key(|(point, _)| crate::point_sort_key(point));
+    let selected = proof
+        .table_batches
+        .iter()
+        .map(|batch| batch.table)
+        .collect::<std::collections::HashSet<_>>();
+    let mut pairs = crate::merge_point_claims(pairs, &selected);
+    pairs.sort_by_key(|(point, _)| crate::point_sort_key(point));
     let original = pairs.clone();
     let (points, values): (Vec<_>, Vec<_>) = if proof.table_batches.is_empty() {
         pairs.into_iter().unzip()
     } else {
-        let selected = proof
-            .table_batches
-            .iter()
-            .map(|batch| batch.table)
-            .collect::<std::collections::HashSet<_>>();
         let mut filtered = pairs
             .into_iter()
             .filter(|(point, _)| !selected.contains(&point.table))

@@ -4172,3 +4172,14 @@ AMO test to 6.7/19.5 s, so 18 is the chosen opening point.
 
 
 `op_probe` now includes Fence and Ebreak, both proving/verifying (66 cases total).
+
+
+### Merge opening points at the same row point
+
+`merge_point_claims` combines opening points that address the same table row
+point, concatenating columns (duplicates keep the first value). Tables selected
+for table batching are left untouched so the batching schedule is unchanged.
+The prover and both verifier openings use the same merge. Benchmark opening
+57,793 -> 57,729 B (total 134,223 -> 134,159 B); the 11-workload sum drops ~0.6 KB
+and AMO latency stays 5.7 s. Merging all tables (including batched ones) was
+rejected earlier because it made the AMO test 5x slower.

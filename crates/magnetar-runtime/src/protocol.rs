@@ -1955,6 +1955,8 @@ impl<'a> UnifiedProveContext<'a> {
             })
             .map(|(index, _)| index)
             .collect::<std::collections::HashSet<_>>();
+        let mut pairs = crate::merge_point_claims(pairs, &selected);
+        pairs.sort_by_key(|(point, _)| crate::point_sort_key(point));
         if selected.is_empty() {
             let (points, values): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
             self.points = points;
@@ -2527,20 +2529,22 @@ impl<'a> UnifiedVerifyContext<'a> {
             self.points.push(point.clone());
             self.values.push(values.clone());
         }
-        let mut pairs = self
+        let mut base_pairs = self
             .points
             .drain(..)
             .zip(self.values.drain(..))
             .collect::<Vec<_>>();
+        base_pairs.sort_by_key(|(point, _)| crate::point_sort_key(point));
+        let selected = self
+            .proof
+            .table_batches
+            .iter()
+            .map(|batch| batch.table)
+            .collect::<std::collections::HashSet<_>>();
+        let original = base_pairs.clone();
+        let mut pairs = crate::merge_point_claims(base_pairs, &selected);
         pairs.sort_by_key(|(point, _)| crate::point_sort_key(point));
-        let original = pairs.clone();
         if !self.proof.table_batches.is_empty() {
-            let selected = self
-                .proof
-                .table_batches
-                .iter()
-                .map(|batch| batch.table)
-                .collect::<std::collections::HashSet<_>>();
             pairs.retain(|(point, _)| !selected.contains(&point.table));
             for batch in &self.proof.table_batches {
                 pairs.push((
