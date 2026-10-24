@@ -2551,3 +2551,12 @@ with address/value constants. `unified_lr_sc`, `unified_trace_proof_merges`, and
 `unified_amo_lr_sc` pass; the gated benchmark is ~156 KB.
 
 Branch/MUL/DIV/JAL rows still pin values and must be converted next.
+
+
+### A2a: fixed branch CPU system
+
+Added `uniform_branch_layout(width)` (no pc/imm pinning) and used it for branch
+rows with `layout.witness(branch_op, pc, rs1, rs2, imm)`. `uniform_branch_relation`
+keeps the pinned variant for existing callers. New
+`unified_branch_round_trips` proves a taken BEQ. ALU, memory, and branch CPU
+systems are now value-independent; MUL/DIV/JAL/JALR/AUIPC still pin values.

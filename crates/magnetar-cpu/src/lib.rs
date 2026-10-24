@@ -1447,21 +1447,23 @@ pub fn uniform_jal_relation_with_increment(
             one.clone(),
             Expr::constant(expected),
         );
-        system.add_constraint(
-            Expr::var(link.a[index]),
-            one.clone(),
-            Expr::constant((pc >> index) & 1),
-        );
-        system.add_constraint(
-            Expr::var(target.a[index]),
-            one.clone(),
-            Expr::constant((pc >> index) & 1),
-        );
-        system.add_constraint(
-            Expr::var(target.b[index]),
-            one.clone(),
-            Expr::constant((imm >> index) & 1),
-        );
+        {
+            system.add_constraint(
+                Expr::var(link.a[index]),
+                one.clone(),
+                Expr::constant((pc >> index) & 1),
+            );
+            system.add_constraint(
+                Expr::var(target.a[index]),
+                one.clone(),
+                Expr::constant((pc >> index) & 1),
+            );
+            system.add_constraint(
+                Expr::var(target.b[index]),
+                one.clone(),
+                Expr::constant((imm >> index) & 1),
+            );
+        }
     }
     let num_vars = system.num_vars;
     (
@@ -2087,10 +2089,23 @@ impl UniformBranchLayout {
     }
 }
 
+pub fn uniform_branch_layout(width: usize) -> (ConstraintSystem, UniformBranchLayout) {
+    uniform_branch_inner(width, 0, 0, false)
+}
+
 pub fn uniform_branch_relation(
     width: usize,
     pc: u64,
     imm: u64,
+) -> (ConstraintSystem, UniformBranchLayout) {
+    uniform_branch_inner(width, pc, imm, true)
+}
+
+fn uniform_branch_inner(
+    width: usize,
+    pc: u64,
+    imm: u64,
+    pin: bool,
 ) -> (ConstraintSystem, UniformBranchLayout) {
     assert!(width > 0 && width <= 64);
     let (mut system, link) = bit_addition_constraints(width);
@@ -2115,21 +2130,23 @@ pub fn uniform_branch_relation(
             one.clone(),
             Expr::constant(expected),
         );
-        system.add_constraint(
-            Expr::var(link.a[index]),
-            one.clone(),
-            Expr::constant((pc >> index) & 1),
-        );
-        system.add_constraint(
-            Expr::var(target.a[index]),
-            one.clone(),
-            Expr::constant((pc >> index) & 1),
-        );
-        system.add_constraint(
-            Expr::var(target.b[index]),
-            one.clone(),
-            Expr::constant((imm >> index) & 1),
-        );
+        if pin {
+            system.add_constraint(
+                Expr::var(link.a[index]),
+                one.clone(),
+                Expr::constant((pc >> index) & 1),
+            );
+            system.add_constraint(
+                Expr::var(target.a[index]),
+                one.clone(),
+                Expr::constant((pc >> index) & 1),
+            );
+            system.add_constraint(
+                Expr::var(target.b[index]),
+                one.clone(),
+                Expr::constant((imm >> index) & 1),
+            );
+        }
         add_boolean_constraint(&mut system, rs1[index]);
         add_boolean_constraint(&mut system, rs2[index]);
         add_boolean_constraint(&mut system, same[index]);
