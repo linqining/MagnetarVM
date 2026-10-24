@@ -2177,3 +2177,10 @@ consistency for AMOADD.
 `amo_logic_row::AmoLogicRow` covers AMOXOR, AMOAND, AMOOR, and AMOSWAP with the
 same two-memory-row read-modify-write binding as AMOADD. Tests cover
 `0b1100`/`0b1010` for each operation.
+
+
+### C: AMO min/max rows
+
+`amo_minmax_row::AmoMinMaxRow` covers AMOMIN, AMOMAX, AMOMINU, AMOMAXU with
+the same read-modify-write memory binding. It uses one SLT/SLTU ALU and a
+select mux; tests cover `-5`/`3` for signed and unsigned orderings.

@@ -6,6 +6,7 @@
 
 pub mod amo_add_row;
 pub mod amo_logic_row;
+pub mod amo_minmax_row;
 pub mod binary_router;
 pub mod binary_shout;
 pub mod binary_twist;
