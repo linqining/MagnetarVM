@@ -2217,3 +2217,12 @@ prove_amo_minmax_batch / verify_amo_minmax_batch
 Each batch uses `prove_shared_simd_spartan` over the row's packed system with
 4 instances in tests. These are standalone proofs, not yet part of the unified
 trace proof.
+
+
+### C: AMO bundle proof from a trace
+
+`amo_bundle::AmoBundleProof` collects AMO events from `TraceRow.mem` and
+`rd_val`/`rs2_val`, groups them by operation, pads each group to a power of two,
+and proves each group with its standalone AMO batch prover. Tests execute a
+trace containing AMOADD/AMOSWAP/AMOXOR/AMOMAX and verify the bundle. This is not
+yet wired into `UnifiedTraceProof` or CPU/memory claims.
