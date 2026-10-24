@@ -5610,6 +5610,14 @@ mod cpu_statement_tests {
             access: crate::access_statement::AccessStatement::from_trace(&trace),
         };
         verify_core_statement(&proof, &statement).unwrap();
+        let mut bad = statement.clone();
+        bad.shape.rows[0].pc = bad.shape.rows[0].pc.wrapping_add(4);
+        assert!(verify_core_statement(&proof, &bad).is_err());
+        let mut bad = statement;
+        if let Some(event) = bad.access.memory_events.first_mut() {
+            event.access.value = event.access.value.wrapping_add(1);
+        }
+        assert!(verify_core_statement(&proof, &bad).is_err());
     }
 
     #[test]

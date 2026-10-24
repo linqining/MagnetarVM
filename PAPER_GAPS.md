@@ -2691,3 +2691,7 @@ and, when no Shout/Router proof is present, checks the shared opening. The
 `core_statement_verifies_without_trace` test passes without a `Trace`; opening is
 skipped when Shout/Router tables are present because those claims are not yet in
 the statement.
+
+
+The core-statement test now tampers a shape PC and a memory-event value; both
+`verify_core_statement` calls are rejected.
