@@ -1053,6 +1053,7 @@ pub struct UnifiedTraceProof {
     pub shape: crate::cpu_shape::CpuShape,
     pub register_index: usize,
     pub ram_index: usize,
+    pub rom_index: usize,
     pub shout_index: Option<usize>,
     pub shift_router_index: Option<usize>,
     pub store_router_index: Option<usize>,
@@ -2226,6 +2227,7 @@ pub fn prove_unified_revealed(
 
 pub(crate) fn shout_router_link_claims(
     commitment: &P3MosaicCommitment,
+    rom_index: usize,
     shift_index: Option<usize>,
     store_index: Option<usize>,
     packed: &crate::packed_shout::PackedShoutProof,
@@ -2243,6 +2245,17 @@ pub(crate) fn shout_router_link_claims(
     }
     let point = packed.claims.link_point.clone();
     let mut out = Vec::new();
+    if commitment.tables.len() > rom_index {
+        out.push((
+            magnetar_pcs::P3MosaicPoint {
+                table: rom_index,
+                point: packed.claims.read_address_point.clone(),
+                columns: (0..packed.claims.column_evals.len()).collect(),
+                next_columns: Vec::new(),
+            },
+            packed.claims.column_evals.clone(),
+        ));
+    }
     if let Some(index) = shift_index {
         let total = commitment.tables[index].num_columns;
         if total >= 10 {
@@ -2355,6 +2368,7 @@ pub fn verify_core_statement(
         crate::packed_shout::verify_packed_shout(packed)?;
         let links = crate::shout_router_link_claims(
             &proof.commitment,
+            proof.rom_index,
             proof.shift_router_index,
             proof.store_router_index,
             packed,

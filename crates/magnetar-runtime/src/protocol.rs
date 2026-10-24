@@ -323,6 +323,7 @@ pub struct ProofBundle {
     pub shape: crate::cpu_shape::CpuShape,
     pub register_index: usize,
     pub ram_index: usize,
+    pub rom_index: usize,
     pub shout_index: Option<usize>,
     pub shift_router_index: Option<usize>,
     pub store_router_index: Option<usize>,
@@ -368,6 +369,7 @@ impl ProofBundle {
             shape: proof.shape.clone(),
             register_index: proof.register_index,
             ram_index: proof.ram_index,
+            rom_index: proof.rom_index,
             shout_index: proof.shout_index,
             shift_router_index: proof.shift_router_index,
             store_router_index: proof.store_router_index,
@@ -415,6 +417,7 @@ impl ProofBundle {
             shape: self.shape,
             register_index: self.register_index,
             ram_index: self.ram_index,
+            rom_index: self.rom_index,
             shout_index: self.shout_index,
             shift_router_index: self.shift_router_index,
             store_router_index: self.store_router_index,
@@ -1143,6 +1146,7 @@ pub(crate) struct UnifiedProveContext<'a> {
     store_router_table: Option<(usize, P3MosaicTable)>,
     register_index: usize,
     ram_index: usize,
+    rom_index: usize,
     trace_witness: crate::trace_commitment::TraceWitness,
     trace_index: usize,
     trace_table: P3MosaicTable,
@@ -1195,12 +1199,12 @@ impl<'a> UnifiedProveContext<'a> {
                 .is_some();
         let mut mosaic_tables = Vec::new();
         let (ram_index, mut next_table) = if shared_cpu {
-            (0usize, 5usize)
+            (0usize, 6usize)
         } else {
             mosaic_tables.push(P3MosaicTable {
                 columns: vec![z.clone()],
             });
-            (1usize, 6usize)
+            (1usize, 7usize)
         };
         mosaic_tables.extend([
             tables.addr.clone(),
@@ -1209,6 +1213,15 @@ impl<'a> UnifiedProveContext<'a> {
             tables.read_value.clone(),
             tables.write_value.clone(),
         ]);
+        let rom_table = shout_witness.as_ref().map(|witness| P3MosaicTable {
+            columns: (0..witness.rom.first().map_or(0, |row| row.len()))
+                .map(|column| witness.rom.iter().map(|row| row[column]).collect())
+                .collect(),
+        });
+        let rom_index = mosaic_tables.len();
+        if let Some(table) = &rom_table {
+            mosaic_tables.push(table.clone());
+        }
         let shout_table: Option<(usize, P3MosaicTable)> = None;
         let shift_router_table = shift_router_witness.as_ref().map(|witness| {
             let index = next_table;
@@ -1278,6 +1291,7 @@ impl<'a> UnifiedProveContext<'a> {
             store_router_table,
             register_index,
             ram_index,
+            rom_index,
             trace_witness,
             trace_index,
             trace_table,
@@ -1523,6 +1537,7 @@ impl<'a> UnifiedProveContext<'a> {
                 .ok_or_else(|| RuntimeError::Proof("missing commitment".into()))?;
             let links = crate::shout_router_link_claims(
                 commitment,
+                self.rom_index,
                 self.shift_router_table.as_ref().map(|(index, _)| *index),
                 self.store_router_table.as_ref().map(|(index, _)| *index),
                 packed,
@@ -1563,6 +1578,7 @@ impl<'a> UnifiedProveContext<'a> {
             shape: crate::cpu_shape::CpuShape::from_trace(self.trace).zeroed(),
             register_index: self.register_index,
             ram_index: self.ram_index,
+            rom_index: self.rom_index,
             shout_index: self.shout_table.as_ref().map(|(index, _)| *index),
             shift_router_index: self.shift_router_table.as_ref().map(|(index, _)| *index),
             store_router_index: self.store_router_table.as_ref().map(|(index, _)| *index),
@@ -1688,14 +1704,6 @@ impl<'a> UnifiedVerifyContext<'a> {
                 table: 0,
                 cycles,
             });
-        let expected_tables = if proof.cpu.is_some() { 12 } else { 11 }
-            + usize::from(shift_router_witness.is_some())
-            + usize::from(store_router_witness.is_some());
-        if proof.commitment.tables.len() != expected_tables {
-            return Err(RuntimeError::Proof(
-                "unified proof does not commit the expected CPU/RAM/aux tables".into(),
-            ));
-        }
         let shout_index = proof.shout_index;
         let shift_router_index = proof.shift_router_index;
         let store_router_index = proof.store_router_index;
@@ -1921,6 +1929,7 @@ impl<'a> UnifiedVerifyContext<'a> {
         if let Some(packed) = &self.proof.packed_shout {
             let links = crate::shout_router_link_claims(
                 &self.proof.commitment,
+                self.proof.rom_index,
                 self.proof.shift_router_index,
                 self.proof.store_router_index,
                 packed,

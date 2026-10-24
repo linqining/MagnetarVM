@@ -3230,3 +3230,20 @@ opening; previously the context only accumulated points.
 
 All targeted unified/AMO/aux/gated/Router tests pass. Benchmark: 124,568 B
 (+40 B).
+
+
+### Shout ROM shared commitment and Router link
+
+The full 12-column ROM table is now committed in the **same shared Mosaic
+commitment** (no separate P3 opening). The Shout read/ROM claim is added at the
+ROM point with `column_evals`, so the previously proof-carried Shout metadata is
+now bound by the opening.
+
+The Router-Shout link is also part of the same opening: at the Shout link point,
+the store Router width one-hot and shift Router shift code are opened with
+expected values taken from `BinaryShoutProof.link_evals`. The unified context now
+verifies the shared Mosaic opening (previously it only accumulated points), and
+both core and unified paths add the same link/ROM points before verification.
+
+All targeted tests pass. Benchmark: 138,064 B (from 124,568 B); the +13.5 KB is
+the cost of committing/opening the ROM table. Packed Shout component 5,226 B.
