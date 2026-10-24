@@ -3310,3 +3310,13 @@ Added `BinaryLigeroCode` (systematic `message || parity`, SHA-256-derived parity
 rows) and `docs/native-f2-pcs.md` describing the native-F2 linear-functional PCS
 plan. The code is committed with `F2NativePcs`; the Ligero random-column linear
 test is the next milestone.
+
+
+### B3 Step 2 prototype: Ligero linear-functional opening
+
+`BinaryLigeroLinearProof` proves `v = Σ_j (Σ_i λ_i M[i][j])` over a bit matrix
+committed by `F2NativePcs`. The prover sends the combined column vector `s`, the
+verifier checks `v = Σ s_j`, and Fiat-Shamir-derived columns are opened (Merkle
+paths for each row bit) and checked against `s_j`. Round-trip and tamper tests
+pass. This direct-column variant is not yet the succinct parity-code Ligero
+test: proof size is `O(columns + samples·rows·log k)`.

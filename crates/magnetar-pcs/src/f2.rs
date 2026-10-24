@@ -216,11 +216,217 @@ impl BinaryLigeroCode {
     }
 }
 
+/// One column opening for the binary Ligero linear-functional check.
+#[derive(Clone, Debug)]
+pub struct BinaryLigeroColumnOpening {
+    pub column: usize,
+    pub values: Vec<F2>,
+    pub paths: Vec<F2NativeOpening>,
+}
+
+/// Opening for `v = Σ_j (Σ_i λ_i M[i][j])`.
+///
+/// This is the Ligero-style linear test: the prover sends the combined column
+/// vector `s = λ·M`, the verifier checks `v = Σ_j s_j`, and samples columns to
+/// check that each opened `M[·][j]` reproduces `s_j`.
+#[derive(Clone, Debug)]
+pub struct BinaryLigeroLinearProof {
+    pub rows: usize,
+    pub columns: usize,
+    pub combination: Vec<F2_128>,
+    pub samples: Vec<BinaryLigeroColumnOpening>,
+}
+
+impl BinaryLigeroLinearProof {
+    pub fn sample_columns(
+        commitment: &F2NativeCommitment,
+        lambda: &[F2_128],
+        columns: usize,
+        count: usize,
+    ) -> Vec<usize> {
+        if columns == 0 || count == 0 {
+            return Vec::new();
+        }
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&commitment.0);
+        bytes.extend_from_slice(&(columns as u64).to_le_bytes());
+        for weight in lambda {
+            bytes.extend_from_slice(&weight.value().to_le_bytes());
+        }
+        let seed = magnetar_transcript::sha256_labeled(b"f2-ligero-samples", &bytes);
+        (0..count)
+            .map(|index| {
+                let mut block = Vec::with_capacity(40);
+                block.extend_from_slice(&seed);
+                block.extend_from_slice(&(index as u64).to_le_bytes());
+                let hash = magnetar_transcript::sha256_labeled(b"f2-ligero-column", &block);
+                let mut value = [0u8; 8];
+                value.copy_from_slice(&hash[..8]);
+                (u64::from_le_bytes(value) as usize) % columns
+            })
+            .collect()
+    }
+
+    pub fn value(&self) -> F2_128 {
+        self.combination
+            .iter()
+            .fold(F2_128::from(0u64), |sum, value| sum + *value)
+    }
+
+    pub fn prove(
+        message: &[F2],
+        rows: usize,
+        columns: usize,
+        lambda: &[F2_128],
+        samples: &[usize],
+    ) -> Result<Self, ProofError> {
+        if rows == 0 || columns == 0 || message.len() != rows * columns {
+            return Err(ProofError::Pcs("Ligero matrix shape mismatch".into()));
+        }
+        if lambda.len() != rows {
+            return Err(ProofError::Pcs("Ligero lambda length mismatch".into()));
+        }
+        let mut combination = vec![F2_128::from(0u64); columns];
+        for (row, weight) in lambda.iter().enumerate() {
+            for column in 0..columns {
+                if message[row * columns + column].value() == 1 {
+                    combination[column] = combination[column] + *weight;
+                }
+            }
+        }
+        let pcs = F2NativePcs;
+        let index_bits = ligero_index_bits(message.len());
+        let mut opened = Vec::with_capacity(samples.len());
+        for &column in samples {
+            if column >= columns {
+                return Err(ProofError::Pcs("Ligero sample column out of range".into()));
+            }
+            let mut values = Vec::with_capacity(rows);
+            let mut paths = Vec::with_capacity(rows);
+            for row in 0..rows {
+                let index = row * columns + column;
+                let point = ligero_index_point(index, index_bits);
+                values.push(message[index]);
+                paths.push(pcs.open(message, &point)?);
+            }
+            opened.push(BinaryLigeroColumnOpening {
+                column,
+                values,
+                paths,
+            });
+        }
+        Ok(Self {
+            rows,
+            columns,
+            combination,
+            samples: opened,
+        })
+    }
+
+    pub fn verify(
+        &self,
+        commitment: &F2NativeCommitment,
+        lambda: &[F2_128],
+        claimed: F2_128,
+    ) -> Result<bool, ProofError> {
+        if self.rows == 0
+            || self.columns == 0
+            || self.combination.len() != self.columns
+            || lambda.len() != self.rows
+        {
+            return Ok(false);
+        }
+        if self.value() != claimed {
+            return Ok(false);
+        }
+        let expected = Self::sample_columns(commitment, lambda, self.columns, self.samples.len());
+        if expected.len() != self.samples.len()
+            || self
+                .samples
+                .iter()
+                .zip(&expected)
+                .any(|(sample, column)| sample.column != *column)
+        {
+            return Ok(false);
+        }
+        let pcs = F2NativePcs;
+        let index_bits = ligero_index_bits(self.rows * self.columns);
+        for sample in &self.samples {
+            if sample.column >= self.columns
+                || sample.values.len() != self.rows
+                || sample.paths.len() != self.rows
+            {
+                return Ok(false);
+            }
+            let mut combined = F2_128::from(0u64);
+            for row in 0..self.rows {
+                if sample.paths[row].value != sample.values[row] {
+                    return Ok(false);
+                }
+                let index = row * self.columns + sample.column;
+                let point = ligero_index_point(index, index_bits);
+                if !pcs.verify(commitment, &point, &sample.paths[row])? {
+                    return Ok(false);
+                }
+                if sample.values[row].value() == 1 {
+                    combined = combined + lambda[row];
+                }
+            }
+            if combined != self.combination[sample.column] {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+}
+
+fn ligero_index_bits(len: usize) -> usize {
+    len.saturating_sub(1).next_power_of_two().trailing_zeros() as usize
+}
+
+fn ligero_index_point(index: usize, bits: usize) -> Vec<F2> {
+    (0..bits)
+        .map(|bit| F2::from_u64(((index >> bit) & 1) as u64))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use magnetar_constraint::Field;
     use magnetar_proof::Mle;
+
+    #[test]
+    fn binary_ligero_linear_opening_round_trips() {
+        let rows = 8usize;
+        let columns = 8usize;
+        let message = (0..rows * columns)
+            .map(|index| F2::from_u64(((index * 7 + 3) % 5) as u64 % 2))
+            .collect::<Vec<_>>();
+        let lambda = (0..rows)
+            .map(|row| F2_128::from((row as u64) * 0x9e37 + 5))
+            .collect::<Vec<_>>();
+        let pcs = F2NativePcs;
+        let commitment = pcs.commit(&message).unwrap();
+        let samples = BinaryLigeroLinearProof::sample_columns(&commitment, &lambda, columns, 3);
+        let proof =
+            BinaryLigeroLinearProof::prove(&message, rows, columns, &lambda, &samples).unwrap();
+        let claimed = (0..rows).fold(F2_128::from(0u64), |sum, row| {
+            if message[row * columns + 0].value() == 1 {
+                sum + lambda[row]
+            } else {
+                sum
+            }
+        });
+        let _ = claimed;
+        assert!(proof.verify(&commitment, &lambda, proof.value()).unwrap());
+        let mut bad = proof.clone();
+        bad.combination[0] = bad.combination[0] + F2_128::from(1u64);
+        assert!(!bad.verify(&commitment, &lambda, bad.value()).unwrap());
+        let mut bad = proof.clone();
+        bad.samples[0].values[0] = F2::from_u64(u64::from(1 - bad.samples[0].values[0].value()));
+        assert!(!bad.verify(&commitment, &lambda, proof.value()).unwrap());
+    }
 
     #[test]
     fn binary_ligero_code_encodes_deterministically() {

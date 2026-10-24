@@ -81,7 +81,13 @@ still embed each bit into a larger field.
 ## Milestones
 
 1. `BinaryLigeroCode` systematic encoder + Merkle commitment (done).
-2. Ligero linear-functional test (open columns, consistency, soundness).
+2. Ligero linear-functional test (done in prototype:
+   `BinaryLigeroLinearProof`). The prover supplies `s = λ·M`, the verifier checks
+   `v = Σ s_j` and samples columns derived by Fiat-Shamir to check
+   `s_j = Σ_i λ_i M[i][j]` against Merkle openings. This direct-column variant
+   has soundness `(1-δ)^t` for a `δ`-fraction of bad columns and proof size
+   `O(columns + t·rows·log k)`, so it is not yet the final succinct code-based
+   Ligero test; the parity-code/proximity-gap version remains the next step.
 3. Extension-point MLE wrapper using `eq(r, i)`.
 4. Native F2 sum-check over the bit relation.
 5. Virtual Spartan lockstep sharing with the packed `F2^128` relation.
