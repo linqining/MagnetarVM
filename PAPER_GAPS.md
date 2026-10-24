@@ -3302,3 +3302,11 @@ coefficient and challenge fields and is an index-opening PCS, not an MLE
 point-evaluation PCS. It cannot directly open the native F2 Merkle commitment at
 an F2^128 sumcheck point. B3's extension-point opening therefore needs a new
 native-F2 PCS (FRI/Ligerito over F2) or a different challenge strategy.
+
+
+### B3 Step 2 started: binary Ligero code
+
+Added `BinaryLigeroCode` (systematic `message || parity`, SHA-256-derived parity
+rows) and `docs/native-f2-pcs.md` describing the native-F2 linear-functional PCS
+plan. The code is committed with `F2NativePcs`; the Ligero random-column linear
+test is the next milestone.

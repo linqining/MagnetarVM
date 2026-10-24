@@ -166,11 +166,80 @@ fn merkle_layers(values: &[F2]) -> Vec<Vec<[u8; 32]>> {
     layers
 }
 
+/// Binary Ligero-style systematic code: `message || parity`.
+///
+/// This is the first milestone of the native-F2 PCS path. Parity rows are
+/// derived deterministically from SHA-256 labels, so the code is reproducible
+/// without storing a large matrix. The codeword is committed with
+/// [`F2NativePcs`]; the remaining Ligero work is the random linear-combination
+/// test that turns index openings into an extension-point evaluation.
+#[derive(Clone, Copy, Debug)]
+pub struct BinaryLigeroCode {
+    pub message_bits: usize,
+    pub parity_bits: usize,
+}
+
+impl BinaryLigeroCode {
+    pub fn new(message_bits: usize, parity_bits: usize) -> Self {
+        Self {
+            message_bits,
+            parity_bits,
+        }
+    }
+
+    pub fn codeword_bits(&self) -> usize {
+        self.message_bits + self.parity_bits
+    }
+
+    pub fn parity(&self, row: usize, message: &[F2]) -> F2 {
+        let mut bit = 0u8;
+        for (column, value) in message.iter().enumerate() {
+            let mut label = Vec::with_capacity(24);
+            label.extend_from_slice(&(row as u64).to_le_bytes());
+            label.extend_from_slice(&(column as u64).to_le_bytes());
+            let hash = magnetar_transcript::sha256_labeled(b"f2-ligero-parity", &label);
+            bit ^= value.value() & (hash[0] & 1);
+        }
+        F2::from_u64(u64::from(bit))
+    }
+
+    pub fn encode(&self, message: &[F2]) -> Result<Vec<F2>, ProofError> {
+        if message.len() != self.message_bits {
+            return Err(ProofError::Pcs("Ligero message length mismatch".into()));
+        }
+        let mut codeword = message.to_vec();
+        codeword.reserve(self.parity_bits);
+        for row in 0..self.parity_bits {
+            codeword.push(self.parity(row, message));
+        }
+        Ok(codeword)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use magnetar_constraint::Field;
     use magnetar_proof::Mle;
+
+    #[test]
+    fn binary_ligero_code_encodes_deterministically() {
+        let code = BinaryLigeroCode::new(16, 8);
+        let message = (0..16u64)
+            .map(|index| F2::from_u64((index * 5 + 1) % 2))
+            .collect::<Vec<_>>();
+        let codeword = code.encode(&message).unwrap();
+        assert_eq!(codeword.len(), code.codeword_bits());
+        assert_eq!(codeword[..16], message[..]);
+        assert_eq!(codeword, code.encode(&message).unwrap());
+        let pcs = F2NativePcs;
+        let commitment = pcs.commit(&codeword).unwrap();
+        let point = (0..5u64)
+            .map(|bit| F2::from_u64((bit + 1) % 2))
+            .collect::<Vec<_>>();
+        let opening = pcs.open(&codeword, &point).unwrap();
+        assert!(pcs.verify(&commitment, &point, &opening).unwrap());
+    }
 
     #[test]
     fn native_f2_merkle_opening_round_trips() {
