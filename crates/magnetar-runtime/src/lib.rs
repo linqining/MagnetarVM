@@ -2904,15 +2904,32 @@ pub fn encode_unified_proof(proof: &UnifiedTraceProof) -> Result<Vec<u8>, Runtim
 pub struct UnifiedProofSizes {
     pub access: usize,
     pub cpu: usize,
+    pub gated: usize,
     pub opening: usize,
+    pub commitment: usize,
+    pub shape: usize,
     pub shout: usize,
+    pub packed_shout: usize,
     pub shift_router: usize,
     pub store_router: usize,
+    pub trace_claims: usize,
+    pub table_batches: usize,
 }
 
 impl UnifiedProofSizes {
     pub fn total(&self) -> usize {
-        self.access + self.cpu + self.opening + self.shout + self.shift_router + self.store_router
+        self.access
+            + self.cpu
+            + self.gated
+            + self.opening
+            + self.commitment
+            + self.shape
+            + self.shout
+            + self.packed_shout
+            + self.shift_router
+            + self.store_router
+            + self.trace_claims
+            + self.table_batches
     }
 }
 
@@ -2925,10 +2942,16 @@ pub fn unified_proof_sizes(proof: &UnifiedTraceProof) -> Result<UnifiedProofSize
     Ok(UnifiedProofSizes {
         access: size(bincode::serialize(&proof.access))?,
         cpu: size(bincode::serialize(&proof.cpu))?,
+        gated: size(bincode::serialize(&proof.gated))?,
         opening: size(bincode::serialize(&proof.opening))?,
+        commitment: size(bincode::serialize(&proof.commitment))?,
+        shape: size(bincode::serialize(&proof.shape))?,
         shout: size(bincode::serialize(&proof.shout))?,
+        packed_shout: size(bincode::serialize(&proof.packed_shout))?,
         shift_router: size(bincode::serialize(&proof.shift_router))?,
         store_router: size(bincode::serialize(&proof.store_router))?,
+        trace_claims: size(bincode::serialize(&proof.trace_claims))?,
+        table_batches: size(bincode::serialize(&proof.table_batches))?,
     })
 }
 

@@ -4016,3 +4016,16 @@ The suite now includes `mem-loop` (44 rows, 191,112 B, ~24.5 s prove at width
 16), exercising a backward branch with store/load each iteration. It verifies
 through the grouped unified path, but its size shows the remaining
 per-row/trace-claim growth that A2 still has to address.
+
+
+### Honest unified size breakdown
+
+`UnifiedProofSizes` now includes the previously missing fields: gated lockstep
+proof, commitment, shape, packed Shout, trace claims and table batches, so
+`total()` is the sum of the proof components rather than an undercount. For the
+44-row `mem-loop` workload: gated 169,828 B, opening 161,161 B, access 20,266 B,
+packed Shout 14,762 B, store Router 9,682 B, shape 1,168 B, other fields small;
+total 377,614 B. Gated segment claims and the opening are the dominant A2 cost.
+Workload totals at width 16 are now: fibonacci 243,153; memory 246,114; shifts
+247,120; branchy 261,419; loop 210,749; clock 192,309; mem-loop 377,614; alu
+280,223.
