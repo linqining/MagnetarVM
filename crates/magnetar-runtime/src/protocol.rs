@@ -326,6 +326,7 @@ pub struct ProofBundle {
     pub shout_index: Option<usize>,
     pub shift_router_index: Option<usize>,
     pub store_router_index: Option<usize>,
+    pub trace_index: usize,
 }
 
 impl ProofBundle {
@@ -364,6 +365,7 @@ impl ProofBundle {
             shout_index: proof.shout_index,
             shift_router_index: proof.shift_router_index,
             store_router_index: proof.store_router_index,
+            trace_index: proof.trace_index,
         }
     }
 
@@ -405,6 +407,7 @@ impl ProofBundle {
             shout_index: self.shout_index,
             shift_router_index: self.shift_router_index,
             store_router_index: self.store_router_index,
+            trace_index: self.trace_index,
             cpu: cpu.ok_or(ProtocolError::MissingStage(StageId::Cpu))?,
             shout,
             shift_router,
@@ -1498,6 +1501,7 @@ impl<'a> UnifiedProveContext<'a> {
             shout_index: self.shout_table.as_ref().map(|(index, _)| *index),
             shift_router_index: self.shift_router_table.as_ref().map(|(index, _)| *index),
             store_router_index: self.store_router_table.as_ref().map(|(index, _)| *index),
+            trace_index: self.trace_index,
             access: self
                 .access
                 .ok_or_else(|| RuntimeError::Proof("missing access proof".into()))?,

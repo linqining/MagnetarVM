@@ -1051,6 +1051,7 @@ pub struct UnifiedTraceProof {
     pub shout_index: Option<usize>,
     pub shift_router_index: Option<usize>,
     pub store_router_index: Option<usize>,
+    pub trace_index: usize,
 }
 
 pub(crate) struct GatedProveInput {
@@ -2221,12 +2222,13 @@ pub struct CpuStatement {
     pub shape: crate::cpu_shape::CpuShape,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug)]
 pub struct CoreStatement {
     pub width: usize,
     pub shape: crate::cpu_shape::CpuShape,
     pub access: crate::access_statement::AccessStatement,
     pub aux: Option<crate::aux_statement::AuxStatement>,
+    pub trace: crate::trace_commitment::TraceWitness,
 }
 
 /// Verify CPU, gated, and access claims without a trace.
@@ -2278,18 +2280,52 @@ pub fn verify_core_statement(
             values.extend(aux_values);
         }
     }
+    for point in &points {
+        eprintln!("core point table {} cols {:?}", point.table, point.columns);
+    }
+    let trace_claims = magnetar_proof::virtual_spartan::split_segment_claims(
+        &statement.trace.layout,
+        &statement.trace.values,
+        &statement.trace.point,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let trace_value = magnetar_proof::Mle::new(statement.trace.values.clone())
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .eval(&statement.trace.point)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    magnetar_proof::virtual_spartan::verify_segment_claims(
+        &statement.trace.layout,
+        &trace_claims,
+        &statement.trace.point,
+        trace_value,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let total_bits = statement.trace.layout.total_bits.trailing_zeros() as usize;
+    for (segment, claim) in statement.trace.layout.segments.iter().zip(&trace_claims) {
+        let size_bits = segment.len.trailing_zeros() as usize;
+        let suffix = segment.offset >> size_bits;
+        let mut point = statement.trace.point[..size_bits].to_vec();
+        for bit in 0..total_bits - size_bits {
+            point.push(F2_128::from(((suffix >> bit) & 1) as u64));
+        }
+        points.push(magnetar_pcs::P3MosaicPoint {
+            table: proof.trace_index,
+            point,
+            columns: vec![0],
+            next_columns: Vec::new(),
+        });
+        values.push(vec![claim.value]);
+    }
     let mut pairs = points.into_iter().zip(values).collect::<Vec<_>>();
     pairs.sort_by_key(|(point, _)| point.table);
     let (points, values): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
-    if statement.aux.is_none() {
-        if let Some(opening) = &proof.opening {
-            let pcs = magnetar_pcs::P3BinaryPcs::with_params(100, 4, 16, 3);
-            if !pcs
-                .verify_mosaic(opening, &points, &values)
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?
-            {
-                return Err(RuntimeError::Proof("core opening rejected".into()));
-            }
+    if let Some(opening) = &proof.opening {
+        let pcs = magnetar_pcs::P3BinaryPcs::with_params(100, 4, 16, 3);
+        if !pcs
+            .verify_mosaic(opening, &points, &values)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        {
+            return Err(RuntimeError::Proof("core opening rejected".into()));
         }
     }
     Ok(())
@@ -5633,6 +5669,7 @@ mod cpu_statement_tests {
             shape: proof.shape.clone(),
             access: crate::access_statement::AccessStatement::from_trace(&trace),
             aux: Some(crate::aux_statement::AuxStatement::from_trace(&trace)),
+            trace: crate::trace_commitment::trace_witness(&trace).unwrap(),
         };
         verify_core_statement(&proof, &statement).unwrap();
         let mut bad = statement.clone();

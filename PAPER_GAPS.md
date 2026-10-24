@@ -2715,3 +2715,16 @@ Adding aux points back into the opening did not verify ("core opening
 rejected"), so the core statement currently verifies the opening only when
 `aux` is absent. The aux claim points or table indexes still have a mismatch to
 debug.
+
+
+### A2a milestone: full core opening without a Trace argument
+
+`CoreStatement` now also carries the trace witness table. `verify_core_statement`
+adds its segment points at `proof.trace_index`, includes aux Shout/Router points,
+and verifies the shared Mosaic opening. `core_statement_verifies_without_trace`
+passes with CPU + gated + RAM/register + Shout + Router + trace tables, without
+passing a `Trace` to the verifier.
+
+This is a statement-based verifier, not a succinct proof: the statement still
+contains the trace witness, access records, and aux rows. But the verifier API
+no longer needs the execution trace itself.
