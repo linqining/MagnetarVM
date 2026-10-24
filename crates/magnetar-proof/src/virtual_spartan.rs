@@ -5,7 +5,7 @@
 //! point is the low part of `r`, and the full claim is reconstructed as
 //! `Σ_i eq(r_high, b_i) · W_i(r_low)`.
 
-use magnetar_constraint::{Segment, WitnessLayout, F2_128};
+use magnetar_constraint::{Segment, SegmentOwner, WitnessLayout, F2_128};
 use thiserror::Error;
 
 use crate::{eq, Mle, ProofError};
@@ -40,6 +40,35 @@ fn suffix_bits(segment: &Segment, total_bits: usize) -> Vec<F2_128> {
 fn local_point(point: &[F2_128], segment: &Segment) -> Vec<F2_128> {
     let size_bits = segment.len.trailing_zeros() as usize;
     point[..size_bits].to_vec()
+}
+
+/// A segment claim tagged with the component that owns the segment.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RoutedSegmentClaim {
+    pub name: String,
+    pub owner: SegmentOwner,
+    pub value: F2_128,
+}
+
+/// Attach each per-segment claim to the `SegmentOwner` recorded in the layout.
+/// This is the routing hook for Virtual Spartan component claims.
+pub fn route_segment_claims(
+    layout: &WitnessLayout,
+    claims: &[SegmentClaim],
+) -> Result<Vec<RoutedSegmentClaim>, VirtualSpartanError> {
+    if claims.len() != layout.segments.len() {
+        return Err(VirtualSpartanError::ClaimShape);
+    }
+    Ok(layout
+        .segments
+        .iter()
+        .zip(claims)
+        .map(|(segment, claim)| RoutedSegmentClaim {
+            name: segment.name.clone(),
+            owner: segment.owner,
+            value: claim.value,
+        })
+        .collect())
 }
 
 pub fn split_segment_claims(
@@ -120,6 +149,24 @@ mod tests {
             Segment::new("c", 8, 8, SegmentKind::Direct, SegmentOwner::Cpu),
         ])
         .unwrap()
+    }
+
+    #[test]
+    fn segment_claims_are_routed_to_owners() {
+        let layout = layout();
+        let values = (0..layout.total_bits)
+            .map(|index| F2_128::from(index as u64 + 1))
+            .collect::<Vec<_>>();
+        let point = (0..layout.total_bits.trailing_zeros() as usize)
+            .map(|bit| F2_128::from((bit + 1) as u64))
+            .collect::<Vec<_>>();
+        let claims = split_segment_claims(&layout, &values, &point).unwrap();
+        let routed = route_segment_claims(&layout, &claims).unwrap();
+        assert_eq!(routed.len(), layout.segments.len());
+        for (routed, segment) in routed.iter().zip(&layout.segments) {
+            assert_eq!(routed.name, segment.name);
+            assert_eq!(routed.owner, segment.owner);
+        }
     }
 
     #[test]
