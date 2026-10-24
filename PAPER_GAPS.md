@@ -2907,3 +2907,22 @@ So the current Router proof proves consistency between two proof-chosen values,
 not that the route matches the program. Fixing this needs committed public
 route columns (offset/width/shift/is_shift/is_store) opened at the same points,
 or a Shout/bytecode selector binding. Do not claim D10 complete before that.
+
+
+### D10: commit and open the public route columns
+
+The Router table now appends 10 committed public-route columns:
+
+```text
+offset_bits[3], width_one_hot[4], shift_code, is_shift, is_store
+```
+
+The prover/verifier add opening points for these columns at the offset, width,
+shift, and valid challenge points, using the selector evals as expected values.
+The proof-carried `offset_public_evals`/`width_public_evals`/`shift_public_eval`/
+`valid_public_evals` fields were removed. The offset/width/shift/valid sumchecks
+now reduce to `sum == 0`, which forces selector evals to equal the committed
+public-route columns.
+
+This closes the internal "proof-chosen public eval" gap. The route is still not
+authenticated by bytecode/Shout, so D10 remains partial.
