@@ -26,6 +26,10 @@ pub struct AmoAddRow {
 }
 
 impl AmoAddRow {
+    pub fn packed_system(&self) -> magnetar_constraint::ConstraintSystem {
+        self.relation.to_system()
+    }
+
     pub fn new(width: usize) -> Self {
         let add = GatedAluRow::new(width);
         let mut relation = BitRelation::new(add.relation.num_vars);
@@ -153,6 +157,46 @@ impl AmoAddRow {
     }
 }
 
+pub fn prove_amo_add_batch(
+    width: usize,
+    rows: &[(u64, u64, u64)],
+) -> Result<
+    magnetar_proof::SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>,
+    crate::RuntimeError,
+> {
+    use magnetar_proof::{prove_shared_simd_spartan, witness_vector};
+    if rows.is_empty() || !rows.len().is_power_of_two() {
+        return Err(crate::RuntimeError::Proof(
+            "AMO batch must be a nonzero power of two".into(),
+        ));
+    }
+    let row = AmoAddRow::new(width);
+    let system = row.packed_system();
+    let mut witnesses = Vec::new();
+    for (old, operand, address) in rows {
+        let bits = row.witness(*old, *operand, *address);
+        witnesses.push(row.relation.to_witness(&bits));
+    }
+    let _ = witness_vector(&system, &witnesses[0])
+        .map_err(|error| crate::RuntimeError::Proof(error.to_string()))?;
+    let pcs = magnetar_pcs::P3BinaryPcs::new(100);
+    prove_shared_simd_spartan(&system, &witnesses, &pcs)
+        .map_err(|error| crate::RuntimeError::Proof(error.to_string()))
+}
+
+pub fn verify_amo_add_batch(
+    width: usize,
+    instances: usize,
+    proof: &magnetar_proof::SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>,
+) -> Result<(), crate::RuntimeError> {
+    use magnetar_proof::verify_shared_simd_spartan;
+    let row = AmoAddRow::new(width);
+    let system = row.packed_system();
+    let pcs = magnetar_pcs::P3BinaryPcs::new(100);
+    verify_shared_simd_spartan(&system, instances, proof, &pcs)
+        .map_err(|error| crate::RuntimeError::Proof(error.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,5 +212,13 @@ mod tests {
             });
             assert_eq!(value, old.wrapping_add(operand) & 0xff);
         }
+        let rows = [
+            (5u64, 3u64, 0x100u64),
+            (7, 9, 0x108),
+            (1, 2, 0x110),
+            (0, 0, 0x118),
+        ];
+        let proof = prove_amo_add_batch(8, &rows).unwrap();
+        verify_amo_add_batch(8, rows.len(), &proof).unwrap();
     }
 }

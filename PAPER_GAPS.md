@@ -2204,3 +2204,16 @@ validity is not yet chained across CPU rows.
 - other events preserve it.
 
 Tests cover LR, matching SC, mismatching SC, and invalidation.
+
+
+AMO row batches now have standalone proofs:
+
+```text
+prove_amo_add_batch / verify_amo_add_batch
+prove_amo_logic_batch / verify_amo_logic_batch
+prove_amo_minmax_batch / verify_amo_minmax_batch
+```
+
+Each batch uses `prove_shared_simd_spartan` over the row's packed system with
+4 instances in tests. These are standalone proofs, not yet part of the unified
+trace proof.
