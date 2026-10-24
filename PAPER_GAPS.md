@@ -2242,3 +2242,10 @@ chain.
 matching write in `trace.memory_events` at the same address. Executor traces do
 not emit a separate read event for AMO, so the old value is bound through the
 trace commitment and `rd_val` rather than a read event.
+
+
+Attempting to emit an AMO read event in the executor broke the unified
+BinaryTwist memory proof (`memory write does not match BinaryTwist`): the
+current witness/claim construction assumes one memory access per row. The
+executor change was reverted. Binding the AMO old value as a first-class memory
+read requires extending BinaryTwist to handle a read+write pair per row.
