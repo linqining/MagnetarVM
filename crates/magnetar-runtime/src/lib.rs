@@ -3642,7 +3642,8 @@ mod tests {
         assert!(proof.access.ram.opening.is_none());
         assert_eq!(
             proof.cpu.commitment.tables.len(),
-            6 + usize::from(proof.shout.is_some())
+            6 + usize::from(proof.gated.is_some())
+                + usize::from(proof.shout.is_some())
                 + usize::from(proof.shift_router.is_some())
                 + usize::from(proof.store_router.is_some())
         );

@@ -390,14 +390,15 @@ pub fn gated_rows_from_trace(
         let Some(step) = crate::step_op_for(row.instruction.op) else {
             break;
         };
-        let op = match step {
-            StepOp::Xor => GatedAluOp::Xor,
-            StepOp::And => GatedAluOp::And,
-            StepOp::Add => GatedAluOp::Add,
-            StepOp::Sub => GatedAluOp::Sub,
-            StepOp::Sltu => GatedAluOp::Sltu,
-            StepOp::Slt => GatedAluOp::Slt,
-            StepOp::Lui => GatedAluOp::Lui,
+        let (op, right) = match step {
+            StepOp::Xor => (GatedAluOp::Xor, row.rs2_val),
+            StepOp::And => (GatedAluOp::And, row.rs2_val),
+            StepOp::Add => (GatedAluOp::Add, row.rs2_val),
+            StepOp::Sub => (GatedAluOp::Sub, row.rs2_val),
+            StepOp::Sltu => (GatedAluOp::Sltu, row.rs2_val),
+            StepOp::Slt => (GatedAluOp::Slt, row.rs2_val),
+            StepOp::Lui => (GatedAluOp::Lui, row.rs2_val),
+            StepOp::Addi => (GatedAluOp::Add, row.instruction.imm as u64),
             _ => break,
         };
         if crate::w_step_op_for(row.instruction.op).is_some()
@@ -410,7 +411,7 @@ pub fn gated_rows_from_trace(
             row.pc,
             GatedCpuRowInput::Alu {
                 left: row.rs1_val,
-                right: row.rs2_val,
+                right,
                 op,
             },
         ));
@@ -903,6 +904,54 @@ mod auipc_trace_tests {
         .unwrap();
         let rows = gated_rows_from_trace(&trace, 8).unwrap();
         assert_eq!(rows.len(), 8);
+        use crate::simd_dual::{prove_gated_dual_batch_bits, verify_gated_dual_batch_bits};
+        use magnetar_pcs::P3SharedPcs;
+        use magnetar_proof::DirectBitPcs;
+        let backend = DirectBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
+        let (proof, layout) = prove_gated_dual_batch_bits(8, &rows, &backend).unwrap();
+        verify_gated_dual_batch_bits(8, &rows, &proof, &layout, &backend).unwrap();
+    }
+
+    #[test]
+    fn addi_trace_proves_through_gated_dual() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 5,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let rows = gated_rows_from_trace(&trace, 8).unwrap();
+        assert_eq!(rows.len(), 2);
         use crate::simd_dual::{prove_gated_dual_batch_bits, verify_gated_dual_batch_bits};
         use magnetar_pcs::P3SharedPcs;
         use magnetar_proof::DirectBitPcs;

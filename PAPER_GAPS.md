@@ -2433,3 +2433,10 @@ next_pre from row[i+1].reservation_before
 A real LUI/LR.D/SC.D/ADD trace produces four linked instances and the batch
 proves/verifies. This is still a standalone batch, not yet the unified CPU
 claim list.
+
+
+### C: ADDI gated trace support
+
+`gated_rows_from_trace` now maps ADDI to an ALU ADD with the immediate as the
+right operand. This makes simple LUI/ADDI/LR/SC traces fully gated; the unified
+table-count assertion now includes the gated claims table.
