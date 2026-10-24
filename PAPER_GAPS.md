@@ -2462,3 +2462,11 @@ after:  157,433 B  (+1.3 KB)
 
 Targeted tests: `unified_trace_proof_merges`, `unified_lr_sc`,
 `unified_amo_lr_sc`.
+
+
+### C: remove duplicate reservation batch
+
+Reservation transitions are now in the unified gated claims, so the standalone
+`AmoBundleProof.reservation` batch was removed. AMO/LR/SC bundles now contain
+only their operation proofs; reservation presence is checked through the gated
+claims.

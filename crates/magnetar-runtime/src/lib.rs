@@ -3566,7 +3566,6 @@ mod tests {
         assert!(amo.add.is_some());
         assert!(amo.lr.is_some());
         assert!(amo.sc.is_some());
-        assert!(amo.reservation.is_some());
         verify_unified_trace(&trace, &proof, 8).unwrap();
         let bundle = crate::protocol::ProofBundle::from_unified(&proof);
         let restored = bundle.into_unified().unwrap();

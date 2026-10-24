@@ -7,7 +7,6 @@ use crate::amo_add_row::{prove_amo_add_batch, verify_amo_add_batch_bound};
 use crate::amo_logic_row::{prove_amo_logic_batch, verify_amo_logic_batch_bound, AmoLogicKind};
 use crate::amo_minmax_row::{prove_amo_minmax_batch, verify_amo_minmax_batch_bound, AmoMinMaxKind};
 use crate::lr_row::{prove_lr_batch, verify_lr_batch_bound};
-use crate::reservation_row::{prove_reservation_batch, verify_reservation_batch_bound};
 use crate::sc_row::{prove_sc_batch, verify_sc_batch_bound};
 use crate::RuntimeError;
 
@@ -26,7 +25,6 @@ pub struct AmoBundleProof {
     pub maxu: Option<AmoProof>,
     pub lr: Option<AmoProof>,
     pub sc: Option<AmoProof>,
-    pub reservation: Option<AmoProof>,
 }
 
 #[derive(Default)]
@@ -42,7 +40,6 @@ struct Rows {
     maxu: Vec<(u64, u64, u64)>,
     lr: Vec<(u64, u64)>,
     sc: Vec<(u64, u64, u64, bool)>,
-    reservation: Vec<(u64, u64, bool, bool, bool, bool)>,
 }
 
 fn collect(trace: &Trace) -> Rows {
@@ -82,18 +79,6 @@ fn collect(trace: &Trace) -> Rows {
             }
             _ => {}
         }
-        if row.reservation_before != row.reservation_after {
-            let addr = row.mem.map(|mem| mem.addr).unwrap_or(0);
-            let res_addr = row.reservation_before.unwrap_or(0);
-            rows.reservation.push((
-                addr,
-                res_addr,
-                row.reservation_before.is_some(),
-                matches!(row.instruction.op, Op::LrW | Op::LrD),
-                matches!(row.instruction.op, Op::ScW | Op::ScD),
-                is_amo_op(row.instruction.op) || is_store_op(row.instruction.op),
-            ));
-        }
     }
     rows
 }
@@ -121,7 +106,6 @@ impl AmoBundleProof {
             && self.maxu.is_none()
             && self.lr.is_none()
             && self.sc.is_none()
-            && self.reservation.is_none()
     }
 }
 
@@ -150,19 +134,6 @@ fn pad_lr(mut rows: Vec<(u64, u64)>) -> Option<Vec<(u64, u64)>> {
     Some(rows)
 }
 
-#[allow(clippy::type_complexity)]
-fn pad_reservation(
-    mut rows: Vec<(u64, u64, bool, bool, bool, bool)>,
-) -> Option<Vec<(u64, u64, bool, bool, bool, bool)>> {
-    if rows.is_empty() {
-        return None;
-    }
-    while !rows.len().is_power_of_two() {
-        rows.push((0, 0, false, false, false, false));
-    }
-    Some(rows)
-}
-
 fn pad_sc(mut rows: Vec<(u64, u64, u64, bool)>) -> Option<Vec<(u64, u64, u64, bool)>> {
     if rows.is_empty() {
         return None;
@@ -175,17 +146,6 @@ fn pad_sc(mut rows: Vec<(u64, u64, u64, bool)>) -> Option<Vec<(u64, u64, u64, bo
 
 pub fn prove_amo_bundle(trace: &Trace, width: usize) -> Result<AmoBundleProof, RuntimeError> {
     let rows = collect(trace);
-    let has_events = !rows.add.is_empty()
-        || !rows.xor.is_empty()
-        || !rows.and.is_empty()
-        || !rows.or.is_empty()
-        || !rows.swap.is_empty()
-        || !rows.min.is_empty()
-        || !rows.max.is_empty()
-        || !rows.minu.is_empty()
-        || !rows.maxu.is_empty()
-        || !rows.lr.is_empty()
-        || !rows.sc.is_empty();
     let add = pad(rows.add)
         .map(|rows| prove_amo_add_batch(width, &rows))
         .transpose()?;
@@ -213,13 +173,6 @@ pub fn prove_amo_bundle(trace: &Trace, width: usize) -> Result<AmoBundleProof, R
     let maxu = pad(rows.maxu)
         .map(|rows| prove_amo_minmax_batch(width, AmoMinMaxKind::Maxu, &rows))
         .transpose()?;
-    let reservation = if has_events {
-        pad_reservation(rows.reservation)
-            .map(|rows| prove_reservation_batch(width, &rows))
-            .transpose()?
-    } else {
-        None
-    };
     let lr = pad_lr(rows.lr)
         .map(|rows| prove_lr_batch(width, &rows))
         .transpose()?;
@@ -238,7 +191,6 @@ pub fn prove_amo_bundle(trace: &Trace, width: usize) -> Result<AmoBundleProof, R
         maxu,
         lr,
         sc,
-        reservation,
     })
 }
 
@@ -567,14 +519,6 @@ pub fn verify_amo_bundle(
         verify_sc_batch_bound(width, &rows, proof)?;
     } else if !rows.sc.is_empty() {
         return Err(RuntimeError::Proof("SC bundle presence".into()));
-    }
-    if let Some(reservation_rows) = pad_reservation(rows.reservation.clone()) {
-        let Some(proof) = &proof.reservation else {
-            return Err(RuntimeError::Proof("reservation bundle presence".into()));
-        };
-        verify_reservation_batch_bound(width, &reservation_rows, proof)?;
-    } else if proof.reservation.is_some() {
-        return Err(RuntimeError::Proof("unexpected reservation bundle".into()));
     }
     Ok(())
 }
