@@ -682,5 +682,14 @@ mod tests {
             row.reservation_after = None;
         }
         assert!(check_reservations(&bad).is_err());
+        let mut bad = trace.clone();
+        if let Some(row) = bad
+            .rows
+            .iter_mut()
+            .find(|row| matches!(row.instruction.op, Op::LrD))
+        {
+            row.rd_val = row.rd_val.wrapping_add(1);
+        }
+        assert!(check_lr_sc_memory(&bad).is_err());
     }
 }

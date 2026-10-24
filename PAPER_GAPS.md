@@ -2301,3 +2301,6 @@ chain check remains verifier-side.
 `check_lr_sc_memory` now binds LR/SC to memory history: LR's `rd_val` must be
 the latest prior value, and a successful SC's write must appear in
 `memory_events`. Targeted tests: `cargo test -p magnetar-runtime amo_bundle`.
+
+
+A tamper test mutates LR `rd_val` and confirms `check_lr_sc_memory` rejects it.
