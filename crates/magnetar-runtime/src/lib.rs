@@ -2680,6 +2680,27 @@ pub fn verify_core_statement(
             values.extend(aux_values);
         }
     }
+    if let Some(router) = &proof.shift_router {
+        let opening = router
+            .opening
+            .as_ref()
+            .ok_or_else(|| RuntimeError::Proof("missing shift router opening".into()))?;
+        let (router_points, router_values) = crate::binary_router::verify_binary_router_from_proof(
+            router,
+            &opening.commitment,
+            0,
+            b"",
+        )
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .ok_or_else(|| RuntimeError::Proof("shift Router claims rejected".into()))?;
+        let pcs = magnetar_pcs::P3BinaryPcs::with_params(100, 4, 16, 3);
+        if !pcs
+            .verify_mosaic(opening, &router_points, &router_values)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        {
+            return Err(RuntimeError::Proof("shift Router opening rejected".into()));
+        }
+    }
     for (point, value) in &proof.trace_claims {
         points.push(point.clone());
         values.push(value.clone());
@@ -3611,6 +3632,55 @@ mod tests {
         );
         let trace = execute(&program, config()).unwrap();
         assert_eq!(trace.final_state.regs[6], 0);
+        let proof = prove_unified_trace(&trace, 8).unwrap();
+        verify_unified_proof(&proof).unwrap();
+    }
+
+    #[test]
+    fn shift_program_unified_proof_round_trips() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x5a5,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Slli,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 3,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Srli,
+                    rd: 3,
+                    rs1: 2,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 2,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Xor,
+                    rd: 4,
+                    rs1: 1,
+                    rs2: 3,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(&program, config()).unwrap();
         let proof = prove_unified_trace(&trace, 8).unwrap();
         verify_unified_proof(&proof).unwrap();
     }

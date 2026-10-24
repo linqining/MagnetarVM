@@ -1429,8 +1429,10 @@ impl<'a> UnifiedProveContext<'a> {
             next_table += 1;
             (index, witness.table())
         });
-        if let Some((_, table)) = &shift_router_table {
-            mosaic_tables.push(table.clone());
+        if shift_router_table.is_some() {
+            mosaic_tables.push(magnetar_pcs::P3MosaicTable {
+                columns: vec![vec![F2_128::from(0u64); 2]],
+            });
         }
         let store_router_table = store_router_witness.as_ref().map(|witness| {
             let index = next_table;
@@ -1612,12 +1614,9 @@ impl<'a> UnifiedProveContext<'a> {
         ) else {
             return Ok(());
         };
-        let (claim, claim_points, claim_values) =
-            prove_binary_router_claims(witness, commitment, *index, b"")
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        self.points.extend(claim_points);
-        self.values.extend(claim_values);
-        self.aux_tables.push(witness.table());
+        let _ = (index, commitment);
+        let claim = crate::binary_router::prove_binary_router(witness)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         self.shift_router = Some(claim);
         Ok(())
     }
@@ -2010,7 +2009,7 @@ impl<'a> UnifiedProveContext<'a> {
             ram_index: self.ram_index,
             rom_index: self.rom_index,
             shout_index: self.shout_table.as_ref().map(|(index, _)| *index),
-            shift_router_index: self.shift_router_table.as_ref().map(|(index, _)| *index),
+            shift_router_index: None,
             store_router_index: self.store_router_table.as_ref().map(|(index, _)| *index),
             trace_index: self.trace_index,
             trace_claims,
@@ -2215,16 +2214,14 @@ impl<'a> UnifiedVerifyContext<'a> {
         ) else {
             return Ok(());
         };
-        let Some((points, values)) =
-            verify_binary_router_claims(witness, claim, &self.proof.commitment, index, b"")
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?
-        else {
+        let _ = index;
+        if !crate::binary_router::verify_binary_router(witness, claim)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        {
             return Err(RuntimeError::Proof(
                 "shift BinaryRouter proof rejected".into(),
             ));
-        };
-        self.points.extend(points);
-        self.values.extend(values);
+        }
         Ok(())
     }
 

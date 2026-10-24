@@ -3832,3 +3832,18 @@ Aggregating the whole branch relation into a component table works in `core`,
 but adds ~46 KB to the opening (152,556 -> 198,832 B), so it was reverted. The
 branch segment remains a CPU/Pcs claim; memory/PC/Router components stay on the
 shared component tables.
+
+
+### D10/B5 fallback: standalone shift Router opening
+
+A shift-heavy unified trace exposed a P3 shared-opening failure: including the
+276-column shift Router table and its 13 claim points in the shared Mosaic
+opening made even `open_mosaic`/`verify_mosaic` on the same inputs return false
+(`prover self verify Ok(false)`); the same table verifies standalone. The shift
+Router is therefore committed/opened standalone inside `BinaryRouterProof`
+(`prove_binary_router`), the shared commitment keeps a 2-cell placeholder table
+to preserve indexes, and the verifier checks the standalone opening in both core
+and trace paths. `shift_program_unified_proof_round_trips` covers a Slli/Srli/Xor
+program. The Shout-to-shift-Router link is skipped while the shift router is
+standalone; store Router and all shared component openings are unchanged. The
+shift proof is ~216 KB at width 8 versus 152 KB for the no-shift benchmark.

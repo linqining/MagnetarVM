@@ -1261,7 +1261,7 @@ pub(crate) fn prove_binary_router_claims(
 
 pub fn prove_binary_router(witness: &BinaryRouterWitness) -> Result<BinaryRouterProof, ProofError> {
     witness.validate()?;
-    let pcs = P3BinaryPcs::new(100);
+    let pcs = P3BinaryPcs::with_params(100, 4, 16, 3);
     let table = witness.table();
     let commitment = pcs.commit_mosaic(core::slice::from_ref(&table))?;
     let (mut proof, points, _) = prove_binary_router_claims(witness, &commitment, 0, b"")?;
@@ -1677,7 +1677,7 @@ pub fn verify_binary_router(
     else {
         return Ok(false);
     };
-    P3BinaryPcs::new(100).verify_mosaic(opening, &points, &values)
+    P3BinaryPcs::with_params(100, 4, 16, 3).verify_mosaic(opening, &points, &values)
 }
 
 #[cfg(test)]
