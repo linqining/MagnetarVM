@@ -2164,3 +2164,9 @@ CPU fusion for DIVW/REMW/DIVUW/REMUW is the next step.
 `GatedAluRow` ADD to old/operand/new. Tests cover `5+3`, `255+1`, `0+7`,
 `17+13` at width 8. Memory read/write binding and the other AMO operations are
 the next step.
+
+
+`AmoAddRow` now carries two memory rows: a read of `old` and a write of `new`
+at the same address, with the address adder inputs bound together and the
+memory gate forced high. The isolated relation checks read-modify-write
+consistency for AMOADD.
