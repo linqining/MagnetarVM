@@ -2417,3 +2417,19 @@ next_pre_addr == 0            when !next_pre_valid
 The address equality is gated by `post_valid`. A four-instance batch is chained
 (LR -> SC -> LR -> SC) and verifies. This is still a standalone row batch, not
 yet the unified CPU row list.
+
+
+### C: reservation rows from a trace
+
+`reservation_cpu_rows_from_trace` maps the gated CPU rows and uses the trace's
+`reservation_before` fields for the chain:
+
+```text
+addr, res_addr, pre_valid
+is_lr, is_sc
+next_pre from row[i+1].reservation_before
+```
+
+A real LUI/LR.D/SC.D/ADD trace produces four linked instances and the batch
+proves/verifies. This is still a standalone batch, not yet the unified CPU
+claim list.

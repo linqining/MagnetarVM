@@ -158,6 +158,45 @@ pub fn verify_reservation_cpu_batch(
         .map_err(|error| crate::RuntimeError::Proof(error.to_string()))
 }
 
+pub fn reservation_cpu_rows_from_trace(
+    trace: &magnetar_spec::Trace,
+    width: usize,
+) -> Result<Vec<(u64, ReservationCpuInput)>, crate::RuntimeError> {
+    let rows = crate::simd_full::gated_rows_from_trace(trace, width)?;
+    let mut result = Vec::with_capacity(rows.len());
+    for (index, (pc, cpu)) in rows.iter().enumerate() {
+        let row = trace
+            .rows
+            .get(index)
+            .ok_or_else(|| crate::RuntimeError::Proof("reservation trace row".into()))?;
+        let next_pre = trace
+            .rows
+            .get(index + 1)
+            .and_then(|next| next.reservation_before);
+        result.push((
+            *pc,
+            ReservationCpuInput {
+                cpu: *cpu,
+                addr: row.mem.map(|mem| mem.addr).unwrap_or(0),
+                res_addr: row.reservation_before.unwrap_or(0),
+                pre_valid: row.reservation_before.is_some(),
+                is_lr: matches!(
+                    row.instruction.op,
+                    magnetar_spec::Op::LrW | magnetar_spec::Op::LrD
+                ),
+                is_sc: matches!(
+                    row.instruction.op,
+                    magnetar_spec::Op::ScW | magnetar_spec::Op::ScD
+                ),
+                is_invalidate: false,
+                next_pre_valid: next_pre.is_some(),
+                next_pre_addr: next_pre.unwrap_or(0),
+            },
+        ));
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +239,67 @@ mod tests {
             (0x1008, input),
             (0x100c, bad),
         ];
+        let proof = prove_reservation_cpu_batch(8, &rows).unwrap();
+        verify_reservation_cpu_batch(8, &rows, &proof).unwrap();
+
+        use magnetar_executor::execute;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Lui,
+                    rd: 4,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x1000_0000,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::LrD,
+                    rd: 5,
+                    rs1: 4,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::ScD,
+                    rd: 6,
+                    rs1: 4,
+                    rs2: 5,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Add,
+                    rd: 7,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x100,
+                stack_top: 0x1000_0080,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let rows = reservation_cpu_rows_from_trace(&trace, 8).unwrap();
+        assert_eq!(rows.len(), 4);
         let proof = prove_reservation_cpu_batch(8, &rows).unwrap();
         verify_reservation_cpu_batch(8, &rows, &proof).unwrap();
     }
