@@ -1057,6 +1057,7 @@ pub(crate) struct GatedProveInput {
 pub struct GatedCpuClaims {
     pub claims: LockstepClaims<P3MosaicCommitment>,
     pub table: usize,
+    pub value: F2_128,
 }
 
 fn step_op_for(op: magnetar_spec::Op) -> Option<magnetar_cpu::StepOp> {

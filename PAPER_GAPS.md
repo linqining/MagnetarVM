@@ -2507,3 +2507,11 @@ of preserving it. Unified LR/SC tests still pass.
 `amo_chain_rows_check` test builds LUI/ADDI/SD/ADDI/AMOADD.D/ADD/ADD/ADD rows and
 checks every combined CPU+reservation relation. `unified_amo_lr_sc` also still
 passes.
+
+
+### A2: carry the gated opening value in the proof
+
+`GatedCpuClaims` now stores `value: F2_128`, the evaluation of the gated witness
+at the verification point. The verifier uses this value directly instead of
+rebuilding the gated `z` and evaluating it. Prover still needs `z`; this removes
+one witness dependency from verification.

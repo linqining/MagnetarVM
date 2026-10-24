@@ -1404,9 +1404,14 @@ impl<'a> UnifiedProveContext<'a> {
                 gated_commitment,
             )
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            let value = Mle::new(input.z.clone())
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?
+                .eval(&ry)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
             self.gated_claims = Some(crate::GatedCpuClaims {
                 claims,
                 table: input.table,
+                value,
             });
             self.gated_ry = Some(ry);
         }
@@ -1806,10 +1811,12 @@ impl<'a> UnifiedVerifyContext<'a> {
         });
         self.values.push(vec![value]);
         if let (Some(input), Some(gated_ry)) = (&self.gated_input, &self.gated_ry) {
-            let gated_value = Mle::new(input.z.clone())
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?
-                .eval(gated_ry)
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            let gated_value = self
+                .proof
+                .gated
+                .as_ref()
+                .map(|gated| gated.value)
+                .unwrap_or_default();
             self.points.push(P3MosaicPoint {
                 table: input.table,
                 point: gated_ry.clone(),
