@@ -2604,3 +2604,10 @@ address, memory value) and compares the exact constraint debug for an LR/SC
 trace. All variants match. This shows the CPU system can be reconstructed from a
 value-free shape; the earlier value-free struct experiment was an implementation
 bug, not a constraint dependency.
+
+
+A first attempt to put the zeroed shape into `UnifiedTraceProof` and rebuild the
+verifier CPU system failed with a lockstep mismatch on the LUI/ADDI/SD/LR/SC
+trace. The field was reverted. The shape test still shows zeroed reconstruction
+for the LR/SC/Add trace, so the remaining difference is specific to one of the
+extra rows (likely ADDI/SD layout details) and needs isolated debugging.

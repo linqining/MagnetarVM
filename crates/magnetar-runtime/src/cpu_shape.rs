@@ -40,6 +40,34 @@ impl CpuShape {
         }
     }
 
+    pub fn zeroed(&self) -> Self {
+        Self {
+            rows: self
+                .rows
+                .iter()
+                .map(|row| CpuShapeRow {
+                    pc: row.pc,
+                    op: row.op,
+                    imm: row.imm,
+                    rs1_val: 0,
+                    rs2_val: 0,
+                    rd_val: 0,
+                    mem: row.mem.map(|(_, _, width, write)| (0, 0, width, write)),
+                })
+                .collect(),
+        }
+    }
+
+    pub fn matches_structure(&self, trace: &Trace) -> bool {
+        self.rows.len() == trace.rows.len()
+            && self.rows.iter().zip(trace.rows.iter()).all(|(shape, row)| {
+                shape.pc == row.pc
+                    && shape.op == row.instruction.op
+                    && shape.imm == row.instruction.imm
+                    && shape.mem.map(|m| (m.2, m.3)) == row.mem.map(|m| (m.width, m.is_write))
+            })
+    }
+
     fn synthetic_rows(&self, trace: &Trace) -> Vec<TraceRow> {
         self.rows
             .iter()
@@ -69,13 +97,23 @@ impl CpuShape {
         trace: &Trace,
         width: usize,
     ) -> Result<magnetar_constraint::ConstraintSystem, crate::RuntimeError> {
+        self.system_with_len(trace, width).map(|(system, _)| system)
+    }
+
+    pub fn system_with_len(
+        &self,
+        trace: &Trace,
+        width: usize,
+    ) -> Result<(magnetar_constraint::ConstraintSystem, usize), crate::RuntimeError> {
         if self.rows.len() != trace.rows.len() {
             return Err(crate::RuntimeError::Proof("CPU shape length".into()));
         }
         let mut synthetic = trace.clone();
         synthetic.rows = self.synthetic_rows(trace);
-        let (system, _) = crate::merged_cpu_system(&synthetic, width)?;
-        Ok(system)
+        let (system, witness) = crate::merged_cpu_system(&synthetic, width)?;
+        let z = magnetar_proof::witness_vector(&system, &witness)
+            .map_err(|error| crate::RuntimeError::Proof(error.to_string()))?;
+        Ok((system, z.len()))
     }
 }
 
