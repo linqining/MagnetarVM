@@ -3531,3 +3531,11 @@ padding. The test `reservation_specs_cover_each_gated_instance` checks that the
 segments cover every gated instance exactly and include Memory/Routing/Pcs
 owners. This is the subsegment schema needed before reconstructing CPU z from
 component claims.
+
+
+### B5: PcBits projection verified
+
+`pc_component_witness_matches_gated_pc_subsegment` builds a trace, extracts the
+gated `ReservationCpuRow` PC subsegment, and compares it bit-for-bit with the
+`PcTransitionRow` component witness. The PC projection is identity over the PC
+bit range. RamBits/RouterBits projections remain.

@@ -1516,3 +1516,51 @@ mod virtual_spec_tests {
         assert!(specs.iter().any(|spec| spec.owner == SegmentOwner::Pcs));
     }
 }
+
+#[cfg(test)]
+mod projection_tests {
+    use magnetar_executor::execute;
+    use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+    #[test]
+    fn pc_component_witness_matches_gated_pc_subsegment() {
+        let program = ProgramImage::new(
+            0x10,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 9,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let config = MachineConfig {
+            entry: 0x10,
+            rom_base: 0x10,
+            ram_base: 0x40,
+            ram_size: 0x40,
+            stack_top: 0x80,
+            max_cycles: 8,
+        };
+        let trace = execute(&program, config).unwrap();
+        let rows =
+            crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, 8).unwrap();
+        let cpu = crate::reservation_cpu_row::ReservationCpuRow::new(8);
+        let pc_row = crate::pc_transition_row::PcTransitionRow::new(8);
+        for (pc, input) in &rows {
+            let gated_bits = cpu.witness(*pc, *input);
+            let pc_bits = pc_row.witness(*pc, *pc, true);
+            for bit in 0..8 {
+                assert_eq!(
+                    gated_bits[cpu.cpu.pc[bit]], pc_bits[pc_row.pc[bit]],
+                    "PC bit {bit} projection mismatch"
+                );
+            }
+        }
+    }
+}
