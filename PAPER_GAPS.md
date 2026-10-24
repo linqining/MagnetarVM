@@ -4,6 +4,27 @@
 代码基线：`00818e8`（`feat/BinaryTwist`）  
 状态说明：✅ 已实现；🟡 部分实现或采用了不同的等价/近似 instantiation；❌ 未实现。
 
+## 最新实现快照（会话验证）
+
+```text
+core proof-only             verify_core_proof(proof)，无 trace/statement
+packed Shout                witness-blind，进入 UnifiedTraceProof
+Shout ROM                   committed in the shared Mosaic commitment
+Router-Shout link           public width/shift at the Shout link point
+unified opening             verify_mosaic 真正执行
+shared CPU                  shared-matrix CPU + ring switching
+Router                       full-cycle witness (None routes)
+native F2                   Merkle PCS + sparse coded Ligero + NativeF2BitPcs
+Virtual Spartan lockstep    prove_lockstep_claims_bits + native BitPcs
+gated bundle soundness      rows 生成 witness 并与 proof.commitment 比较
+C3/C4                       gated row 约束 next_pc；reservation row 在 shared CPU
+benchmark                   137,120 B (opening 65,537, packed_shout 5,226)
+```
+
+仍开放：C1/C2 bytecode/micro-PC/SIMD instance schema、B5 virtual segment
+claim router、B6 sum-check 优化、B8 recursive verifier、D2 单周期 p=2、
+E5/E6 单 packed PCS/Ligerito 集成。
+
 ## 一、结论摘要
 
 当前仓库已经具备一条**可运行的参考证明链**：
