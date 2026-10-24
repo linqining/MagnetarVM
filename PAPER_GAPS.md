@@ -2192,3 +2192,15 @@ select mux; tests cover `-5`/`3` for signed and unsigned orderings.
 `sc_row::ScRow` reads `old`, writes `operand` only when `success`, and sets
 `rd = !success`. Tests cover both SC outcomes and LR load/reserve. Reservation
 validity is not yet chained across CPU rows.
+
+
+### C: reservation transition row
+
+`reservation_row::ReservationRow` models LR/SC state:
+
+- LR sets the reservation and its address;
+- SC succeeds only when the previous reservation is valid and addresses match;
+- stores/AMOs clear the reservation;
+- other events preserve it.
+
+Tests cover LR, matching SC, mismatching SC, and invalidation.

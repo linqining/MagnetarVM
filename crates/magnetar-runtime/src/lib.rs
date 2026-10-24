@@ -26,6 +26,7 @@ pub mod packed_shout;
 pub mod pc_row;
 pub mod protocol;
 pub mod register_twist;
+pub mod reservation_row;
 pub mod sc_row;
 pub mod signed_div_row;
 pub mod simd_cpu;
