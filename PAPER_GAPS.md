@@ -3332,3 +3332,13 @@ unsampled positions sound. Because `eq(r,index)` factorises as
 `eq(r_low,col)·eq(r_high,row)`, setting `λ = eq(r_high)` and weighting the
 message columns by `eq(r_low)` gives a native-F2 extension-point MLE opening.
 The test compares it against a dense `Mle::eval` and passes.
+
+
+### B3 Step 3: NativeF2LigeroPcs interface
+
+`NativeF2LigeroPcs` wraps the coded Ligero projection into a PCS-shaped API:
+`commit(bits)`, `open(bits, point ∈ F2^128^n)`, and
+`verify(commitment, point, opening) -> Option<F2_128>`. The test compares the
+opened value against a dense `Mle::eval` and checks that changing the low
+coordinates changes the returned value. This is the interface a native F2
+sum-check can call.

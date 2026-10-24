@@ -615,11 +615,151 @@ impl BinaryLigeroCodedProof {
     }
 }
 
+/// Native-F2 MLE PCS built from the coded Ligero proof.
+#[derive(Clone, Debug)]
+pub struct NativeF2LigeroPcs {
+    pub rows: usize,
+    pub message_columns: usize,
+    pub parity_columns: usize,
+    pub samples: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeF2LigeroCommitment {
+    pub root: F2NativeCommitment,
+    pub rows: usize,
+    pub message_columns: usize,
+    pub parity_columns: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct NativeF2LigeroOpening {
+    pub proof: BinaryLigeroCodedProof,
+}
+
+impl NativeF2LigeroPcs {
+    pub fn new(rows: usize, message_columns: usize, parity_columns: usize, samples: usize) -> Self {
+        Self {
+            rows,
+            message_columns,
+            parity_columns,
+            samples,
+        }
+    }
+
+    pub fn bits(&self) -> usize {
+        self.rows * self.message_columns
+    }
+
+    fn encode(&self, bits: &[F2]) -> Result<Vec<F2>, ProofError> {
+        if bits.len() != self.bits() {
+            return Err(ProofError::Pcs("native F2 PCS bit length mismatch".into()));
+        }
+        let code = BinaryLigeroCode::new(self.message_columns, self.parity_columns);
+        let mut encoded = Vec::with_capacity(self.rows * code.codeword_bits());
+        for row in 0..self.rows {
+            let start = row * self.message_columns;
+            encoded.extend(code.encode(&bits[start..start + self.message_columns])?);
+        }
+        Ok(encoded)
+    }
+
+    pub fn commit(&self, bits: &[F2]) -> Result<NativeF2LigeroCommitment, ProofError> {
+        let encoded = self.encode(bits)?;
+        Ok(NativeF2LigeroCommitment {
+            root: F2NativePcs.commit(&encoded)?,
+            rows: self.rows,
+            message_columns: self.message_columns,
+            parity_columns: self.parity_columns,
+        })
+    }
+
+    pub fn open(&self, bits: &[F2], point: &[F2_128]) -> Result<NativeF2LigeroOpening, ProofError> {
+        if point.len()
+            != self.rows.trailing_zeros() as usize + self.message_columns.trailing_zeros() as usize
+        {
+            return Err(ProofError::Pcs("native F2 PCS point arity".into()));
+        }
+        let encoded = self.encode(bits)?;
+        let commitment = F2NativePcs.commit(&encoded)?;
+        let row_bits = self.rows.trailing_zeros() as usize;
+        let lambda = eq_weights(&point[row_bits..]);
+        let codeword_columns = self.message_columns + self.parity_columns;
+        let samples = BinaryLigeroCodedProof::sample_columns(
+            &commitment,
+            &lambda,
+            codeword_columns,
+            self.samples,
+        );
+        let proof = BinaryLigeroCodedProof::prove(
+            bits,
+            self.rows,
+            self.message_columns,
+            self.parity_columns,
+            &lambda,
+            &samples,
+        )?;
+        Ok(NativeF2LigeroOpening { proof })
+    }
+
+    pub fn verify(
+        &self,
+        commitment: &NativeF2LigeroCommitment,
+        point: &[F2_128],
+        opening: &NativeF2LigeroOpening,
+    ) -> Result<Option<F2_128>, ProofError> {
+        if commitment.rows != self.rows
+            || commitment.message_columns != self.message_columns
+            || commitment.parity_columns != self.parity_columns
+        {
+            return Ok(None);
+        }
+        let row_bits = self.rows.trailing_zeros() as usize;
+        if point.len() != row_bits + self.message_columns.trailing_zeros() as usize {
+            return Ok(None);
+        }
+        let lambda = eq_weights(&point[row_bits..]);
+        if !opening.proof.verify(&commitment.root, &lambda)? {
+            return Ok(None);
+        }
+        let low = eq_weights(&point[..row_bits]);
+        Ok(Some(opening.proof.mle_value(&low)?))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use magnetar_constraint::Field;
     use magnetar_proof::Mle;
+
+    #[test]
+    fn native_f2_ligero_pcs_round_trips() {
+        use magnetar_proof::Mle;
+        let pcs = NativeF2LigeroPcs::new(8, 8, 8, 24);
+        let bits = (0..pcs.bits())
+            .map(|index| F2::from_u64(((index * 7 + 3) % 5) as u64 % 2))
+            .collect::<Vec<_>>();
+        let point = (0..6u64)
+            .map(|bit| F2_128::from(bit * 13 + 5))
+            .collect::<Vec<_>>();
+        let commitment = pcs.commit(&bits).unwrap();
+        let opening = pcs.open(&bits, &point).unwrap();
+        let value = pcs.verify(&commitment, &point, &opening).unwrap().unwrap();
+        let dense = Mle::new(
+            bits.iter()
+                .map(|bit| F2_128::from(u64::from(bit.value())))
+                .collect(),
+        )
+        .unwrap()
+        .eval(&point)
+        .unwrap();
+        assert_eq!(value, dense);
+        let mut wrong = point.clone();
+        wrong[0] = wrong[0] + F2_128::from(1u64);
+        let wrong_value = pcs.verify(&commitment, &wrong, &opening).unwrap().unwrap();
+        assert_ne!(wrong_value, dense);
+    }
 
     #[test]
     fn binary_ligero_extension_mle_matches_dense_eval() {

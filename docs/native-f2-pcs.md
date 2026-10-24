@@ -92,7 +92,8 @@ still embed each bit into a larger field.
    `BinaryLigeroCodedProof::mle_value`). The MLE weight factorises as
    `eq(r_high,row)·eq(r_low,column)`; the code test binds the row combination,
    and the verifier reconstructs the dense evaluation from the opened codeword.
-4. Native F2 sum-check over the bit relation.
+4. Native F2 sum-check over the bit relation (next; the PCS interface is now
+   `NativeF2LigeroPcs` with commit/open/verify at F2^128 points).
 5. Virtual Spartan lockstep sharing with the packed `F2^128` relation.
 6. CPU schema integration.
 
