@@ -825,7 +825,7 @@ impl P3SharedPcs {
 
     fn pcs_for(bits: usize) -> P3BinaryPcs {
         if bits >= 4 {
-            P3BinaryPcs::with_params(100, 4, 16, 3)
+            P3BinaryPcs::with_params(100, 4, 20, 3)
         } else {
             P3BinaryPcs::new(100)
         }

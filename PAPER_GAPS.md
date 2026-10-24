@@ -4140,3 +4140,14 @@ All verify.
 `reservation_cpu_rows_from_trace_full` covers at least every trace row for
 Or/Xori/Ori/Andi/Slti/Sltiu/Mul/Div/Rem/Mulh and an AmoswapD program, catching
 the silent gated-row truncation class without running proofs.
+
+
+### Gated bit PCS: 20 proof-of-work bits
+
+`P3SharedPcs` (the bit-PCS behind the gated RingSwitch opening) now uses
+`pow_bits=20` instead of 16. This shaves 3-7 KB from every workload: fibonacci
+242,545 -> 237,505; memory 246,226 -> 243,122; branchy 261,355 -> 256,747;
+mem-loop 379,590 -> 372,326. Proving time rises ~10-20% (fibonacci 5.7 -> 6.6 s,
+mem-loop 24.5 -> 27.0 s) and AMO stays ~5.7 s. `pow_bits=24` saved another
+4-9 KB but pushed mem-loop to 58 s, so 20 bits is the chosen point. The no-shift benchmark drops 145,199 -> 142,927
+B (gated 71,108 -> 68,580 B).
