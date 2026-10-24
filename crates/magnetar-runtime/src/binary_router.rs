@@ -131,31 +131,12 @@ impl BinaryRouterWitness {
                 Op::Sll | Op::Srl | Op::Sra | Op::Slli | Op::Srli | Op::Srai
             );
             let is_store = matches!(row.instruction.op, Op::Sb | Op::Sh | Op::Sw | Op::Sd);
-            if (is_shift && mode == RouterMode::Stores) || (is_store && mode == RouterMode::Shifts)
-            {
-                if let Some(access) = row.mem {
-                    if access.is_write {
-                        let offset = access.addr.wrapping_sub(trace.config.ram_base);
-                        let word = usize::try_from(offset / 8)
-                            .map_err(|_| ProofError::Pcs("RAM word overflows usize".into()))?;
-                        let lane = (offset % 8) as usize;
-                        if word * 8 + 8 <= ram.len() {
-                            let old = read_word(&ram, word);
-                            let width = usize::from(access.width);
-                            let source = if row.instruction.op.amo_width().is_some() {
-                                access.value
-                            } else {
-                                row.rs2_val
-                            };
-                            write_word(&mut ram, word, store_word(old, lane, width, source));
-                        }
-                    }
-                }
-                continue;
-            }
-            match row.instruction.op {
-                Op::Sll | Op::Srl | Op::Sra | Op::Slli | Op::Srli | Op::Srai => {
-                    let route = match row.instruction.op {
+            let mut route = RouterRoute::None;
+            let mut input = (0u64, 0u64);
+            let mut output = 0u64;
+            if is_shift {
+                if mode == RouterMode::Shifts || mode == RouterMode::Both {
+                    let shift_route = match row.instruction.op {
                         Op::Sll => {
                             ShiftRoute::new(ShiftKind::LogicalLeft, (row.rs2_val & 0x3f) as u8)
                         }
@@ -172,55 +153,54 @@ impl BinaryRouterWitness {
                         }
                         _ => unreachable!(),
                     };
-                    routes.push(RouterRoute::Shift(route));
-                    inputs.push((row.rs1_val, 0u64));
-                    outputs.push(row.rd_val);
+                    route = RouterRoute::Shift(shift_route);
+                    input = (row.rs1_val, 0u64);
+                    output = row.rd_val;
                 }
-                Op::Sb | Op::Sh | Op::Sw | Op::Sd => {
-                    let access = row
-                        .mem
-                        .ok_or_else(|| ProofError::Pcs("store row has no memory access".into()))?;
-                    let offset = access
-                        .addr
-                        .checked_sub(trace.config.ram_base)
-                        .ok_or_else(|| ProofError::Pcs("store address below RAM base".into()))?;
-                    let word = usize::try_from(offset / 8)
-                        .map_err(|_| ProofError::Pcs("store word overflows usize".into()))?;
-                    let lane = (offset % 8) as usize;
-                    if lane + usize::from(access.width) > 8 || word * 8 + 8 > ram.len() {
-                        return Err(ProofError::Pcs("store access is outside RAM".into()));
-                    }
-                    let old = read_word(&ram, word);
-                    let source = row.rs2_val;
-                    let width = usize::from(access.width);
-                    let new = store_word(old, lane, width, source);
+            } else if is_store {
+                let access = row
+                    .mem
+                    .ok_or_else(|| ProofError::Pcs("store row has no memory access".into()))?;
+                let offset = access
+                    .addr
+                    .checked_sub(trace.config.ram_base)
+                    .ok_or_else(|| ProofError::Pcs("store address below RAM base".into()))?;
+                let word = usize::try_from(offset / 8)
+                    .map_err(|_| ProofError::Pcs("store word overflows usize".into()))?;
+                let lane = (offset % 8) as usize;
+                if lane + usize::from(access.width) > 8 || word * 8 + 8 > ram.len() {
+                    return Err(ProofError::Pcs("store access is outside RAM".into()));
+                }
+                let old = read_word(&ram, word);
+                let source = row.rs2_val;
+                let width = usize::from(access.width);
+                let new = store_word(old, lane, width, source);
+                if mode == RouterMode::Stores || mode == RouterMode::Both {
                     let store_width = StoreWidth::from_bytes(width)
                         .map_err(|error| ProofError::Pcs(error.to_string()))?;
-                    let route = StoreRoute::new(store_width, lane)
-                        .map_err(|error| ProofError::Pcs(error.to_string()))?;
-                    routes.push(RouterRoute::Store(route));
-                    inputs.push((old, source));
-                    outputs.push(old ^ new);
-                    write_word(&mut ram, word, new);
+                    route = RouterRoute::Store(
+                        StoreRoute::new(store_width, lane)
+                            .map_err(|error| ProofError::Pcs(error.to_string()))?,
+                    );
+                    input = (old, source);
+                    output = old ^ new;
                 }
-                _ => {
-                    if let Some(access) = row.mem {
-                        if access.is_write {
-                            let offset = access.addr.wrapping_sub(trace.config.ram_base);
-                            let word = usize::try_from(offset / 8)
-                                .map_err(|_| ProofError::Pcs("RAM word overflows usize".into()))?;
-                            let lane = (offset % 8) as usize;
-                            if word * 8 + 8 <= ram.len() {
-                                let old = read_word(&ram, word);
-                                let width = usize::from(access.width);
-                                let source = if row.instruction.op.amo_width().is_some() {
-                                    access.value
-                                } else {
-                                    row.rs2_val
-                                };
-                                write_word(&mut ram, word, store_word(old, lane, width, source));
-                            }
-                        }
+                write_word(&mut ram, word, new);
+            } else if let Some(access) = row.mem {
+                if access.is_write {
+                    let offset = access.addr.wrapping_sub(trace.config.ram_base);
+                    let word = usize::try_from(offset / 8)
+                        .map_err(|_| ProofError::Pcs("RAM word overflows usize".into()))?;
+                    let lane = (offset % 8) as usize;
+                    if word * 8 + 8 <= ram.len() {
+                        let old = read_word(&ram, word);
+                        let width = usize::from(access.width);
+                        let source = if row.instruction.op.amo_width().is_some() {
+                            access.value
+                        } else {
+                            row.rs2_val
+                        };
+                        write_word(&mut ram, word, store_word(old, lane, width, source));
                     }
                 }
             }
@@ -235,14 +215,23 @@ impl BinaryRouterWitness {
                     write_word(&mut ram, word, store_word(old, lane, width, access.value));
                 }
             }
+            routes.push(route);
+            inputs.push(input);
+            outputs.push(output);
         }
-        if routes.is_empty() {
+        if routes
+            .iter()
+            .all(|route| matches!(route, RouterRoute::None))
+        {
             return Err(ProofError::Pcs(
                 "BinaryRouter witness contains no shift or store rows".into(),
             ));
         }
         let cycles = routes.len().next_power_of_two().max(2);
         let cycle_bits = cycles.trailing_zeros() as usize;
+        routes.resize(cycles, RouterRoute::None);
+        inputs.resize(cycles, (0u64, 0u64));
+        outputs.resize(cycles, 0u64);
         let mut input = vec![vec![F2_128::from(0u64); cycles]; INPUT_BITS];
         let mut output = vec![vec![F2_128::from(0u64); cycles]; WORD_BITS];
         let mut offset_bits = vec![vec![F2_128::from(0u64); cycles]; 3];
@@ -284,7 +273,6 @@ impl BinaryRouterWitness {
                 output[bit][cycle] = F2_128::from((outputs[cycle] >> bit) & 1);
             }
         }
-        routes.resize(cycles, RouterRoute::None);
         for cycle in 0..cycles {
             is_shift[cycle] =
                 F2_128::from(u64::from(matches!(routes[cycle], RouterRoute::Shift(_))));

@@ -3191,3 +3191,20 @@ To finish D10 the Router witness must either:
 
 Option 1 is the SIMD-consistent layout. The link columns and helper work is
 otherwise ready.
+
+
+### D10: Router is now full-cycle
+
+`BinaryRouterWitness::from_trace_mode` now pushes exactly one route per trace row
+(`RouterRoute::None` for non-matching rows), pads the route vector to the cycle
+power of two, and keeps RAM updates for store rows. This makes Router `cycles`
+match Shout `cycles` and fixes the earlier point-length mismatch (Shout len 3 vs
+Router vars 1).
+
+All binary_router, gated_aux, unified, and core tests pass; benchmark unchanged
+at 124,528 B.
+
+Remaining D10 step: comparing Shout `link_evals` with Router evals at two
+different random points is not sound (equal evaluations at different points do
+not imply equal vectors). The link still needs a **common-point bridge** or a
+sumcheck equality, now possible because the cycle domains align.
