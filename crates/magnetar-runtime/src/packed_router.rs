@@ -72,13 +72,13 @@ pub fn groups(has_q: bool) -> Vec<GroupSpec> {
     ];
     if has_q {
         out.push(GroupSpec {
-            point_index: 6,
+            point_index: 10,
             start: INPUT_BITS + 9,
             value_offset: 0,
             width: 64,
         });
         out.push(GroupSpec {
-            point_index: 7,
+            point_index: 11,
             start: BIT_COLUMNS,
             value_offset: 0,
             width: 64,

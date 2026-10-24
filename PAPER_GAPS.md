@@ -3105,3 +3105,16 @@ three-column table padded to `max(cells, cycles)`. All functional tests passed
 after padding the point vectors, but the benchmark grew from 123,928 B to
 136,408 B (opening 54,337 -> 66,881) because the merged table has more variables
 and the multi-column point openings cost more than the saved tables. Reverted.
+
+
+### Negative result: separate Shout ROM commitment
+
+Tried giving `PackedShoutProof` a separate P3 commitment/opening for the 12 ROM
+metadata columns. It is sound for the metadata but adds a full P3 opening; the
+packed Shout component grew from 4,586 B to 57,474 B and the total from 123,928
+to 176,816 B. Reverted. Shout ROM metadata must share an existing P3 opening (or
+be packed into the Shout bit table) rather than get its own.
+
+Also fixed `packed_router::groups`: the q/hq group point indices were not updated
+after the Router public-route values were appended; they are now 10/11 and
+gated_aux passes again.

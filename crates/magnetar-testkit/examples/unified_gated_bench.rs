@@ -59,6 +59,10 @@ fn main() {
     println!("access {}", bincode::serialize(&p.access).unwrap().len());
     println!("cpu {}", bincode::serialize(&p.cpu).unwrap().len());
     println!("gated {}", bincode::serialize(&p.gated).unwrap().len());
+    println!(
+        "packed_shout {}",
+        bincode::serialize(&p.packed_shout).unwrap().len()
+    );
     println!("opening {}", bincode::serialize(&p.opening).unwrap().len());
     println!("shout {}", bincode::serialize(&p.shout).unwrap().len());
     println!(
