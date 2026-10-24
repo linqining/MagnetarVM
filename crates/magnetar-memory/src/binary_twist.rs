@@ -153,6 +153,7 @@ impl BinaryTwistWitness {
         let mut value = Vec::new();
         let mut read_value = Vec::new();
         let mut write_value = Vec::new();
+        let cycles = trace.rows.len().next_power_of_two().max(2);
         for row in &trace.rows {
             if !row.extra_mem.is_empty() {
                 return Err(MemoryError::InvalidBinaryTwist(
@@ -225,6 +226,16 @@ impl BinaryTwistWitness {
             if access.is_write {
                 current[word] = written;
             }
+        }
+        while value.len() < cycles {
+            value.push(current.clone());
+            let mut read = vec![F2_128::from(0u64); cells];
+            read[0] = F2_128::from(1u64);
+            read_address.push(read);
+            write_address.push(vec![F2_128::from(0u64); cells]);
+            increment.push(F2_128::from(0u64));
+            read_value.push(current[0]);
+            write_value.push(F2_128::from(0u64));
         }
         Ok(Self {
             address_bits,
@@ -431,7 +442,7 @@ mod tests {
         let trace = execute(&loading_program(), config()).unwrap();
         let witness = BinaryTwistWitness::from_trace_full_cycles(&trace).unwrap();
         witness.validate().unwrap();
-        assert_eq!(witness.cycles, trace.rows.len());
+        assert_eq!(witness.cycles, trace.rows.len().next_power_of_two().max(2));
         let events = BinaryTwistWitness::from_trace(&trace).unwrap();
         let mut event = 0usize;
         for (cycle, row) in trace.rows.iter().enumerate() {
