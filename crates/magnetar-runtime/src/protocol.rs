@@ -1399,13 +1399,13 @@ impl<'a> UnifiedProveContext<'a> {
                 .filter(|rows| !rows.is_empty() && rows.len().is_power_of_two())
                 .is_some();
         let mut mosaic_tables = Vec::new();
-        let (ram_index, mut next_table) = if shared_cpu {
-            (0usize, 6usize)
+        let ram_index = if shared_cpu {
+            0usize
         } else {
             mosaic_tables.push(P3MosaicTable {
                 columns: vec![z.clone()],
             });
-            (1usize, 7usize)
+            1usize
         };
         mosaic_tables.extend([
             tables.addr.clone(),
@@ -1425,23 +1425,17 @@ impl<'a> UnifiedProveContext<'a> {
         }
         let shout_table: Option<(usize, P3MosaicTable)> = None;
         let shift_router_table = shift_router_witness.as_ref().map(|witness| {
-            let index = next_table;
-            next_table += 1;
-            (index, witness.table())
-        });
-        if shift_router_table.is_some() {
-            mosaic_tables.push(magnetar_pcs::P3MosaicTable {
-                columns: vec![vec![F2_128::from(0u64); 2]],
-            });
-        }
-        let store_router_table = store_router_witness.as_ref().map(|witness| {
-            let index = next_table;
-            next_table += 1;
-            (index, witness.table())
-        });
-        if let Some((_, table)) = &store_router_table {
+            let table = witness.table();
+            let index = mosaic_tables.len();
             mosaic_tables.push(table.clone());
-        }
+            (index, table)
+        });
+        let store_router_table = store_router_witness.as_ref().map(|witness| {
+            let table = witness.table();
+            let index = mosaic_tables.len();
+            mosaic_tables.push(table.clone());
+            (index, table)
+        });
         let register_index = mosaic_tables.len();
         mosaic_tables.push(register_tables.addr.clone());
         mosaic_tables.push(register_tables.inc.clone());
@@ -1614,9 +1608,12 @@ impl<'a> UnifiedProveContext<'a> {
         ) else {
             return Ok(());
         };
-        let _ = (index, commitment);
-        let claim = crate::binary_router::prove_binary_router(witness)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        let (claim, claim_points, claim_values) =
+            prove_binary_router_claims(witness, commitment, *index, b"")
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        self.points.extend(claim_points);
+        self.values.extend(claim_values);
+        self.aux_tables.push(witness.table());
         self.shift_router = Some(claim);
         Ok(())
     }
@@ -2009,7 +2006,7 @@ impl<'a> UnifiedProveContext<'a> {
             ram_index: self.ram_index,
             rom_index: self.rom_index,
             shout_index: self.shout_table.as_ref().map(|(index, _)| *index),
-            shift_router_index: None,
+            shift_router_index: self.shift_router_table.as_ref().map(|(index, _)| *index),
             store_router_index: self.store_router_table.as_ref().map(|(index, _)| *index),
             trace_index: self.trace_index,
             trace_claims,
@@ -2214,14 +2211,16 @@ impl<'a> UnifiedVerifyContext<'a> {
         ) else {
             return Ok(());
         };
-        let _ = index;
-        if !crate::binary_router::verify_binary_router(witness, claim)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?
-        {
+        let Some((points, values)) =
+            verify_binary_router_claims(witness, claim, &self.proof.commitment, index, b"")
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        else {
             return Err(RuntimeError::Proof(
                 "shift BinaryRouter proof rejected".into(),
             ));
-        }
+        };
+        self.points.extend(points);
+        self.values.extend(values);
         Ok(())
     }
 

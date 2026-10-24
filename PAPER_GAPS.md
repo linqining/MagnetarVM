@@ -3886,3 +3886,21 @@ the wrong byte offset (cycle limit), not because of a proof failure.
 The suite now includes a backward-branch countdown loop (8 rows, 97,639 B at
 width 16) and a branchy Beq/Bne workload (19 rows, 115,367 B). All six
 workloads prove and verify.
+
+
+### Shift Router shared opening fixed
+
+Root cause was two indexing bugs, not P3:
+
+1. `next_table` was initialized to 6 and incremented manually. When the Shout ROM
+   table was also pushed, the shift/store Router indexes no longer matched their
+   positions in `mosaic_tables`; shift Router points were applied to the wrong
+   table.
+2. `shout_router_link_claims` used column `total - 3` for the shift code, but the
+   Router table appends shift_code followed by three offset and four width
+   columns. The link must use `total - 8`.
+
+Both are fixed; indexes now come from `mosaic_tables.len()`. The shift Router is
+back in the shared Mosaic opening, its Shout link is restored, and the standalone
+fallback/placeholder is removed. The shift workload drops from 217,168 to
+128,600 B (width 16) and `shift_program_unified_proof_round_trips` passes.

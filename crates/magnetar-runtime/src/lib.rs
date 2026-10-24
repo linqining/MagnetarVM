@@ -2524,7 +2524,7 @@ pub(crate) fn shout_router_link_claims(
                 magnetar_pcs::P3MosaicPoint {
                     table: index,
                     point: point.clone(),
-                    columns: vec![total - 3],
+                    columns: vec![total - 8],
                     next_columns: Vec::new(),
                 },
                 vec![code],
@@ -2678,27 +2678,6 @@ pub fn verify_core_statement(
             .ok_or_else(|| RuntimeError::Proof("Router claims rejected".into()))?;
             points.extend(aux_points);
             values.extend(aux_values);
-        }
-    }
-    if let Some(router) = &proof.shift_router {
-        let opening = router
-            .opening
-            .as_ref()
-            .ok_or_else(|| RuntimeError::Proof("missing shift router opening".into()))?;
-        let (router_points, router_values) = crate::binary_router::verify_binary_router_from_proof(
-            router,
-            &opening.commitment,
-            0,
-            b"",
-        )
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?
-        .ok_or_else(|| RuntimeError::Proof("shift Router claims rejected".into()))?;
-        let pcs = magnetar_pcs::P3BinaryPcs::with_params(100, 4, 16, 3);
-        if !pcs
-            .verify_mosaic(opening, &router_points, &router_values)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?
-        {
-            return Err(RuntimeError::Proof("shift Router opening rejected".into()));
         }
     }
     for (point, value) in &proof.trace_claims {
