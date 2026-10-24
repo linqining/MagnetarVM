@@ -4079,9 +4079,9 @@ group=4: 345,831 B / 12.4 s; group=4 is only ~0.5% smaller with a slower
 verifier, so the default remains group=2 and group=4 stays opt-in.
 
 
-### Table batching threshold 16 rows
+### Table batching threshold 16 rows (rejected)
 
-Allowing table batching for up to 16-row tables (row bits <= 4) reduces the
-workload total by ~6 KB: loop 210,749 -> 209,621; mem-loop 383,974 -> 380,038;
-shifts 249,960 -> 249,024, with other workloads unchanged. Core, unified LR/SC
-and AMO, shift, grouped and chunked tests still pass.
+Allowing batching for up to 16-row tables (row bits <= 4) saved ~6 KB on the
+workload total (loop 210,749 -> 209,621; mem-loop 383,974 -> 380,038), but the
+AMO test went from 5.6 s to 28.9 s. The 8-row threshold (row bits <= 3) is kept;
+the 16-row variant is rejected on latency.
