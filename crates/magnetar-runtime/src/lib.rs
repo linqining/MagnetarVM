@@ -1053,6 +1053,7 @@ pub(crate) struct GatedProveInput {
     pub a1: [magnetar_proof::SharedBlockMatrix; 3],
     pub layout: magnetar_constraint::WitnessLayout,
     pub table: usize,
+    pub cycles: usize,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -1060,6 +1061,7 @@ pub struct GatedCpuClaims {
     pub claims: LockstepClaims<P3MosaicCommitment>,
     pub table: usize,
     pub value: F2_128,
+    pub cycles: usize,
 }
 
 fn step_op_for(op: magnetar_spec::Op) -> Option<magnetar_cpu::StepOp> {
@@ -2227,6 +2229,22 @@ pub fn verify_cpu_statement(
     let pcs = magnetar_pcs::P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
     magnetar_proof::verify_lockstep_claims(&system_a, &system_b, &layout, &proof.cpu, &pcs)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if let Some(gated) = &proof.gated {
+        let (a0, a1, gated_layout) =
+            crate::simd_dual::reservation_claim_matrices(statement.width, gated.cycles)?;
+        magnetar_proof::spartan::verify_lockstep_claims_with_matrices(
+            &a0[0],
+            &a0[1],
+            &a0[2],
+            &a1[0],
+            &a1[1],
+            &a1[2],
+            &gated_layout,
+            &gated.claims,
+            &pcs,
+        )
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    }
     Ok(())
 }
 
@@ -5499,6 +5517,7 @@ mod cpu_statement_tests {
         )
         .unwrap();
         let proof = prove_unified_trace(&trace, 8).unwrap();
+        assert!(proof.gated.is_some());
         let statement = CpuStatement {
             width: 8,
             shape: proof.shape.clone(),

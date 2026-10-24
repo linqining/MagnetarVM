@@ -2652,3 +2652,12 @@ row and reconstructs the merged CPU system/witness length with no `Trace` input.
 lockstep claims against that system. The new
 `cpu_statement_verifies_without_trace` test calls it successfully; this is the
 first real succinct-verifier API (CPU claims only, no access/aux yet).
+
+
+### A2a: gated claims in the trace-free CPU verifier
+
+`GatedCpuClaims` now stores `cycles`; `GatedProveInput` carries it. The
+trace-free `verify_cpu_statement` rebuilds the gated matrices from
+`(width, cycles)` and verifies the gated claims with
+`verify_lockstep_claims_with_matrices`. The test program asserts `gated` is
+present and passes without a trace.

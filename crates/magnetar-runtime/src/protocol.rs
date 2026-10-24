@@ -1197,8 +1197,13 @@ impl<'a> UnifiedProveContext<'a> {
         let gated_input = crate::reservation_cpu_row::reservation_cpu_rows_from_trace(trace, width)
             .ok()
             .filter(|rows| width <= 128 && !rows.is_empty() && rows.len().is_power_of_two())
-            .and_then(|rows| crate::simd_dual::reservation_claim_inputs(width, &rows).ok())
-            .map(|(z, a0, a1, layout)| {
+            .and_then(|rows| {
+                let cycles = rows.len();
+                crate::simd_dual::reservation_claim_inputs(width, &rows)
+                    .ok()
+                    .map(|(z, a0, a1, layout)| (z, a0, a1, layout, cycles))
+            })
+            .map(|(z, a0, a1, layout, cycles)| {
                 let table = mosaic_tables.len();
                 mosaic_tables.push(P3MosaicTable {
                     columns: vec![z.clone()],
@@ -1209,6 +1214,7 @@ impl<'a> UnifiedProveContext<'a> {
                     a1,
                     layout,
                     table,
+                    cycles,
                 }
             });
 
@@ -1415,6 +1421,7 @@ impl<'a> UnifiedProveContext<'a> {
                 claims,
                 table: input.table,
                 value,
+                cycles: input.cycles,
             });
             self.gated_ry = Some(ry);
         }
@@ -1574,13 +1581,19 @@ impl<'a> UnifiedVerifyContext<'a> {
         }
         let gated_input = gated_rows
             .as_ref()
-            .and_then(|rows| crate::simd_dual::reservation_claim_matrices(width, rows.len()).ok())
-            .map(|(a0, a1, layout)| crate::GatedProveInput {
+            .and_then(|rows| {
+                let cycles = rows.len();
+                crate::simd_dual::reservation_claim_matrices(width, cycles)
+                    .ok()
+                    .map(|(a0, a1, layout)| (a0, a1, layout, cycles))
+            })
+            .map(|(a0, a1, layout, cycles)| crate::GatedProveInput {
                 z: Vec::new(),
                 a0,
                 a1,
                 layout,
                 table: proof.gated.as_ref().map_or(0, |gated| gated.table),
+                cycles,
             });
         let expected_tables = 6
             + usize::from(shout_witness.is_some())
