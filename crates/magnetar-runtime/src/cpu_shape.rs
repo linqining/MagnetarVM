@@ -22,9 +22,12 @@ pub struct CpuShape {
 
 impl CpuShape {
     pub fn from_trace(trace: &Trace) -> Self {
+        Self::from_rows(&trace.rows)
+    }
+
+    pub fn from_rows(rows: &[TraceRow]) -> Self {
         Self {
-            rows: trace
-                .rows
+            rows: rows
                 .iter()
                 .map(|row| CpuShapeRow {
                     pc: row.pc,
@@ -40,6 +43,18 @@ impl CpuShape {
 
     pub fn zeroed(&self) -> Self {
         self.clone()
+    }
+
+    pub fn matches_rows(&self, rows: &[TraceRow]) -> bool {
+        self.rows.len() == rows.len()
+            && self.rows.iter().zip(rows.iter()).all(|(shape, row)| {
+                shape.pc == row.pc
+                    && shape.micro_op == row.micro_op
+                    && shape.op == row.instruction.op
+                    && shape.imm == row.instruction.imm
+                    && shape.mem_width == row.mem.map(|m| m.width)
+                    && shape.mem_write == row.mem.is_some_and(|m| m.is_write)
+            })
     }
 
     pub fn matches_structure(&self, trace: &Trace) -> bool {

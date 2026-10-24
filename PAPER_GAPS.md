@@ -3441,3 +3441,12 @@ place (identity expansion today). The executor/CPU-relation migration is
 documented in `docs/c1-instruction-expansion.md`: trace rows need `micro_pc` and
 `MicroOpKind`, the gated row needs a fetch selector with `next_pc = pc`, and
 Shout must read by `micro_pc`. This is the next C1 step.
+
+
+### A2 chunked: per-chunk CPU shape
+
+`ChunkCpuProof` now carries a value-free `CpuShape`. The verifier rebuilds the
+chunk CPU system from the shape (`system_without_trace`) instead of from the
+trace rows, while still checking that the shape matches the supplied trace and
+that the chunk witness commitment matches `ChunkCpuProof.cpu.commitment`.
+Tampering a chunk shape is rejected.

@@ -2770,6 +2770,7 @@ pub struct AuxTraceProof {
 pub struct ChunkCpuProof {
     pub start: usize,
     pub end: usize,
+    pub shape: crate::cpu_shape::CpuShape,
     pub cpu: CpuSpartanProof,
 }
 
@@ -3044,7 +3045,12 @@ pub fn prove_chunked_trace(
             chunk_state_digest(trace, end),
             proof_digest,
         ));
-        chunks.push(ChunkCpuProof { start, end, cpu });
+        chunks.push(ChunkCpuProof {
+            start,
+            end,
+            shape: crate::cpu_shape::CpuShape::from_rows(&trace.rows[start..end]),
+            cpu,
+        });
         start = end;
     }
     let chain = ChainedRecursion.aggregate(&chained)?;
@@ -3103,8 +3109,17 @@ pub fn verify_chunked_trace(
                 "chunk {index} proof digest mismatch"
             )));
         }
+        if !chunk
+            .shape
+            .matches_rows(&trace.rows[chunk.start..chunk.end])
+        {
+            return Err(RuntimeError::Proof(format!(
+                "chunk {index} shape does not match the supplied trace"
+            )));
+        }
         let (system, witness) =
             merged_cpu_system_for_rows(&trace.rows[chunk.start..chunk.end], width)?;
+        let (shape_system, _) = chunk.shape.system_without_trace(width)?;
         let values = magnetar_proof::witness_vector(&system, &witness)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         let expected = backend
@@ -3118,7 +3133,7 @@ pub fn verify_chunked_trace(
                 "chunk {index} witness does not match the proof commitment"
             )));
         }
-        backend.verify(&system, &chunk.cpu)?;
+        backend.verify(&shape_system, &chunk.cpu)?;
         expected_start = chunk.end;
     }
     if expected_start != trace.rows.len() {
@@ -4986,6 +5001,9 @@ mod tests {
         );
         let trace = execute(&program, config()).unwrap();
         let proof = prove_chunked_trace(&trace, 8, 2).unwrap();
+        let mut tampered_shape = proof.clone();
+        tampered_shape.chunks[0].shape.rows[0].imm += 1;
+        assert!(verify_chunked_trace(&trace, &tampered_shape, 8).is_err());
         assert_eq!(proof.chunks.len(), 3);
         assert_eq!(proof.chunks[0].end, 2);
         assert_eq!(proof.chunks[2].end, trace.rows.len());
