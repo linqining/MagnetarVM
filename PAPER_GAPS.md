@@ -2772,3 +2772,13 @@ three initial-table points, one read-value point, and one write-value point, so
 the prover and verifier point multisets match. The benchmark is 159,203 B
 (+2.4 KB). The eval values are still computed from the witness; the points are
 the prerequisite for using proof-carried values.
+
+
+### A2a: verifier uses proof-carried Twist value evals
+
+`BinaryTwistRamProof` now stores `read_value_eval`, `write_value_eval`,
+`initial_read_eval`, `initial_write_eval`, and `initial_update_eval`.
+`verify_binary_twist_claims` uses those values instead of folding
+witness.read_value/write_value/initial; the shared point helper binds them to the
+opening. Benchmark: 159,363 B (+160 B). Address/increment/final tables and
+`read_value`/`write_value` addresses still come from the witness.

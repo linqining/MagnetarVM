@@ -944,6 +944,11 @@ pub struct BinaryTwistRamProof {
     pub write: BinaryTwistWriteClaim,
     pub update: BinaryTwistUpdateClaim,
     pub opening: Option<P3MosaicOpening>,
+    pub read_value_eval: F2_128,
+    pub write_value_eval: F2_128,
+    pub initial_read_eval: F2_128,
+    pub initial_write_eval: F2_128,
+    pub initial_update_eval: F2_128,
 }
 
 fn eq_at_index(point: &[F2_128], index: usize) -> F2_128 {
@@ -1710,6 +1715,11 @@ pub(crate) fn prove_binary_twist_claims(
             write,
             update,
             opening: None,
+            read_value_eval: claimed_read,
+            write_value_eval: claimed_write,
+            initial_read_eval,
+            initial_write_eval,
+            initial_update_eval,
         },
         (addr_points, addr_expected),
     ))
@@ -1797,14 +1807,8 @@ pub(crate) fn verify_binary_twist_claims(
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-read");
     absorb_mosaic_commitment(&mut transcript, commitment);
     let rho_j = sample_point(&mut transcript, cycle_bits);
-    let eq_j = eq_vector(&rho_j, cycles);
     let read_point = rho_j.clone();
-    let claimed_read = eq_j
-        .iter()
-        .zip(&witness.read_value)
-        .fold(F2_128::from(0u64), |sum, (weight, value)| {
-            sum + *weight * *value
-        });
+    let claimed_read = proof.read_value_eval;
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-read-initial");
     absorb_mosaic_commitment(&mut transcript, commitment);
@@ -1819,13 +1823,13 @@ pub(crate) fn verify_binary_twist_claims(
     let r_j = &initial_challenges[..cycle_bits];
     let r_k = &initial_challenges[cycle_bits..];
     let initial_read_point = r_k.to_vec();
-    let initial_read_eval = fold_all(&witness.initial, r_k);
+    let initial_read_eval = proof.initial_read_eval;
     let ra_bit_evals = (0..address_bits)
         .map(|bit| fold_all(&addr[bit], r_j))
         .collect::<Vec<_>>();
     let ra_valid_eval = fold_all(&addr[2 * address_bits], r_j);
     let eq_eval = eq_points(&rho_j, r_j);
-    let m0_eval = fold_all(&witness.initial, r_k);
+    let m0_eval = proof.initial_read_eval;
     let ra_eval = address_value(&ra_bit_evals, ra_valid_eval, r_k);
     if sum != eq_eval * m0_eval * ra_eval {
         return Ok(None);
@@ -1908,14 +1912,8 @@ pub(crate) fn verify_binary_twist_claims(
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-write");
     absorb_mosaic_commitment(&mut transcript, commitment);
     let rho_j = sample_point(&mut transcript, cycle_bits);
-    let eq_j = eq_vector(&rho_j, cycles);
     let write_point = rho_j.clone();
-    let claimed_write = eq_j
-        .iter()
-        .zip(&witness.write_value)
-        .fold(F2_128::from(0u64), |sum, (weight, value)| {
-            sum + *weight * *value
-        });
+    let claimed_write = proof.write_value_eval;
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-write-base");
     absorb_mosaic_commitment(&mut transcript, commitment);
@@ -1930,14 +1928,14 @@ pub(crate) fn verify_binary_twist_claims(
     let r_j = &base_challenges[..cycle_bits];
     let r_k = &base_challenges[cycle_bits..];
     let initial_write_point = r_k.to_vec();
-    let initial_write_eval = fold_all(&witness.initial, r_k);
+    let initial_write_eval = proof.initial_write_eval;
     let wa_bit_evals = (0..address_bits)
         .map(|bit| fold_all(&addr[address_bits + bit], r_j))
         .collect::<Vec<_>>();
     let wa_valid_eval = fold_all(&addr[2 * address_bits + 1], r_j);
     let inc_eval = fold_all(increments, &inc_point(r_j));
     let eq_eval = eq_points(&rho_j, r_j);
-    let m0_eval = fold_all(&witness.initial, r_k);
+    let m0_eval = proof.initial_write_eval;
     let wa_eval = address_value(&wa_bit_evals, wa_valid_eval, r_k);
     if sum != eq_eval * wa_eval * (m0_eval + inc_eval) {
         return Ok(None);
@@ -2041,7 +2039,7 @@ pub(crate) fn verify_binary_twist_claims(
     let r_jp = &update_challenges[..cycle_bits];
     let r_k = &update_challenges[cycle_bits..];
     let initial_update_point = r_k.to_vec();
-    let initial_update_eval = fold_all(&witness.initial, r_k);
+    let initial_update_eval = proof.initial_update_eval;
     let wa_bit_evals = (0..address_bits)
         .map(|bit| fold_all(&addr[address_bits + bit], r_jp))
         .collect::<Vec<_>>();
@@ -2050,7 +2048,7 @@ pub(crate) fn verify_binary_twist_claims(
     let eq_eval = eq_points(&rho_k, r_k);
     let delta_eval = eq_at_index(r_jp, 0);
     let final_eval = fold_all(&witness.final_value, r_k);
-    let m0_eval = fold_all(&witness.initial, r_k);
+    let m0_eval = proof.initial_update_eval;
     let wa_eval = address_value(&wa_bit_evals, wa_valid_eval, r_k);
     let final_terminal = eq_eval * (delta_eval * (final_eval + m0_eval) + wa_eval * inc_eval);
     if sum != final_terminal {
