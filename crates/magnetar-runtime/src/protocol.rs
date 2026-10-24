@@ -1320,7 +1320,7 @@ fn gated_shift_claims(
 }
 
 #[allow(clippy::type_complexity)]
-fn gated_component_claims(
+pub(crate) fn gated_component_claims(
     trace: &magnetar_spec::Trace,
     width: usize,
     cycles: usize,

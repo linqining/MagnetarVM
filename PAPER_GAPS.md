@@ -3947,3 +3947,10 @@ instance order (dropping per-row padding and adding a group-padding segment).
 against that layout, proves/verifies, and rejects a tampered second-instance PC.
 C2 now has a grouped virtual-layout lockstep path; the unified gated path still
 uses group=1 because grouped component claims are not yet reordered.
+
+
+`grouped_component_claims_match_virtual_segments` evaluates the existing
+cycle-major component columns at the grouped virtual layout's local points and
+checks every filled replacement equals the corresponding grouped segment claim.
+This shows the B5 component tables remain valid under C2 grouping; the unified
+gated path still needs to select the grouped matrices/layout.

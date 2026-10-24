@@ -2520,6 +2520,138 @@ mod virtual_spec_tests {
     }
 
     #[test]
+    fn grouped_component_claims_match_virtual_segments() {
+        use magnetar_pcs::P3BinaryPcs;
+        use magnetar_proof::{prove_lockstep_bits_with_point, DirectBitPcs};
+        let width = 8usize;
+        let program = magnetar_spec::ProgramImage::new(
+            0x10,
+            vec![
+                magnetar_spec::Instruction {
+                    op: magnetar_spec::Op::Lui,
+                    rd: 20,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x1000_0000,
+                    shamt: 0,
+                }
+                .encode(),
+                magnetar_spec::Instruction {
+                    op: magnetar_spec::Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 1,
+                    shamt: 0,
+                }
+                .encode(),
+                magnetar_spec::Instruction {
+                    op: magnetar_spec::Op::Sd,
+                    rd: 0,
+                    rs1: 20,
+                    rs2: 1,
+                    imm: 8,
+                    shamt: 0,
+                }
+                .encode(),
+                magnetar_spec::Instruction::new(magnetar_spec::Op::Ecall).encode(),
+            ],
+        );
+        let trace = magnetar_executor::execute(
+            &program,
+            magnetar_spec::MachineConfig {
+                entry: 0x10,
+                rom_base: 0x10,
+                ram_base: 0x1000_0000,
+                ram_size: 0x1000,
+                stack_top: 0x1000_1000,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let rows = crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, width)
+            .unwrap();
+        let cycles = rows.len();
+        let group = 2usize;
+        let (z_group, a0, a1, _) =
+            super::reservation_grouped_lockstep(width, &rows, group).unwrap();
+        let block_cols = a0[0].cols() / (cycles / group);
+        let (_, _, layout) = reservation_claim_matrices(width, cycles).unwrap();
+        let base_cols = layout.total_bits / cycles;
+        let row = crate::reservation_cpu_row::ReservationCpuRow::new(width);
+        let specs = reservation_virtual_specs(width, cycles, base_cols);
+        let grouped = super::group_virtual_specs(
+            &specs,
+            cycles,
+            base_cols,
+            row.cpu.relation.num_vars,
+            block_cols,
+            group,
+        );
+        let padded = crate::build_padded_virtual_layout(&grouped).unwrap();
+        let mut mapping = vec![0usize; z_group.len()];
+        for map in &padded.mapping {
+            let mut cursor = map.padded_offset;
+            for (original, len) in &map.sources {
+                for offset in 0..*len {
+                    mapping[original + offset] = cursor + offset;
+                }
+                cursor += len;
+            }
+        }
+        let wrap = |matrix| super::ScatterMatrix {
+            inner: matrix,
+            mapping: mapping.clone(),
+            cols: padded.layout.total_bits,
+        };
+        let va0 = [
+            wrap(a0[0].clone()),
+            wrap(a0[1].clone()),
+            wrap(a0[2].clone()),
+        ];
+        let va1 = [
+            wrap(a1[0].clone()),
+            wrap(a1[1].clone()),
+            wrap(a1[2].clone()),
+        ];
+        let virtual_values = padded.pad_values(&z_group);
+        let bits = virtual_values
+            .iter()
+            .map(|value| value.value() == 1)
+            .collect::<Vec<_>>();
+        let backend = DirectBitPcs::new(P3BinaryPcs::new(100));
+        let (_, ry) = prove_lockstep_bits_with_point(
+            &bits,
+            &va0[0],
+            &va0[1],
+            &va0[2],
+            &va1[0],
+            &va1[1],
+            &va1[2],
+            &padded.layout,
+            &backend,
+        )
+        .unwrap();
+        let (claims, _) =
+            crate::protocol::gated_component_claims(&trace, width, cycles, &padded.layout, &ry)
+                .unwrap();
+        let mut checked = 0usize;
+        for (index, claim) in claims.iter().enumerate() {
+            let Some(claim) = claim else { continue };
+            let segment = &padded.layout.segments[index];
+            let values = virtual_values[segment.offset..segment.end()].to_vec();
+            let bits = segment.len.trailing_zeros() as usize;
+            let expected = magnetar_proof::Mle::new(values)
+                .unwrap()
+                .eval(&ry[..bits])
+                .unwrap();
+            assert_eq!(*claim, expected);
+            checked += 1;
+        }
+        assert!(checked > 0);
+    }
+
+    #[test]
     fn reservation_specs_cover_each_gated_instance() {
         let width = 8usize;
         let rows = crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(
