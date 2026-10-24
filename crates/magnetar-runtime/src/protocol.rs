@@ -1166,6 +1166,7 @@ pub(crate) struct UnifiedProveContext<'a> {
     cpu_ry: Option<Vec<F2_128>>,
     gated_input: Option<crate::GatedProveInput>,
     component_index: Option<usize>,
+    shift_index: Option<usize>,
     component_ry: Option<Vec<F2_128>>,
     gated_claims: Option<crate::GatedCpuClaims>,
     gated_ry: Option<Vec<F2_128>>,
@@ -1206,6 +1207,73 @@ fn gated_component_columns(
         }
     }
     Ok((data, address, pc))
+}
+
+#[allow(clippy::type_complexity)]
+fn gated_shift_columns(
+    trace: &magnetar_spec::Trace,
+    width: usize,
+    cycles: usize,
+) -> Result<(Vec<F2_128>, Vec<F2_128>, Vec<F2_128>), RuntimeError> {
+    let rows = crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(trace, width)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if rows.len() != cycles {
+        return Err(RuntimeError::Proof(
+            "gated shift cycles do not match trace rows".into(),
+        ));
+    }
+    let stages = width.trailing_zeros() as usize;
+    let len = (cycles * stages).next_power_of_two();
+    let mut sll = vec![F2_128::from(0u64); len];
+    let mut srl = vec![F2_128::from(0u64); len];
+    let mut sra = vec![F2_128::from(0u64); len];
+    for (cycle, (_, input)) in rows.iter().enumerate() {
+        if let crate::simd_f2::GatedCpuRowInput::Shift { shamt, kind, .. } = input.cpu {
+            let target = match kind {
+                crate::simd_f2::BitShiftKind::Sll => &mut sll,
+                crate::simd_f2::BitShiftKind::Srl => &mut srl,
+                crate::simd_f2::BitShiftKind::Sra => &mut sra,
+            };
+            for bit in 0..stages {
+                target[cycle * stages + bit] = F2_128::from((shamt >> bit) & 1);
+            }
+        }
+    }
+    Ok((sll, srl, sra))
+}
+
+#[allow(clippy::type_complexity)]
+fn gated_shift_claims(
+    trace: &magnetar_spec::Trace,
+    width: usize,
+    cycles: usize,
+    layout: &magnetar_constraint::WitnessLayout,
+    ry: &[F2_128],
+) -> Result<(Vec<Option<F2_128>>, Vec<(usize, usize)>), RuntimeError> {
+    let (sll, srl, sra) = gated_shift_columns(trace, width, cycles)?;
+    let sll_mle =
+        magnetar_proof::Mle::new(sll).map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let srl_mle =
+        magnetar_proof::Mle::new(srl).map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let sra_mle =
+        magnetar_proof::Mle::new(sra).map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let mut claims = vec![None; layout.segments.len()];
+    let mut columns = Vec::new();
+    for (index, segment) in layout.segments.iter().enumerate() {
+        let (column, mle) = match segment.name.as_str() {
+            "shift_sll" => (0usize, &sll_mle),
+            "shift_srl" => (1usize, &srl_mle),
+            "shift_sra" => (2usize, &sra_mle),
+            _ => continue,
+        };
+        let bits = segment.len.trailing_zeros() as usize;
+        let claim = mle
+            .eval(&ry[..bits])
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        columns.push((column, bits));
+        claims[index] = Some(claim);
+    }
+    Ok((claims, columns))
 }
 
 #[allow(clippy::type_complexity)]
@@ -1373,6 +1441,16 @@ impl<'a> UnifiedProveContext<'a> {
         } else {
             None
         };
+        let shift_index = if let Some(input) = &gated_input {
+            let (sll, srl, sra) = gated_shift_columns(trace, width, input.cycles)?;
+            let index = mosaic_tables.len();
+            mosaic_tables.push(magnetar_pcs::P3MosaicTable {
+                columns: vec![sll, srl, sra],
+            });
+            Some(index)
+        } else {
+            None
+        };
 
         Ok(Self {
             trace,
@@ -1411,6 +1489,7 @@ impl<'a> UnifiedProveContext<'a> {
             cpu_ry: None,
             gated_input,
             component_index,
+            shift_index,
             component_ry: None,
             gated_claims: None,
             gated_ry: None,
@@ -1567,6 +1646,30 @@ impl<'a> UnifiedProveContext<'a> {
                 self.values
                     .push(pairs.into_iter().map(|(_, value)| value).collect());
             }
+            if let Some(index) = gated.shift_index {
+                let values = gated
+                    .shift_claims
+                    .iter()
+                    .filter_map(|value| *value)
+                    .collect::<Vec<_>>();
+                if let Some((_, bits)) = gated.shift_columns.first() {
+                    let mut pairs = gated
+                        .shift_columns
+                        .iter()
+                        .copied()
+                        .zip(values)
+                        .collect::<Vec<_>>();
+                    pairs.sort_by_key(|(column, _)| column.0);
+                    self.points.push(P3MosaicPoint {
+                        table: index,
+                        point: ry[..*bits].to_vec(),
+                        columns: pairs.iter().map(|(column, _)| column.0).collect(),
+                        next_columns: Vec::new(),
+                    });
+                    self.values
+                        .push(pairs.into_iter().map(|(_, value)| value).collect());
+                }
+            }
         }
         Ok(())
     }
@@ -1641,6 +1744,13 @@ impl<'a> UnifiedProveContext<'a> {
                 &input.layout,
                 &gated_ry,
             )?;
+            let (shift_claims, shift_columns) = gated_shift_claims(
+                self.trace,
+                self.width,
+                input.cycles,
+                &input.layout,
+                &gated_ry,
+            )?;
             self.component_ry = Some(gated_ry.clone());
             self.gated_claims = Some(crate::GatedCpuClaims {
                 proof,
@@ -1648,6 +1758,9 @@ impl<'a> UnifiedProveContext<'a> {
                 component_claims,
                 component_columns,
                 component_index: self.component_index,
+                shift_claims,
+                shift_columns,
+                shift_index: self.shift_index,
             });
             self.gated_ry = None;
         }
@@ -2187,6 +2300,31 @@ impl<'a> UnifiedVerifyContext<'a> {
                         .iter()
                         .copied()
                         .zip(component_values)
+                        .collect::<Vec<_>>();
+                    pairs.sort_by_key(|(column, _)| column.0);
+                    self.component_points.push((
+                        P3MosaicPoint {
+                            table: index,
+                            point: gated_point[..*bits].to_vec(),
+                            columns: pairs.iter().map(|(column, _)| column.0).collect(),
+                            next_columns: Vec::new(),
+                        },
+                        pairs.into_iter().map(|(_, value)| value).collect(),
+                    ));
+                }
+            }
+            if let Some(index) = gated.shift_index {
+                let shift_values = gated
+                    .shift_claims
+                    .iter()
+                    .filter_map(|value| *value)
+                    .collect::<Vec<_>>();
+                if let Some((_, bits)) = gated.shift_columns.first() {
+                    let mut pairs = gated
+                        .shift_columns
+                        .iter()
+                        .copied()
+                        .zip(shift_values)
                         .collect::<Vec<_>>();
                     pairs.sort_by_key(|(column, _)| column.0);
                     self.component_points.push((

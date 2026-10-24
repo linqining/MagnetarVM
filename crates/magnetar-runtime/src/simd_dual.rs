@@ -762,8 +762,50 @@ pub(crate) fn reservation_virtual_specs(
             SegmentOwner::Cpu,
         ),
         (
-            "shift",
+            "shift_sll_lo",
             gated.shift_offset,
+            gated.shift_offset + gated.shift.sll.shamt[0],
+            SegmentOwner::Routing(RoutingKind::Shifts),
+        ),
+        (
+            "shift_sll_hi",
+            gated.shift_offset + gated.shift.sll.shamt[0] + width.trailing_zeros() as usize,
+            gated.shift_offset + gated.shift.srl_offset,
+            SegmentOwner::Routing(RoutingKind::Shifts),
+        ),
+        (
+            "shift_srl_lo",
+            gated.shift_offset + gated.shift.srl_offset,
+            gated.shift_offset + gated.shift.srl_offset + gated.shift.srl.shamt[0],
+            SegmentOwner::Routing(RoutingKind::Shifts),
+        ),
+        (
+            "shift_srl_hi",
+            gated.shift_offset
+                + gated.shift.srl_offset
+                + gated.shift.srl.shamt[0]
+                + width.trailing_zeros() as usize,
+            gated.shift_offset + gated.shift.sra_offset,
+            SegmentOwner::Routing(RoutingKind::Shifts),
+        ),
+        (
+            "shift_sra_lo",
+            gated.shift_offset + gated.shift.sra_offset,
+            gated.shift_offset + gated.shift.sra_offset + gated.shift.sra.shamt[0],
+            SegmentOwner::Routing(RoutingKind::Shifts),
+        ),
+        (
+            "shift_sra_hi",
+            gated.shift_offset
+                + gated.shift.sra_offset
+                + gated.shift.sra.shamt[0]
+                + width.trailing_zeros() as usize,
+            gated.shift_offset + gated.shift.is_sll,
+            SegmentOwner::Routing(RoutingKind::Shifts),
+        ),
+        (
+            "shift_sel",
+            gated.shift_offset + gated.shift.is_sll,
             gated.branch_offset,
             SegmentOwner::Routing(RoutingKind::Shifts),
         ),
@@ -824,6 +866,28 @@ pub(crate) fn reservation_virtual_specs(
             )
         })
         .collect::<Vec<_>>();
+    let shift_stages = width.trailing_zeros() as usize;
+    for (name, shamt) in [
+        ("shift_sll", gated.shift.sll.shamt[0]),
+        (
+            "shift_srl",
+            gated.shift.srl_offset + gated.shift.srl.shamt[0],
+        ),
+        (
+            "shift_sra",
+            gated.shift.sra_offset + gated.shift.sra.shamt[0],
+        ),
+    ] {
+        let sources = (0..cycles)
+            .map(|cycle| (cycle * base_cols + gated.shift_offset + shamt, shift_stages))
+            .collect::<Vec<_>>();
+        specs.push(crate::VirtualSegmentSpec {
+            name: name.into(),
+            sources,
+            owner: SegmentOwner::Routing(RoutingKind::Shifts),
+            projection: SegmentOwner::Routing(RoutingKind::Shifts).projection(),
+        });
+    }
     let pc_sources = (0..cycles)
         .map(|cycle| (cycle * base_cols + pc_start, seq_start - pc_start))
         .collect::<Vec<_>>();
@@ -1737,7 +1801,6 @@ mod virtual_spec_tests {
         let specs = reservation_virtual_specs(width, cycles, base_cols);
         let padded = crate::build_padded_virtual_layout(&specs).unwrap();
         let (z, _, _, _) = reservation_claim_inputs(width, &rows).unwrap();
-        let cpu = crate::reservation_cpu_row::ReservationCpuRow::new(width);
         let router = crate::binary_router::BinaryRouterWitness::from_trace_mode(
             &trace,
             crate::binary_router::RouterMode::Shifts,
@@ -1756,25 +1819,28 @@ mod virtual_spec_tests {
                     .copy_from_slice(&z[*original..*original + len]);
                 cursor += len;
             }
-            if spec.name.starts_with("shift") {
-                let cycle = spec
-                    .name
-                    .strip_prefix("shift")
-                    .and_then(|suffix| suffix.parse::<usize>().ok())
-                    .unwrap();
-                if !matches!(
-                    rows[cycle].1.cpu,
-                    crate::simd_f2::GatedCpuRowInput::Shift { .. }
-                ) {
-                    continue;
-                }
-                virtual_values[map.padded_offset + cpu.cpu.shift.is_shift] = router.is_shift[cycle];
-                let shamt = (0..64)
-                    .find(|value| router.shift_q[*value][cycle].value() == 1)
-                    .unwrap_or(0);
-                for bit in 0..4 {
-                    virtual_values[map.padded_offset + cpu.cpu.shift.sll.shamt[bit]] =
-                        F2_128::from(((shamt as u64) >> bit) & 1);
+            let target = match spec.name.as_str() {
+                "shift_sll" => Some(crate::simd_f2::BitShiftKind::Sll),
+                "shift_srl" => Some(crate::simd_f2::BitShiftKind::Srl),
+                "shift_sra" => Some(crate::simd_f2::BitShiftKind::Sra),
+                _ => None,
+            };
+            if let Some(target) = target {
+                let mut cursor = map.padded_offset;
+                for (cycle, (_, len)) in spec.sources.iter().enumerate() {
+                    if let crate::simd_f2::GatedCpuRowInput::Shift { kind, .. } = &rows[cycle].1.cpu
+                    {
+                        if *kind == target {
+                            let shamt = (0..64)
+                                .find(|value| router.shift_q[*value][cycle].value() == 1)
+                                .unwrap_or(0);
+                            for bit in 0..*len {
+                                virtual_values[cursor + bit] =
+                                    F2_128::from(((shamt as u64) >> bit) & 1);
+                            }
+                        }
+                    }
+                    cursor += len;
                 }
             }
         }

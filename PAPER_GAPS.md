@@ -3792,3 +3792,15 @@ from the gated inputs themselves (Memory value and rs1+imm; row PC), so loads,
 stores and padding rows match the gated virtual segments exactly. Component
 claims include `memory_data`, `memory_addr` and `pc_bits`; all are covered by the
 shared opening. Benchmark: 151,415 -> 151,124 B; gated 70,185 B.
+
+
+### B5: Router shift aggregate replacements
+
+The per-cycle shift relation is split into per-kind non-shamt ranges plus
+aggregate `shift_sll`/`shift_srl`/`shift_sra` segments (one shamt slice per
+cycle). A second component table holds the three shamt columns padded to a power
+of two; `gated_shift_claims` evaluates them at the virtual segment points and the
+prover/verifier add the shift table point to the shared Mosaic opening. The
+`is_shift`/selector bits stay per-cycle (shift_sel). Benchmark: 151,124 ->
+152,098 B; gated 70,999 B. The shift split adds four claim segments and a small
+third table.

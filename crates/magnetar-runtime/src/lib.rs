@@ -1092,6 +1092,9 @@ pub struct GatedCpuClaims {
     pub component_claims: Vec<Option<F2_128>>,
     pub component_columns: Vec<(usize, usize)>,
     pub component_index: Option<usize>,
+    pub shift_claims: Vec<Option<F2_128>>,
+    pub shift_columns: Vec<(usize, usize)>,
+    pub shift_index: Option<usize>,
 }
 
 fn step_op_for(op: magnetar_spec::Op) -> Option<magnetar_cpu::StepOp> {
@@ -2600,6 +2603,29 @@ pub fn verify_core_statement(
                     .iter()
                     .copied()
                     .zip(component_values)
+                    .collect::<Vec<_>>();
+                pairs.sort_by_key(|(column, _)| column.0);
+                points.push(magnetar_pcs::P3MosaicPoint {
+                    table: index,
+                    point: gated_point[..*bits].to_vec(),
+                    columns: pairs.iter().map(|(column, _)| column.0).collect(),
+                    next_columns: Vec::new(),
+                });
+                values.push(pairs.into_iter().map(|(_, value)| value).collect());
+            }
+        }
+        if let Some(index) = gated.shift_index {
+            let shift_values = gated
+                .shift_claims
+                .iter()
+                .filter_map(|value| *value)
+                .collect::<Vec<_>>();
+            if let Some((_, bits)) = gated.shift_columns.first() {
+                let mut pairs = gated
+                    .shift_columns
+                    .iter()
+                    .copied()
+                    .zip(shift_values)
                     .collect::<Vec<_>>();
                 pairs.sort_by_key(|(column, _)| column.0);
                 points.push(magnetar_pcs::P3MosaicPoint {
