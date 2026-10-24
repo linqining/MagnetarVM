@@ -49,7 +49,7 @@ fn main() {
         revealed.opening.is_some()
     );
     let p = &proof.unified;
-    for (index, table) in p.cpu.commitment.tables.iter().enumerate() {
+    for (index, table) in p.commitment.tables.iter().enumerate() {
         println!(
             "table {index} columns {} vars {}",
             table.num_columns, table.num_variables

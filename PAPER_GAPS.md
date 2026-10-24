@@ -3006,3 +3006,18 @@ so behavior and size are unchanged.
 `verify_cpu`, and `verify_core_statement` skip the CPU lockstep/opening point
 when it is absent. The prover still emits CPU claims, so existing tests and size
 are unchanged; this makes the skip path compile and testable.
+
+
+### B milestone: unified CPU uses the shared-matrix gated batch
+
+`prove_cpu` now proves the gated shared-matrix claims when a full gated input is
+present and sets `cpu = None`; the verifier skips the per-row CPU lockstep and
+table-0 point. The unified gated input uses
+`reservation_cpu_rows_from_trace_full` (all rows padded to a power of two with
+Nop rows). `verify_core_proof`/`core_statement`, `unified_lr_sc`, and
+`unified_amo_lr_sc` pass without CPU claims.
+
+Benchmark: 176,128 B, larger than 161,343 B because the full gated z table and
+reservation columns are bigger than the removed CPU proof/table points. This is
+the architectural B switch, not a size win yet; removing the now-unused CPU
+table 0 and shifting indexes is the next step.

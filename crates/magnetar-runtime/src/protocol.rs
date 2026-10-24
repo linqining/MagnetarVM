@@ -1225,29 +1225,30 @@ impl<'a> UnifiedProveContext<'a> {
         };
         mosaic_tables.push(trace_table.clone());
 
-        let gated_input = crate::reservation_cpu_row::reservation_cpu_rows_from_trace(trace, width)
-            .ok()
-            .filter(|rows| width <= 128 && !rows.is_empty() && rows.len().is_power_of_two())
-            .and_then(|rows| {
-                let cycles = rows.len();
-                crate::simd_dual::reservation_claim_inputs(width, &rows)
-                    .ok()
-                    .map(|(z, a0, a1, layout)| (z, a0, a1, layout, cycles))
-            })
-            .map(|(z, a0, a1, layout, cycles)| {
-                let table = mosaic_tables.len();
-                mosaic_tables.push(P3MosaicTable {
-                    columns: vec![z.clone()],
+        let gated_input =
+            crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(trace, width)
+                .ok()
+                .filter(|rows| width <= 128 && !rows.is_empty() && rows.len().is_power_of_two())
+                .and_then(|rows| {
+                    let cycles = rows.len();
+                    crate::simd_dual::reservation_claim_inputs(width, &rows)
+                        .ok()
+                        .map(|(z, a0, a1, layout)| (z, a0, a1, layout, cycles))
+                })
+                .map(|(z, a0, a1, layout, cycles)| {
+                    let table = mosaic_tables.len();
+                    mosaic_tables.push(P3MosaicTable {
+                        columns: vec![z.clone()],
+                    });
+                    crate::GatedProveInput {
+                        z,
+                        a0,
+                        a1,
+                        layout,
+                        table,
+                        cycles,
+                    }
                 });
-                crate::GatedProveInput {
-                    z,
-                    a0,
-                    a1,
-                    layout,
-                    table,
-                    cycles,
-                }
-            });
 
         Ok(Self {
             trace,
@@ -1417,17 +1418,22 @@ impl<'a> UnifiedProveContext<'a> {
         let (system_a, system_b) = split_cpu_relations(&self.system);
         let layout = cpu_segment_layout(self.z.len())?;
         let gated_commitment = commitment.clone();
-        let (claims, ry) = magnetar_proof::prove_lockstep_claims(
-            &system_a,
-            &system_b,
-            &self.cpu_witness,
-            &layout,
-            &pcs,
-            commitment,
-        )
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        self.cpu = Some(claims);
-        self.cpu_ry = Some(ry);
+        if self.gated_input.is_none() {
+            let (claims, ry) = magnetar_proof::prove_lockstep_claims(
+                &system_a,
+                &system_b,
+                &self.cpu_witness,
+                &layout,
+                &pcs,
+                commitment,
+            )
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            self.cpu = Some(claims);
+            self.cpu_ry = Some(ry);
+        } else {
+            self.cpu = None;
+            self.cpu_ry = None;
+        }
         if let Some(input) = &self.gated_input {
             let backend =
                 DirectBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
@@ -1460,21 +1466,19 @@ impl<'a> UnifiedProveContext<'a> {
     }
 
     pub(crate) fn prove_opening(&mut self) -> Result<(), RuntimeError> {
-        let ry = self
-            .cpu_ry
-            .as_ref()
-            .ok_or_else(|| RuntimeError::Proof("opening stage before CPU".into()))?;
-        let value = Mle::new(self.z.clone())
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?
-            .eval(ry)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        self.points.push(P3MosaicPoint {
-            table: 0,
-            point: ry.clone(),
-            columns: vec![0],
-            next_columns: Vec::new(),
-        });
-        self.values.push(vec![value]);
+        if let Some(ry) = self.cpu_ry.as_ref() {
+            let value = Mle::new(self.z.clone())
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?
+                .eval(ry)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            self.points.push(P3MosaicPoint {
+                table: 0,
+                point: ry.clone(),
+                columns: vec![0],
+                next_columns: Vec::new(),
+            });
+            self.values.push(vec![value]);
+        }
         if let (Some(input), Some(gated_ry)) = (&self.gated_input, &self.gated_ry) {
             let gated_value = Mle::new(input.z.clone())
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?
@@ -1619,9 +1623,10 @@ impl<'a> UnifiedVerifyContext<'a> {
             }
             _ => {}
         }
-        let gated_rows = crate::reservation_cpu_row::reservation_cpu_rows_from_trace(trace, width)
-            .ok()
-            .filter(|rows| width <= 128 && !rows.is_empty() && rows.len().is_power_of_two());
+        let gated_rows =
+            crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(trace, width)
+                .ok()
+                .filter(|rows| width <= 128 && !rows.is_empty() && rows.len().is_power_of_two());
         match (gated_rows.is_some(), proof.gated.is_some()) {
             (true, false) | (false, true) => {
                 return Err(RuntimeError::Proof(
@@ -1876,20 +1881,15 @@ impl<'a> UnifiedVerifyContext<'a> {
     }
 
     pub(crate) fn verify_opening(&mut self) -> Result<(), RuntimeError> {
-        let ry = self
-            .cpu_ry
-            .as_ref()
-            .ok_or_else(|| RuntimeError::Proof("opening before CPU".into()))?;
-        let value = self
-            .cpu_value
-            .ok_or_else(|| RuntimeError::Proof("missing CPU value".into()))?;
-        self.points.push(P3MosaicPoint {
-            table: 0,
-            point: ry.clone(),
-            columns: vec![0],
-            next_columns: Vec::new(),
-        });
-        self.values.push(vec![value]);
+        if let (Some(ry), Some(value)) = (self.cpu_ry.as_ref(), self.cpu_value) {
+            self.points.push(P3MosaicPoint {
+                table: 0,
+                point: ry.clone(),
+                columns: vec![0],
+                next_columns: Vec::new(),
+            });
+            self.values.push(vec![value]);
+        }
         if let (Some(input), Some(gated_ry)) = (&self.gated_input, &self.gated_ry) {
             let gated_value = self
                 .proof
