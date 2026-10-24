@@ -1304,4 +1304,59 @@ mod tests {
             prove_dual_cpu(8, StepOp::Sub, 0b1010_1010, 0b0000_1100).expect("prove");
         verify_dual_cpu(8, StepOp::Sub, &proof, &layout).expect("verify");
     }
+
+    #[test]
+    fn shared_matrix_cpu_claims_verify() {
+        use crate::simd_f2::{GatedAluOp, GatedCpuRowInput};
+        use magnetar_pcs::P3SharedPcs;
+        use magnetar_proof::spartan::prove_lockstep_claims_with_matrices;
+        use magnetar_proof::spartan::verify_lockstep_claims_with_matrices;
+        use magnetar_proof::Pcs;
+
+        let rows = vec![
+            (
+                0x1000,
+                GatedCpuRowInput::Alu {
+                    left: 1,
+                    right: 2,
+                    op: GatedAluOp::Add,
+                },
+            ),
+            (
+                0x1004,
+                GatedCpuRowInput::Alu {
+                    left: 3,
+                    right: 1,
+                    op: GatedAluOp::Xor,
+                },
+            ),
+            (
+                0x1008,
+                GatedCpuRowInput::Alu {
+                    left: 5,
+                    right: 2,
+                    op: GatedAluOp::Sub,
+                },
+            ),
+            (
+                0x100c,
+                GatedCpuRowInput::Alu {
+                    left: 6,
+                    right: 3,
+                    op: GatedAluOp::And,
+                },
+            ),
+        ];
+        let (z, a0, a1, layout) = gated_claim_inputs(8, &rows).unwrap();
+        let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+        let commitment = pcs.commit(&z).unwrap();
+        let (claims, _ry) = prove_lockstep_claims_with_matrices(
+            &z, &a0[0], &a0[1], &a0[2], &a1[0], &a1[1], &a1[2], &layout, &pcs, commitment,
+        )
+        .unwrap();
+        verify_lockstep_claims_with_matrices(
+            &a0[0], &a0[1], &a0[2], &a1[0], &a1[1], &a1[2], &layout, &claims, &pcs,
+        )
+        .unwrap();
+    }
 }

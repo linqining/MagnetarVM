@@ -2926,3 +2926,15 @@ public-route columns.
 
 This closes the internal "proof-chosen public eval" gap. The route is still not
 authenticated by bytecode/Shout, so D10 remains partial.
+
+
+### B1: standalone shared-matrix CPU claim test
+
+`shared_matrix_cpu_claims_verify` builds four ALU `GatedCpuRowInput` rows,
+calls `gated_claim_inputs` (the shared block-matrix path), proves and verifies
+the lockstep claims with `prove/verify_lockstep_claims_with_matrices`. No
+per-row `merged_cpu_system` is used. This is the first direct B1 evidence.
+
+Unified CPU integration is still blocked by coverage: `gated_rows_from_trace`
+breaks/truncates at unsupported rows (Ecall, AMO, LR/SC), so the shared matrix
+cannot yet replace the full per-row CPU system.
