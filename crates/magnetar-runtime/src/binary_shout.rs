@@ -229,6 +229,16 @@ pub struct BinaryShoutProof {
     pub boolean_column_point: Vec<F2_128>,
     pub read_address_point: Vec<F2_128>,
     pub opening: Option<P3MosaicOpening>,
+    pub address_bits: usize,
+    pub cycle_bits: usize,
+    pub cycles: usize,
+    pub columns: usize,
+    pub claimed_read: F2_128,
+    pub ra0_evals: Vec<F2_128>,
+    pub ra1_evals: Vec<F2_128>,
+    pub is_32_eval: F2_128,
+    pub valid_eval: F2_128,
+    pub column_evals: Vec<F2_128>,
 }
 
 fn eq_at_index(point: &[F2_128], index: usize) -> F2_128 {
@@ -502,6 +512,17 @@ pub(crate) fn prove_binary_shout_claims(
         })
     })?;
     let r_j = &challenges[..n];
+    let r_k = &challenges[n..];
+    let column_evals = (0..columns)
+        .map(|column| {
+            let values = witness
+                .rom
+                .iter()
+                .map(|row| row[column])
+                .collect::<Vec<_>>();
+            fold_all(&values, r_k)
+        })
+        .collect::<Vec<_>>();
     let ra0_bit_evals = (0..a)
         .map(|bit| fold_all(&witness.address0[bit], r_j))
         .collect::<Vec<_>>();
@@ -548,6 +569,16 @@ pub(crate) fn prove_binary_shout_claims(
             boolean_column_point: boolean_challenges[n..].to_vec(),
             read_address_point: challenges[n..].to_vec(),
             opening: None,
+            address_bits: a,
+            cycle_bits: n,
+            cycles,
+            columns,
+            claimed_read: claimed,
+            ra0_evals: ra0_bit_evals.clone(),
+            ra1_evals: ra1_bit_evals.clone(),
+            is_32_eval,
+            valid_eval,
+            column_evals,
         },
         points,
         values,
@@ -566,16 +597,14 @@ pub fn prove_binary_shout(witness: &BinaryShoutWitness) -> Result<BinaryShoutPro
 
 #[allow(clippy::needless_range_loop)]
 pub(crate) fn verify_binary_shout_claims(
-    witness: &BinaryShoutWitness,
+    _witness: &BinaryShoutWitness,
     proof: &BinaryShoutProof,
     commitment: &P3MosaicCommitment,
     table_index: usize,
     binding: &[u8],
 ) -> Result<Option<ClaimPoints>, ProofError> {
-    witness.validate()?;
-    let a = witness.address_bits;
-    let n = witness.cycle_bits;
-    let cycles = witness.cycles;
+    let a = proof.address_bits;
+    let n = proof.cycle_bits;
     let total_columns = 2 * a + 2;
     let col_bits = total_columns.next_power_of_two().trailing_zeros() as usize;
     if commitment.tables.len() <= table_index
@@ -609,23 +638,11 @@ pub(crate) fn verify_binary_shout_claims(
     absorb_commitment(&mut transcript, commitment);
     transcript.absorb("packed-binding", binding);
     let rho_j = sample_point(&mut transcript, n);
-    let columns = witness.rom.first().map_or(0, |row| row.len());
+    let columns = proof.columns;
     let gammas = (0..columns)
         .map(|_| challenge(&mut transcript, "column"))
         .collect::<Vec<_>>();
-    let eq_j = eq_vector(&rho_j, cycles);
-    let claimed =
-        eq_j.iter()
-            .zip(&witness.read_value)
-            .fold(F2_128::from(0u64), |sum, (weight, value)| {
-                sum + *weight
-                    * value
-                        .iter()
-                        .zip(&gammas)
-                        .fold(F2_128::from(0u64), |acc, (value, gamma)| {
-                            acc + *value * *gamma
-                        })
-            });
+    let claimed = proof.claimed_read;
     transcript.absorb("claimed", &claimed.value().to_le_bytes());
     let Some((sum, challenges)) = replay_terms_derived(&proof.rounds, claimed, &mut transcript)
     else {
@@ -633,23 +650,11 @@ pub(crate) fn verify_binary_shout_claims(
     };
     let r_j = &challenges[..n];
     let r_k = &challenges[n..];
-    let ra0_bit_evals = (0..a)
-        .map(|bit| fold_all(&witness.address0[bit], r_j))
-        .collect::<Vec<_>>();
-    let ra1_bit_evals = (0..a)
-        .map(|bit| fold_all(&witness.address1[bit], r_j))
-        .collect::<Vec<_>>();
-    let is_32_eval = fold_all(&witness.is_32, r_j);
-    let valid_eval = fold_all(&witness.valid, r_j);
-    let mut column_evals = Vec::with_capacity(columns);
-    for column in 0..columns {
-        let values = witness
-            .rom
-            .iter()
-            .map(|row| row[column])
-            .collect::<Vec<_>>();
-        column_evals.push(fold_all(&values, r_k));
-    }
+    let ra0_bit_evals = proof.ra0_evals.clone();
+    let ra1_bit_evals = proof.ra1_evals.clone();
+    let is_32_eval = proof.is_32_eval;
+    let valid_eval = proof.valid_eval;
+    let column_evals = proof.column_evals.clone();
     let ra0_eval = address_value(&ra0_bit_evals, r_k);
     let ra1_eval = address_value(&ra1_bit_evals, r_k);
     let word_eval =

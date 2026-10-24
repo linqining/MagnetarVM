@@ -2794,3 +2794,11 @@ not use a witness at all; `verify_binary_twist_claims` is a compatibility wrappe
 `access_claims_from_proof` verifies RAM and register claims from the proof, and
 `CoreStatement` no longer contains `AccessStatement`. Benchmark: 161,187 B
 (+1.8 KB). Aux Shout/Router statements are still linear.
+
+
+### A2a: proof-only BinaryShout verification
+
+`BinaryShoutProof` now carries dimensions, claimed read fold, address/is_32/valid
+evals, and ROM column evals. `verify_binary_shout_claims` takes the witness only
+for API compatibility and uses proof values for every check; the witness argument
+is unused. Benchmark: 161,579 B (+392 B).
