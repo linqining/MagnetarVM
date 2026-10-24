@@ -3708,3 +3708,19 @@ reconstruction. A load-only unified trace asserts that at least one replacement
 is filled and that the proof verifies; the replacement equals the original
 segment claim. Store rows currently skip the data replacement because gated data
 holds the stored value while RAM `read_value` holds the old word.
+
+
+### B5: component openings verify the replacements
+
+`GatedCpuClaims` now carries a component P3 commitment/opening over the aggregate
+`memory_data`/`memory_addr` columns. `prove_cpu` keeps `gated_ry` and commits the
+component table; the verifier obtains `ry` from
+`verify_lockstep_bits_with_replacements_point`, rebuilds the same local points
+from the virtual layout, and verifies the component opening against the
+replacement values. A tampered replacement is rejected. Load-only traces use
+both columns; store traces still skip `memory_data` (gated store data is the
+source value, not RAM `read_value`).
+
+The component proof is a separate P3 opening, so the benchmark grows to
+188,616 B. Moving the component table into the shared Mosaic commitment is the
+next step to avoid the extra opening.

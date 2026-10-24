@@ -1172,6 +1172,97 @@ pub(crate) struct UnifiedProveContext<'a> {
     opening: Option<magnetar_pcs::P3MosaicOpening>,
 }
 
+fn gated_component_columns(
+    trace: &magnetar_spec::Trace,
+    width: usize,
+    cycles: usize,
+) -> Result<(Vec<F2_128>, Vec<F2_128>), RuntimeError> {
+    let full = magnetar_memory::BinaryTwistWitness::from_trace_full_cycles(trace)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if full.cycles != cycles {
+        return Err(RuntimeError::Proof(
+            "full-cycle RAM witness does not match gated cycles".into(),
+        ));
+    }
+    let mut data = vec![F2_128::from(0u64); cycles * width];
+    let mut address = vec![F2_128::from(0u64); cycles * width];
+    for cycle in 0..cycles {
+        let value = full.read_value[cycle].value();
+        for bit in 0..width {
+            data[cycle * width + bit] = F2_128::from((value >> bit) & 1);
+        }
+        if let Some(cell) = full.read_address[cycle]
+            .iter()
+            .position(|bit| bit.value() == 1)
+        {
+            if full.idle_word != Some(cell) {
+                let byte_address = trace.config.ram_base + 8 * cell as u64;
+                for bit in 0..width {
+                    address[cycle * width + bit] = F2_128::from((byte_address >> bit) & 1);
+                }
+            }
+        }
+    }
+    Ok((data, address))
+}
+
+fn gated_component_opening(
+    trace: &magnetar_spec::Trace,
+    width: usize,
+    cycles: usize,
+    layout: &magnetar_constraint::WitnessLayout,
+    ry: &[F2_128],
+    replacements: &[Option<F2_128>],
+) -> Result<
+    Option<(
+        magnetar_pcs::P3MosaicCommitment,
+        magnetar_pcs::P3MosaicOpening,
+    )>,
+    RuntimeError,
+> {
+    let (data, address) = gated_component_columns(trace, width, cycles)?;
+    let table = magnetar_pcs::P3MosaicTable {
+        columns: vec![data, address],
+    };
+    let pcs = magnetar_pcs::P3BinaryPcs::new(100);
+    let commitment = pcs
+        .commit_mosaic(std::slice::from_ref(&table))
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let mut points = Vec::new();
+    let mut values = Vec::new();
+    for (index, segment) in layout.segments.iter().enumerate() {
+        if replacements[index].is_none() {
+            continue;
+        }
+        let (column, name) = if segment.name == "memory_data" {
+            (0usize, "memory_data")
+        } else if segment.name == "memory_addr" {
+            (1usize, "memory_addr")
+        } else {
+            continue;
+        };
+        let _ = name;
+        let bits = segment.len.trailing_zeros() as usize;
+        if bits > ry.len() {
+            return Err(RuntimeError::Proof("component opening point arity".into()));
+        }
+        points.push(magnetar_pcs::P3MosaicPoint {
+            table: 0,
+            point: ry[..bits].to_vec(),
+            columns: vec![column],
+            next_columns: Vec::new(),
+        });
+        values.push(vec![replacements[index].unwrap()]);
+    }
+    if points.is_empty() {
+        return Ok(None);
+    }
+    let opening = pcs
+        .open_mosaic(std::slice::from_ref(&table), &points)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok(Some((commitment, opening)))
+}
+
 fn gated_component_claims(
     trace: &magnetar_spec::Trace,
     width: usize,
@@ -1580,10 +1671,22 @@ impl<'a> UnifiedProveContext<'a> {
                 &input.layout,
                 &gated_ry,
             )?;
+            let component_open = gated_component_opening(
+                self.trace,
+                self.width,
+                input.cycles,
+                &input.layout,
+                &gated_ry,
+                &component_claims,
+            )?;
             self.gated_claims = Some(crate::GatedCpuClaims {
                 proof,
                 cycles: input.cycles,
                 component_claims,
+                component_commitment: component_open
+                    .as_ref()
+                    .map(|(commitment, _)| commitment.clone()),
+                component_opening: component_open.map(|(_, opening)| opening),
             });
             self.gated_ry = None;
         }

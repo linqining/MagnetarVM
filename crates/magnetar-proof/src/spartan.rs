@@ -1668,6 +1668,34 @@ pub fn verify_lockstep_bits_with_replacements<B: BitPcs>(
     backend: &B,
     replacements: &[Option<F2_128>],
 ) -> Result<(), SpartanError> {
+    verify_lockstep_bits_with_replacements_point(
+        a0,
+        b0,
+        c0,
+        a1,
+        b1,
+        c1,
+        layout,
+        proof,
+        backend,
+        replacements,
+    )
+    .map(|_| ())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn verify_lockstep_bits_with_replacements_point<B: BitPcs>(
+    a0: &dyn SpartanMatrix,
+    b0: &dyn SpartanMatrix,
+    c0: &dyn SpartanMatrix,
+    a1: &dyn SpartanMatrix,
+    b1: &dyn SpartanMatrix,
+    c1: &dyn SpartanMatrix,
+    layout: &WitnessLayout,
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    backend: &B,
+    replacements: &[Option<F2_128>],
+) -> Result<Vec<F2_128>, SpartanError> {
     if a0.rows() != a1.rows()
         || b0.rows() != a1.rows()
         || c0.rows() != a1.rows()
@@ -1755,7 +1783,7 @@ pub fn verify_lockstep_bits_with_replacements<B: BitPcs>(
     if !backend.verify(&proof.commitment, &ry, vw, &proof.opening)? {
         return Err(SpartanError::Verification("lockstep PCS opening rejected"));
     }
-    Ok(())
+    Ok(ry)
 }
 
 #[allow(clippy::too_many_arguments)]

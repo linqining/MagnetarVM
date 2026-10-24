@@ -1090,6 +1090,8 @@ pub struct GatedCpuClaims {
     pub cycles: usize,
     /// Optional per-segment claim overrides from component proofs.
     pub component_claims: Vec<Option<F2_128>>,
+    pub component_commitment: Option<P3MosaicCommitment>,
+    pub component_opening: Option<P3MosaicOpening>,
 }
 
 fn step_op_for(op: magnetar_spec::Op) -> Option<magnetar_cpu::StepOp> {
@@ -3504,6 +3506,17 @@ mod tests {
         let gated = unified.gated.as_ref().unwrap();
         assert!(gated.component_claims.iter().any(Option::is_some));
         verify_unified_proof(&unified).unwrap();
+        let mut bad = unified.clone();
+        if let Some(gated) = &mut bad.gated {
+            if let Some(value) = gated
+                .component_claims
+                .iter_mut()
+                .find(|value| value.is_some())
+            {
+                *value = Some(value.unwrap() + F2_128::from(1u64));
+            }
+        }
+        assert!(verify_unified_proof(&bad).is_err());
     }
 
     #[test]
