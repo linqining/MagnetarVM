@@ -2011,6 +2011,79 @@ mod projection_tests {
     }
 
     #[test]
+    fn ram_bit_columns_commit_and_open() {
+        use magnetar_pcs::{P3BinaryPcs, P3MosaicPoint};
+        use magnetar_proof::Mle;
+        let mut data = vec![0u8; 8];
+        data.copy_from_slice(&0x7788u64.to_le_bytes());
+        let program = ProgramImage::new(
+            0x10,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x40,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Ld,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        )
+        .with_data(data);
+        let config = MachineConfig {
+            entry: 0x10,
+            rom_base: 0x10,
+            ram_base: 0x40,
+            ram_size: 0x40,
+            stack_top: 0x80,
+            max_cycles: 8,
+        };
+        let trace = execute(&program, config).unwrap();
+        let full = magnetar_memory::BinaryTwistWitness::from_trace_full_cycles(&trace).unwrap();
+        let tables = crate::binary_twist::batch_tables(&full).unwrap();
+        let mut bit_tables = tables.read_value_bits.clone();
+        bit_tables.extend(tables.read_address_bits.clone());
+        let columns = bit_tables
+            .iter()
+            .flat_map(|table| table.columns.clone())
+            .collect::<Vec<_>>();
+        let table = magnetar_pcs::P3MosaicTable { columns };
+        let cycle_bits = full.cycles.trailing_zeros() as usize;
+        let point = (0..cycle_bits)
+            .map(|bit| F2_128::from((bit * 11 + 5) as u64))
+            .collect::<Vec<_>>();
+        let pcs = P3BinaryPcs::new(100);
+        let commitment = pcs.commit_mosaic(std::slice::from_ref(&table)).unwrap();
+        let expected = table
+            .columns
+            .iter()
+            .map(|column| Mle::new(column.clone()).unwrap().eval(&point).unwrap())
+            .collect::<Vec<_>>();
+        let points = [P3MosaicPoint {
+            table: 0,
+            point: point.clone(),
+            columns: (0..table.columns.len()).collect(),
+            next_columns: Vec::new(),
+        }];
+        let opening = pcs
+            .open_mosaic(std::slice::from_ref(&table), &points)
+            .unwrap();
+        assert!(pcs.verify_mosaic(&opening, &points, &[expected]).unwrap());
+        let _ = commitment;
+    }
+
+    #[test]
     fn aggregate_ram_address_claim_matches_component_bit_columns() {
         use magnetar_proof::{eq, Mle};
         let mut data = vec![0u8; 8];

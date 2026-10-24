@@ -3636,3 +3636,12 @@ claim-replacement equation for RAM data. `aggregate_ram_address_claim_matches_co
 does the same for `memory_addr`; the full-cycle witness records its `idle_word`
 and `read_address_bits` zero the idle address, so the gated idle-zero address
 projection matches.
+
+
+### B5: bit-column P3 round-trip
+
+`ram_bit_columns_commit_and_open` packs all `read_value_bits` and
+`read_address_bits` columns into one P3 mosaic table, commits, opens at a cycle
+point, and verifies the opening against computed column evaluations. This shows
+the component bit columns are PCS-ready; the remaining step is to add their
+proof-carried evaluations to the CPU claim reconstruction.
