@@ -2480,3 +2480,17 @@ non-memory rows both are zero. This ties the reservation chain to the same
 memory claim used by the CPU/gated proof, not only to trace fields.
 
 Targeted tests: `reservation_cpu_row`, `unified_lr_sc`, `unified_amo_lr_sc`.
+
+
+### C: bind LR/SC value to CPU memory data
+
+`ReservationCpuRow` now carries `value`/`has_value` and constrains, when
+`has_value = 1`:
+
+```text
+value == cpu.memory.data_in
+```
+
+The trace builder sets it to `rd_val` for LR and to the memory write value for
+SC. This binds the LR read / SC write data to the same CPU memory claim as the
+address. The small gated benchmark is 155,833 B after the change.

@@ -17,6 +17,8 @@ pub struct ReservationCpuInput {
     pub is_invalidate: bool,
     pub next_pre_valid: bool,
     pub next_pre_addr: u64,
+    pub value: u64,
+    pub has_value: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -27,6 +29,8 @@ pub struct ReservationCpuRow {
     pub reservation_offset: usize,
     pub next_pre_valid: VarId,
     pub next_pre_addr: Vec<VarId>,
+    pub value: Vec<VarId>,
+    pub has_value: VarId,
     pub relation: BitRelation,
 }
 
@@ -55,6 +59,10 @@ impl ReservationCpuRow {
         let next_pre_addr = (cursor..cursor + width).collect::<Vec<_>>();
         cursor += width;
         let next_pre_valid = cursor;
+        cursor += 1;
+        let value = (cursor..cursor + width).collect::<Vec<_>>();
+        cursor += width;
+        let has_value = cursor;
         relation.num_vars = cursor + 1;
         let one = reservation_offset + reservation.one;
         let post_valid = reservation_offset + reservation.post_valid;
@@ -79,6 +87,25 @@ impl ReservationCpuRow {
                 Vec::new(),
             ));
         }
+        relation.add(BitRow::new(
+            vec![has_value],
+            vec![has_value, one],
+            Vec::new(),
+        ));
+        for value_bit in &value {
+            relation.add(BitRow::new(
+                vec![*value_bit],
+                vec![*value_bit, one],
+                Vec::new(),
+            ));
+        }
+        for (bit, value_bit) in value.iter().enumerate() {
+            relation.add(BitRow::new(
+                vec![*value_bit, cpu.memory_offset + cpu.memory.data_in[bit]],
+                vec![has_value],
+                Vec::new(),
+            ));
+        }
         Self {
             width,
             cpu,
@@ -86,6 +113,8 @@ impl ReservationCpuRow {
             reservation_offset,
             next_pre_valid,
             next_pre_addr,
+            value,
+            has_value,
             relation,
         }
     }
@@ -109,6 +138,10 @@ impl ReservationCpuRow {
         bits[self.next_pre_valid] = input.next_pre_valid;
         for (bit, var) in self.next_pre_addr.iter().enumerate() {
             bits[*var] = (input.next_pre_addr >> bit) & 1 == 1;
+        }
+        bits[self.has_value] = input.has_value;
+        for (bit, var) in self.value.iter().enumerate() {
+            bits[*var] = (input.value >> bit) & 1 == 1;
         }
         bits
     }
@@ -198,6 +231,26 @@ pub fn reservation_cpu_rows_from_trace(
                 is_invalidate: false,
                 next_pre_valid: next_pre.is_some(),
                 next_pre_addr: next_pre.unwrap_or(0),
+                value: if matches!(
+                    row.instruction.op,
+                    magnetar_spec::Op::LrW | magnetar_spec::Op::LrD
+                ) {
+                    row.rd_val
+                } else if matches!(
+                    row.instruction.op,
+                    magnetar_spec::Op::ScW | magnetar_spec::Op::ScD
+                ) {
+                    row.mem.map(|mem| mem.value).unwrap_or(0)
+                } else {
+                    0
+                },
+                has_value: matches!(
+                    row.instruction.op,
+                    magnetar_spec::Op::LrW
+                        | magnetar_spec::Op::LrD
+                        | magnetar_spec::Op::ScW
+                        | magnetar_spec::Op::ScD
+                ),
             },
         ));
     }
@@ -226,6 +279,8 @@ mod tests {
             is_invalidate: false,
             next_pre_valid: true,
             next_pre_addr: 5,
+            value: 5,
+            has_value: true,
         };
         let bits = row.witness(0x1000, input);
         assert!(row.relation_check(&bits));
@@ -238,6 +293,13 @@ mod tests {
         bad.res_addr = 5;
         bad.next_pre_valid = false;
         bad.next_pre_addr = 0;
+        bad.value = 7;
+        bad.cpu = GatedCpuRowInput::Memory {
+            rs1: 5,
+            imm: 0,
+            value: 7,
+            is_mem: true,
+        };
         let bits = row.witness(0x1000, bad);
         assert!(row.relation_check(&bits));
         let rows = [
