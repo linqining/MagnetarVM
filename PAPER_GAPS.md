@@ -2314,3 +2314,9 @@ on every unified proof; `unified_trace_proof_merges_row_constraints` asserts it.
 `unified_amo_lr_sc_bundle_round_trips` executes SD/AMOADD.D/LR.D/SC.D together
 and checks that AMO, LR, SC, and reservation batches are all present in one
 unified proof.
+
+
+The reservation batch now contains only rows where `reservation_before !=
+reservation_after`, instead of every trace row. Non-changing rows are covered by
+the verifier-side chain check, so this avoids proving trivial transitions on
+long traces.

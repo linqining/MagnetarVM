@@ -82,16 +82,18 @@ fn collect(trace: &Trace) -> Rows {
             }
             _ => {}
         }
-        let addr = row.mem.map(|mem| mem.addr).unwrap_or(0);
-        let res_addr = row.reservation_before.unwrap_or(0);
-        rows.reservation.push((
-            addr,
-            res_addr,
-            row.reservation_before.is_some(),
-            matches!(row.instruction.op, Op::LrW | Op::LrD),
-            matches!(row.instruction.op, Op::ScW | Op::ScD),
-            is_amo_op(row.instruction.op) || is_store_op(row.instruction.op),
-        ));
+        if row.reservation_before != row.reservation_after {
+            let addr = row.mem.map(|mem| mem.addr).unwrap_or(0);
+            let res_addr = row.reservation_before.unwrap_or(0);
+            rows.reservation.push((
+                addr,
+                res_addr,
+                row.reservation_before.is_some(),
+                matches!(row.instruction.op, Op::LrW | Op::LrD),
+                matches!(row.instruction.op, Op::ScW | Op::ScD),
+                is_amo_op(row.instruction.op) || is_store_op(row.instruction.op),
+            ));
+        }
     }
     rows
 }
@@ -550,13 +552,13 @@ pub fn verify_amo_bundle(
     } else if !rows.sc.is_empty() {
         return Err(RuntimeError::Proof("SC bundle presence".into()));
     }
-    let wants_reservation = has_amo_events(trace);
-    if let Some(proof) = &proof.reservation {
-        let rows = pad_reservation(rows.reservation.clone())
-            .ok_or_else(|| RuntimeError::Proof("reservation bundle missing".into()))?;
-        verify_reservation_batch(width, rows.len(), proof)?;
-    } else if wants_reservation {
-        return Err(RuntimeError::Proof("reservation bundle presence".into()));
+    if let Some(reservation_rows) = pad_reservation(rows.reservation.clone()) {
+        let Some(proof) = &proof.reservation else {
+            return Err(RuntimeError::Proof("reservation bundle presence".into()));
+        };
+        verify_reservation_batch(width, reservation_rows.len(), proof)?;
+    } else if proof.reservation.is_some() {
+        return Err(RuntimeError::Proof("unexpected reservation bundle".into()));
     }
     Ok(())
 }
