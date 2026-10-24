@@ -1306,6 +1306,21 @@ pub fn prove_lockstep_bits<B: BitPcs>(
     layout: &WitnessLayout,
     backend: &B,
 ) -> Result<LockstepProof<B::Commitment, B::Opening>, SpartanError> {
+    Ok(prove_lockstep_bits_with_point(bits, a0, b0, c0, a1, b1, c1, layout, backend)?.0)
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn prove_lockstep_bits_with_point<B: BitPcs>(
+    bits: &[bool],
+    a0: &dyn SpartanMatrix,
+    b0: &dyn SpartanMatrix,
+    c0: &dyn SpartanMatrix,
+    a1: &dyn SpartanMatrix,
+    b1: &dyn SpartanMatrix,
+    c1: &dyn SpartanMatrix,
+    layout: &WitnessLayout,
+    backend: &B,
+) -> Result<(LockstepProof<B::Commitment, B::Opening>, Vec<F2_128>), SpartanError> {
     let z = bits
         .iter()
         .map(|bit| F2_128::from(u64::from(*bit)))
@@ -1314,19 +1329,22 @@ pub fn prove_lockstep_bits<B: BitPcs>(
     let (claims, ry) =
         prove_lockstep_claims_bits(&z, a0, b0, c0, a1, b1, c1, layout, backend, commitment)?;
     let (_, opening) = backend.open(bits, &ry)?;
-    Ok(LockstepProof {
-        commitment: claims.commitment,
-        v_a0: claims.v_a0,
-        v_b0: claims.v_b0,
-        v_c0: claims.v_c0,
-        v_a1: claims.v_a1,
-        v_b1: claims.v_b1,
-        v_c1: claims.v_c1,
-        outer: claims.outer,
-        inner: claims.inner,
-        segments: claims.segments,
-        opening,
-    })
+    Ok((
+        LockstepProof {
+            commitment: claims.commitment,
+            v_a0: claims.v_a0,
+            v_b0: claims.v_b0,
+            v_c0: claims.v_c0,
+            v_a1: claims.v_a1,
+            v_b1: claims.v_b1,
+            v_c1: claims.v_c1,
+            outer: claims.outer,
+            inner: claims.inner,
+            segments: claims.segments,
+            opening,
+        },
+        ry,
+    ))
 }
 
 pub fn prove_lockstep<P: Pcs>(

@@ -1172,6 +1172,71 @@ pub(crate) struct UnifiedProveContext<'a> {
     opening: Option<magnetar_pcs::P3MosaicOpening>,
 }
 
+fn gated_component_claims(
+    trace: &magnetar_spec::Trace,
+    width: usize,
+    cycles: usize,
+    layout: &magnetar_constraint::WitnessLayout,
+    ry: &[F2_128],
+) -> Result<Vec<Option<F2_128>>, RuntimeError> {
+    let full = magnetar_memory::BinaryTwistWitness::from_trace_full_cycles(trace)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if full.cycles != cycles {
+        return Err(RuntimeError::Proof(
+            "full-cycle RAM witness does not match gated cycles".into(),
+        ));
+    }
+    let mut data = vec![F2_128::from(0u64); cycles * width];
+    let mut address = vec![F2_128::from(0u64); cycles * width];
+    for cycle in 0..cycles {
+        let value = full.read_value[cycle].value();
+        for bit in 0..width {
+            data[cycle * width + bit] = F2_128::from((value >> bit) & 1);
+        }
+        if let Some(cell) = full.read_address[cycle]
+            .iter()
+            .position(|bit| bit.value() == 1)
+        {
+            if full.idle_word != Some(cell) {
+                let byte_address = trace.config.ram_base + 8 * cell as u64;
+                for bit in 0..width {
+                    address[cycle * width + bit] = F2_128::from((byte_address >> bit) & 1);
+                }
+            }
+        }
+    }
+    let data_mle =
+        magnetar_proof::Mle::new(data).map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let address_mle = magnetar_proof::Mle::new(address)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let has_store = trace
+        .rows
+        .iter()
+        .any(|row| row.mem.is_some_and(|access| access.is_write));
+    let mut replacements = vec![None; layout.segments.len()];
+    for (index, segment) in layout.segments.iter().enumerate() {
+        if segment.name != "memory_data" && segment.name != "memory_addr" {
+            continue;
+        }
+        let bits = segment.len.trailing_zeros() as usize;
+        if bits > ry.len() {
+            return Err(RuntimeError::Proof("component segment point arity".into()));
+        }
+        let point = &ry[..bits];
+        let component = if segment.name == "memory_data" {
+            data_mle.eval(point)
+        } else {
+            address_mle.eval(point)
+        }
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        if segment.name == "memory_data" && has_store {
+            continue;
+        }
+        replacements[index] = Some(component);
+    }
+    Ok(replacements)
+}
+
 impl<'a> UnifiedProveContext<'a> {
     pub(crate) fn new(trace: &'a Trace, width: usize) -> Result<Self, RuntimeError> {
         check_trace_linkage(trace)?;
@@ -1496,7 +1561,7 @@ impl<'a> UnifiedProveContext<'a> {
                 wrap(input.a1[1].clone()),
                 wrap(input.a1[2].clone()),
             ];
-            let proof = magnetar_proof::prove_lockstep_bits(
+            let (proof, gated_ry) = magnetar_proof::prove_lockstep_bits_with_point(
                 &bits,
                 &va0[0],
                 &va0[1],
@@ -1508,10 +1573,17 @@ impl<'a> UnifiedProveContext<'a> {
                 &backend,
             )
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            let component_claims = gated_component_claims(
+                self.trace,
+                self.width,
+                input.cycles,
+                &input.layout,
+                &gated_ry,
+            )?;
             self.gated_claims = Some(crate::GatedCpuClaims {
                 proof,
                 cycles: input.cycles,
-                component_claims: vec![None; input.layout.segments.len()],
+                component_claims,
             });
             self.gated_ry = None;
         }

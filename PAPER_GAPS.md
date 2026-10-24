@@ -3694,3 +3694,17 @@ After making the virtual layout the gated witness, removing the redundant
 cycles) reduces the benchmark from 152,912 to 150,902 B; the gated component is
 70,635 B. The remaining growth over the 137,120 B baseline is the per-owner
 segment split and its claims.
+
+
+### B5: component claims fill the virtual segments
+
+`prove_cpu` keeps the gated `ry` (via `prove_lockstep_bits_with_point`) and
+builds the aggregate RAM data/address vectors from the full-cycle BinaryTwist
+witness. For each `memory_data`/`memory_addr` virtual segment it evaluates the
+component vector at the segment's local point and writes
+`component_claims[index]`. The verifier's
+`verify_lockstep_bits_with_replacements` uses these values in the CPU claim
+reconstruction. A load-only unified trace asserts that at least one replacement
+is filled and that the proof verifies; the replacement equals the original
+segment claim. Store rows currently skip the data replacement because gated data
+holds the stored value while RAM `read_value` holds the old word.

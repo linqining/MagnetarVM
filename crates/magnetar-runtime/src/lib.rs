@@ -3500,6 +3500,10 @@ mod tests {
         let witness = magnetar_memory::BinaryTwistWitness::from_trace_full_cycles(&trace).unwrap();
         let proof = crate::binary_twist::prove_binary_twist_ram(&witness).unwrap();
         assert!(crate::binary_twist::verify_binary_twist_ram(&witness, &proof).unwrap());
+        let unified = prove_unified_trace(&trace, 16).unwrap();
+        let gated = unified.gated.as_ref().unwrap();
+        assert!(gated.component_claims.iter().any(Option::is_some));
+        verify_unified_proof(&unified).unwrap();
     }
 
     #[test]
