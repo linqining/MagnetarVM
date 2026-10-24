@@ -3464,6 +3464,110 @@ mod tests {
     }
 
     #[test]
+    fn unified_amo_lr_sc_bundle_round_trips() {
+        use magnetar_executor::execute;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Lui,
+                    rd: 4,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x1000_0000,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 10,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Sd,
+                    rd: 0,
+                    rs1: 4,
+                    rs2: 1,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 2,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 5,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::AmoaddD,
+                    rd: 3,
+                    rs1: 4,
+                    rs2: 2,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::LrD,
+                    rd: 6,
+                    rs1: 4,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 7,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 9,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::ScD,
+                    rd: 8,
+                    rs1: 4,
+                    rs2: 7,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x100,
+                stack_top: 0x1000_0080,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let proof = prove_unified_trace(&trace, 8).unwrap();
+        let amo = proof.amo.as_ref().expect("AMO bundle");
+        assert!(amo.add.is_some());
+        assert!(amo.lr.is_some());
+        assert!(amo.sc.is_some());
+        assert!(amo.reservation.is_some());
+        verify_unified_trace(&trace, &proof, 8).unwrap();
+    }
+
+    #[test]
     fn revealed_unified_proof_round_trips() {
         use magnetar_spec::{Instruction, Op};
 
