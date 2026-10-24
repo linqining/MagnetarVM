@@ -4112,3 +4112,8 @@ the OR/immediate-op fixes.
 
 `immediate_logical_ops_round_trip_unified` adds a CI test for Xori/Ori/Andi/
 Slti/Sltiu through prove/verify, guarding the gated-row mapping fixes.
+
+
+`op_probe` now covers 58 cases: all 16 AMO variants plus LrW/ScW, in addition to
+the ALU/word/control/branch/load/store set. All verify through the unified path;
+this exercises the gated AMO/LR/SC mappings and the word-width behavior.

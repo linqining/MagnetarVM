@@ -77,6 +77,35 @@ fn cases() -> Vec<(&'static str, ProgramImage)> {
             ins(Op::AmoswapD, 4, 20, 3, 0, 0),
         ]),
     ));
+    for (name, op) in [
+        ("amoaddd", Op::AmoaddD),
+        ("amoandd", Op::AmoandD),
+        ("amoord", Op::AmoorD),
+        ("amoxord", Op::AmoxorD),
+        ("amomind", Op::AmominD),
+        ("amomaxd", Op::AmomaxD),
+        ("amominud", Op::AmominuD),
+        ("amomaxud", Op::AmomaxuD),
+        ("amoaddw", Op::AmoaddW),
+        ("amoandw", Op::AmoandW),
+        ("amoorw", Op::AmoorW),
+        ("amoxorw", Op::AmoxorW),
+        ("amominw", Op::AmominW),
+        ("amomaxw", Op::AmomaxW),
+        ("amominuw", Op::AmominuW),
+        ("amomaxuw", Op::AmomaxuW),
+    ] {
+        cases.push((
+            name,
+            program(vec![
+                ins(Op::Lui, 20, 0, 0, 0x1000_0000, 0),
+                ins(Op::Addi, 2, 0, 0, 5, 0),
+                ins(Op::Sd, 0, 20, 2, 0, 0),
+                ins(Op::Addi, 3, 0, 0, 3, 0),
+                ins(op, 4, 20, 3, 0, 0),
+            ]),
+        ));
+    }
     cases.push((
         "lrd_scd",
         program(vec![
@@ -86,6 +115,17 @@ fn cases() -> Vec<(&'static str, ProgramImage)> {
             ins(Op::LrD, 4, 20, 0, 0, 0),
             ins(Op::Addi, 5, 0, 0, 9, 0),
             ins(Op::ScD, 6, 20, 5, 0, 0),
+        ]),
+    ));
+    cases.push((
+        "lrw_scw",
+        program(vec![
+            ins(Op::Lui, 20, 0, 0, 0x1000_0000, 0),
+            ins(Op::Addi, 2, 0, 0, 5, 0),
+            ins(Op::Sd, 0, 20, 2, 0, 0),
+            ins(Op::LrW, 4, 20, 0, 0, 0),
+            ins(Op::Addi, 5, 0, 0, 9, 0),
+            ins(Op::ScW, 6, 20, 5, 0, 0),
         ]),
     ));
     for (name, op, left, imm) in [
