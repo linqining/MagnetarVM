@@ -53,12 +53,49 @@ pub struct BytecodeRow {
     pub selectors: Selectors,
 }
 
+/// Kind of a scheduled micro-op. The current executor emits one `Execute`
+/// micro-op per instruction; `Fetch` is reserved for instruction expansion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MicroOpKind {
+    Fetch,
+    Execute,
+}
+
+/// A scheduled micro-op. `rv_pc` is the architectural instruction address;
+/// `micro_pc` is the row key used by the bytecode/Shout table.
+#[derive(Clone, Debug)]
+pub struct MicroOp {
+    pub micro_pc: Word,
+    pub rv_pc: Word,
+    pub kind: MicroOpKind,
+    pub instruction_word: u32,
+    pub instruction: Instruction,
+    pub selectors: Selectors,
+}
+
+/// Expand the preprocessed bytecode into scheduled micro-ops. The current
+/// one-instruction/one-micro-op encoding is the identity expansion; multi-op
+/// rows can be introduced here without changing the Shout table shape.
+pub fn expand_bytecode(rows: &[BytecodeRow]) -> Vec<MicroOp> {
+    rows.iter()
+        .map(|row| MicroOp {
+            micro_pc: row.micro_pc,
+            rv_pc: row.micro_pc,
+            kind: MicroOpKind::Execute,
+            instruction_word: row.instruction_word,
+            instruction: row.instruction,
+            selectors: row.selectors,
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug)]
 pub struct PreprocessedProgram {
     pub config: MachineConfig,
     pub image: ProgramImage,
     pub rom: RomImage,
     pub bytecode: Vec<BytecodeRow>,
+    pub micro_ops: Vec<MicroOp>,
     pub routing: RoutingTables,
 }
 
@@ -192,6 +229,7 @@ pub fn preprocess(
         }
     }
 
+    let micro_ops = expand_bytecode(&bytecode);
     Ok(PreprocessedProgram {
         config,
         image: image.clone(),
@@ -200,6 +238,7 @@ pub fn preprocess(
             words: image.rom.clone(),
         },
         bytecode,
+        micro_ops,
         routing,
     })
 }
@@ -397,5 +436,44 @@ mod tests {
             Some(StoreWidth::Double)
         );
         assert!(preprocessed.bytecode[7].selectors.is_halt);
+    }
+}
+
+#[cfg(test)]
+mod expansion_tests {
+    use super::*;
+
+    #[test]
+    fn bytecode_expands_to_execute_micro_ops() {
+        let image = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: magnetar_spec::Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(magnetar_spec::Op::Ecall).encode(),
+            ],
+        );
+        let config = MachineConfig {
+            entry: 0x1000,
+            rom_base: 0x1000,
+            ram_base: 0x1000_0000,
+            ram_size: 0x1000,
+            stack_top: 0x1000_1000,
+            max_cycles: 16,
+        };
+        let prepared = preprocess(&image, config).unwrap();
+        assert_eq!(prepared.micro_ops.len(), prepared.bytecode.len());
+        for (op, row) in prepared.micro_ops.iter().zip(&prepared.bytecode) {
+            assert_eq!(op.kind, MicroOpKind::Execute);
+            assert_eq!(op.micro_pc, row.micro_pc);
+            assert_eq!(op.rv_pc, row.micro_pc);
+        }
     }
 }
