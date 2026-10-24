@@ -3138,3 +3138,11 @@ from 128 to 256 entries. The leaf batch still disagrees, so the mismatch is in
 how the padded row/column point is formed for the packed table, not in the
 metadata values themselves. A region suffix in the point (or a packed layout
 helper shared by prove/verify) is still required.
+
+
+Further instrumentation: after appending metadata, every leaf equals the
+corresponding table column MLE at the read point, and every table bit equals the
+packed bit at `cycle * 2^col_bits + column`. The disagreement is therefore only
+in the evaluation point padding used by the packed opening, not in the data or
+columns. The next fix must derive the padded row/column point from the same
+helper that builds `packed_bits`, including the padded row bits.
