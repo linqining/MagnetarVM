@@ -3172,3 +3172,22 @@ The remaining D10 step is to open the Router public-route columns at the Shout
 read point and compare them with `link_evals`; this requires proving packed Shout
 before the shared opening so the extra Router point can be added to the same
 Mosaic opening.
+
+
+### D10 domain mismatch: Router cycles are filtered, Shout cycles are full
+
+Attempting to open the Router public columns at the Shout read point failed
+because the domains differ: `BinaryRouterWitness::from_trace_mode` emits one
+route row per **matching** shift/store row, so its `cycles` is the number of
+routes padded to a power of two. Shout's `cycles` is the full trace row count
+padded. In the core test the Shout link point had length 3 while the store Router
+table had 1 variable. The opening was rejected.
+
+To finish D10 the Router witness must either:
+
+1. be full-cycle, pushing `RouterRoute::None` for every non-matching trace row;
+2. or carry the original cycle index per route and link through a sparse/lookup
+   sum.
+
+Option 1 is the SIMD-consistent layout. The link columns and helper work is
+otherwise ready.
