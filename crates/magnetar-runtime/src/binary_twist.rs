@@ -781,6 +781,9 @@ pub(crate) type ClaimedRam = (BinaryTwistRamProof, MosaicClaims);
 pub(crate) struct BatchTables {
     pub addr: P3MosaicTable,
     pub inc: P3MosaicTable,
+    pub initial: P3MosaicTable,
+    pub read_value: P3MosaicTable,
+    pub write_value: P3MosaicTable,
     pub address_bits: usize,
     pub cycle_bits: usize,
     pub final_values: Vec<F2_128>,
@@ -851,10 +854,29 @@ pub(crate) fn batch_tables(witness: &BinaryTwistWitness) -> Result<BatchTables, 
         }
     }
     increments[..witness.cycles].copy_from_slice(&witness.increment);
+    let cycles_padded = cycles.next_power_of_two().max(2);
+    let mut read_value = witness.read_value.clone();
+    read_value.resize(cycles_padded, F2_128::from(0u64));
+    let mut write_value = witness.write_value.clone();
+    write_value.resize(cycles_padded, F2_128::from(0u64));
+    let mut initial = witness.initial.clone();
+    initial.resize(
+        witness.initial.len().next_power_of_two().max(2),
+        F2_128::from(0u64),
+    );
     Ok(BatchTables {
         addr: P3MosaicTable { columns: addr },
         inc: P3MosaicTable {
             columns: vec![increments],
+        },
+        initial: P3MosaicTable {
+            columns: vec![initial],
+        },
+        read_value: P3MosaicTable {
+            columns: vec![read_value],
+        },
+        write_value: P3MosaicTable {
+            columns: vec![write_value],
         },
         address_bits,
         cycle_bits,

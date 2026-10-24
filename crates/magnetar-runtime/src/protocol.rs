@@ -1176,8 +1176,11 @@ impl<'a> UnifiedProveContext<'a> {
             },
             tables.addr.clone(),
             tables.inc.clone(),
+            tables.initial.clone(),
+            tables.read_value.clone(),
+            tables.write_value.clone(),
         ];
-        let mut next_table = 3usize;
+        let mut next_table = 6usize;
         let shout_table = shout_witness.as_ref().map(|witness| {
             let index = next_table;
             next_table += 1;
@@ -1205,6 +1208,9 @@ impl<'a> UnifiedProveContext<'a> {
         let register_index = mosaic_tables.len();
         mosaic_tables.push(register_tables.addr.clone());
         mosaic_tables.push(register_tables.inc.clone());
+        mosaic_tables.push(register_tables.initial.clone());
+        mosaic_tables.push(register_tables.read_value.clone());
+        mosaic_tables.push(register_tables.write_value.clone());
         let trace_witness = crate::trace_commitment::trace_witness(trace)?;
         let trace_index = mosaic_tables.len();
         let trace_table = P3MosaicTable {
@@ -1622,7 +1628,7 @@ impl<'a> UnifiedVerifyContext<'a> {
                 table: proof.gated.as_ref().map_or(0, |gated| gated.table),
                 cycles,
             });
-        let expected_tables = 6
+        let expected_tables = 12
             + usize::from(shout_witness.is_some())
             + usize::from(shift_router_witness.is_some())
             + usize::from(store_router_witness.is_some())
@@ -1632,7 +1638,7 @@ impl<'a> UnifiedVerifyContext<'a> {
                 "unified proof does not commit the expected CPU/RAM/aux tables".into(),
             ));
         }
-        let mut next_table = 3usize;
+        let mut next_table = 6usize;
         let shout_index = shout_witness.as_ref().map(|_| {
             let index = next_table;
             next_table += 1;
@@ -1764,7 +1770,7 @@ impl<'a> UnifiedVerifyContext<'a> {
         self.values.extend(register_values);
 
         let trace_witness = crate::trace_commitment::trace_witness(self.trace)?;
-        let trace_index = self.register_index + 2;
+        let trace_index = self.proof.trace_index;
         let trace_claims = magnetar_proof::virtual_spartan::split_segment_claims(
             &trace_witness.layout,
             &trace_witness.values,

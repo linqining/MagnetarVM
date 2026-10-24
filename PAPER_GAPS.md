@@ -2740,3 +2740,16 @@ claims. The gated benchmark is 156,515 B (+331 B) while the statement shrinks.
 
 `CoreStatement` is serde-able again now that the trace witness was removed; the
 core test serializes/deserializes it and verifies the decoded statement.
+
+
+### A2a: commit initial/read/write Twist tables
+
+`BatchTables` now includes `initial`, `read_value`, and `write_value` tables
+(padded to powers of two, minimum 2). The unified Mosaic commitment adds these
+three tables for both RAM and registers; auxiliary/gated/trace table indexes are
+shifted accordingly. `unified_lr_sc`, `core_statement`, `aux_statement`, and
+`unified_amo_lr_sc` pass. The benchmark is 156,771 B (+256 B).
+
+This is the commitment prerequisite for proof-carried access evaluations. The
+verifier still reads these vectors from the witness until the new eval fields
+and points are added.
