@@ -3096,3 +3096,12 @@ Benchmark:
 before tuning: 138,640 B (gated 71,577)
 after tuning:  123,928 B (gated 56,865)
 ```
+
+
+### Negative result: merging Twist value tables
+
+Tried merging the initial/read/write value tables of each Twist into one
+three-column table padded to `max(cells, cycles)`. All functional tests passed
+after padding the point vectors, but the benchmark grew from 123,928 B to
+136,408 B (opening 54,337 -> 66,881) because the merged table has more variables
+and the multi-column point openings cost more than the saved tables. Reverted.
