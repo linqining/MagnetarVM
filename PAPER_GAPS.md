@@ -3031,3 +3031,12 @@ records this, and access proving/verification use it instead of hard-coded 1.
 Table-0 opening points are omitted. All targeted unified tests pass with no CPU
 lockstep claims. Benchmark: 176,952 B (still larger than the per-row build
 because the full gated z/reservation table dominates).
+
+
+### B size diagnosis
+
+The benchmark prints `gated table 11 cycles 4`. Table 11 has 1 column and
+15 variables (32768 bits) for 4 padded rows, so the gated/reservation z table is
+the new dominant committed object (~8192 bits per row) and explains the
+176,952 B result. The per-row CPU table was only 7 variables. Shrinking the
+reservation row's bit width (or not padding from 3 to 4 rows) is the size lever.
