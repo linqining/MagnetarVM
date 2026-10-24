@@ -7,6 +7,7 @@
 //! decision.
 
 use crate::branch_row::{BranchKind, GatedBranchRow};
+use crate::mul_row::GatedMulRow;
 use crate::RuntimeError;
 use magnetar_constraint::{VarId, F2_128};
 use magnetar_proof::dual_field::{BitRelation, BitRow};
@@ -1593,6 +1594,8 @@ pub struct GatedCpuRow {
     pub shift_offset: usize,
     pub branch: GatedBranchRow,
     pub branch_offset: usize,
+    pub mul: GatedMulRow,
+    pub mul_offset: usize,
     pub pc: Vec<VarId>,
     pub next_pc: Vec<VarId>,
     pub sequential: VarId,
@@ -1644,12 +1647,25 @@ impl GatedCpuRow {
                 shift_vars(&row.c),
             ));
         }
+        let mul = GatedMulRow::new(width);
+        let mul_offset = relation.num_vars;
+        relation.num_vars += mul.relation.num_vars;
+        for row in &mul.relation.rows {
+            let shift_vars =
+                |vars: &[VarId]| vars.iter().map(|var| *var + mul_offset).collect::<Vec<_>>();
+            relation.add(BitRow::new(
+                shift_vars(&row.a),
+                shift_vars(&row.b),
+                shift_vars(&row.c),
+            ));
+        }
         relation.add(BitRow::new(
             vec![
                 alu.is_alu,
                 memory_offset + memory.adder.gate,
                 shift_offset + shift.is_shift,
                 branch_offset + branch.is_branch,
+                mul_offset + mul.is_mul,
             ],
             vec![alu.one],
             vec![alu.one],
@@ -1783,6 +1799,8 @@ impl GatedCpuRow {
             shift_offset,
             branch,
             branch_offset,
+            mul,
+            mul_offset,
             pc,
             next_pc,
             sequential,
@@ -1920,6 +1938,7 @@ impl GatedCpuRow {
         bits.extend(self.memory.witness(0, 0, 0, false));
         bits.extend(self.shift.inactive_witness());
         bits.extend(self.branch.witness(pc, imm, left, right, kind));
+        bits.extend(self.mul.inactive_witness());
         let taken = match kind {
             BranchKind::Beq => left == right,
             BranchKind::Bne => left != right,
@@ -1934,6 +1953,15 @@ impl GatedCpuRow {
             pc.wrapping_add(4)
         };
         self.finish(bits, pc, next_pc, false)
+    }
+
+    pub fn mul_witness_at(&self, pc: u64, left: u64, right: u64) -> Vec<bool> {
+        let mut bits = self.alu.witness(0, 0, GatedAluOp::Inactive);
+        bits.extend(self.memory.witness(0, 0, 0, false));
+        bits.extend(self.shift.inactive_witness());
+        bits.extend(self.branch.inactive_witness());
+        bits.extend(self.mul.witness(left, right));
+        self.finish(bits, pc, pc.wrapping_add(4), true)
     }
 
     fn finish(&self, mut bits: Vec<bool>, pc: u64, next_pc: u64, sequential: bool) -> Vec<bool> {
@@ -1961,6 +1989,8 @@ impl GatedCpuRow {
         let memory = self.memory.witness(0, 0, 0, false);
         bits.extend(memory);
         bits.extend(self.shift.inactive_witness());
+        bits.extend(self.branch.inactive_witness());
+        bits.extend(self.mul.inactive_witness());
         let jump = matches!(op, GatedAluOp::Jal | GatedAluOp::Jalr);
         let next_pc = if op == GatedAluOp::Jalr {
             left.wrapping_add(right) & !1
@@ -1987,6 +2017,7 @@ impl GatedCpuRow {
         bits.extend(self.memory.witness(0, 0, 0, false));
         bits.extend(self.shift.witness(left, shamt, kind));
         bits.extend(self.branch.inactive_witness());
+        bits.extend(self.mul.inactive_witness());
         self.finish(bits, pc, pc.wrapping_add(4), true)
     }
 
@@ -2003,6 +2034,7 @@ impl GatedCpuRow {
         bits.extend(memory);
         bits.extend(self.shift.inactive_witness());
         bits.extend(self.branch.inactive_witness());
+        bits.extend(self.mul.inactive_witness());
         self.finish(bits, pc, pc.wrapping_add(4), true)
     }
 }
@@ -2118,6 +2150,21 @@ mod gated_cpu_row_tests {
         let branch_witness = row.relation.to_witness(&branch);
         assert!(row.packed_companion_system().check(&branch_witness).is_ok());
 
+        let mul = row.mul_witness_at(0x1000, 5, 3);
+        assert!(row.relation.check(&mul));
+        let mul_product = row
+            .mul
+            .product
+            .iter()
+            .take(8)
+            .enumerate()
+            .fold(0u64, |value, (bit, var)| {
+                value | (u64::from(mul[*var + row.mul_offset]) << bit)
+            });
+        assert_eq!(mul_product, 15);
+        let mul_witness = row.relation.to_witness(&mul);
+        assert!(row.packed_companion_system().check(&mul_witness).is_ok());
+
         let shift = row.shift_witness_at(0x1008, 5, 2, BitShiftKind::Sll);
         assert!(row.relation.check(&shift));
         assert!(!shift[row.alu.is_alu]);
@@ -2161,6 +2208,10 @@ pub enum GatedCpuRowInput {
         imm: u64,
         kind: BranchKind,
     },
+    Mul {
+        left: u64,
+        right: u64,
+    },
 }
 
 pub fn prove_gated_cpu_batch(
@@ -2198,6 +2249,7 @@ pub fn prove_gated_cpu_batch(
                 imm,
                 kind,
             } => row.branch_witness_at(0, *left, *right, *imm, *kind),
+            GatedCpuRowInput::Mul { left, right } => row.mul_witness_at(0, *left, *right),
         };
         witnesses.push(row.relation.to_witness(&bits));
     }
@@ -2316,6 +2368,7 @@ pub fn prove_gated_cpu_batch_pc(
                 imm,
                 kind,
             } => row.branch_witness_at(*pc, *left, *right, *imm, *kind),
+            GatedCpuRowInput::Mul { left, right } => row.mul_witness_at(*pc, *left, *right),
         };
         z.extend(
             witness_vector(&system, &row.relation.to_witness(&bits))
@@ -2398,7 +2451,7 @@ mod claim_routing_tests {
                 GatedCpuRowInput::Alu { .. } => ClaimKind::Register,
                 GatedCpuRowInput::Memory { .. } => ClaimKind::Ram,
                 GatedCpuRowInput::Shift { .. } => ClaimKind::Shift,
-                GatedCpuRowInput::Branch { .. } => ClaimKind::Direct,
+                GatedCpuRowInput::Branch { .. } | GatedCpuRowInput::Mul { .. } => ClaimKind::Direct,
             };
             claims.push(crate::protocol::Claim::new(
                 kind,

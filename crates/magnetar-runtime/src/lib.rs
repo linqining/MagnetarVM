@@ -14,6 +14,7 @@ pub mod gated_bundle;
 pub mod gated_recursion;
 pub mod gated_register;
 pub mod gated_shift;
+pub mod mul_row;
 pub mod packed_router;
 pub mod packed_select;
 pub mod packed_shout;

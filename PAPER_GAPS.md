@@ -2017,3 +2017,24 @@ the reconstructed P3 commitment, and evaluates the claim points. So this is a
 witness-checked, opening-free backend: proof size is small, but verification
 work is non-succinct and there is no zero-knowledge/hiding guarantee. A
 production succinct/hiding opening remains future work.
+
+
+### C: MUL row
+
+`mul_row::GatedMulRow` implements a schoolbook shift-add multiplier:
+
+- `width^2` partial products;
+- `width` shift-add rounds over a `2*width` accumulator;
+- full adders with explicit OR-majority carry;
+- output = low/high `width` bits.
+
+Test `mul_row_multiplies` covers `5*3=15`, `255*255=65025`, `0*7`, `17*13`.
+
+`GatedCpuRow` now has a fifth row kind:
+
+```text
+is_alu + is_mem + is_shift + is_branch + is_mul = 1
+```
+
+`mul_trace_proves_through_gated_dual` executes `lui x1,5; mul x2,x1,x1`
+and proves/verifies through the gated dual backend.
