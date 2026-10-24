@@ -3539,3 +3539,11 @@ component claims.
 gated `ReservationCpuRow` PC subsegment, and compares it bit-for-bit with the
 `PcTransitionRow` component witness. The PC projection is identity over the PC
 bit range. RamBits/RouterBits projections remain.
+
+
+### B5: RamBits data projection verified
+
+`ram_data_bits_match_twist_read_value` builds a load trace, extracts the gated
+memory `data` subsegment (accounting for `memory_offset`), and compares it
+bit-for-bit with the BinaryTwist `read_value` low bits. The memory data bits are
+the RAM value bits; address projection still needs the RAM-base affine offset.

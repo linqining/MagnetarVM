@@ -1519,8 +1519,66 @@ mod virtual_spec_tests {
 
 #[cfg(test)]
 mod projection_tests {
+    use crate::simd_f2::GatedCpuRowInput;
     use magnetar_executor::execute;
     use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+    #[test]
+    fn ram_data_bits_match_twist_read_value() {
+        let mut data = vec![0u8; 8];
+        data.copy_from_slice(&0x1122_3344_5566_7788u64.to_le_bytes());
+        let program = ProgramImage::new(
+            0x10,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x40,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Ld,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        )
+        .with_data(data);
+        let config = MachineConfig {
+            entry: 0x10,
+            rom_base: 0x10,
+            ram_base: 0x40,
+            ram_size: 0x40,
+            stack_top: 0x80,
+            max_cycles: 8,
+        };
+        let trace = execute(&program, config).unwrap();
+        let twist = magnetar_memory::BinaryTwistWitness::from_trace(&trace).unwrap();
+        let rows =
+            crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, 16).unwrap();
+        let cpu = crate::reservation_cpu_row::ReservationCpuRow::new(16);
+        let (pc, input) = rows
+            .iter()
+            .find(|(_, input)| matches!(input.cpu, GatedCpuRowInput::Memory { .. }))
+            .unwrap();
+        let gated_bits = cpu.witness(*pc, *input);
+        let twist_value = twist.read_value[0].value();
+        for bit in 0..16 {
+            assert_eq!(
+                gated_bits[cpu.cpu.memory_offset + cpu.cpu.memory.data[bit]],
+                ((twist_value >> bit) & 1) == 1,
+                "RAM data bit {bit} projection mismatch"
+            );
+        }
+    }
 
     #[test]
     fn pc_component_witness_matches_gated_pc_subsegment() {
