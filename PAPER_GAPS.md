@@ -4055,3 +4055,20 @@ despite a ~1 KB benchmark improvement; reverted. Relaxing table batching to
 allow tables with up to 64 rows raised mem-loop to 382,942 B and its proving
 time to ~98 s; reverted to the 8-row threshold. The aligned padded layout and
 the current batching policy remain the best measured configuration.
+
+
+### D9: Q is tied to the Shout-authenticated shift code
+
+The shift Router now carries six `shamt` bit columns and two `kind` bit columns.
+A new random-point linear opening checks:
+
+- `hQ_h = h * Q_h` for every one-hot slot,
+- `Σ h Q_h = Σ 2^b shamt_b`,
+- `shift_code = Σ 2^b shamt_b + 64 * Σ 2^j kind_j`.
+
+`shift_code` is already the Shout-linked bytecode selector, and the route
+coefficients now derive the shift kind/shamt from `Q`/kind bits instead of
+reading `shift_code` directly. The proof carries the linear-point evaluations
+and a tampered last value is rejected. Size cost: memory +2.0 KB, shifts +2.8 KB,
+mem-loop +6.4 KB; workloads without a Router are unchanged. Register-shift
+virtual expansion remains open.

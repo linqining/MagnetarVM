@@ -88,6 +88,8 @@ pub struct BinaryRouterWitness {
     pub offset_bits: Vec<Vec<F2_128>>,
     pub width_bits: Vec<Vec<F2_128>>,
     pub shift_code: Vec<F2_128>,
+    pub shift_shamt_bits: Vec<Vec<F2_128>>,
+    pub shift_kind_bits: Vec<Vec<F2_128>>,
     pub shift_q: Vec<Vec<F2_128>>,
     pub shift_hq: Vec<Vec<F2_128>>,
     pub is_shift: Vec<F2_128>,
@@ -243,6 +245,8 @@ impl BinaryRouterWitness {
         let mut offset_bits = vec![vec![F2_128::from(0u64); cycles]; 3];
         let mut width_bits = vec![vec![F2_128::from(0u64); cycles]; 4];
         let mut shift_code = vec![F2_128::from(0u64); cycles];
+        let mut shift_shamt_bits = vec![vec![F2_128::from(0u64); cycles]; 6];
+        let mut shift_kind_bits = vec![vec![F2_128::from(0u64); cycles]; 2];
         let mut shift_q = vec![vec![F2_128::from(0u64); cycles]; 64];
         let mut shift_hq = vec![vec![F2_128::from(0u64); cycles]; 64];
         let mut is_shift = vec![F2_128::from(0u64); cycles];
@@ -267,6 +271,20 @@ impl BinaryRouterWitness {
                 let shamt = code % 64;
                 shift_q[shamt][cycle] = F2_128::from(1u64);
                 shift_hq[shamt][cycle] = F2_128::from(shamt as u64);
+                for (bit, column) in shift_shamt_bits.iter_mut().enumerate() {
+                    column[cycle] = F2_128::from(((shamt >> bit) & 1) as u64);
+                }
+                let kind_bits = match routes[cycle] {
+                    RouterRoute::Shift(route) => match route.kind {
+                        ShiftKind::LogicalLeft => 0u64,
+                        ShiftKind::LogicalRight => 1,
+                        ShiftKind::ArithmeticRight => 2,
+                    },
+                    _ => 0,
+                };
+                for (bit, column) in shift_kind_bits.iter_mut().enumerate() {
+                    column[cycle] = F2_128::from((kind_bits >> bit) & 1);
+                }
             }
             is_shift[cycle] =
                 F2_128::from(u64::from(matches!(routes[cycle], RouterRoute::Shift(_))));
@@ -293,6 +311,8 @@ impl BinaryRouterWitness {
             offset_bits,
             width_bits,
             shift_code,
+            shift_shamt_bits,
+            shift_kind_bits,
             shift_q,
             shift_hq,
             is_shift,
@@ -309,6 +329,8 @@ impl BinaryRouterWitness {
         columns.push(self.is_store.clone());
         columns.extend(self.shift_q.clone());
         columns.extend(self.shift_hq.clone());
+        columns.extend(self.shift_shamt_bits.clone());
+        columns.extend(self.shift_kind_bits.clone());
         columns.push(self.shift_code.clone());
         for bit in 0..3 {
             columns.push(
@@ -378,6 +400,16 @@ impl BinaryRouterWitness {
                 .any(|column| column.len() != self.cycles)
             || self.shift_code.len() != self.cycles
             || self.shift_q.len() != 64
+            || self.shift_shamt_bits.len() != 6
+            || self.shift_kind_bits.len() != 2
+            || self
+                .shift_shamt_bits
+                .iter()
+                .any(|bits| bits.len() != self.cycles)
+            || self
+                .shift_kind_bits
+                .iter()
+                .any(|bits| bits.len() != self.cycles)
             || self
                 .shift_q
                 .iter()
@@ -402,14 +434,23 @@ impl BinaryRouterWitness {
             let is_shift = self.is_shift[cycle].value() == 1;
             let is_store = self.is_store[cycle].value() == 1;
             if is_shift {
-                let code = self.shift_code[cycle].value() as u64;
-                let kind = match code / 64 {
+                let shamt = (0..64)
+                    .find(|index| self.shift_q[*index][cycle].value() == 1)
+                    .unwrap_or(0) as u8;
+                let kind_bits = self
+                    .shift_kind_bits
+                    .iter()
+                    .enumerate()
+                    .fold(0u64, |value, (bit, column)| {
+                        value | ((column[cycle].value() as u64) << bit)
+                    });
+                let kind = match kind_bits {
                     0 => ShiftKind::LogicalLeft,
                     1 => ShiftKind::LogicalRight,
                     2 => ShiftKind::ArithmeticRight,
                     _ => continue,
                 };
-                let route = ShiftRoute::new(kind, (code % 64) as u8);
+                let route = ShiftRoute::new(kind, shamt);
                 for output_bit in 0..WORD_BITS {
                     if let BitSource::Input(input_bit) = route.source_bit(output_bit) {
                         coefficients[usize::from(input_bit)][cycle] = coefficients
@@ -501,6 +542,7 @@ pub struct BinaryRouterProof {
     pub hq_evals: Vec<F2_128>,
     pub q_claimed: F2_128,
     pub hq_claimed: F2_128,
+    pub shift_linear_values: Vec<F2_128>,
     pub cycle_bits: usize,
     pub cycles: usize,
 }
@@ -710,6 +752,37 @@ fn sumcheck_offset(
 }
 
 #[allow(clippy::needless_range_loop)]
+fn shift_linear_ok(values: &[F2_128]) -> bool {
+    if values.len() != 64 + 64 + 6 + 2 + 1 {
+        return false;
+    }
+    let q = &values[..64];
+    let hq = &values[64..128];
+    let shamt_bits = &values[128..134];
+    let kind_bits = &values[134..136];
+    let shift_code = values[136];
+    let mut selected = F2_128::from(0u64);
+    let mut shamt = F2_128::from(0u64);
+    let mut kind = F2_128::from(0u64);
+    for index in 0..64 {
+        if hq[index] != F2_128::from(index as u64) * q[index] {
+            return false;
+        }
+        selected = selected + F2_128::from(index as u64) * q[index];
+    }
+    for bit in 0..6 {
+        shamt = shamt + F2_128::from(1u64 << bit) * shamt_bits[bit];
+    }
+    for bit in 0..2 {
+        kind = kind + F2_128::from(1u64 << bit) * kind_bits[bit];
+    }
+    if selected != shamt {
+        return false;
+    }
+    shift_code == shamt + F2_128::from(64u64) * kind
+}
+
+#[allow(clippy::needless_range_loop)]
 pub(crate) fn prove_binary_router_claims(
     witness: &BinaryRouterWitness,
     commitment: &P3MosaicCommitment,
@@ -725,7 +798,7 @@ pub(crate) fn prove_binary_router_claims(
         .any(|column| column.iter().any(|value| value.value() == 1));
     let bit_columns = INPUT_BITS + 9 + 64;
     let hq_columns = bit_columns + 64;
-    let total_columns = hq_columns + 1 + PUBLIC_COLUMNS;
+    let total_columns = hq_columns + 8 + 1 + PUBLIC_COLUMNS;
 
     let mut transcript = Sha256Transcript::new("magnetar-binary-router-boolean");
     absorb_commitment(&mut transcript, commitment);
@@ -1155,7 +1228,7 @@ pub(crate) fn prove_binary_router_claims(
         P3MosaicPoint {
             table: table_index,
             point: shift_point.clone(),
-            columns: (hq_columns..hq_columns + 1).collect(),
+            columns: (hq_columns + 8..hq_columns + 9).collect(),
             next_columns: Vec::new(),
         },
         P3MosaicPoint {
@@ -1203,6 +1276,7 @@ pub(crate) fn prove_binary_router_claims(
             next_columns: Vec::new(),
         });
     }
+
     let mut values = vec![
         boolean.bit_evals.clone(),
         input_bit_evals.clone(),
@@ -1219,6 +1293,42 @@ pub(crate) fn prove_binary_router_claims(
         values.push(q_evals.clone());
         values.push(hq_evals.clone());
     }
+    let mut linear_transcript = Sha256Transcript::new("magnetar-binary-router-linear");
+    absorb_commitment(&mut linear_transcript, commitment);
+    linear_transcript.absorb("packed-binding", binding);
+    let linear_rho_j = sample_point(&mut linear_transcript, n);
+    let linear_columns = (INPUT_BITS + 9..hq_columns + 9).collect::<Vec<_>>();
+    let mut linear_values = Vec::with_capacity(linear_columns.len());
+    for column in INPUT_BITS + 9..bit_columns {
+        linear_values.push(fold_all(
+            &witness.shift_q[column - INPUT_BITS - 9],
+            &linear_rho_j,
+        ));
+    }
+    for column in bit_columns..hq_columns {
+        linear_values.push(fold_all(
+            &witness.shift_hq[column - bit_columns],
+            &linear_rho_j,
+        ));
+    }
+    for bit in 0..6 {
+        linear_values.push(fold_all(&witness.shift_shamt_bits[bit], &linear_rho_j));
+    }
+    for bit in 0..2 {
+        linear_values.push(fold_all(&witness.shift_kind_bits[bit], &linear_rho_j));
+    }
+    linear_values.push(fold_all(&witness.shift_code, &linear_rho_j));
+    points.push(P3MosaicPoint {
+        table: table_index,
+        point: if linear_rho_j.is_empty() {
+            vec![F2_128::from(0u64)]
+        } else {
+            linear_rho_j
+        },
+        columns: linear_columns,
+        next_columns: Vec::new(),
+    });
+    values.push(linear_values.clone());
     let q_claimed = if has_q {
         q_eq_claimed(witness, &_q_rho_j)
     } else {
@@ -1251,6 +1361,7 @@ pub(crate) fn prove_binary_router_claims(
             hq_evals,
             q_claimed,
             hq_claimed,
+            shift_linear_values: linear_values,
             cycle_bits: n,
             cycles,
         },
@@ -1349,7 +1460,7 @@ pub(crate) fn verify_binary_router_from_proof(
     let has_q = !proof.q_evals.is_empty();
     let bit_columns = INPUT_BITS + 9 + 64;
     let hq_columns = bit_columns + 64;
-    let total_columns = hq_columns + 1 + PUBLIC_COLUMNS;
+    let total_columns = hq_columns + 8 + 1 + PUBLIC_COLUMNS;
     let col_bits = bit_columns.next_power_of_two().trailing_zeros() as usize;
     if commitment.tables.len() <= table_index
         || commitment.tables[table_index].num_variables != n.max(1)
@@ -1594,7 +1705,7 @@ pub(crate) fn verify_binary_router_from_proof(
             } else {
                 shift_r_j.to_vec()
             },
-            columns: (hq_columns..hq_columns + 1).collect(),
+            columns: (hq_columns + 8..hq_columns + 9).collect(),
             next_columns: Vec::new(),
         },
         P3MosaicPoint {
@@ -1662,6 +1773,25 @@ pub(crate) fn verify_binary_router_from_proof(
         valid_evals.to_vec(),
     ];
     values.extend(extra_values);
+    let mut linear_transcript = Sha256Transcript::new("magnetar-binary-router-linear");
+    absorb_commitment(&mut linear_transcript, commitment);
+    linear_transcript.absorb("packed-binding", binding);
+    let linear_rho_j = sample_point(&mut linear_transcript, n);
+    if !shift_linear_ok(&proof.shift_linear_values) {
+        return Ok(None);
+    }
+    points.push(P3MosaicPoint {
+        table: table_index,
+        point: if linear_rho_j.is_empty() {
+            vec![F2_128::from(0u64)]
+        } else {
+            linear_rho_j
+        },
+        columns: (INPUT_BITS + 9..hq_columns + 9).collect(),
+        next_columns: Vec::new(),
+    });
+    values.push(proof.shift_linear_values.clone());
+
     Ok(Some((points, values)))
 }
 
@@ -1742,6 +1872,12 @@ mod tests {
 
         let mut tampered = proof.clone();
         tampered.rounds[0][0] = tampered.rounds[0][0] + F2_128::from(1u64);
+        assert!(!verify_binary_router(&witness, &tampered).unwrap());
+
+        let mut tampered = proof.clone();
+        if let Some(value) = tampered.shift_linear_values.last_mut() {
+            *value = *value + F2_128::from(1u64);
+        }
         assert!(!verify_binary_router(&witness, &tampered).unwrap());
 
         let mut tampered = proof.clone();
