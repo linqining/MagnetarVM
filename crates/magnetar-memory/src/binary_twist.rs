@@ -24,6 +24,7 @@ pub struct BinaryTwistWitness {
     pub read_value: Vec<F2_128>,
     pub write_value: Vec<F2_128>,
     pub final_value: Vec<F2_128>,
+    pub idle_word: Option<usize>,
 }
 
 impl BinaryTwistWitness {
@@ -128,6 +129,7 @@ impl BinaryTwistWitness {
             read_value,
             write_value,
             final_value: current,
+            idle_word: None,
         })
     }
 
@@ -271,6 +273,7 @@ impl BinaryTwistWitness {
             read_value,
             write_value,
             final_value: current,
+            idle_word: Some(idle_word),
         })
     }
 

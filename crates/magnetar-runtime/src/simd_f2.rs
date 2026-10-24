@@ -2897,6 +2897,7 @@ pub fn gated_memory_twist_witness(
         read_value,
         write_value,
         final_value: current,
+        idle_word: None,
     };
     witness
         .validate()

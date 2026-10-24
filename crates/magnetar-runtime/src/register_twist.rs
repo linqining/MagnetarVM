@@ -77,6 +77,7 @@ pub fn register_twist_witness(trace: &Trace) -> Result<BinaryTwistWitness, Proof
         read_value,
         write_value,
         final_value: registers.iter().map(|word| F2_128::from(*word)).collect(),
+        idle_word: None,
     };
     witness
         .validate()

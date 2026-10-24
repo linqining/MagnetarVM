@@ -2011,6 +2011,88 @@ mod projection_tests {
     }
 
     #[test]
+    fn aggregate_ram_address_claim_matches_component_bit_columns() {
+        use magnetar_proof::{eq, Mle};
+        let mut data = vec![0u8; 8];
+        data.copy_from_slice(&0x7788u64.to_le_bytes());
+        let program = ProgramImage::new(
+            0x10,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x40,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Ld,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        )
+        .with_data(data);
+        let config = MachineConfig {
+            entry: 0x10,
+            rom_base: 0x10,
+            ram_base: 0x40,
+            ram_size: 0x40,
+            stack_top: 0x80,
+            max_cycles: 8,
+        };
+        let trace = execute(&program, config).unwrap();
+        let width = 16usize;
+        let rows = crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, width)
+            .unwrap();
+        let cycles = rows.len();
+        let (_, _, layout) = reservation_claim_matrices(width, cycles).unwrap();
+        let base_cols = layout.total_bits / cycles;
+        let (z, _, _, _) = reservation_claim_inputs(width, &rows).unwrap();
+        let cpu = crate::reservation_cpu_row::ReservationCpuRow::new(width);
+        let mut aggregate = Vec::with_capacity(cycles * width);
+        for cycle in 0..cycles {
+            for bit in 0..width {
+                let index =
+                    cycle * base_cols + cpu.cpu.memory_offset + cpu.cpu.memory.adder.out[bit];
+                aggregate.push(z[index]);
+            }
+        }
+        let bit_bits = width.trailing_zeros() as usize;
+        let cycle_bits = cycles.trailing_zeros() as usize;
+        let bit_point = (0..bit_bits)
+            .map(|bit| F2_128::from((bit * 5 + 1) as u64))
+            .collect::<Vec<_>>();
+        let cycle_point = (0..cycle_bits)
+            .map(|bit| F2_128::from((bit * 7 + 3) as u64))
+            .collect::<Vec<_>>();
+        let mut point = bit_point.clone();
+        point.extend(cycle_point.iter().copied());
+        let aggregate_eval = Mle::new(aggregate).unwrap().eval(&point).unwrap();
+        let full = magnetar_memory::BinaryTwistWitness::from_trace_full_cycles(&trace).unwrap();
+        let tables = crate::binary_twist::batch_tables(&full).unwrap();
+        let mut component_eval = F2_128::from(0u64);
+        for bit in 0..tables.address_bits {
+            let value = Mle::new(tables.read_address_bits[bit].columns[0].clone())
+                .unwrap()
+                .eval(&cycle_point)
+                .unwrap();
+            let bits = (0..bit_bits)
+                .map(|index| F2_128::from(((bit >> index) & 1) as u64))
+                .collect::<Vec<_>>();
+            component_eval = component_eval + eq(&bit_point, &bits) * value;
+        }
+        assert_eq!(aggregate_eval, component_eval);
+    }
+
+    #[test]
     fn ram_data_bits_match_twist_read_value() {
         let mut data = vec![0u8; 8];
         data.copy_from_slice(&0x1122_3344_5566_7788u64.to_le_bytes());

@@ -87,6 +87,7 @@ pub fn gated_register_twist_witness(
         read_value,
         write_value,
         final_value: registers.iter().map(|word| F2_128::from(*word)).collect(),
+        idle_word: None,
     };
     witness
         .validate()

@@ -871,8 +871,10 @@ pub(crate) fn batch_tables(witness: &BinaryTwistWitness) -> Result<BatchTables, 
             read_value_bits[bit][cycle] = F2_128::from((value >> bit) & 1);
         }
         if let Some(cell) = one_hot_address(&witness.read_address[cycle]) {
-            for bit in 0..address_bits {
-                read_address_bits[bit][cycle] = F2_128::from(((cell >> bit) & 1) as u64);
+            if witness.idle_word != Some(cell) {
+                for bit in 0..address_bits {
+                    read_address_bits[bit][cycle] = F2_128::from(((cell >> bit) & 1) as u64);
+                }
             }
         }
     }

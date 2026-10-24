@@ -3632,4 +3632,7 @@ with the gather layout.
 (per-bit columns over cycles). `aggregate_ram_claim_matches_component_bit_columns`
 checks the aggregate `memory_data` segment evaluation against the weighted sum of
 component bit-column evaluations at the cycle point; they match. This is the
-claim-replacement equation for RAM data.
+claim-replacement equation for RAM data. `aggregate_ram_address_claim_matches_component_bit_columns`
+does the same for `memory_addr`; the full-cycle witness records its `idle_word`
+and `read_address_bits` zero the idle address, so the gated idle-zero address
+projection matches.
