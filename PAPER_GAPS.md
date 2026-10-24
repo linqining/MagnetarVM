@@ -3295,3 +3295,10 @@ so the opening is a Merkle path and the claimed value is the selected bit.
 This is a genuine native-F2 opening (not the F2^128 embedding) for F2
 challenges. Extension-field sumcheck challenges still need a lift/sumcheck layer;
 that is the next B3 step. The prototype is tested for round-trip and tamper.
+
+
+The vendored Ligerito implementation only supports `BinaryElem32`/`BinaryElem128`
+coefficient and challenge fields and is an index-opening PCS, not an MLE
+point-evaluation PCS. It cannot directly open the native F2 Merkle commitment at
+an F2^128 sumcheck point. B3's extension-point opening therefore needs a new
+native-F2 PCS (FRI/Ligerito over F2) or a different challenge strategy.
