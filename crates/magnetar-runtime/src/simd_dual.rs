@@ -2211,6 +2211,54 @@ mod virtual_spec_tests {
     }
 
     #[test]
+    fn grouped_lockstep_supports_four_cycles_per_instance() {
+        use magnetar_pcs::P3BinaryPcs;
+        use magnetar_proof::{prove_lockstep_bits, verify_lockstep_bits, DirectBitPcs};
+        let width = 8usize;
+        let mut rom = (1..=8)
+            .map(|index| {
+                magnetar_spec::Instruction {
+                    op: magnetar_spec::Op::Addi,
+                    rd: (index % 8) as u8,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: index,
+                    shamt: 0,
+                }
+                .encode()
+            })
+            .collect::<Vec<_>>();
+        rom.push(magnetar_spec::Instruction::new(magnetar_spec::Op::Ecall).encode());
+        let program = magnetar_spec::ProgramImage::new(0x10, rom);
+        let trace = magnetar_executor::execute(
+            &program,
+            magnetar_spec::MachineConfig {
+                entry: 0x10,
+                rom_base: 0x10,
+                ram_base: 0x1000_0000,
+                ram_size: 0x1000,
+                stack_top: 0x1000_1000,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let rows = crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, width)
+            .unwrap();
+        let (z, a0, a1, layout) = super::reservation_grouped_lockstep(width, &rows, 4).unwrap();
+        assert_eq!(z.len(), layout.total_bits);
+        let bits = z.iter().map(|value| value.value() == 1).collect::<Vec<_>>();
+        let backend = DirectBitPcs::new(P3BinaryPcs::new(100));
+        let proof = prove_lockstep_bits(
+            &bits, &a0[0], &a0[1], &a0[2], &a1[0], &a1[1], &a1[2], &layout, &backend,
+        )
+        .unwrap();
+        verify_lockstep_bits(
+            &a0[0], &a0[1], &a0[2], &a1[0], &a1[1], &a1[2], &layout, &proof, &backend,
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn reservation_specs_cover_each_gated_instance() {
         let width = 8usize;
         let rows = crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(

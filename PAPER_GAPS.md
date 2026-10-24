@@ -3933,3 +3933,8 @@ shared-matrix relations (inter-instance boundary rows included), and a
 per-instance `WitnessLayout`. `grouped_lockstep_layout_round_trips` commits that
 layout and runs `prove_lockstep_bits`/`verify_lockstep_bits` end to end. The
 grouping is not yet selected by the unified runtime path.
+
+
+`grouped_lockstep_supports_four_cycles_per_instance` runs the same grouped
+lockstep path with group=4 over an eight-cycle trace, checking the helper is not
+specific to pair grouping.
