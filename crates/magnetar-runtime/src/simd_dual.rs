@@ -1555,6 +1555,77 @@ mod virtual_spec_tests {
         execute(&program, config()).unwrap()
     }
 
+    fn shift_trace() -> magnetar_spec::Trace {
+        let program = ProgramImage::new(
+            0x10,
+            vec![
+                Instruction {
+                    op: Op::Slli,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 5,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        execute(&program, config()).unwrap()
+    }
+
+    #[test]
+    fn shift_subsegment_is_filled_from_router() {
+        let width = 16usize;
+        let trace = shift_trace();
+        let rows = crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, width)
+            .unwrap();
+        let cycles = rows.len();
+        let (_, _, layout) = reservation_claim_matrices(width, cycles).unwrap();
+        let base_cols = layout.total_bits / cycles;
+        let specs = reservation_virtual_specs(width, cycles, base_cols);
+        let padded = crate::build_padded_virtual_layout(&specs).unwrap();
+        let (z, _, _, _) = reservation_claim_inputs(width, &rows).unwrap();
+        let cpu = crate::reservation_cpu_row::ReservationCpuRow::new(width);
+        let router = crate::binary_router::BinaryRouterWitness::from_trace_mode(
+            &trace,
+            crate::binary_router::RouterMode::Shifts,
+        )
+        .unwrap();
+        let mut virtual_values = vec![F2_128::from(0u64); padded.layout.total_bits];
+        for spec in &specs {
+            let map = padded
+                .mapping
+                .iter()
+                .find(|map| map.original_offset == spec.offset && map.len == spec.len)
+                .unwrap();
+            virtual_values[map.padded_offset..map.padded_offset + spec.len]
+                .copy_from_slice(&z[spec.offset..spec.offset + spec.len]);
+            if spec.name.starts_with("shift") {
+                let cycle = spec
+                    .name
+                    .strip_prefix("shift")
+                    .and_then(|suffix| suffix.parse::<usize>().ok())
+                    .unwrap();
+                if !matches!(
+                    rows[cycle].1.cpu,
+                    crate::simd_f2::GatedCpuRowInput::Shift { .. }
+                ) {
+                    continue;
+                }
+                virtual_values[map.padded_offset + cpu.cpu.shift.is_shift] = router.is_shift[cycle];
+                let shamt = (0..64)
+                    .find(|value| router.shift_q[*value][cycle].value() == 1)
+                    .unwrap_or(0);
+                for bit in 0..4 {
+                    virtual_values[map.padded_offset + cpu.cpu.shift.sll.shamt[bit]] =
+                        F2_128::from(((shamt as u64) >> bit) & 1);
+                }
+            }
+        }
+        assert_eq!(padded.unpad_values(&virtual_values), z);
+    }
+
     #[test]
     fn reservation_specs_cover_each_gated_instance() {
         let width = 8usize;

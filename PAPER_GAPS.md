@@ -3575,4 +3575,4 @@ equals z. Other owners are still copied from z.
 fills the gated memory `data` and `adder.out` bits from the BinaryTwist
 `read_value`/`read_address` (affine `ram_base + 8*word`). Both then pad the
 virtual witness and unpad back to the original CPU z; the reconstruction equals
-z. This is component-driven z reconstruction for PC and RAM; Router fill is next.
+z. `shift_subsegment_is_filled_from_router` fills the gated `is_shift` and shamt bits from the Router `is_shift`/`shift_q` columns. PC, RAM and Router owners now all have component-driven virtual segment fill that reconstructs CPU z.
