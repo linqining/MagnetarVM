@@ -823,7 +823,16 @@ pub fn verify_gated_dual_batch_bits<B: magnetar_proof::BitPcs>(
     use magnetar_proof::verify_lockstep_bits;
 
     let row = GatedCpuRow::new(width);
-    let (_base_cols, s1, s2) = gated_shared_matrices(&row, rows.len(), None)?;
+    let (base_cols, s1, s2) = gated_shared_matrices(&row, rows.len(), None)?;
+    let bits = gated_batch_bits(&row, base_cols, rows);
+    let expected = backend
+        .commit(&bits)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if backend.commitment_bytes(&expected) != backend.commitment_bytes(&proof.commitment) {
+        return Err(RuntimeError::Proof(
+            "gated batch witness does not match the proof commitment".into(),
+        ));
+    }
     verify_lockstep_bits(
         &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], layout, proof, backend,
     )
@@ -869,8 +878,17 @@ pub fn verify_gated_dual_batch_bits_with_pc<B: magnetar_proof::BitPcs>(
     use magnetar_proof::verify_lockstep_bits;
 
     let row = GatedCpuRow::new(width);
-    let (_base_cols, s1, s2) =
+    let (base_cols, s1, s2) =
         gated_shared_matrices(&row, rows.len(), Some((initial_pc, final_pc)))?;
+    let bits = gated_batch_bits(&row, base_cols, rows);
+    let expected = backend
+        .commit(&bits)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if backend.commitment_bytes(&expected) != backend.commitment_bytes(&proof.commitment) {
+        return Err(RuntimeError::Proof(
+            "gated batch witness does not match the proof commitment".into(),
+        ));
+    }
     verify_lockstep_bits(
         &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], layout, proof, backend,
     )

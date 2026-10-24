@@ -236,6 +236,15 @@ mod tests {
     }
 
     #[test]
+    fn gated_bundle_rejects_tampered_pc() {
+        let rows = rows();
+        let bundle = prove_gated_bundle(8, &rows).unwrap();
+        let mut bad = rows.clone();
+        bad[0].0 = bad[0].0.wrapping_add(4);
+        assert!(verify_gated_bundle(8, &bad, &bundle).is_err());
+    }
+
+    #[test]
     fn gated_bundle_runs_with_native_f2_backend() {
         use magnetar_pcs::f2::NativeF2BitPcs;
         let rows = rows();

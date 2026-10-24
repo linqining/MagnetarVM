@@ -3383,3 +3383,17 @@ same 8-bit two-row bundle (about 11x). The native path is therefore kept as the
 B3 reference backend, not the default unified CPU backend. Reducing this needs a
 smaller codeword/sampling strategy or a native Ligero-like PCS with succinct
 linear tests.
+
+
+### C3/C4 soundness: gated batch verifier now binds rows
+
+`verify_gated_dual_batch_bits` and `_with_pc` previously rebuilt the shared
+matrices from `rows` but did not bind the witness to those rows. They now
+recompute `gated_batch_bits`, commit them with the same backend, and compare the
+commitment bytes with the proof before running the lockstep verifier. A test
+that changes the PC of a row is now rejected (`gated_bundle_rejects_tampered_pc`).
+
+The gated CPU row already constrains `next_pc` (sequential PC+4, jump/branch
+targets) and the shared matrices chain `next_pc(instance)` to
+`pc(instance+1)`, so PC linkage is inside the proof for this path. The
+reservation relation is included in `ReservationCpuRow` on the shared-CPU path.
