@@ -3881,3 +3881,8 @@ The suite now also runs a branchy program (Beq/Bne loops, 19 rows, 115,367 B
 at width 16). All five workloads prove and verify. A backward-branch Fibonacci
 variant was dropped from the probe because its hand-written immediate pointed at
 the wrong byte offset (cycle limit), not because of a proof failure.
+
+
+The suite now includes a backward-branch countdown loop (8 rows, 97,639 B at
+width 16) and a branchy Beq/Bne workload (19 rows, 115,367 B). All six
+workloads prove and verify.

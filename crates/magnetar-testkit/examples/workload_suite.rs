@@ -110,6 +110,19 @@ fn workloads() -> Vec<(&'static str, ProgramImage)> {
         }
         .encode(),
     ]);
+    let loop_workload = program(vec![
+        addi(1, 0, 3),
+        addi(1, 1, -1),
+        Instruction {
+            op: Op::Bne,
+            rd: 0,
+            rs1: 1,
+            rs2: 0,
+            imm: -4,
+            shamt: 0,
+        }
+        .encode(),
+    ]);
     let branchy = program(vec![
         addi(1, 0, 5),
         addi(2, 0, 0),
@@ -154,6 +167,7 @@ fn workloads() -> Vec<(&'static str, ProgramImage)> {
         ("memory", memory),
         ("shifts", shifts),
         ("branchy", branchy),
+        ("loop", loop_workload),
         ("alu", alu),
     ]
 }
