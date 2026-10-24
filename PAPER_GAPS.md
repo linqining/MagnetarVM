@@ -2855,3 +2855,29 @@ versus the paper's single-cycle p=2 layout, not a soundness gap.
 odd-subcycle write. Standalone `prove/verify_binary_twist_ram` now commits/checks
 all five tables and sorts points by table. Tamper test now mutates the proof eval
 (not the witness), matching the proof-only verifier.
+
+
+### Current P0 status after A2/D2/packed Shout
+
+```text
+A2  core verifier proof-only, value-free shape
+    verify_core_proof(proof), no trace/statement
+    remaining: shape still one row per cycle
+
+D2  two-phase register encoding documented/tested
+    single-cycle p=2 layout still not implemented
+
+D7  packed Shout witness-blind and used by UnifiedTraceProof
+    reference Shout table removed
+
+E1  PackedMosaic aligned subcubes implemented
+E2  lift implemented and tested
+E3  batch_claims implemented and tested
+E4  RingSwitchPackedBitPcs implemented and tested as a backend
+    none of E1-E4 is yet the default unified opening
+    a one-point batched opening prototype was only ~2% smaller
+
+B1-B3 shared-matrix SIMD / native F2 dual relation still absent
+D9/D10 bytecode/Shout-authenticated selectors, Router Q/Inc routing still partial
+C1/C3/C4 bytecode/micro-PC/PC/reservation still trace/statement checked
+```
