@@ -236,6 +236,17 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow native F2 Ligero proof; run explicitly"]
+    fn gated_bundle_runs_with_native_f2_backend() {
+        use magnetar_pcs::f2::NativeF2BitPcs;
+        let rows = rows();
+        let backend = NativeF2BitPcs { samples: 16 };
+        let bundle = prove_gated_bundle_with_backend(8, &rows, &backend).unwrap();
+        assert!(bundle.ram.is_some());
+        verify_gated_bundle_with_backend(8, &rows, &bundle, &backend).unwrap();
+    }
+
+    #[test]
     fn gated_bundle_runs_with_ring_switch_backend() {
         let rows = rows();
         let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());

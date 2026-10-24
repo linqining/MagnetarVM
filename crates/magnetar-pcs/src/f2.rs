@@ -4,7 +4,7 @@
 //! binary-field PCS over `F2_128` and embeds each bit as `0` or `1`.
 
 use magnetar_constraint::{Field, F2, F2_128};
-use magnetar_proof::{Pcs, ProofError};
+use magnetar_proof::{BitPcs, Mle, Pcs, ProofError};
 
 use crate::p3_pcs::{P3BinaryPcs, P3Commitment, P3Opening};
 
@@ -760,6 +760,50 @@ impl NativeF2BitPcs {
                 _ => Err(ProofError::Pcs("native F2 PCS expects bit values".into())),
             })
             .collect()
+    }
+}
+
+impl BitPcs for NativeF2BitPcs {
+    type Commitment = NativeF2LigeroCommitment;
+    type Opening = NativeF2LigeroOpening;
+
+    fn commit(&self, bits: &[bool]) -> Result<Self::Commitment, ProofError> {
+        let values = bits
+            .iter()
+            .map(|bit| F2::from_u64(u64::from(*bit)))
+            .collect::<Vec<_>>();
+        self.params(values.len()).commit(&values)
+    }
+
+    fn open(&self, bits: &[bool], point: &[F2_128]) -> Result<(F2_128, Self::Opening), ProofError> {
+        let values = bits
+            .iter()
+            .map(|bit| F2::from_u64(u64::from(*bit)))
+            .collect::<Vec<_>>();
+        let pcs = self.params(values.len());
+        let opening = pcs.open(&values, point)?;
+        let value = Mle::new(
+            values
+                .iter()
+                .map(|value| F2_128::from(u64::from(value.value())))
+                .collect(),
+        )?
+        .eval(point)?;
+        Ok((value, opening))
+    }
+
+    fn verify(
+        &self,
+        commitment: &Self::Commitment,
+        point: &[F2_128],
+        value: F2_128,
+        opening: &Self::Opening,
+    ) -> Result<bool, ProofError> {
+        <Self as Pcs>::verify(self, commitment, point, value, opening)
+    }
+
+    fn commitment_bytes(&self, commitment: &Self::Commitment) -> Vec<u8> {
+        bincode::serialize(commitment).unwrap_or_default()
     }
 }
 

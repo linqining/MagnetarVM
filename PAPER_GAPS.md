@@ -3353,3 +3353,14 @@ with the existing `prove_spartan`/`verify_spartan` reduction, but with native-F2
 commitments/openings instead of the `F2^128` embedding. The XOR relation test
 passes. Remaining B3 work: shared Virtual Spartan lockstep/inner sum-check with
 the packed relation and CPU integration.
+
+
+### Virtual Spartan lockstep with the native F2 backend
+
+`NativeF2BitPcs` now implements `BitPcs`, so the existing lockstep reduction
+(`prove_lockstep_claims_bits`: shared outer product over both relations, one
+shared inner sum-check, one commitment/opening) runs with a native-F2 witness
+commitment instead of the packed `F2^128` backend. The gated CPU bundle proves
+and verifies with `NativeF2BitPcs` (test marked ignored because the prototype
+Ligero opening takes ~205 s in debug). This is the lockstep integration point;
+the unified CPU path still uses `RingSwitchPackedBitPcs`.
