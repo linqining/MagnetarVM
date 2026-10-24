@@ -373,17 +373,23 @@ impl BinaryLigeroLinearProof {
                 return Ok(false);
             }
             let mut combined = F2_128::from(0u64);
-            for row in 0..self.rows {
-                if sample.paths[row].value != sample.values[row] {
+            for (row, ((value, path), weight)) in sample
+                .values
+                .iter()
+                .zip(&sample.paths)
+                .zip(lambda)
+                .enumerate()
+            {
+                if path.value != *value {
                     return Ok(false);
                 }
                 let index = row * self.columns + sample.column;
                 let point = ligero_index_point(index, index_bits);
-                if !pcs.verify(commitment, &point, &sample.paths[row])? {
+                if !pcs.verify(commitment, &point, path)? {
                     return Ok(false);
                 }
-                if sample.values[row].value() == 1 {
-                    combined = combined + lambda[row];
+                if value.value() == 1 {
+                    combined = combined + *weight;
                 }
             }
             if combined != self.combination[sample.column] {
@@ -568,8 +574,8 @@ impl BinaryLigeroCodedProof {
         }
         let message = self.codeword[..self.message_columns].to_vec();
         let parity = self.codeword[self.message_columns..].to_vec();
-        for row in 0..self.parity_columns {
-            if code.parity_ext(row, &message) != parity[row] {
+        for (row, parity_value) in parity.iter().enumerate() {
+            if code.parity_ext(row, &message) != *parity_value {
                 return Ok(false);
             }
         }
@@ -594,17 +600,23 @@ impl BinaryLigeroCodedProof {
                 return Ok(false);
             }
             let mut combined = F2_128::from(0u64);
-            for row in 0..self.rows {
-                if sample.paths[row].value != sample.values[row] {
+            for (row, ((value, path), weight)) in sample
+                .values
+                .iter()
+                .zip(&sample.paths)
+                .zip(lambda)
+                .enumerate()
+            {
+                if path.value != *value {
                     return Ok(false);
                 }
                 let index = row * codeword_columns + sample.column;
                 let point = ligero_index_point(index, index_bits);
-                if !pcs.verify(commitment, &point, &sample.paths[row])? {
+                if !pcs.verify(commitment, &point, path)? {
                     return Ok(false);
                 }
-                if sample.values[row].value() == 1 {
-                    combined = combined + lambda[row];
+                if value.value() == 1 {
+                    combined = combined + *weight;
                 }
             }
             if combined != self.codeword[sample.column] {
@@ -938,14 +950,6 @@ mod tests {
         let samples = BinaryLigeroLinearProof::sample_columns(&commitment, &lambda, columns, 3);
         let proof =
             BinaryLigeroLinearProof::prove(&message, rows, columns, &lambda, &samples).unwrap();
-        let claimed = (0..rows).fold(F2_128::from(0u64), |sum, row| {
-            if message[row * columns + 0].value() == 1 {
-                sum + lambda[row]
-            } else {
-                sum
-            }
-        });
-        let _ = claimed;
         assert!(proof.verify(&commitment, &lambda, proof.value()).unwrap());
         let mut bad = proof.clone();
         bad.combination[0] = bad.combination[0] + F2_128::from(1u64);
