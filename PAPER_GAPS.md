@@ -3769,3 +3769,15 @@ component P3 commitment/opening is gone.
 Benchmark: 188,616 -> 151,415 B; gated 108,349 -> 70,716 B. Load-only RAM
 data/address replacements are covered by the shared opening and the tamper test
 still rejects altered replacements. Store data replacement remains skipped.
+
+
+### B5: store data and byte addresses
+
+`gated_component_columns` now derives the component columns directly from the
+gated row inputs: data = `access.value` for stores and `row.rd_val` for loads,
+address = `access.addr` (byte address, lane included), zero on non-memory rows.
+This matches the gated `memory.data`/`adder.out` bits exactly for both loads and
+stores, so `memory_data` replacement is no longer skipped. The column is a
+committed gated-memory component table (for stores it represents the store
+source, not RAM `read_value`); routing that value to the register component is a
+later paper-fidelity step.

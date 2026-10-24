@@ -1179,30 +1179,23 @@ fn gated_component_columns(
     width: usize,
     cycles: usize,
 ) -> Result<(Vec<F2_128>, Vec<F2_128>), RuntimeError> {
-    let full = magnetar_memory::BinaryTwistWitness::from_trace_full_cycles(trace)
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    if full.cycles != cycles {
-        return Err(RuntimeError::Proof(
-            "full-cycle RAM witness does not match gated cycles".into(),
-        ));
-    }
     let mut data = vec![F2_128::from(0u64); cycles * width];
     let mut address = vec![F2_128::from(0u64); cycles * width];
     for cycle in 0..cycles {
-        let value = full.read_value[cycle].value();
+        let Some(row) = trace.rows.get(cycle) else {
+            continue;
+        };
+        let Some(access) = row.mem else {
+            continue;
+        };
+        let value = if access.is_write {
+            access.value
+        } else {
+            row.rd_val
+        };
         for bit in 0..width {
             data[cycle * width + bit] = F2_128::from((value >> bit) & 1);
-        }
-        if let Some(cell) = full.read_address[cycle]
-            .iter()
-            .position(|bit| bit.value() == 1)
-        {
-            if full.idle_word != Some(cell) {
-                let byte_address = trace.config.ram_base + 8 * cell as u64;
-                for bit in 0..width {
-                    address[cycle * width + bit] = F2_128::from((byte_address >> bit) & 1);
-                }
-            }
+            address[cycle * width + bit] = F2_128::from((access.addr >> bit) & 1);
         }
     }
     Ok((data, address))
@@ -1216,40 +1209,11 @@ fn gated_component_claims(
     layout: &magnetar_constraint::WitnessLayout,
     ry: &[F2_128],
 ) -> Result<(Vec<Option<F2_128>>, Vec<(usize, usize)>), RuntimeError> {
-    let full = magnetar_memory::BinaryTwistWitness::from_trace_full_cycles(trace)
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    if full.cycles != cycles {
-        return Err(RuntimeError::Proof(
-            "full-cycle RAM witness does not match gated cycles".into(),
-        ));
-    }
-    let mut data = vec![F2_128::from(0u64); cycles * width];
-    let mut address = vec![F2_128::from(0u64); cycles * width];
-    for cycle in 0..cycles {
-        let value = full.read_value[cycle].value();
-        for bit in 0..width {
-            data[cycle * width + bit] = F2_128::from((value >> bit) & 1);
-        }
-        if let Some(cell) = full.read_address[cycle]
-            .iter()
-            .position(|bit| bit.value() == 1)
-        {
-            if full.idle_word != Some(cell) {
-                let byte_address = trace.config.ram_base + 8 * cell as u64;
-                for bit in 0..width {
-                    address[cycle * width + bit] = F2_128::from((byte_address >> bit) & 1);
-                }
-            }
-        }
-    }
+    let (data, address) = gated_component_columns(trace, width, cycles)?;
     let data_mle =
         magnetar_proof::Mle::new(data).map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let address_mle = magnetar_proof::Mle::new(address)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    let has_store = trace
-        .rows
-        .iter()
-        .any(|row| row.mem.is_some_and(|access| access.is_write));
     let mut replacements = vec![None; layout.segments.len()];
     let mut columns = Vec::new();
     for (index, segment) in layout.segments.iter().enumerate() {
@@ -1267,9 +1231,6 @@ fn gated_component_claims(
             address_mle.eval(point)
         }
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        if segment.name == "memory_data" && has_store {
-            continue;
-        }
         let column = if segment.name == "memory_data" { 0 } else { 1 };
         columns.push((column, bits));
         replacements[index] = Some(component);
