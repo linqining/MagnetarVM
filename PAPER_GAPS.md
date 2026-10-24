@@ -3118,3 +3118,15 @@ be packed into the Shout bit table) rather than get its own.
 Also fixed `packed_router::groups`: the q/hq group point indices were not updated
 after the Router public-route values were appended; they are now 10/11 and
 gated_aux passes again.
+
+
+### Negative result: appending per-cycle Shout metadata columns
+
+Tried appending the 12 per-cycle `read_value` metadata columns to
+`BinaryShoutWitness::table()` and extending the read-point values/leaves. The
+packed Shout leaf batch disagreed with the packed table value
+(leaves=18, col_bits=5) because the packed bit layout pads the column dimension
+to a power of two and the row/column point layout is derived from that padded
+shape, so the simple column append does not preserve the packed-point layout.
+Reverted. A correct integration must pack the metadata region with the same
+column padding used by `table_bits`, or use a region suffix in the row point.
