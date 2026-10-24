@@ -269,6 +269,7 @@ pub struct BinaryShoutProof {
     pub valid_eval: F2_128,
     pub column_evals: Vec<F2_128>,
     pub link_evals: Vec<F2_128>,
+    pub link_point: Vec<F2_128>,
 }
 
 fn eq_at_index(point: &[F2_128], index: usize) -> F2_128 {
@@ -616,6 +617,7 @@ pub(crate) fn prove_binary_shout_claims(
             valid_eval,
             column_evals,
             link_evals,
+            link_point: r_j.to_vec(),
         },
         points,
         values,

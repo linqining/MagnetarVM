@@ -3208,3 +3208,25 @@ Remaining D10 step: comparing Shout `link_evals` with Router evals at two
 different random points is not sound (equal evaluations at different points do
 not imply equal vectors). The link still needs a **common-point bridge** or a
 sumcheck equality, now possible because the cycle domains align.
+
+
+### D10: Router-Shout link at the Shout read point
+
+With Router now full-cycle, the common point is the Shout read point. The
+prover generates packed Shout before the opening, then adds Router public points
+at the Shout read point:
+
+```text
+shift Router:  shift_code column  <- Σ 2^i Shout link[4+i]
+store Router:  width one-hot[4]   <- Shout link[0..4]
+```
+
+Both points go into the same shared Mosaic opening. The core statement and the
+unified context append the same points before verifying the opening. This makes
+the opening the equality proof (same table, same point, same columns).
+
+Also fixed: `verify_unified_trace` now actually verifies the shared Mosaic
+opening; previously the context only accumulated points.
+
+All targeted unified/AMO/aux/gated/Router tests pass. Benchmark: 124,568 B
+(+40 B).

@@ -2224,6 +2224,56 @@ pub fn prove_unified_revealed(
     Ok(proof)
 }
 
+pub(crate) fn shout_router_link_claims(
+    commitment: &P3MosaicCommitment,
+    shift_index: Option<usize>,
+    store_index: Option<usize>,
+    packed: &crate::packed_shout::PackedShoutProof,
+) -> Result<Vec<(magnetar_pcs::P3MosaicPoint, Vec<F2_128>)>, RuntimeError> {
+    let link = &packed.claims.link_evals;
+    if link.len() != 12 {
+        return Err(RuntimeError::Proof("missing Shout link evals".into()));
+    }
+    let width = link[..4].to_vec();
+    let mut code = F2_128::from(0u64);
+    for (bit, value) in link[4..].iter().enumerate() {
+        if value.value() == 1 {
+            code = code + F2_128::from(1u128 << bit);
+        }
+    }
+    let point = packed.claims.link_point.clone();
+    let mut out = Vec::new();
+    if let Some(index) = shift_index {
+        let total = commitment.tables[index].num_columns;
+        if total >= 10 {
+            out.push((
+                magnetar_pcs::P3MosaicPoint {
+                    table: index,
+                    point: point.clone(),
+                    columns: vec![total - 3],
+                    next_columns: Vec::new(),
+                },
+                vec![code],
+            ));
+        }
+    }
+    if let Some(index) = store_index {
+        let total = commitment.tables[index].num_columns;
+        if total >= 10 {
+            out.push((
+                magnetar_pcs::P3MosaicPoint {
+                    table: index,
+                    point,
+                    columns: (total - 7..total - 3).collect(),
+                    next_columns: Vec::new(),
+                },
+                width,
+            ));
+        }
+    }
+    Ok(out)
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CpuStatement {
     pub width: usize,
@@ -2297,15 +2347,22 @@ pub fn verify_core_statement(
             values.extend(aux_values);
         }
     }
-    for point in &points {
-        eprintln!("core point table {} cols {:?}", point.table, point.columns);
-    }
     for (point, value) in &proof.trace_claims {
         points.push(point.clone());
         values.push(value.clone());
     }
     if let Some(packed) = &proof.packed_shout {
         crate::packed_shout::verify_packed_shout(packed)?;
+        let links = crate::shout_router_link_claims(
+            &proof.commitment,
+            proof.shift_router_index,
+            proof.store_router_index,
+            packed,
+        )?;
+        for (point, link_values) in links {
+            points.push(point);
+            values.push(link_values);
+        }
     }
     let mut pairs = points.into_iter().zip(values).collect::<Vec<_>>();
     pairs.sort_by_key(|(point, _)| point.table);

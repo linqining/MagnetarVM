@@ -1160,6 +1160,7 @@ pub(crate) struct UnifiedProveContext<'a> {
     gated_input: Option<crate::GatedProveInput>,
     gated_claims: Option<crate::GatedCpuClaims>,
     gated_ry: Option<Vec<F2_128>>,
+    packed_shout: Option<crate::packed_shout::PackedShoutProof>,
     opening: Option<magnetar_pcs::P3MosaicOpening>,
 }
 
@@ -1294,6 +1295,7 @@ impl<'a> UnifiedProveContext<'a> {
             gated_input,
             gated_claims: None,
             gated_ry: None,
+            packed_shout: None,
             opening: None,
         })
     }
@@ -1475,6 +1477,15 @@ impl<'a> UnifiedProveContext<'a> {
             });
             self.gated_ry = None;
         }
+        if let Some(witness) = &self.shout_witness {
+            let packed = crate::packed_shout::prove_packed_shout(witness)?;
+            let commitment = self
+                .commitment
+                .as_ref()
+                .ok_or_else(|| RuntimeError::Proof("missing commitment".into()))?;
+            let _ = commitment;
+            self.packed_shout = Some(packed);
+        }
         Ok(())
     }
 
@@ -1505,6 +1516,22 @@ impl<'a> UnifiedProveContext<'a> {
             });
             self.values.push(vec![gated_value]);
         }
+        if let Some(packed) = &self.packed_shout {
+            let commitment = self
+                .commitment
+                .as_ref()
+                .ok_or_else(|| RuntimeError::Proof("missing commitment".into()))?;
+            let links = crate::shout_router_link_claims(
+                commitment,
+                self.shift_router_table.as_ref().map(|(index, _)| *index),
+                self.store_router_table.as_ref().map(|(index, _)| *index),
+                packed,
+            )?;
+            for (point, values) in links {
+                self.points.push(point);
+                self.values.push(values);
+            }
+        }
         let mut pairs = self
             .points
             .drain(..)
@@ -1531,11 +1558,7 @@ impl<'a> UnifiedProveContext<'a> {
         let (trace_points, trace_values) =
             crate::trace_commitment::trace_claim_points(&self.trace_witness, self.trace_index)?;
         let trace_claims = trace_points.into_iter().zip(trace_values).collect();
-        let packed_shout = self
-            .shout_witness
-            .as_ref()
-            .map(crate::packed_shout::prove_packed_shout)
-            .transpose()?;
+        let packed_shout = self.packed_shout;
         Ok(UnifiedTraceProof {
             shape: crate::cpu_shape::CpuShape::from_trace(self.trace).zeroed(),
             register_index: self.register_index,
@@ -1894,6 +1917,36 @@ impl<'a> UnifiedVerifyContext<'a> {
                 next_columns: Vec::new(),
             });
             self.values.push(vec![value]);
+        }
+        if let Some(packed) = &self.proof.packed_shout {
+            let links = crate::shout_router_link_claims(
+                &self.proof.commitment,
+                self.proof.shift_router_index,
+                self.proof.store_router_index,
+                packed,
+            )?;
+            for (point, values) in links {
+                self.points.push(point);
+                self.values.push(values);
+            }
+        }
+        let mut pairs = self
+            .points
+            .drain(..)
+            .zip(self.values.drain(..))
+            .collect::<Vec<_>>();
+        pairs.sort_by_key(|(point, _)| point.table);
+        let (points, values): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+        self.points = points;
+        self.values = values;
+        if let Some(opening) = &self.proof.opening {
+            let pcs = P3BinaryPcs::with_params(100, 4, 16, 3);
+            if !pcs
+                .verify_mosaic(opening, &self.points, &self.values)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?
+            {
+                return Err(RuntimeError::Proof("unified opening rejected".into()));
+            }
         }
         Ok(())
     }
