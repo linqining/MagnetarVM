@@ -2595,3 +2595,12 @@ imm)` fills the row. New `unified_auipc_round_trips` passes. JALR remains pinned
 With ALU/memory/branch/MUL/DIV/JAL/JALR/AUIPC systems fixed, zeroing every
 value in `CpuShape` still reconstructs the same CPU constraint system for an
 LR/SC trace (exact debug equality). AMO rows still pin values.
+
+
+### A2a: zeroing shape values preserves the CPU system
+
+The shape test now zeroes each value class independently (rs1/rs2/rd, memory
+address, memory value) and compares the exact constraint debug for an LR/SC
+trace. All variants match. This shows the CPU system can be reconstructed from a
+value-free shape; the earlier value-free struct experiment was an implementation
+bug, not a constraint dependency.
