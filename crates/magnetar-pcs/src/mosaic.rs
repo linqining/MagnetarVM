@@ -534,6 +534,44 @@ mod tests {
         assert_eq!(proof.value, mosaic.eval_packed(&proof.point).unwrap());
     }
     #[test]
+    fn table_claim_batching_reconstructs_packed_value() {
+        let columns = vec![values(8, 1), values(8, 3), values(8, 5)];
+        let mosaic = PackedMosaic::new(&columns).unwrap();
+        let row_point = vec![F2_128::from(3u64), F2_128::from(7u64), F2_128::from(11u64)];
+        let mut claims = Vec::new();
+        for (column, values) in columns.iter().enumerate() {
+            let lifted = mosaic.lift(column, &row_point).unwrap();
+            let value = Mle::new(values.clone()).unwrap().eval(&row_point).unwrap();
+            claims.push((lifted, value));
+        }
+        let mut transcript = Sha256Transcript::new("table-batch-test");
+        let batch = batch_claims(&mosaic.values, &claims, &mut transcript).unwrap();
+        let zero_components = columns
+            .iter()
+            .map(|column| vec![F2_128::from(0u64); column.len()])
+            .collect::<Vec<_>>();
+        let verifier_mosaic = PackedMosaic::new(&zero_components).unwrap();
+        let mut verifier_transcript = Sha256Transcript::new("table-batch-test");
+        verify_batching(
+            &batch,
+            &claims,
+            verifier_mosaic.total_bits,
+            &mut verifier_transcript,
+        )
+        .unwrap();
+        let row_bits = row_point.len();
+        let row_eval = batch.point[..row_bits].to_vec();
+        let suffix = &batch.point[row_bits..];
+        let mut rebuilt = F2_128::from(0u64);
+        for (column, values) in columns.iter().enumerate() {
+            let component = &verifier_mosaic.components[column];
+            let weight = eq(suffix, &component.suffix);
+            rebuilt = rebuilt + weight * Mle::new(values.clone()).unwrap().eval(&row_eval).unwrap();
+        }
+        assert_eq!(batch.value, rebuilt);
+    }
+
+    #[test]
     fn packed_mosaic_commits_and_opens_once() {
         let components = vec![values(2, 1), values(4, 2), values(8, 3)];
         let mosaic = PackedMosaic::new(&components).unwrap();

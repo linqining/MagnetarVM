@@ -3252,3 +3252,13 @@ the cost of committing/opening the ROM table. Packed Shout component 5,226 B.
 Added tamper tests for the committed Shout metadata: flipping a Shout
 `link_evals` entry (Router-Shout link) and flipping a `column_evals` entry (ROM
 claim) are both rejected by `verify_core_proof`.
+
+
+### Negative result: per-table opening batching
+
+Prototype `table_claim_batching_reconstructs_packed_value` works: per-table
+PackedMosaic layout + batch_claims + a final P3 opening of all columns at the
+batched row point. Integrated into the unified opening it reduced the opening
+from 67,809 to 65,825 B, but the stored per-table claims and batching proofs add
+about 19 KB and prove time rose from ~2 s to 11-17 s on the small benchmark.
+Total grew to 154,976 B. Reverted; the prototype test stays in magnetar-pcs.
