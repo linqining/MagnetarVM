@@ -1095,6 +1095,8 @@ pub struct GatedCpuClaims {
     pub shift_claims: Vec<Option<F2_128>>,
     pub shift_columns: Vec<(usize, usize)>,
     pub shift_index: Option<usize>,
+    pub active_claims: Vec<Option<F2_128>>,
+    pub active_index: Option<usize>,
 }
 
 fn step_op_for(op: magnetar_spec::Op) -> Option<magnetar_cpu::StepOp> {
@@ -2635,6 +2637,17 @@ pub fn verify_core_statement(
                     next_columns: Vec::new(),
                 });
                 values.push(pairs.into_iter().map(|(_, value)| value).collect());
+            }
+        }
+        if let Some(index) = gated.active_index {
+            if let Some(value) = gated.active_claims.iter().filter_map(|value| *value).next() {
+                points.push(magnetar_pcs::P3MosaicPoint {
+                    table: index,
+                    point: gated_point[..gated.cycles.trailing_zeros() as usize].to_vec(),
+                    columns: vec![0],
+                    next_columns: Vec::new(),
+                });
+                values.push(vec![value]);
             }
         }
     }

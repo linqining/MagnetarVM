@@ -3804,3 +3804,14 @@ prover/verifier add the shift table point to the shared Mosaic opening. The
 `is_shift`/selector bits stay per-cycle (shift_sel). Benchmark: 151,124 ->
 152,098 B; gated 70,999 B. The shift split adds four claim segments and a small
 third table.
+
+
+### B5: shift-active replacement
+
+`shift_sel` is split into `shift_sel_lo`/`shift_one`, and an aggregate
+`shift_active` segment (one `is_shift` source per cycle) is backed by a
+one-column component table. The point is added to the shared opening. Benchmark:
+152,098 -> 152,556 B; gated 71,521 B. Together with memory/PC/shift shamt, the
+gated virtual segments for the main architectural components are now covered by
+committed component claims; the remaining per-cycle CPU/branch segments stay in
+the CPU relation.

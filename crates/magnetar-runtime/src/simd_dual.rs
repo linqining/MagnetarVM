@@ -804,8 +804,14 @@ pub(crate) fn reservation_virtual_specs(
             SegmentOwner::Routing(RoutingKind::Shifts),
         ),
         (
-            "shift_sel",
+            "shift_sel_lo",
             gated.shift_offset + gated.shift.is_sll,
+            gated.shift_offset + gated.shift.is_shift,
+            SegmentOwner::Routing(RoutingKind::Shifts),
+        ),
+        (
+            "shift_one",
+            gated.shift_offset + gated.shift.is_shift + 1,
             gated.branch_offset,
             SegmentOwner::Routing(RoutingKind::Shifts),
         ),
@@ -866,6 +872,20 @@ pub(crate) fn reservation_virtual_specs(
             )
         })
         .collect::<Vec<_>>();
+    let active_sources = (0..cycles)
+        .map(|cycle| {
+            (
+                cycle * base_cols + gated.shift_offset + gated.shift.is_shift,
+                1,
+            )
+        })
+        .collect::<Vec<_>>();
+    specs.push(crate::VirtualSegmentSpec {
+        name: "shift_active".into(),
+        sources: active_sources,
+        owner: SegmentOwner::Routing(RoutingKind::Shifts),
+        projection: SegmentOwner::Routing(RoutingKind::Shifts).projection(),
+    });
     let shift_stages = width.trailing_zeros() as usize;
     for (name, shamt) in [
         ("shift_sll", gated.shift.sll.shamt[0]),
