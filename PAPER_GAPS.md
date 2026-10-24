@@ -2226,3 +2226,13 @@ trace proof.
 and proves each group with its standalone AMO batch prover. Tests execute a
 trace containing AMOADD/AMOSWAP/AMOXOR/AMOMAX and verify the bundle. This is not
 yet wired into `UnifiedTraceProof` or CPU/memory claims.
+
+
+### C: AMO bundle in UnifiedTraceProof
+
+`UnifiedTraceProof.amo` now carries the AMO bundle when the trace contains AMO
+events. `ProveContext::finish` generates it, `ProofBundle` preserves it, and
+`verify_unified_with_plan` checks both presence and each batch proof. The
+`unified_amo_bundle_round_trips` test executes AMOADD.D and verifies the unified
+proof. AMO events are not yet bound to CPU/memory claims or the reservation
+chain.

@@ -1039,6 +1039,7 @@ pub struct UnifiedTraceProof {
     pub shout: Option<crate::binary_shout::BinaryShoutProof>,
     pub shift_router: Option<crate::binary_router::BinaryRouterProof>,
     pub store_router: Option<crate::binary_router::BinaryRouterProof>,
+    pub amo: Option<crate::amo_bundle::AmoBundleProof>,
 }
 
 pub(crate) struct GatedProveInput {
@@ -2232,6 +2233,15 @@ pub(crate) fn verify_unified_with_plan(
             crate::protocol::ExecutionStage::Opening => context.verify_opening()?,
         }
     }
+    let has_amo = crate::amo_bundle::has_amo_events(trace);
+    if has_amo != proof.amo.is_some() {
+        return Err(RuntimeError::Proof(
+            "AMO bundle presence does not match the trace".into(),
+        ));
+    }
+    if let Some(amo) = &proof.amo {
+        crate::amo_bundle::verify_amo_bundle(trace, width, amo)?;
+    }
     if let Some(mut routed) = context.take_routed_claims() {
         plan.check_virtual_claims(&routed)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
@@ -3293,6 +3303,79 @@ mod tests {
                 + usize::from(proof.shift_router.is_some())
                 + usize::from(proof.store_router.is_some())
         );
+        verify_unified_trace(&trace, &proof, 8).unwrap();
+    }
+
+    #[test]
+    fn unified_amo_bundle_round_trips() {
+        use magnetar_executor::execute;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Lui,
+                    rd: 4,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x1000_0000,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 10,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Sd,
+                    rd: 0,
+                    rs1: 4,
+                    rs2: 1,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 2,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 5,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::AmoaddD,
+                    rd: 3,
+                    rs1: 4,
+                    rs2: 2,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x100,
+                stack_top: 0x1000_0080,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let proof = prove_unified_trace(&trace, 8).unwrap();
+        assert!(proof.amo.is_some());
         verify_unified_trace(&trace, &proof, 8).unwrap();
     }
 

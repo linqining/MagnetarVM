@@ -69,6 +69,33 @@ fn pad(mut rows: Vec<(u64, u64, u64)>) -> Option<Vec<(u64, u64, u64)>> {
     Some(rows)
 }
 
+impl AmoBundleProof {
+    pub fn is_empty(&self) -> bool {
+        self.add.is_none()
+            && self.xor.is_none()
+            && self.and.is_none()
+            && self.or.is_none()
+            && self.swap.is_none()
+            && self.min.is_none()
+            && self.max.is_none()
+            && self.minu.is_none()
+            && self.maxu.is_none()
+    }
+}
+
+pub fn has_amo_events(trace: &Trace) -> bool {
+    let rows = collect(trace);
+    !rows.add.is_empty()
+        || !rows.xor.is_empty()
+        || !rows.and.is_empty()
+        || !rows.or.is_empty()
+        || !rows.swap.is_empty()
+        || !rows.min.is_empty()
+        || !rows.max.is_empty()
+        || !rows.minu.is_empty()
+        || !rows.maxu.is_empty()
+}
+
 pub fn prove_amo_bundle(trace: &Trace, width: usize) -> Result<AmoBundleProof, RuntimeError> {
     let rows = collect(trace);
     let add = pad(rows.add)

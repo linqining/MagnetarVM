@@ -319,6 +319,7 @@ pub struct ProofBundle {
     pub trace_commitment: [u8; 32],
     pub opening: Option<magnetar_pcs::P3MosaicOpening>,
     pub stages: Vec<(StageId, StageProof)>,
+    pub amo: Option<crate::amo_bundle::AmoBundleProof>,
 }
 
 impl ProofBundle {
@@ -350,6 +351,7 @@ impl ProofBundle {
             trace_commitment: proof.trace_commitment,
             opening: proof.opening.clone(),
             stages,
+            amo: proof.amo.clone(),
         }
     }
 
@@ -384,6 +386,7 @@ impl ProofBundle {
             },
             trace_commitment: self.trace_commitment,
             opening: self.opening,
+            amo: self.amo,
             cpu: cpu.ok_or(ProtocolError::MissingStage(StageId::Cpu))?,
             gated: None,
             shout,
@@ -1083,6 +1086,7 @@ mod plan_tests {
 }
 pub(crate) struct UnifiedProveContext<'a> {
     trace: &'a Trace,
+    width: usize,
     witness: BinaryTwistWitness,
     tables: BatchTables,
     system: ConstraintSystem,
@@ -1205,6 +1209,7 @@ impl<'a> UnifiedProveContext<'a> {
 
         Ok(Self {
             trace,
+            width,
             witness,
             tables,
             system,
@@ -1453,6 +1458,11 @@ impl<'a> UnifiedProveContext<'a> {
     }
 
     pub(crate) fn finish(self) -> Result<UnifiedTraceProof, RuntimeError> {
+        let amo = if crate::amo_bundle::has_amo_events(self.trace) {
+            Some(crate::amo_bundle::prove_amo_bundle(self.trace, self.width)?)
+        } else {
+            None
+        };
         Ok(UnifiedTraceProof {
             access: self
                 .access
@@ -1466,6 +1476,7 @@ impl<'a> UnifiedProveContext<'a> {
             shout: self.shout,
             shift_router: self.shift_router,
             store_router: self.store_router,
+            amo,
         })
     }
 }
