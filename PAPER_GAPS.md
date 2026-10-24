@@ -2296,3 +2296,8 @@ verifies it. The witness uses the width-masked address for the match bit, which
 fixed a false mismatch when a 64-bit address was truncated. This binds the
 reservation transition fields cryptographically per row, while the cross-row
 chain check remains verifier-side.
+
+
+`check_lr_sc_memory` now binds LR/SC to memory history: LR's `rd_val` must be
+the latest prior value, and a successful SC's write must appear in
+`memory_events`. Targeted tests: `cargo test -p magnetar-runtime amo_bundle`.

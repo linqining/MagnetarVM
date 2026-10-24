@@ -249,6 +249,51 @@ fn memory_before(trace: &Trace, addr: u64, width: u8, cycle: u64, mask: u64) -> 
     Some(value & mask)
 }
 
+fn check_lr_sc_memory(trace: &Trace) -> Result<(), RuntimeError> {
+    for row in &trace.rows {
+        let Some(mem) = row.mem else {
+            continue;
+        };
+        let bits = u32::from(mem.width) * 8;
+        let mask = if bits >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << bits) - 1
+        };
+        match row.instruction.op {
+            Op::LrW | Op::LrD => {
+                let old = row.rd_val & mask;
+                if memory_before(trace, mem.addr, mem.width, row.cycle, mask) != Some(old) {
+                    return Err(RuntimeError::Proof(
+                        "LR value is not the latest memory value".into(),
+                    ));
+                }
+            }
+            Op::ScW | Op::ScD => {
+                let old = memory_before(trace, mem.addr, mem.width, row.cycle, mask);
+                if old.is_none() {
+                    return Err(RuntimeError::Proof("SC without prior memory value".into()));
+                }
+                if row.rd_val == 0 {
+                    let value = row.rs2_val & mask;
+                    let written = trace.memory_events.iter().any(|event| {
+                        event.access.addr == mem.addr
+                            && event.access.is_write
+                            && (event.access.value & mask) == value
+                    });
+                    if !written {
+                        return Err(RuntimeError::Proof(
+                            "successful SC write is missing from memory_events".into(),
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn check_memory_events(trace: &Trace) -> Result<(), RuntimeError> {
     for row in &trace.rows {
         let Some(mem) = row.mem else {
@@ -430,6 +475,7 @@ pub fn verify_amo_bundle(
     proof: &AmoBundleProof,
 ) -> Result<(), RuntimeError> {
     check_memory_events(trace)?;
+    check_lr_sc_memory(trace)?;
     check_reservations(trace)?;
     let rows = collect(trace);
     let expected =
