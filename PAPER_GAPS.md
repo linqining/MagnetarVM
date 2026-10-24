@@ -2618,3 +2618,14 @@ program and still reproduces the CPU constraint system and z length. A second
 attempt to use it in `UnifiedTraceProof` nevertheless failed with a lockstep
 inner mismatch, so the proof field was reverted again. The remaining difference
 is not system constraints or z length; it must be in the claim/layout wiring.
+
+
+### A2a: isolated shape claim test fails
+
+A direct test generated CPU lockstep claims from the real trace system and then
+verified them with the zeroed-shape system. The system debug, `num_vars`, z
+length, and layout length all match, yet verification returns "lockstep inner
+mismatch". This rules out shape/system reconstruction as the cause and points at
+how `verify_lockstep_claims` consumes the system matrices or layout in this
+path. The failing test was removed from the committed suite; the shape-system
+equality test remains.
