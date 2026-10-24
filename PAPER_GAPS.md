@@ -2762,3 +2762,13 @@ opening to reject. The prover and verifier point multisets did not match
 reverted to the committed table-extension state. The next attempt should derive
 the points once in a shared helper used by both sides instead of editing each
 side independently.
+
+
+### A2a: shared Twist value-eval points
+
+Added `TwistValueEvals`/`push_twist_value_points` and call it from both
+`prove_binary_twist_claims` and `verify_binary_twist_claims`. The helper emits
+three initial-table points, one read-value point, and one write-value point, so
+the prover and verifier point multisets match. The benchmark is 159,203 B
+(+2.4 KB). The eval values are still computed from the witness; the points are
+the prerequisite for using proof-carried values.

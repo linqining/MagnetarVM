@@ -1090,6 +1090,56 @@ fn absorb_mosaic_commitment(transcript: &mut Sha256Transcript, commitment: &P3Mo
     );
 }
 
+#[allow(clippy::too_many_arguments)]
+struct TwistValueEvals {
+    read: F2_128,
+    write: F2_128,
+    initial_read: F2_128,
+    initial_write: F2_128,
+    initial_update: F2_128,
+}
+
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+fn push_twist_value_points(
+    points: &mut Vec<P3MosaicPoint>,
+    expected: &mut Vec<Vec<F2_128>>,
+    table_index: usize,
+    read_point: &[F2_128],
+    write_point: &[F2_128],
+    initial_read_point: &[F2_128],
+    initial_write_point: &[F2_128],
+    initial_update_point: &[F2_128],
+    evals: TwistValueEvals,
+) {
+    for (point, value) in [
+        (initial_read_point, evals.initial_read),
+        (initial_write_point, evals.initial_write),
+        (initial_update_point, evals.initial_update),
+    ] {
+        points.push(P3MosaicPoint {
+            table: table_index + 2,
+            point: inc_point(point),
+            columns: vec![0],
+            next_columns: Vec::new(),
+        });
+        expected.push(vec![value]);
+    }
+    points.push(P3MosaicPoint {
+        table: table_index + 3,
+        point: inc_point(read_point),
+        columns: vec![0],
+        next_columns: Vec::new(),
+    });
+    expected.push(vec![evals.read]);
+    points.push(P3MosaicPoint {
+        table: table_index + 4,
+        point: inc_point(write_point),
+        columns: vec![0],
+        next_columns: Vec::new(),
+    });
+    expected.push(vec![evals.write]);
+}
+
 /// Build all BinaryTwist claims against a commitment owned by an outer proof.
 ///
 /// `table_index` is the address table's index in that commitment; the compact
@@ -1166,6 +1216,7 @@ pub(crate) fn prove_binary_twist_claims(
     absorb_mosaic_commitment(&mut transcript, commitment);
     let rho_j = sample_point(&mut transcript, n);
     let eq_j = eq_vector(&rho_j, cycles);
+    let read_point = rho_j.clone();
     let claimed_read = eq_j
         .iter()
         .zip(&witness.read_value)
@@ -1206,7 +1257,9 @@ pub(crate) fn prove_binary_twist_claims(
             })
         })?;
     let r_j = &challenges[..n];
-    let _r_k = &challenges[n..];
+    let r_k = &challenges[n..];
+    let initial_read_point = r_k.to_vec();
+    let initial_read_eval = fold_all(&witness.initial, r_k);
     let ra_bit_evals = (0..a)
         .map(|bit| fold_all(&addr[bit], r_j))
         .collect::<Vec<_>>();
@@ -1358,6 +1411,7 @@ pub(crate) fn prove_binary_twist_claims(
     absorb_mosaic_commitment(&mut transcript, commitment);
     let rho_j = sample_point(&mut transcript, n);
     let eq_j = eq_vector(&rho_j, cycles);
+    let write_point = rho_j.clone();
     let claimed_write = eq_j
         .iter()
         .zip(&witness.write_value)
@@ -1399,7 +1453,9 @@ pub(crate) fn prove_binary_twist_claims(
             })
         })?;
     let r_j = &challenges[..n];
-    let _r_k = &challenges[n..];
+    let r_k = &challenges[n..];
+    let initial_write_point = r_k.to_vec();
+    let initial_write_eval = fold_all(&witness.initial, r_k);
     let wa_bit_evals = (0..a)
         .map(|bit| fold_all(&addr[a + bit], r_j))
         .collect::<Vec<_>>();
@@ -1600,7 +1656,9 @@ pub(crate) fn prove_binary_twist_claims(
             })
         })?;
     let r_jp = &challenges[..n];
-    let _r_k = &challenges[n..];
+    let r_k = &challenges[n..];
+    let initial_update_point = r_k.to_vec();
+    let initial_update_eval = fold_all(&witness.initial, r_k);
     let wa_bit_evals = (0..a)
         .map(|bit| fold_all(&addr[a + bit], r_jp))
         .collect::<Vec<_>>();
@@ -1626,6 +1684,23 @@ pub(crate) fn prove_binary_twist_claims(
     });
     inc_expected.push(vec![inc_eval]);
 
+    push_twist_value_points(
+        &mut addr_points,
+        &mut addr_expected,
+        table_index,
+        &read_point,
+        &write_point,
+        &initial_read_point,
+        &initial_write_point,
+        &initial_update_point,
+        TwistValueEvals {
+            read: claimed_read,
+            write: claimed_write,
+            initial_read: initial_read_eval,
+            initial_write: initial_write_eval,
+            initial_update: initial_update_eval,
+        },
+    );
     addr_points.extend(inc_points);
     addr_expected.extend(inc_expected);
     Ok((
@@ -1723,6 +1798,7 @@ pub(crate) fn verify_binary_twist_claims(
     absorb_mosaic_commitment(&mut transcript, commitment);
     let rho_j = sample_point(&mut transcript, cycle_bits);
     let eq_j = eq_vector(&rho_j, cycles);
+    let read_point = rho_j.clone();
     let claimed_read = eq_j
         .iter()
         .zip(&witness.read_value)
@@ -1742,6 +1818,8 @@ pub(crate) fn verify_binary_twist_claims(
     };
     let r_j = &initial_challenges[..cycle_bits];
     let r_k = &initial_challenges[cycle_bits..];
+    let initial_read_point = r_k.to_vec();
+    let initial_read_eval = fold_all(&witness.initial, r_k);
     let ra_bit_evals = (0..address_bits)
         .map(|bit| fold_all(&addr[bit], r_j))
         .collect::<Vec<_>>();
@@ -1831,6 +1909,7 @@ pub(crate) fn verify_binary_twist_claims(
     absorb_mosaic_commitment(&mut transcript, commitment);
     let rho_j = sample_point(&mut transcript, cycle_bits);
     let eq_j = eq_vector(&rho_j, cycles);
+    let write_point = rho_j.clone();
     let claimed_write = eq_j
         .iter()
         .zip(&witness.write_value)
@@ -1850,6 +1929,8 @@ pub(crate) fn verify_binary_twist_claims(
     };
     let r_j = &base_challenges[..cycle_bits];
     let r_k = &base_challenges[cycle_bits..];
+    let initial_write_point = r_k.to_vec();
+    let initial_write_eval = fold_all(&witness.initial, r_k);
     let wa_bit_evals = (0..address_bits)
         .map(|bit| fold_all(&addr[address_bits + bit], r_j))
         .collect::<Vec<_>>();
@@ -1959,6 +2040,8 @@ pub(crate) fn verify_binary_twist_claims(
     };
     let r_jp = &update_challenges[..cycle_bits];
     let r_k = &update_challenges[cycle_bits..];
+    let initial_update_point = r_k.to_vec();
+    let initial_update_eval = fold_all(&witness.initial, r_k);
     let wa_bit_evals = (0..address_bits)
         .map(|bit| fold_all(&addr[address_bits + bit], r_jp))
         .collect::<Vec<_>>();
@@ -1992,6 +2075,23 @@ pub(crate) fn verify_binary_twist_claims(
     });
     inc_expected.push(vec![inc_eval]);
 
+    push_twist_value_points(
+        &mut addr_points,
+        &mut addr_expected,
+        table_index,
+        &read_point,
+        &write_point,
+        &initial_read_point,
+        &initial_write_point,
+        &initial_update_point,
+        TwistValueEvals {
+            read: claimed_read,
+            write: claimed_write,
+            initial_read: initial_read_eval,
+            initial_write: initial_write_eval,
+            initial_update: initial_update_eval,
+        },
+    );
     addr_points.extend(inc_points);
     addr_expected.extend(inc_expected);
     Ok(Some((addr_points, addr_expected)))
