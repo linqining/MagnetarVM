@@ -317,7 +317,7 @@ pub const CLAIM_CONSUMERS: &[(ClaimKind, ClaimSink)] = &[
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ProofBundle {
     pub trace_commitment: [u8; 32],
-    pub opening: magnetar_pcs::P3MosaicOpening,
+    pub opening: Option<magnetar_pcs::P3MosaicOpening>,
     pub stages: Vec<(StageId, StageProof)>,
 }
 
@@ -1462,9 +1462,7 @@ impl<'a> UnifiedProveContext<'a> {
                 .cpu
                 .ok_or_else(|| RuntimeError::Proof("missing CPU proof".into()))?,
             gated: self.gated_claims,
-            opening: self
-                .opening
-                .ok_or_else(|| RuntimeError::Proof("missing opening".into()))?,
+            opening: self.opening,
             shout: self.shout,
             shift_router: self.shift_router,
             store_router: self.store_router,
@@ -1816,12 +1814,56 @@ impl<'a> UnifiedVerifyContext<'a> {
         let (points, values): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
         self.points = points;
         self.values = values;
-        let pcs = P3BinaryPcs::new(100);
-        if !pcs
-            .verify_mosaic(&self.proof.opening, &self.points, &self.values)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?
-        {
-            return Err(RuntimeError::Proof("unified P3 opening rejected".into()));
+        if let Some(opening) = &self.proof.opening {
+            let pcs = P3BinaryPcs::new(100);
+            if !pcs
+                .verify_mosaic(opening, &self.points, &self.values)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?
+            {
+                return Err(RuntimeError::Proof("unified P3 opening rejected".into()));
+            }
+        } else {
+            self.verify_revealed_opening()?;
+        }
+        Ok(())
+    }
+
+    fn verify_revealed_opening(&self) -> Result<(), RuntimeError> {
+        let context = UnifiedProveContext::new(self.trace, self.width)?;
+        let commitment = P3BinaryPcs::new(100)
+            .commit_mosaic(&context.mosaic_tables)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        if commitment != self.proof.cpu.commitment {
+            return Err(RuntimeError::Proof(
+                "revealed tables do not match the committed mosaic".into(),
+            ));
+        }
+        for (point, expected) in self.points.iter().zip(&self.values) {
+            if !point.next_columns.is_empty() {
+                return Err(RuntimeError::Proof(
+                    "revealed opening does not support successor columns".into(),
+                ));
+            }
+            let table = context
+                .mosaic_tables
+                .get(point.table)
+                .ok_or_else(|| RuntimeError::Proof("revealed table index".into()))?;
+            if point.columns.len() != expected.len() {
+                return Err(RuntimeError::Proof("revealed column count".into()));
+            }
+            for (column, value) in point.columns.iter().zip(expected) {
+                let column = table
+                    .columns
+                    .get(*column)
+                    .ok_or_else(|| RuntimeError::Proof("revealed column index".into()))?;
+                let actual = Mle::new(column.clone())
+                    .map_err(|error| RuntimeError::Proof(error.to_string()))?
+                    .eval(&point.point)
+                    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+                if actual != *value {
+                    return Err(RuntimeError::Proof("revealed opening value".into()));
+                }
+            }
         }
         Ok(())
     }

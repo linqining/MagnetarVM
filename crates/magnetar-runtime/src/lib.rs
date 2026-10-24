@@ -1024,7 +1024,7 @@ pub struct UnifiedTraceProof {
     pub trace_commitment: [u8; 32],
     pub cpu: LockstepClaims<P3MosaicCommitment>,
     pub gated: Option<GatedCpuClaims>,
-    pub opening: P3MosaicOpening,
+    pub opening: Option<P3MosaicOpening>,
     pub shout: Option<crate::binary_shout::BinaryShoutProof>,
     pub shift_router: Option<crate::binary_router::BinaryRouterProof>,
     pub store_router: Option<crate::binary_router::BinaryRouterProof>,
@@ -2246,6 +2246,15 @@ pub(crate) fn verify_unified_inner(
 
 /// Verify a unified proof against the public statement before rebuilding the
 /// row systems. Program identity is bound through the ROM carried by the trace.
+pub fn prove_unified_revealed(
+    trace: &Trace,
+    width: usize,
+) -> Result<UnifiedTraceProof, RuntimeError> {
+    let mut proof = prove_unified_trace(trace, width)?;
+    proof.opening = None;
+    Ok(proof)
+}
+
 pub fn verify_unified_trace(
     trace: &Trace,
     proof: &UnifiedTraceProof,
@@ -3274,6 +3283,43 @@ mod tests {
                 + usize::from(proof.store_router.is_some())
         );
         verify_unified_trace(&trace, &proof, 8).unwrap();
+    }
+
+    #[test]
+    fn revealed_unified_proof_round_trips() {
+        use magnetar_spec::{Instruction, Op};
+
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Add,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Xor,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(&program, config()).unwrap();
+        let proof = prove_unified_revealed(&trace, 8).unwrap();
+        assert!(proof.opening.is_none());
+        verify_unified_trace(&trace, &proof, 8).unwrap();
+        let mut tampered = proof;
+        tampered.cpu.commitment.tables[0].num_columns += 1;
+        assert!(verify_unified_trace(&trace, &tampered, 8).is_err());
     }
 
     #[test]

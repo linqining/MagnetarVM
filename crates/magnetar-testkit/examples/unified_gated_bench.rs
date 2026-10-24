@@ -41,6 +41,13 @@ fn main() {
     .unwrap();
     let proof = prove_unified_gated(&trace, 8).unwrap();
     verify_unified_gated(&trace, &proof, 8).unwrap();
+    let revealed = magnetar_runtime::prove_unified_revealed(&trace, 8).unwrap();
+    magnetar_runtime::verify_unified_trace(&trace, &revealed, 8).unwrap();
+    println!(
+        "revealed total {} opening {}",
+        bincode::serialize(&revealed).unwrap().len(),
+        revealed.opening.is_some()
+    );
     let p = &proof.unified;
     for (index, table) in p.cpu.commitment.tables.iter().enumerate() {
         println!(

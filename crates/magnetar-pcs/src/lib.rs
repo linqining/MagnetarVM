@@ -8,6 +8,7 @@
 pub mod bn254;
 pub mod f2;
 pub mod mosaic;
+pub mod reveal_pcs;
 pub use bn254::{
     Bn254Kzg, Bn254KzgBatchOpening, Bn254KzgCommitment, Bn254KzgError, Bn254KzgOpening,
 };
@@ -20,6 +21,7 @@ pub use p3_pcs::{
     P3BatchCommitment, P3BatchOpening, P3BatchPoint, P3BinaryPcs, P3Commitment, P3MosaicCommitment,
     P3MosaicOpening, P3MosaicPoint, P3MosaicTable, P3MosaicTableShape, P3Opening, P3SharedPcs,
 };
+pub use reveal_pcs::{RevealCommitment, RevealOpening, RevealPcs};
 
 use magnetar_constraint::F2_128;
 use magnetar_proof::{Mle, Pcs, ProofError, SpartanProof};

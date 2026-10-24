@@ -1975,3 +1975,37 @@ B spike results:
 
 Lowering security to 64/40 is not acceptable as the default. A new
 point-evaluation PCS backend is required for B; one is not present in the repo.
+
+
+### B: revealing point-evaluation backend
+
+Added `RevealPcs`, a non-succinct, non-hiding point-evaluation PCS:
+
+- commitment = SHA-256 of the evaluation vector;
+- opening = whole vector;
+- verifier recomputes the hash and MLE value.
+
+Measured:
+
+```text
+P3 opening, 128 values:      52,712 B
+Reveal opening, 128 values:   2,056 B
+```
+
+The unified proof now supports `opening: None` and
+`prove_unified_revealed`. In that mode the verifier rebuilds the mosaic tables
+from the trace, checks the reconstructed commitment, and evaluates every claim
+point directly.
+
+Small gated trace:
+
+```text
+P3 unified proof:       209,720 B
+revealed unified proof:   9,976 B
+```
+
+Tampering the reconstructed commitment is rejected.
+
+This is a real size reduction but not a production PCS: it reveals the tables
+and relies on the verifier having the trace. It is the first working B backend
+and a baseline for a future succinct/hiding replacement.
