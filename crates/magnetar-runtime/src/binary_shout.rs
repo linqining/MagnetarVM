@@ -181,11 +181,40 @@ impl BinaryShoutWitness {
         })
     }
 
+    pub fn link_columns(&self) -> Vec<Vec<F2_128>> {
+        let mut columns = vec![vec![F2_128::from(0u64); self.cycles]; 12];
+        for (cycle, row) in self.read_value.iter().enumerate() {
+            let store_width = row[9].value() as u64;
+            let width = match store_width {
+                1 => Some(0usize),
+                2 => Some(1),
+                4 => Some(2),
+                8 => Some(3),
+                _ => None,
+            };
+            if let Some(width) = width {
+                columns[width][cycle] = F2_128::from(1u64);
+            }
+            let kind = row[7].value() as u64;
+            let shamt = row[8].value() as u64 & 0x3f;
+            let code = if kind == 0 {
+                0
+            } else {
+                (kind - 1) * 64 + shamt
+            };
+            for bit in 0..8 {
+                columns[4 + bit][cycle] = F2_128::from((code >> bit) & 1);
+            }
+        }
+        columns
+    }
+
     pub fn table(&self) -> P3MosaicTable {
         let mut columns = self.address0.clone();
         columns.extend(self.address1.clone());
         columns.push(self.is_32.clone());
         columns.push(self.valid.clone());
+        columns.extend(self.link_columns());
         P3MosaicTable { columns }
     }
 
@@ -239,6 +268,7 @@ pub struct BinaryShoutProof {
     pub is_32_eval: F2_128,
     pub valid_eval: F2_128,
     pub column_evals: Vec<F2_128>,
+    pub link_evals: Vec<F2_128>,
 }
 
 fn eq_at_index(point: &[F2_128], index: usize) -> F2_128 {
@@ -401,7 +431,7 @@ pub(crate) fn prove_binary_shout_claims(
     let mut transcript = Sha256Transcript::new("magnetar-binary-shout-boolean");
     absorb_commitment(&mut transcript, commitment);
     transcript.absorb("packed-binding", binding);
-    let total_columns = 2 * a + 2;
+    let total_columns = 2 * a + 2 + 12;
     let col_bits = total_columns.next_power_of_two().trailing_zeros() as usize;
     let rho_c = sample_point(&mut transcript, col_bits);
     let rho_j = sample_point(&mut transcript, n);
@@ -523,6 +553,11 @@ pub(crate) fn prove_binary_shout_claims(
             fold_all(&values, r_k)
         })
         .collect::<Vec<_>>();
+    let link_evals = witness
+        .link_columns()
+        .iter()
+        .map(|column| fold_all(column, r_j))
+        .collect::<Vec<_>>();
     let ra0_bit_evals = (0..a)
         .map(|bit| fold_all(&witness.address0[bit], r_j))
         .collect::<Vec<_>>();
@@ -560,6 +595,7 @@ pub(crate) fn prove_binary_shout_claims(
         read_values.extend(ra1_bit_evals.clone());
         read_values.push(is_32_eval);
         read_values.push(valid_eval);
+        read_values.extend(link_evals.iter().copied());
         read_values
     }];
     Ok((
@@ -579,6 +615,7 @@ pub(crate) fn prove_binary_shout_claims(
             is_32_eval,
             valid_eval,
             column_evals,
+            link_evals,
         },
         points,
         values,
@@ -614,7 +651,7 @@ pub(crate) fn verify_binary_shout_from_proof(
 ) -> Result<Option<ClaimPoints>, ProofError> {
     let a = proof.address_bits;
     let n = proof.cycle_bits;
-    let total_columns = 2 * a + 2;
+    let total_columns = 2 * a + 2 + 12;
     let col_bits = total_columns.next_power_of_two().trailing_zeros() as usize;
     if commitment.tables.len() <= table_index
         || commitment.tables[table_index].num_variables != n.max(1)
@@ -636,7 +673,7 @@ pub(crate) fn verify_binary_shout_from_proof(
     let r_j = &boolean_challenges[..n];
     let r_c = &boolean_challenges[n..];
     let mut b = F2_128::from(0u64);
-    for column in 0..total_columns {
+    for column in 0..2 * a + 2 {
         b = b + eq_at_index(r_c, column) * proof.boolean.bit_evals[column];
     }
     if sum != eq_points(&rho_c, r_c) * eq_points(&rho_j, r_j) * b * (b + F2_128::from(1u64)) {
@@ -705,6 +742,7 @@ pub(crate) fn verify_binary_shout_from_proof(
     read_values.extend(ra1_bit_evals.clone());
     read_values.push(is_32_eval);
     read_values.push(valid_eval);
+    read_values.extend(proof.link_evals.iter().copied());
     let values = vec![proof.boolean.bit_evals.clone(), read_values];
     Ok(Some((points, values)))
 }

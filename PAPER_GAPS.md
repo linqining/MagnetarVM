@@ -3151,3 +3151,24 @@ helper that builds `packed_bits`, including the padded row bits.
 A small probe confirmed `Mle::eval` treats `point[0]` as the least-significant
 index bit (values[1] is selected by point [1,0]). So the packed Shout layout is
 LSB-first; the remaining metadata mismatch is not due to point bit order.
+
+
+### D10: committed bit-sliced Shout link columns
+
+Raw Shout metadata fields are field-valued, so appending them to the bit-packed
+table was invalid (packed bits only represent booleans). Instead
+`BinaryShoutWitness::link_columns()` derives 12 boolean columns:
+
+```text
+store-width one-hot[4]
+shift code bits[8] = (kind-1)*64 + shamt
+```
+
+These are appended to the Shout table, included in the read-point leaves, and
+stored as `BinaryShoutProof.link_evals`. Packed Shout now round-trips with them.
+Benchmark: 124,528 B (packed_shout 5,186 B, +600 B).
+
+The remaining D10 step is to open the Router public-route columns at the Shout
+read point and compare them with `link_evals`; this requires proving packed Shout
+before the shared opening so the extra Router point can be added to the same
+Mosaic opening.
