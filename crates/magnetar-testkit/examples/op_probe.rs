@@ -128,6 +128,8 @@ fn cases() -> Vec<(&'static str, ProgramImage)> {
             ins(Op::ScW, 6, 20, 5, 0, 0),
         ]),
     ));
+    cases.push(("fence", program(vec![ins(Op::Fence, 0, 0, 0, 0, 0)])));
+    cases.push(("ebreak", program(vec![ins(Op::Ebreak, 0, 0, 0, 0, 0)])));
     for (name, op, left, imm) in [
         ("xori", Op::Xori, 0x5a5i64, 0x3c3i64),
         ("ori", Op::Ori, 0x5a5, 0x3c3),

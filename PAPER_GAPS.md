@@ -4169,3 +4169,6 @@ The no-shift benchmark drops 135,263 -> 134,223 B (opening 58,833 -> 57,793 B);
 workloads shrink by 1-4 KB each (fibonacci 237,505 -> 235,329; mem-loop
 372,326 -> 371,222) for ~2% more AMO latency. Pow=20/24 saved more but pushed the
 AMO test to 6.7/19.5 s, so 18 is the chosen opening point.
+
+
+`op_probe` now includes Fence and Ebreak, both proving/verifying (66 cases total).
