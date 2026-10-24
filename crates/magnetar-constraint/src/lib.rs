@@ -15,6 +15,7 @@ pub use ir::{
     LinearizationError, VarId, Witness,
 };
 pub use layout::{
-    LayoutError, MemoryKind, RoutingKind, Segment, SegmentKind, SegmentOwner, WitnessLayout,
+    LayoutError, MemoryKind, ProjectionKind, RoutingKind, Segment, SegmentKind, SegmentOwner,
+    WitnessLayout,
 };
 pub use simd::{DualSimdR1cs, SimdError, SimdR1cs};

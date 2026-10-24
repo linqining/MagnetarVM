@@ -3492,3 +3492,20 @@ the target: split the CPU witness into component-owned virtual witnesses and
 prove a public projection from each component table to its virtual segment
 before reconstructing the CPU witness. Owner metadata, padded layouts, routing,
 and consumption validation are already implemented.
+
+
+### B5: projection metadata
+
+Added `ProjectionKind { Identity, PcBits, RamBits, RouterBits }` and
+`SegmentOwner::projection()`:
+
+```text
+Cpu       -> Identity
+Memory    -> RamBits
+Routing   -> RouterBits
+Pcs       -> PcBits
+```
+
+`segment_owners_expose_their_projection` covers the mapping. This is the layout
+metadata the shared segment protocol needs before reconstructing CPU z from
+component tables.

@@ -3343,6 +3343,21 @@ mod tests {
     }
 
     #[test]
+    fn segment_owners_expose_their_projection() {
+        use magnetar_constraint::{MemoryKind, ProjectionKind, RoutingKind, SegmentOwner};
+        assert_eq!(SegmentOwner::Cpu.projection(), ProjectionKind::Identity);
+        assert_eq!(
+            SegmentOwner::Memory(MemoryKind::Ram).projection(),
+            ProjectionKind::RamBits
+        );
+        assert_eq!(
+            SegmentOwner::Routing(RoutingKind::Shifts).projection(),
+            ProjectionKind::RouterBits
+        );
+        assert_eq!(SegmentOwner::Pcs.projection(), ProjectionKind::PcBits);
+    }
+
+    #[test]
     fn cpu_segments_are_tagged_with_their_owner() {
         use magnetar_constraint::{MemoryKind, RoutingKind, SegmentOwner};
         assert_eq!(

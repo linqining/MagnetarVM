@@ -36,6 +36,26 @@ pub enum SegmentOwner {
     Pcs,
 }
 
+/// Public projection from a component table to a virtual CPU segment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ProjectionKind {
+    Identity,
+    PcBits,
+    RamBits,
+    RouterBits,
+}
+
+impl SegmentOwner {
+    pub fn projection(self) -> ProjectionKind {
+        match self {
+            SegmentOwner::Cpu => ProjectionKind::Identity,
+            SegmentOwner::Memory(_) => ProjectionKind::RamBits,
+            SegmentOwner::Routing(_) => ProjectionKind::RouterBits,
+            SegmentOwner::Pcs => ProjectionKind::PcBits,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Segment {
     pub name: String,
