@@ -484,7 +484,8 @@ pub use spartan::{
     prove_lockstep, prove_lockstep_bits, prove_lockstep_claims, prove_lockstep_with_matrices,
     prove_shared_simd_spartan, prove_spartan, prove_spartan_bits, prove_spartan_with_matrices,
     verify_lockstep, verify_lockstep_bits, verify_lockstep_claims, verify_lockstep_segments,
-    verify_lockstep_with_matrices, verify_shared_simd_spartan, verify_spartan, verify_spartan_bits,
+    verify_lockstep_with_matrices, verify_shared_simd_spartan,
+    verify_shared_simd_spartan_with_witnesses, verify_spartan, verify_spartan_bits,
     verify_spartan_with_matrices, witness_vector, LockstepClaims, LockstepProof, SparseMatrix,
     SpartanError, SpartanMatrix, SpartanProof,
 };

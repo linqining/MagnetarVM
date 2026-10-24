@@ -2361,3 +2361,15 @@ trace from 156,089 B to 348,731 B: two extra P3 proofs cost ~192 KB, more than
 the entire opening. The field was removed from `UnifiedTraceProof`; PC rows and
 batches remain standalone. PC constraints must be folded into the CPU/gated
 claims rather than proved as another P3 batch.
+
+
+### Soundness fix: bind AMO/LR/SC/reservation batches to trace rows
+
+The batch verifiers previously checked only that a valid Spartan proof existed
+for the row system; they did not bind it to the rows recomputed from the trace.
+A proof for different witnesses with the same instance count would verify.
+
+`verify_shared_simd_spartan_with_witnesses` now rebuilds `z` from the supplied
+rows, commits it, and compares the commitment to `proof.commitment` before the
+Spartan verification. All AMO/LR/SC/reservation bundle verifiers use this bound
+path. A tampered AMOADD `rd_val` is rejected by `verify_amo_bundle`.

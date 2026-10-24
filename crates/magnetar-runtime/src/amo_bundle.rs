@@ -3,12 +3,12 @@
 use magnetar_spec::{Op, Trace};
 use serde::{Deserialize, Serialize};
 
-use crate::amo_add_row::{prove_amo_add_batch, verify_amo_add_batch};
-use crate::amo_logic_row::{prove_amo_logic_batch, verify_amo_logic_batch, AmoLogicKind};
-use crate::amo_minmax_row::{prove_amo_minmax_batch, verify_amo_minmax_batch, AmoMinMaxKind};
-use crate::lr_row::{prove_lr_batch, verify_lr_batch};
-use crate::reservation_row::{prove_reservation_batch, verify_reservation_batch};
-use crate::sc_row::{prove_sc_batch, verify_sc_batch};
+use crate::amo_add_row::{prove_amo_add_batch, verify_amo_add_batch_bound};
+use crate::amo_logic_row::{prove_amo_logic_batch, verify_amo_logic_batch_bound, AmoLogicKind};
+use crate::amo_minmax_row::{prove_amo_minmax_batch, verify_amo_minmax_batch_bound, AmoMinMaxKind};
+use crate::lr_row::{prove_lr_batch, verify_lr_batch_bound};
+use crate::reservation_row::{prove_reservation_batch, verify_reservation_batch_bound};
+use crate::sc_row::{prove_sc_batch, verify_sc_batch_bound};
 use crate::RuntimeError;
 
 type AmoProof = magnetar_proof::SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>;
@@ -503,7 +503,9 @@ pub fn verify_amo_bundle(
             Ok(count)
         };
     if let Some(proof) = &proof.add {
-        verify_amo_add_batch(width, expected(&rows.add, true, "add")?, proof)?;
+        let padded =
+            pad(rows.add.clone()).ok_or_else(|| RuntimeError::Proof("AMOADD rows".into()))?;
+        verify_amo_add_batch_bound(width, &padded, proof)?;
     } else {
         let _ = expected(&rows.add, false, "add")?;
     }
@@ -515,7 +517,14 @@ pub fn verify_amo_bundle(
     ];
     for (proof, kind, rows, label) in logic {
         if let Some(proof) = proof {
-            verify_amo_logic_batch(width, kind, expected(rows, true, label)?, proof)?;
+            let padded = {
+                let mut rows = rows.clone();
+                while !rows.is_empty() && !rows.len().is_power_of_two() {
+                    rows.push((0, 0, 0));
+                }
+                rows
+            };
+            verify_amo_logic_batch_bound(width, kind, &padded, proof)?;
         } else {
             let _ = expected(rows, false, label)?;
         }
@@ -533,7 +542,14 @@ pub fn verify_amo_bundle(
     ];
     for (proof, kind, rows, label) in minmax {
         if let Some(proof) = proof {
-            verify_amo_minmax_batch(width, kind, expected(rows, true, label)?, proof)?;
+            let padded = {
+                let mut rows = rows.clone();
+                while !rows.is_empty() && !rows.len().is_power_of_two() {
+                    rows.push((0, 0, 0));
+                }
+                rows
+            };
+            verify_amo_minmax_batch_bound(width, kind, &padded, proof)?;
         } else {
             let _ = expected(rows, false, label)?;
         }
@@ -541,14 +557,14 @@ pub fn verify_amo_bundle(
     if let Some(proof) = &proof.lr {
         let rows = pad_lr(rows.lr.clone())
             .ok_or_else(|| RuntimeError::Proof("LR bundle missing".into()))?;
-        verify_lr_batch(width, rows.len(), proof)?;
+        verify_lr_batch_bound(width, &rows, proof)?;
     } else if !rows.lr.is_empty() {
         return Err(RuntimeError::Proof("LR bundle presence".into()));
     }
     if let Some(proof) = &proof.sc {
         let rows = pad_sc(rows.sc.clone())
             .ok_or_else(|| RuntimeError::Proof("SC bundle missing".into()))?;
-        verify_sc_batch(width, rows.len(), proof)?;
+        verify_sc_batch_bound(width, &rows, proof)?;
     } else if !rows.sc.is_empty() {
         return Err(RuntimeError::Proof("SC bundle presence".into()));
     }
@@ -556,7 +572,7 @@ pub fn verify_amo_bundle(
         let Some(proof) = &proof.reservation else {
             return Err(RuntimeError::Proof("reservation bundle presence".into()));
         };
-        verify_reservation_batch(width, reservation_rows.len(), proof)?;
+        verify_reservation_batch_bound(width, &reservation_rows, proof)?;
     } else if proof.reservation.is_some() {
         return Err(RuntimeError::Proof("unexpected reservation bundle".into()));
     }
@@ -690,6 +706,15 @@ mod tests {
         .unwrap();
         let proof = prove_amo_bundle(&trace, 8).unwrap();
         verify_amo_bundle(&trace, 8, &proof).unwrap();
+        let mut wrong = trace.clone();
+        if let Some(row) = wrong
+            .rows
+            .iter_mut()
+            .find(|row| matches!(row.instruction.op, Op::AmoaddD))
+        {
+            row.rd_val = row.rd_val.wrapping_add(1);
+        }
+        assert!(verify_amo_bundle(&wrong, 8, &proof).is_err());
         let mut bad = trace.clone();
         if let Some(row) = bad
             .rows

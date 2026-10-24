@@ -125,6 +125,26 @@ pub fn verify_lr_batch(
         .map_err(|error| crate::RuntimeError::Proof(error.to_string()))
 }
 
+pub fn verify_lr_batch_bound(
+    width: usize,
+    rows: &[(u64, u64)],
+    proof: &magnetar_proof::SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>,
+) -> Result<(), crate::RuntimeError> {
+    use magnetar_proof::{verify_shared_simd_spartan_with_witnesses, witness_vector};
+    let row = LrRow::new(width);
+    let system = row.packed_system();
+    let mut witnesses = Vec::new();
+    for (old, address) in rows {
+        let bits = row.witness(*old, *address);
+        witnesses.push(row.relation.to_witness(&bits));
+    }
+    let _ = witness_vector(&system, &witnesses[0])
+        .map_err(|error| crate::RuntimeError::Proof(error.to_string()))?;
+    let pcs = magnetar_pcs::P3BinaryPcs::new(100);
+    verify_shared_simd_spartan_with_witnesses(&system, &witnesses, proof, &pcs)
+        .map_err(|error| crate::RuntimeError::Proof(error.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

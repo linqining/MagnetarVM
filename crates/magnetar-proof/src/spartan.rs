@@ -215,6 +215,8 @@ pub enum SpartanError {
     Proof(#[from] ProofError),
     #[error("matrix dimensions mismatch")]
     Dimensions,
+    #[error("witness commitment does not match the claimed instances")]
+    WitnessCommitmentMismatch,
     #[error("sumcheck claim mismatch: expected {expected:?}, got {actual:?}")]
     ClaimMismatch { expected: F2_128, actual: F2_128 },
     #[error("verification failed: {0}")]
@@ -544,6 +546,26 @@ pub fn prove_shared_simd_spartan<P: Pcs>(
         return Err(SpartanError::Dimensions);
     }
     prove_spartan_with_matrices(&z, &a, &b, &c, pcs)
+}
+
+pub fn verify_shared_simd_spartan_with_witnesses<P: Pcs>(
+    base: &ConstraintSystem,
+    witnesses: &[Witness],
+    proof: &SpartanProof<P::Commitment, P::Opening>,
+    pcs: &P,
+) -> Result<(), SpartanError> {
+    if witnesses.is_empty() || !witnesses.len().is_power_of_two() {
+        return Err(SpartanError::EmptySimd);
+    }
+    let mut z = Vec::new();
+    for witness in witnesses {
+        z.extend(witness_vector(base, witness)?);
+    }
+    let commitment = pcs.commit(&z)?;
+    if pcs.commitment_bytes(&commitment) != pcs.commitment_bytes(&proof.commitment) {
+        return Err(SpartanError::WitnessCommitmentMismatch);
+    }
+    verify_shared_simd_spartan(base, witnesses.len(), proof, pcs)
 }
 
 pub fn verify_shared_simd_spartan<P: Pcs>(
