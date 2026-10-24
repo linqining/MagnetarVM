@@ -2184,3 +2184,11 @@ same two-memory-row read-modify-write binding as AMOADD. Tests cover
 `amo_minmax_row::AmoMinMaxRow` covers AMOMIN, AMOMAX, AMOMINU, AMOMAXU with
 the same read-modify-write memory binding. It uses one SLT/SLTU ALU and a
 select mux; tests cover `-5`/`3` for signed and unsigned orderings.
+
+
+### C: isolated LR/SC rows
+
+`lr_row::LrRow` loads `old` from the address and exposes a reservation flag.
+`sc_row::ScRow` reads `old`, writes `operand` only when `success`, and sets
+`rd = !success`. Tests cover both SC outcomes and LR load/reserve. Reservation
+validity is not yet chained across CPU rows.
