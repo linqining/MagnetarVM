@@ -3938,3 +3938,12 @@ grouping is not yet selected by the unified runtime path.
 `grouped_lockstep_supports_four_cycles_per_instance` runs the same grouped
 lockstep path with group=4 over an eight-cycle trace, checking the helper is not
 specific to pair grouping.
+
+
+`group_virtual_specs` maps the cycle-major virtual segment sources into grouped
+instance order (dropping per-row padding and adding a group-padding segment).
+`grouped_virtual_layout_round_trips` checks the gather/scatter round trip, and
+`grouped_virtual_lockstep_proves` wraps the grouped matrices in `ScatterMatrix`
+against that layout, proves/verifies, and rejects a tampered second-instance PC.
+C2 now has a grouped virtual-layout lockstep path; the unified gated path still
+uses group=1 because grouped component claims are not yet reordered.

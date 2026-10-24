@@ -783,6 +783,56 @@ pub(crate) fn reservation_claim_matrices(
 }
 
 #[allow(dead_code, clippy::type_complexity)]
+pub(crate) fn group_virtual_specs(
+    specs: &[crate::VirtualSegmentSpec],
+    cycles: usize,
+    base_cols: usize,
+    row_vars: usize,
+    block_cols: usize,
+    group: usize,
+) -> Vec<crate::VirtualSegmentSpec> {
+    let mut grouped = Vec::with_capacity(specs.len() + 1);
+    for spec in specs {
+        let mut sources = Vec::new();
+        for (offset, len) in &spec.sources {
+            for index in *offset..*offset + *len {
+                let cycle = index / base_cols;
+                if cycle >= cycles {
+                    continue;
+                }
+                let column = index % base_cols;
+                if column >= row_vars {
+                    continue;
+                }
+                let mapped = (cycle / group) * block_cols + (cycle % group) * row_vars + column;
+                sources.push((mapped, 1usize));
+            }
+        }
+        if !sources.is_empty() {
+            grouped.push(crate::VirtualSegmentSpec {
+                name: spec.name.clone(),
+                sources,
+                owner: spec.owner,
+                projection: spec.projection,
+            });
+        }
+    }
+    let padding = block_cols - group * row_vars;
+    if padding > 0 {
+        let sources = (0..cycles / group)
+            .map(|instance| (instance * block_cols + group * row_vars, padding))
+            .collect::<Vec<_>>();
+        grouped.push(crate::VirtualSegmentSpec {
+            name: "group_padding".into(),
+            sources,
+            owner: magnetar_constraint::SegmentOwner::Cpu,
+            projection: magnetar_constraint::ProjectionKind::Identity,
+        });
+    }
+    grouped
+}
+
+#[allow(dead_code, clippy::type_complexity)]
 pub(crate) fn reservation_grouped_lockstep(
     width: usize,
     rows: &[(u64, crate::reservation_cpu_row::ReservationCpuInput)],
@@ -2256,6 +2306,217 @@ mod virtual_spec_tests {
             &a0[0], &a0[1], &a0[2], &a1[0], &a1[1], &a1[2], &layout, &proof, &backend,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn grouped_virtual_layout_round_trips() {
+        let width = 8usize;
+        let program = magnetar_spec::ProgramImage::new(
+            0x10,
+            vec![
+                magnetar_spec::Instruction {
+                    op: magnetar_spec::Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 1,
+                    shamt: 0,
+                }
+                .encode(),
+                magnetar_spec::Instruction {
+                    op: magnetar_spec::Op::Addi,
+                    rd: 2,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 2,
+                    shamt: 0,
+                }
+                .encode(),
+                magnetar_spec::Instruction {
+                    op: magnetar_spec::Op::Addi,
+                    rd: 3,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 3,
+                    shamt: 0,
+                }
+                .encode(),
+                magnetar_spec::Instruction::new(magnetar_spec::Op::Ecall).encode(),
+            ],
+        );
+        let trace = magnetar_executor::execute(
+            &program,
+            magnetar_spec::MachineConfig {
+                entry: 0x10,
+                rom_base: 0x10,
+                ram_base: 0x1000_0000,
+                ram_size: 0x1000,
+                stack_top: 0x1000_1000,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let rows = crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, width)
+            .unwrap();
+        let cycles = rows.len();
+        let group = 2usize;
+        let (z_group, a0, _, _) = super::reservation_grouped_lockstep(width, &rows, group).unwrap();
+        let block_cols = a0[0].cols() / (cycles / group);
+        let (_, _, layout) = reservation_claim_matrices(width, cycles).unwrap();
+        let base_cols = layout.total_bits / cycles;
+        let row_vars = crate::reservation_cpu_row::ReservationCpuRow::new(width)
+            .cpu
+            .relation
+            .num_vars;
+        let specs = reservation_virtual_specs(width, cycles, base_cols);
+        let grouped =
+            super::group_virtual_specs(&specs, cycles, base_cols, row_vars, block_cols, group);
+        let padded = crate::build_padded_virtual_layout(&grouped).unwrap();
+        let virtual_values = padded.pad_values(&z_group);
+        assert_eq!(virtual_values.len(), padded.layout.total_bits);
+        assert_eq!(padded.unpad_values(&virtual_values), z_group);
+    }
+
+    #[test]
+    fn grouped_virtual_lockstep_proves() {
+        use magnetar_pcs::P3BinaryPcs;
+        use magnetar_proof::{prove_lockstep_bits, verify_lockstep_bits, DirectBitPcs};
+        let width = 8usize;
+        let program = magnetar_spec::ProgramImage::new(
+            0x10,
+            vec![
+                magnetar_spec::Instruction {
+                    op: magnetar_spec::Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 1,
+                    shamt: 0,
+                }
+                .encode(),
+                magnetar_spec::Instruction {
+                    op: magnetar_spec::Op::Addi,
+                    rd: 2,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 2,
+                    shamt: 0,
+                }
+                .encode(),
+                magnetar_spec::Instruction {
+                    op: magnetar_spec::Op::Addi,
+                    rd: 3,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 3,
+                    shamt: 0,
+                }
+                .encode(),
+                magnetar_spec::Instruction::new(magnetar_spec::Op::Ecall).encode(),
+            ],
+        );
+        let trace = magnetar_executor::execute(
+            &program,
+            magnetar_spec::MachineConfig {
+                entry: 0x10,
+                rom_base: 0x10,
+                ram_base: 0x1000_0000,
+                ram_size: 0x1000,
+                stack_top: 0x1000_1000,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let rows = crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, width)
+            .unwrap();
+        let cycles = rows.len();
+        let group = 2usize;
+        let (z_group, a0, a1, _) =
+            super::reservation_grouped_lockstep(width, &rows, group).unwrap();
+        let block_cols = a0[0].cols() / (cycles / group);
+        let (_, _, layout) = reservation_claim_matrices(width, cycles).unwrap();
+        let base_cols = layout.total_bits / cycles;
+        let row = crate::reservation_cpu_row::ReservationCpuRow::new(width);
+        let specs = reservation_virtual_specs(width, cycles, base_cols);
+        let grouped = super::group_virtual_specs(
+            &specs,
+            cycles,
+            base_cols,
+            row.cpu.relation.num_vars,
+            block_cols,
+            group,
+        );
+        let padded = crate::build_padded_virtual_layout(&grouped).unwrap();
+        let mut mapping = vec![0usize; z_group.len()];
+        for map in &padded.mapping {
+            let mut cursor = map.padded_offset;
+            for (original, len) in &map.sources {
+                for offset in 0..*len {
+                    mapping[original + offset] = cursor + offset;
+                }
+                cursor += len;
+            }
+        }
+        let wrap = |matrix| super::ScatterMatrix {
+            inner: matrix,
+            mapping: mapping.clone(),
+            cols: padded.layout.total_bits,
+        };
+        let va0 = [
+            wrap(a0[0].clone()),
+            wrap(a0[1].clone()),
+            wrap(a0[2].clone()),
+        ];
+        let va1 = [
+            wrap(a1[0].clone()),
+            wrap(a1[1].clone()),
+            wrap(a1[2].clone()),
+        ];
+        let virtual_values = padded.pad_values(&z_group);
+        let bits = virtual_values
+            .iter()
+            .map(|value| value.value() == 1)
+            .collect::<Vec<_>>();
+        let backend = DirectBitPcs::new(P3BinaryPcs::new(100));
+        let proof = prove_lockstep_bits(
+            &bits,
+            &va0[0],
+            &va0[1],
+            &va0[2],
+            &va1[0],
+            &va1[1],
+            &va1[2],
+            &padded.layout,
+            &backend,
+        )
+        .unwrap();
+        verify_lockstep_bits(
+            &va0[0],
+            &va0[1],
+            &va0[2],
+            &va1[0],
+            &va1[1],
+            &va1[2],
+            &padded.layout,
+            &proof,
+            &backend,
+        )
+        .unwrap();
+        let boundary = mapping[block_cols + row.cpu.pc[0]];
+        let mut broken = bits;
+        broken[boundary] = !broken[boundary];
+        assert!(prove_lockstep_bits(
+            &broken,
+            &va0[0],
+            &va0[1],
+            &va0[2],
+            &va1[0],
+            &va1[1],
+            &va1[2],
+            &padded.layout,
+            &backend,
+        )
+        .is_err());
     }
 
     #[test]
