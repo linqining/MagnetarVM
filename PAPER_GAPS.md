@@ -4200,3 +4200,12 @@ Shared opening moves to `(rate=3, pow=21, fold=2)`. Benchmark: 132,063 ->
 2,728,168 -> 2,703,720 B; AMO verify stays ~6.4 s. Pow=22/23 shaved more
 (benchmark 130,047/129,151) but pushed some workloads hard (bitops proving
 6.5 -> 19.8 s at pow=23), so 21 is the chosen opening point.
+
+
+### 12-variable gated tables: rate 3 / fold 2
+
+`P3SharedPcs` now uses `(rate=3, pow=20, fold=2)` for 12-variable tables in
+addition to the 9-variable pow=24 branch. This drops the 11-workload sum
+2,703,720 -> 2,693,240 B (memory -2.9 KB, loop -2.4 KB, muldiv -3.5 KB, mixedmem
+-1.0 KB) with AMO ~6.6 s. Applying the same branch to 13-variable tables was
+rejected: fibonacci grew 4.2 KB and bitops 3.1 KB.
