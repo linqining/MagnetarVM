@@ -320,7 +320,6 @@ pub struct ProofBundle {
     pub opening: Option<magnetar_pcs::P3MosaicOpening>,
     pub stages: Vec<(StageId, StageProof)>,
     pub amo: Option<crate::amo_bundle::AmoBundleProof>,
-    pub pc: Option<crate::pc_transition_row::PcBatchProof>,
 }
 
 impl ProofBundle {
@@ -353,7 +352,6 @@ impl ProofBundle {
             opening: proof.opening.clone(),
             stages,
             amo: proof.amo.clone(),
-            pc: proof.pc.clone(),
         }
     }
 
@@ -389,7 +387,6 @@ impl ProofBundle {
             trace_commitment: self.trace_commitment,
             opening: self.opening,
             amo: self.amo,
-            pc: self.pc,
             cpu: cpu.ok_or(ProtocolError::MissingStage(StageId::Cpu))?,
             gated: None,
             shout,
@@ -1461,7 +1458,6 @@ impl<'a> UnifiedProveContext<'a> {
     }
 
     pub(crate) fn finish(self) -> Result<UnifiedTraceProof, RuntimeError> {
-        let pc = crate::pc_transition_row::prove_pc_batch(self.trace, self.width)?;
         let amo = if crate::amo_bundle::has_amo_events(self.trace) {
             Some(crate::amo_bundle::prove_amo_bundle(self.trace, self.width)?)
         } else {
@@ -1481,7 +1477,6 @@ impl<'a> UnifiedProveContext<'a> {
             shift_router: self.shift_router,
             store_router: self.store_router,
             amo,
-            pc,
         })
     }
 }

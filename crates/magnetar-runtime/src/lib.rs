@@ -1042,7 +1042,6 @@ pub struct UnifiedTraceProof {
     pub shift_router: Option<crate::binary_router::BinaryRouterProof>,
     pub store_router: Option<crate::binary_router::BinaryRouterProof>,
     pub amo: Option<crate::amo_bundle::AmoBundleProof>,
-    pub pc: Option<crate::pc_transition_row::PcBatchProof>,
 }
 
 pub(crate) struct GatedProveInput {
@@ -2236,7 +2235,6 @@ pub(crate) fn verify_unified_with_plan(
             crate::protocol::ExecutionStage::Opening => context.verify_opening()?,
         }
     }
-    crate::pc_transition_row::verify_pc_batch(trace, width, proof.pc.as_ref())?;
     let has_amo = crate::amo_bundle::has_amo_events(trace);
     if has_amo != proof.amo.is_some() {
         return Err(RuntimeError::Proof(
@@ -3637,7 +3635,6 @@ mod tests {
 
         let proof = prove_unified_trace(&trace, 8).unwrap();
         assert!(proof.amo.is_none());
-        assert!(proof.pc.is_some());
         assert!(proof.access.ram.opening.is_none());
         assert_eq!(
             proof.cpu.commitment.tables.len(),

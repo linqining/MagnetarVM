@@ -2352,3 +2352,12 @@ the gated CPU row and the public PC statement, not by the PC batch itself.
 JALR low-bit clear. `PcBatchProof.targets` proves every trace row whose
 `next_pc != pc+4`, using `pc` as base for branches/JAL and `rs1_val` for JALR.
 A test executes a taken BEQ and verifies the target batch.
+
+
+### PC batch size regression
+
+Adding `PcBatchProof` as a separate unified sub-proof raised the small gated
+trace from 156,089 B to 348,731 B: two extra P3 proofs cost ~192 KB, more than
+the entire opening. The field was removed from `UnifiedTraceProof`; PC rows and
+batches remain standalone. PC constraints must be folded into the CPU/gated
+claims rather than proved as another P3 batch.
