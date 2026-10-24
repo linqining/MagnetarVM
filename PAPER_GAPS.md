@@ -2577,3 +2577,10 @@ proves MUL and DIVU traces.
 target/link sums. `uniform_jal_layout(width, increment)` builds the unpinned
 system; runtime JAL uses it with `layout.witness(pc, imm)`. New
 `unified_jal_round_trips` passes. JALR/AUIPC still pin values.
+
+
+### A2a: fixed AUIPC CPU system
+
+`UniformAuipcLayout` now has `value_out` variables constrained to the adder sum;
+`uniform_auipc_layout(width)` leaves pc/imm as variables and `witness_at(pc,
+imm)` fills the row. New `unified_auipc_round_trips` passes. JALR remains pinned.

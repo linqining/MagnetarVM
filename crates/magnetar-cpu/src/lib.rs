@@ -2458,15 +2458,27 @@ pub struct UniformAuipcLayout {
     pub adder: BitAdderLayout,
     pub pc: u64,
     pub value: u64,
+    pub value_out: Vec<VarId>,
     pub num_vars: usize,
 }
 
 impl UniformAuipcLayout {
     pub fn witness(&self, imm: u64) -> Witness {
+        self.witness_at(self.pc, imm)
+    }
+
+    pub fn witness_at(&self, pc: u64, imm: u64) -> Witness {
         let mut values = vec![F2_128::from(0u64); self.num_vars];
-        self.adder.fill_witness(&mut values, self.pc, imm);
+        self.adder.fill_witness(&mut values, pc, imm);
+        for (bit, var) in self.value_out.iter().enumerate() {
+            values[*var] = F2_128::from((pc.wrapping_add(imm) >> bit) & 1);
+        }
         Witness::new(values)
     }
+}
+
+pub fn uniform_auipc_layout(width: usize) -> (ConstraintSystem, UniformAuipcLayout) {
+    uniform_auipc_inner(width, 0, 0, false)
 }
 
 pub fn uniform_auipc_relation(
@@ -2474,22 +2486,37 @@ pub fn uniform_auipc_relation(
     pc: u64,
     value: u64,
 ) -> (ConstraintSystem, UniformAuipcLayout) {
+    uniform_auipc_inner(width, pc, value, true)
+}
+
+fn uniform_auipc_inner(
+    width: usize,
+    pc: u64,
+    value: u64,
+    pin: bool,
+) -> (ConstraintSystem, UniformAuipcLayout) {
     assert!(width > 0 && width <= 64);
     let (mut system, adder) = bit_addition_constraints(width);
     let one = Expr::constant(1u64);
     for index in 0..width {
         let pc_bit = (pc >> index) & 1;
         let value_bit = (value >> index) & 1;
-        system.add_constraint(
-            Expr::var(adder.a[index]),
-            one.clone(),
-            Expr::constant(pc_bit),
-        );
-        system.add_constraint(
-            Expr::var(adder.sum[index]),
-            one.clone(),
-            Expr::constant(value_bit),
-        );
+        if pin {
+            system.add_constraint(
+                Expr::var(adder.a[index]),
+                one.clone(),
+                Expr::constant(pc_bit),
+            );
+            system.add_constraint(
+                Expr::var(adder.sum[index]),
+                one.clone(),
+                Expr::constant(value_bit),
+            );
+        }
+    }
+    let value_out: Vec<VarId> = system.alloc(width).collect();
+    for (index, &var) in value_out.iter().enumerate() {
+        system.add_constraint(Expr::var(var), one.clone(), Expr::var(adder.sum[index]));
     }
     let num_vars = system.num_vars;
     (
@@ -2499,6 +2526,7 @@ pub fn uniform_auipc_relation(
             adder,
             pc,
             value,
+            value_out,
             num_vars,
         },
     )

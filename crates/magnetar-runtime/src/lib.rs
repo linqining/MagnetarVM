@@ -1263,9 +1263,8 @@ fn row_cpu_relation(
             Ok(Some((system, layout.witness(row.rs1_val, imm))))
         }
         magnetar_spec::Op::Auipc => {
-            let (system, layout) =
-                magnetar_cpu::uniform_auipc_row_relation(width, row.pc, imm, row.rd_val);
-            Ok(Some((system, layout.witness(imm))))
+            let (system, layout) = magnetar_cpu::uniform_auipc_layout(width);
+            Ok(Some((system, layout.witness_at(row.pc, imm))))
         }
         magnetar_spec::Op::Ecall | magnetar_spec::Op::Ebreak | magnetar_spec::Op::Fence => Ok(None),
         other => Err(RuntimeError::UnsupportedRow(other.name())),
@@ -3667,6 +3666,42 @@ mod tests {
                     rs1: 0,
                     rs2: 0,
                     imm: 2,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let proof = prove_unified_trace(&trace, 8).unwrap();
+        verify_unified_trace(&trace, &proof, 8).unwrap();
+    }
+
+    #[test]
+    fn unified_auipc_round_trips() {
+        use magnetar_executor::execute;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Auipc,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x1000,
                     shamt: 0,
                 }
                 .encode(),
