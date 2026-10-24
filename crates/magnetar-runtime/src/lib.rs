@@ -3245,6 +3245,8 @@ mod tests {
         let rows = crate::simd_full::gated_rows_from_trace(&expanded, 8).unwrap();
         let bundle = crate::gated_bundle::prove_gated_bundle(8, &rows).unwrap();
         crate::gated_bundle::verify_gated_bundle(8, &rows, &bundle).unwrap();
+        let proof = prove_unified_trace(&expanded, 8).unwrap();
+        verify_core_proof(&proof).unwrap();
     }
 
     #[test]
