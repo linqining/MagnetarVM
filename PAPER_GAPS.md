@@ -2373,3 +2373,10 @@ A proof for different witnesses with the same instance count would verify.
 rows, commits it, and compares the commitment to `proof.commitment` before the
 Spartan verification. All AMO/LR/SC/reservation bundle verifiers use this bound
 path. A tampered AMOADD `rd_val` is rejected by `verify_amo_bundle`.
+
+
+PC batch verification is now witness-bound: `verify_pc_batch` rebuilds the
+transition and target witnesses from the trace and compares their PCS
+commitment with the proof. A tampered `next_pc` is rejected. The batch remains
+standalone; it is not in the unified proof because of the measured size
+regression.

@@ -182,6 +182,9 @@ mod tests {
         let batch = prove_pc_batch(&trace, 16).unwrap().unwrap();
         assert!(batch.targets.is_some());
         verify_pc_batch(&trace, 16, Some(&batch)).unwrap();
+        let mut bad = trace.clone();
+        bad.rows[0].next_pc = bad.rows[0].next_pc.wrapping_add(4);
+        assert!(verify_pc_batch(&bad, 16, Some(&batch)).is_err());
     }
 
     #[test]
@@ -209,6 +212,26 @@ mod tests {
         let proof = prove_pc_transition_batch(16, &rows).unwrap();
         verify_pc_transition_batch(16, rows.len(), &proof).unwrap();
     }
+}
+
+pub fn verify_pc_transition_batch_bound(
+    width: usize,
+    rows: &[(u64, u64, bool)],
+    proof: &magnetar_proof::SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>,
+) -> Result<(), crate::RuntimeError> {
+    use magnetar_proof::{verify_shared_simd_spartan_with_witnesses, witness_vector};
+    let row = PcTransitionRow::new(width);
+    let system = row.packed_system();
+    let mut witnesses = Vec::new();
+    for (pc, target, sequential) in rows {
+        let bits = row.witness(*pc, *target, *sequential);
+        witnesses.push(row.relation.to_witness(&bits));
+    }
+    let _ = witness_vector(&system, &witnesses[0])
+        .map_err(|error| crate::RuntimeError::Proof(error.to_string()))?;
+    let pcs = magnetar_pcs::P3BinaryPcs::new(100);
+    verify_shared_simd_spartan_with_witnesses(&system, &witnesses, proof, &pcs)
+        .map_err(|error| crate::RuntimeError::Proof(error.to_string()))
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -316,11 +339,39 @@ pub fn verify_pc_batch(
         let Some(proof) = &batch.targets else {
             return Err(crate::RuntimeError::Proof("missing PC target proof".into()));
         };
-        crate::pc_target_row::verify_pc_target_batch(width, target_count, proof)?;
+        let mut target_rows = trace
+            .rows
+            .iter()
+            .filter(|row| row.next_pc != row.pc.wrapping_add(4))
+            .map(|row| {
+                let jalr = matches!(row.instruction.op, magnetar_spec::Op::Jalr);
+                (
+                    if jalr { row.rs1_val } else { row.pc },
+                    row.instruction.imm as u64,
+                    jalr,
+                    row.next_pc,
+                )
+            })
+            .collect::<Vec<_>>();
+        while !target_rows.len().is_power_of_two() {
+            target_rows.push((0, 0, false, 0));
+        }
+        crate::pc_target_row::verify_pc_target_batch_bound(width, &target_rows, proof)?;
     } else if batch.targets.is_some() {
         return Err(crate::RuntimeError::Proof(
             "unexpected PC target proof".into(),
         ));
     }
-    verify_pc_transition_batch(width, count, &batch.proof)
+    let mut rows = trace
+        .rows
+        .iter()
+        .map(|row| {
+            let sequential = row.next_pc == row.pc.wrapping_add(4);
+            (row.pc, if sequential { 0 } else { row.next_pc }, sequential)
+        })
+        .collect::<Vec<_>>();
+    while !rows.len().is_power_of_two() {
+        rows.push((0, 0, true));
+    }
+    verify_pc_transition_batch_bound(width, &rows, &batch.proof)
 }
