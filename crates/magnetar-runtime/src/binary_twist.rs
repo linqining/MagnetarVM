@@ -784,6 +784,10 @@ pub(crate) struct BatchTables {
     pub initial: P3MosaicTable,
     pub read_value: P3MosaicTable,
     pub write_value: P3MosaicTable,
+    #[allow(dead_code)]
+    pub read_value_bits: Vec<P3MosaicTable>,
+    #[allow(dead_code)]
+    pub read_address_bits: Vec<P3MosaicTable>,
     pub address_bits: usize,
     pub cycle_bits: usize,
     pub final_values: Vec<F2_128>,
@@ -859,6 +863,19 @@ pub(crate) fn batch_tables(witness: &BinaryTwistWitness) -> Result<BatchTables, 
     read_value.resize(cycles_padded, F2_128::from(0u64));
     let mut write_value = witness.write_value.clone();
     write_value.resize(cycles_padded, F2_128::from(0u64));
+    let mut read_value_bits = vec![vec![F2_128::from(0u64); cycles_padded]; witness.cell_bits];
+    let mut read_address_bits = vec![vec![F2_128::from(0u64); cycles_padded]; address_bits];
+    for cycle in 0..witness.cycles {
+        let value = witness.read_value[cycle].value();
+        for bit in 0..witness.cell_bits {
+            read_value_bits[bit][cycle] = F2_128::from((value >> bit) & 1);
+        }
+        if let Some(cell) = one_hot_address(&witness.read_address[cycle]) {
+            for bit in 0..address_bits {
+                read_address_bits[bit][cycle] = F2_128::from(((cell >> bit) & 1) as u64);
+            }
+        }
+    }
     let mut initial = witness.initial.clone();
     initial.resize(
         witness.initial.len().next_power_of_two().max(2),
@@ -878,6 +895,18 @@ pub(crate) fn batch_tables(witness: &BinaryTwistWitness) -> Result<BatchTables, 
         write_value: P3MosaicTable {
             columns: vec![write_value],
         },
+        read_value_bits: read_value_bits
+            .into_iter()
+            .map(|column| P3MosaicTable {
+                columns: vec![column],
+            })
+            .collect(),
+        read_address_bits: read_address_bits
+            .into_iter()
+            .map(|column| P3MosaicTable {
+                columns: vec![column],
+            })
+            .collect(),
         address_bits,
         cycle_bits,
         final_values: witness.final_value.clone(),

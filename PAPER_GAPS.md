@@ -3624,3 +3624,12 @@ concatenates them, `pad_values` gathers and `unpad_values` scatters. Memory owne
 segments are aggregated across cycles (`memory_addr`, `memory_data`), while CPU
 ranges remain per-cycle. The PC/RAM/shift fill tests and metadata round-trip pass
 with the gather layout.
+
+
+### B5: aggregate RAM claim from component bit columns
+
+`batch_tables` now also exposes `read_value_bits` and `read_address_bits`
+(per-bit columns over cycles). `aggregate_ram_claim_matches_component_bit_columns`
+checks the aggregate `memory_data` segment evaluation against the weighted sum of
+component bit-column evaluations at the cycle point; they match. This is the
+claim-replacement equation for RAM data.
