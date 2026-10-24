@@ -148,7 +148,7 @@ E5/E6 单 packed PCS/Ligerito 集成。
 | B1 | 两个 SIMD R1CS 关系共享一个 bit-valued witness：一个 over `F2`，一个 over `F2_128`（§5.1） | `constraint::simd` 现有 `SimdR1cs`/`DualSimdR1cs`，并支持 `combined_system` + `combined_witness`（q 个 instance 的 block-diagonal 编码）；CPU 仍是单一 `ConstraintSystem`，尚未转成统一 SIMD 矩阵 | 🟡 | 设计两套矩阵 `A1/B1/C1`、`A2/B2/C2`；共享 witness；cross-step constraints；CPU 转换 |
 | B2 | BinarySpartan：SIMD Spartan + binary witness packing（128 bits per field element）+ ring switching（§4.3） | `magnetar-proof` 的参考 Spartan；`constraint::simd::pack_binary`/`unpack_binary` 已实现 128-bit packing；`prove_simd_spartan`/`verify_simd_spartan` 提供 block-diagonal SIMD proof 路径；共享矩阵优化、binary-witness evaluation claim、ring switching 未实现 | 🟡 | 实现共享矩阵 SIMD reduction、binary-witness evaluation claim、ring switching |
 | B3 | Virtual Spartan：联合两个 SIMD 关系，lockstep outer sum-check，共享 inner sum-check，per-segment claims（§5.3） | unified CPU 使用 `LockstepProof`，segment claims 重建 claim；`BitRelation`/F2 product（extension challenges）；新增 `magnetar-pcs::f2::F2Pcs`：把 F2 bits 嵌入 P3 `F2_128` 做 succinct opening；尚未接 CPU、不是原生 F2 Ligerito | 🟡 | 把 F2 relation 接进 CPU；原生 F2 PCS |
-| B4 | 两个 outer sum-check 共享 instance challenge，inner 只跑一次（§5.3） | 无 | ❌ | 与 B3 一起实现 |
+| B4 | 两个 outer sum-check 共享 instance challenge，inner 只跑一次（§5.3） | `prove_lockstep_claims_bits` 用一个 outer product6 合并两个关系，用一个 inner product2 合并 `a+r b+r²c`，共享同一 commitment/opening | ✅ | 已实现；native F2 backend 也可走同一 lockstep |
 | B5 | 直接段 claims 进 PCS；虚拟段 claims 分发给 Twist/Shout/Router（§5.3） | 所有段都在 `z` 中提交；没有虚拟段 claim 路由 | ❌ | 需要 segment layout + claim router |
 | B6 | sum-check 优化：univariate skip、Frobenius one-hot check、degree reduction 等（§4.2–4.4） | 参考实现，逐轮朴素 sum-check | ❌ | 性能优化项；不影响语义 |
 | B7 | 稀疏矩阵/结构矩阵 verifier 直接求值（§4.2 Remark） | 参考实现直接构造/使用矩阵 | 🟡 | 预计算 public matrices；避免 verifier 重建 |
@@ -160,8 +160,8 @@ E5/E6 单 packed PCS/Ligerito 集成。
 |---|---|---|---|---|
 | C1 | fetch-decode-execute，一个 micro-PC 对应 bytecode 表一行（§2、§5.5） | executor 支持 RV64I/M/A/C；preprocess 仍是“一 instruction = 一 micro-op” | 🟡 | bytecode table、instruction expansion、micro-PC |
 | C2 | 每个 SIMD instance 覆盖若干连续 cycle，cross-step constraints 在 instance 内/间链接（§5.1） | 每行 relation 或 merged system；无 SIMD instance 概念 | ❌ | 与 B1/B3 一起实现 |
-| C3 | PC linkage 在 proof 内检查（§5.5） | `check_trace_linkage` 在 verifier 重建 trace 后做；不在 R1CS 内 | ❌ | 把 PC/micro-PC 链放进 SIMD R1CS 或 Shout claim |
-| C4 | reservation chain 在 proof 内检查（§5.1/§5.5） | trace 记录 reservation；verifier 检查；不在 R1CS 内 | ❌ | 加 reservation 约束/segment |
+| C3 | PC linkage 在 proof 内检查（§5.5） | gated CPU row 约束 `next_pc=pc+4`/jump/branch target，shared matrix 链接 `next_pc(i)->pc(i+1)`；`gated_bundle_rejects_tampered_pc` 验证 verifier 绑定 rows 到 commitment | 🟡 | gated/shared 路径已在 proof 内；chunked/trace 路径仍做 trace linkage |
+| C4 | reservation chain 在 proof 内检查（§5.1/§5.5） | `ReservationCpuRow` 把 reservation transition 并入 shared CPU relation；shared-CPU 路径的 witness 绑定已修复 | 🟡 | shared-CPU 路径在 proof 内；standalone reservation bundle 仍可独立验证 |
 | C5 | 初始/最终 public state 绑定在 proof 内（§5.1） | `Statement` + trace digest 绑定；R1CS 不直接约束 initial/final | 🟡 | 在 R1CS 中绑定 initial/final rows |
 | C6 | RV64I 核心（论文范围） | RV64I/M/A/C 已覆盖；F/D 只有 decoder | ✅/🟡 | F/D 是仓库扩展，不是论文 RV64I 核心；若要完整 RV64G 需补执行/proof |
 | C7 | 任意 aligned sub-word load/store；跨 word 的 unaligned 访问 | executor 拒绝 unaligned；proof 支持 word 内所有对齐宽度 | 🟡 | 论文只要求 sub-word store 在 word 内；跨 word 是扩展 |
@@ -172,10 +172,10 @@ E5/E6 单 packed PCS/Ligerito 集成。
 | # | 论文要求（§） | 当前实现 | 状态 | 剩余工作 |
 |---|---|---|---|---|
 | D1 | BinaryTwist for RAM（p=1 read + 1 write） | `binary_twist.rs`：bit-sliced 虚拟地址、虚拟 `Val`/`Next`、紧凑 `Inc`、read/write/final/booleanity sum-check、P3 claims | ✅ | 语义已具备；性能/LT 见 D5 |
-| D2 | BinaryTwist for registers（p=2 reads + 1 write） | `register_twist.rs` 把 rs1/rs2/rd 编码为两个 Twist 子 cycle；已接入 `TraceAccessProof` / unified shared P3 opening；register Merkle fields/steps 已移除，register Twist 是唯一 register consistency proof；不是论文的单周期 p=2 布局 | 🟡 | 把两相编码改成单周期 p=2（或明确说明等价编码） |
+| D2 | BinaryTwist for registers（p=2 reads + 1 write） | `register_twist.rs` 用两相子 cycle 编码 rs1/rs2/rd，`register_twist_two_phase_shape` 验证每行两个 read 和第二个子 cycle 的 write，`docs/register-twist-equivalence.md` 证明与单周期 p=2 的 read-before-write 语义等价；register Merkle fields/steps 已移除，register Twist 是唯一 register consistency proof | ✅ | 采用论文允许的等价 specialization；单周期布局只作为性能优化 |
 | D3 | 地址虚拟化：`d` 个 component polynomials，每个 `K^(1/d) × T`（§4.4） | bit-sliced：`a` 个地址 bit + valid，等价于 `d=a` 的 2-entry components；这是论文允许的合法特化 | ✅ | 若要任意 `d` 的 packed components，可作为性能扩展 |
 | D4 | one-hot/collision polynomial，Frobenius 优化（§4.4） | cell-column one-hot multiplicity claim；claim transcript 改绑 `table_binding`；**PackedSharedPcs 端到端测试通过**（cell columns + packed commit/open/verify）；尚未接 unified；collision 尚未 shared；Frobenius 未做 | 🟡 | 把 packed cell-column claim 接进 unified；collision shared；Frobenius 属 B6 |
-| D5 | `LT` 线性时间处理（§4.4） | `LT` 物化 `T × T`，prover 二次；已记录 TODO | ❌ | 线性时间 `LT` 是研究项；当前不能扩展到大 T |
+| D5 | `LT` 线性时间处理（§4.4） | `lt_mle` 使用前缀公式，测试 `lt_mle_matches_quadratic` 对比物化二次结果 | ✅ | 已实现 |
 | D6 | `Inc` 紧凑表、`Val`/`Next` 虚拟 | 已实现 | ✅ | 保持 |
 | D7 | BinaryShout for bytecode：公开表 `Val` 有 `c` 列，读地址 bits + 所有 value columns 一个 sum-check；bytecode 表含 micro-PC/decoded fields（§4.4、§5.5） | `binary_shout.rs`：16/32-bit ROM 读取，`c=12` columns（word、length、opcode、rd、rs1、rs2、imm、shift kind/shamt、store width、micro-PC、is_halt）；metadata 直接来自 public `preprocess` bytecode table；仍是一 instruction = 一 micro-op，无 expansion | 🟡 | instruction expansion/micro-PC 细化；把 selector columns 接到 Router 的 `Q` |
 | D8 | Shout 的地址虚拟化/one-hot 检查 | bit-sliced fetch 地址 + booleanity；valid 列；`d=a` 特化 | ✅ | 同 D3，合法特化 |
