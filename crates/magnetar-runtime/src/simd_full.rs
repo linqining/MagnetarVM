@@ -212,9 +212,10 @@ mod tests {
 ///
 /// Supported rows are ALU XOR/AND/ADD and load/store rows; anything else ends
 /// the slice. The slice length is truncated to the largest power of two.
-pub fn gated_rows_from_trace(
+fn gated_rows_from_trace_impl(
     trace: &Trace,
     _width: usize,
+    truncate: bool,
 ) -> Result<Vec<(u64, crate::simd_f2::GatedCpuRowInput)>, RuntimeError> {
     use crate::simd_f2::{GatedAluOp, GatedCpuRowInput};
     use magnetar_cpu::StepOp;
@@ -437,9 +438,18 @@ pub fn gated_rows_from_trace(
             "trace has no supported gated rows".into(),
         ));
     }
-    let power = 1usize << (usize::BITS - 1 - rows.len().leading_zeros()) as usize;
-    rows.truncate(power);
+    if truncate {
+        let power = 1usize << (usize::BITS - 1 - rows.len().leading_zeros()) as usize;
+        rows.truncate(power);
+    }
     Ok(rows)
+}
+
+pub fn gated_rows_from_trace(
+    trace: &Trace,
+    width: usize,
+) -> Result<Vec<(u64, crate::simd_f2::GatedCpuRowInput)>, RuntimeError> {
+    gated_rows_from_trace_impl(trace, width, true)
 }
 
 /// Full gated row batch padded to the next power of two with Nop ALU rows.
@@ -447,7 +457,7 @@ pub fn gated_rows_from_trace_padded(
     trace: &Trace,
     width: usize,
 ) -> Result<Vec<(u64, crate::simd_f2::GatedCpuRowInput)>, RuntimeError> {
-    let mut rows = gated_rows_from_trace(trace, width)?;
+    let mut rows = gated_rows_from_trace_impl(trace, width, false)?;
     let target = trace.rows.len().next_power_of_two().max(2);
     let last_pc = rows.last().map(|(pc, _)| *pc).unwrap_or(0);
     while rows.len() < target {
@@ -467,6 +477,76 @@ pub fn gated_rows_from_trace_padded(
 #[cfg(test)]
 mod gated_trace_tests {
     use super::*;
+
+    #[test]
+    fn padded_alu_rows_prove() {
+        use crate::simd_dual::{prove_gated_dual_batch_bits, verify_gated_dual_batch_bits};
+        use magnetar_executor::execute;
+        use magnetar_pcs::P3SharedPcs;
+        use magnetar_proof::DirectBitPcs;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 5,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Add,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 1,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Xor,
+                    rd: 3,
+                    rs1: 2,
+                    rs2: 1,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 4,
+                    rs1: 3,
+                    rs2: 0,
+                    imm: 1,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let rows = gated_rows_from_trace_padded(&trace, 8).unwrap();
+        assert_eq!(rows.len(), 8);
+        let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+        let backend = DirectBitPcs::new(pcs);
+        let (proof, layout) = prove_gated_dual_batch_bits(8, &rows, &backend).unwrap();
+        verify_gated_dual_batch_bits(8, &rows, &proof, &layout, &backend).unwrap();
+    }
 
     #[test]
     fn padded_trace_covers_ecall() {

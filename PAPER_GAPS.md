@@ -2951,3 +2951,16 @@ The padded batch does **not** yet prove successfully through
 `prove_gated_dual_batch_bits` (sumcheck claim mismatch), so this is coverage-only;
 the shared-matrix relation needs a real Nop selector or consistent PC/next-PC
 witness before unified CPU integration.
+
+
+### B: padded full-row gated batch now proves
+
+`gated_rows_from_trace_impl(..., truncate)` now separates the legacy truncated
+view from the full row list. `gated_rows_from_trace_padded` uses the full list
+and pads with zero ALU rows to the next power of two.
+`padded_alu_rows_prove` proves/verifies a 5-row trace (4 ALU + Ecall) padded to
+8 rows through the shared-matrix dual backend. Ecall maps to a satisfiable zero
+ALU row.
+
+AMO/LR/SC still map to a zero ALU fallback rather than a semantic row, so their
+CPU facets are not yet in the shared matrix.
