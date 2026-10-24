@@ -3873,3 +3873,11 @@ second 9-var table. P3 opens and verifies this synthetic schedule. The real
 failure therefore depends on additional unified tables/schedule state, not just
 the router table shape or multi-point batches; the standalone shift-Router
 fallback stays in place until the exact combined schedule is minimized.
+
+
+### G3: branch workload
+
+The suite now also runs a branchy program (Beq/Bne loops, 19 rows, 115,367 B
+at width 16). All five workloads prove and verify. A backward-branch Fibonacci
+variant was dropped from the probe because its hand-written immediate pointed at
+the wrong byte offset (cycle limit), not because of a proof failure.

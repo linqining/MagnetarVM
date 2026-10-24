@@ -110,6 +110,30 @@ fn workloads() -> Vec<(&'static str, ProgramImage)> {
         }
         .encode(),
     ]);
+    let branchy = program(vec![
+        addi(1, 0, 5),
+        addi(2, 0, 0),
+        Instruction {
+            op: Op::Beq,
+            rd: 0,
+            rs1: 2,
+            rs2: 1,
+            imm: 8,
+            shamt: 0,
+        }
+        .encode(),
+        addi(2, 2, 1),
+        Instruction {
+            op: Op::Bne,
+            rd: 0,
+            rs1: 2,
+            rs2: 1,
+            imm: -8,
+            shamt: 0,
+        }
+        .encode(),
+        addi(2, 2, 3),
+    ]);
     let alu = program(
         (1..=24)
             .map(|index| {
@@ -129,6 +153,7 @@ fn workloads() -> Vec<(&'static str, ProgramImage)> {
         ("fibonacci", fib),
         ("memory", memory),
         ("shifts", shifts),
+        ("branchy", branchy),
         ("alu", alu),
     ]
 }
