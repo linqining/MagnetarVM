@@ -3547,3 +3547,12 @@ bit range. RamBits/RouterBits projections remain.
 memory `data` subsegment (accounting for `memory_offset`), and compares it
 bit-for-bit with the BinaryTwist `read_value` low bits. The memory data bits are
 the RAM value bits; address projection still needs the RAM-base affine offset.
+
+
+### B5: RouterBits projection verified
+
+`router_shift_bits_match_gated_shift_subsegment` compares the gated shift
+subsegment with the Router witness for a shift trace: `is_shift` matches for
+every cycle, and the gated shamt bits match the Router `shift_q` one-hot column.
+Together with PcBits and RamBits data, each owner now has a verified projection
+prototype.

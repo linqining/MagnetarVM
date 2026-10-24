@@ -1524,6 +1524,63 @@ mod projection_tests {
     use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 
     #[test]
+    fn router_shift_bits_match_gated_shift_subsegment() {
+        let program = ProgramImage::new(
+            0x10,
+            vec![
+                Instruction {
+                    op: Op::Slli,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 5,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let config = MachineConfig {
+            entry: 0x10,
+            rom_base: 0x10,
+            ram_base: 0x40,
+            ram_size: 0x40,
+            stack_top: 0x80,
+            max_cycles: 8,
+        };
+        let trace = execute(&program, config).unwrap();
+        let router = crate::binary_router::BinaryRouterWitness::from_trace_mode(
+            &trace,
+            crate::binary_router::RouterMode::Shifts,
+        )
+        .unwrap();
+        let rows =
+            crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, 16).unwrap();
+        let cpu = crate::reservation_cpu_row::ReservationCpuRow::new(16);
+        for (index, (pc, input)) in rows.iter().enumerate() {
+            let gated_bits = cpu.witness(*pc, *input);
+            let is_shift = gated_bits[cpu.cpu.shift_offset + cpu.cpu.shift.is_shift];
+            assert_eq!(
+                is_shift,
+                router.is_shift[index].value() == 1,
+                "is_shift mismatch at {index}"
+            );
+            if is_shift {
+                let mut shamt = 0u64;
+                for bit in 0..4 {
+                    if gated_bits[cpu.cpu.shift_offset + cpu.cpu.shift.sll.shamt[bit]] {
+                        shamt |= 1 << bit;
+                    }
+                }
+                let router_shamt = (0..64)
+                    .find(|value| router.shift_q[*value][index].value() == 1)
+                    .unwrap_or(0) as u64;
+                assert_eq!(shamt, router_shamt, "shift shamt mismatch at {index}");
+            }
+        }
+    }
+
+    #[test]
     fn ram_data_bits_match_twist_read_value() {
         let mut data = vec![0u8; 8];
         data.copy_from_slice(&0x1122_3344_5566_7788u64.to_le_bytes());
