@@ -131,6 +131,116 @@ impl BinaryTwistWitness {
         })
     }
 
+    /// Full-cycle RAM witness: one Twist cycle per trace row, with idle reads
+    /// at word 0 for rows that do not perform a memory access.
+    pub fn from_trace_full_cycles(trace: &Trace) -> Result<Self, MemoryError> {
+        let cells = trace.config.ram_size / 8;
+        if cells == 0 || !cells.is_power_of_two() {
+            return Err(MemoryError::InvalidBinaryTwist(
+                "RAM must contain a power-of-two number of words".into(),
+            ));
+        }
+        let address_bits = cells.trailing_zeros() as usize;
+        let mut current = vec![F2_128::from(0u64); cells];
+        for (index, chunk) in trace.initial_ram.chunks_exact(8).enumerate() {
+            current[index] =
+                F2_128::from(u64::from_le_bytes(chunk.try_into().expect("eight bytes")));
+        }
+        let initial = current.clone();
+        let mut read_address = Vec::new();
+        let mut write_address = Vec::new();
+        let mut increment = Vec::new();
+        let mut value = Vec::new();
+        let mut read_value = Vec::new();
+        let mut write_value = Vec::new();
+        for row in &trace.rows {
+            if !row.extra_mem.is_empty() {
+                return Err(MemoryError::InvalidBinaryTwist(
+                    "full-cycle RAM witness does not support extra_mem rows".into(),
+                ));
+            }
+            value.push(current.clone());
+            let Some(access) = row.mem else {
+                let mut read = vec![F2_128::from(0u64); cells];
+                read[0] = F2_128::from(1u64);
+                read_address.push(read);
+                write_address.push(vec![F2_128::from(0u64); cells]);
+                increment.push(F2_128::from(0u64));
+                read_value.push(current[0]);
+                write_value.push(F2_128::from(0u64));
+                continue;
+            };
+            let width = usize::from(access.width);
+            if width == 0 || width > 8 {
+                return Err(MemoryError::InvalidBinaryTwist(
+                    "BinaryTwist supports 1..=8 byte accesses".into(),
+                ));
+            }
+            let offset = access
+                .addr
+                .checked_sub(trace.config.ram_base)
+                .ok_or_else(|| {
+                    MemoryError::InvalidBinaryTwist(format!(
+                        "address {:#x} is below the RAM base",
+                        access.addr
+                    ))
+                })?;
+            let word = usize::try_from(offset / 8)
+                .map_err(|_| MemoryError::InvalidBinaryTwist("address overflows usize".into()))?;
+            let lane = usize::try_from(offset % 8).expect("lane fits");
+            if lane + width > 8 || word >= cells {
+                return Err(MemoryError::InvalidBinaryTwist(
+                    "access is outside the RAM table".into(),
+                ));
+            }
+            let old = current[word];
+            read_value.push(old);
+            let (read, write, delta, written) = if access.is_write {
+                let mask = if width == 8 {
+                    u64::MAX
+                } else {
+                    ((1u64 << (width * 8)) - 1) << (lane * 8)
+                };
+                let shifted = access.value.wrapping_shl((lane * 8) as u32);
+                let new = F2_128::from(((old.value() as u64) & !mask) | (shifted & mask));
+                let mut read_one_hot = vec![F2_128::from(0u64); cells];
+                read_one_hot[word] = F2_128::from(1u64);
+                let mut one_hot = vec![F2_128::from(0u64); cells];
+                one_hot[word] = F2_128::from(1u64);
+                (read_one_hot, one_hot, old + new, new)
+            } else {
+                let mut one_hot = vec![F2_128::from(0u64); cells];
+                one_hot[word] = F2_128::from(1u64);
+                (
+                    one_hot,
+                    vec![F2_128::from(0u64); cells],
+                    F2_128::from(0u64),
+                    F2_128::from(0u64),
+                )
+            };
+            read_address.push(read);
+            write_address.push(write);
+            increment.push(delta);
+            write_value.push(written);
+            if access.is_write {
+                current[word] = written;
+            }
+        }
+        Ok(Self {
+            address_bits,
+            cell_bits: 64,
+            cycles: value.len(),
+            initial,
+            read_address,
+            write_address,
+            increment,
+            value,
+            read_value,
+            write_value,
+            final_value: current,
+        })
+    }
+
     pub fn validate(&self) -> Result<(), MemoryError> {
         let cells = self.initial.len();
         if self.cycles != self.value.len()
@@ -314,5 +424,24 @@ mod tests {
         let mut tampered = witness;
         tampered.value[1][0] = tampered.value[1][0] + F2_128::from(1u64);
         assert!(tampered.validate().is_err());
+    }
+
+    #[test]
+    fn full_cycle_witness_has_one_cycle_per_trace_row() {
+        let trace = execute(&loading_program(), config()).unwrap();
+        let witness = BinaryTwistWitness::from_trace_full_cycles(&trace).unwrap();
+        witness.validate().unwrap();
+        assert_eq!(witness.cycles, trace.rows.len());
+        let events = BinaryTwistWitness::from_trace(&trace).unwrap();
+        let mut event = 0usize;
+        for (cycle, row) in trace.rows.iter().enumerate() {
+            if row.mem.is_some() {
+                assert_eq!(witness.read_value[cycle], events.read_value[event]);
+                assert_eq!(witness.write_value[cycle], events.write_value[event]);
+                event += 1;
+            }
+        }
+        assert_eq!(event, events.cycles);
+        assert_eq!(witness.final_value[0], F2_128::from(7u64));
     }
 }

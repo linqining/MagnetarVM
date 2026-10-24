@@ -3576,3 +3576,12 @@ fills the gated memory `data` and `adder.out` bits from the BinaryTwist
 `read_value`/`read_address` (affine `ram_base + 8*word`). Both then pad the
 virtual witness and unpad back to the original CPU z; the reconstruction equals
 z. `shift_subsegment_is_filled_from_router` fills the gated `is_shift` and shamt bits from the Router `is_shift`/`shift_q` columns. PC, RAM and Router owners now all have component-driven virtual segment fill that reconstructs CPU z.
+
+
+### B5: full-cycle RAM Twist witness
+
+`BinaryTwistWitness::from_trace_full_cycles` emits one Twist cycle per trace row,
+using an idle read at word 0 for non-memory rows. The test verifies one cycle per
+row, `validate()`, and that memory-row `read_value`/`write_value` match the
+event-indexed witness. This aligns the RAM domain with the gated/ Router cycle
+domain for component claims.
