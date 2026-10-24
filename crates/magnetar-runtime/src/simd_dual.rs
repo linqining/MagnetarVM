@@ -783,6 +783,81 @@ pub(crate) fn reservation_claim_matrices(
 }
 
 #[allow(dead_code, clippy::type_complexity)]
+pub(crate) fn reservation_grouped_lockstep(
+    width: usize,
+    rows: &[(u64, crate::reservation_cpu_row::ReservationCpuInput)],
+    group: usize,
+) -> Result<
+    (
+        Vec<F2_128>,
+        [magnetar_proof::SharedBlockMatrix; 3],
+        [magnetar_proof::SharedBlockMatrix; 3],
+        magnetar_constraint::WitnessLayout,
+    ),
+    RuntimeError,
+> {
+    use magnetar_constraint::{Segment, SegmentKind, SegmentOwner, WitnessLayout};
+    use magnetar_proof::spartan::MatrixPart;
+    use magnetar_proof::SharedBlockMatrix;
+    let cycles = rows.len();
+    let groups = cycles / group;
+    let (system, z, row_cols) = grouped_gated_system(width, rows, group)?;
+    let block_cols = (system.num_vars + 1).next_power_of_two();
+    let row = crate::reservation_cpu_row::ReservationCpuRow::new(width);
+    let mut extra_a = Vec::new();
+    let mut extra_b = Vec::new();
+    let mut extra_c = Vec::new();
+    for instance in 0..groups.saturating_sub(1) {
+        for bit in 0..width {
+            extra_a.push(vec![(
+                instance * block_cols + (group - 1) * row_cols + row.cpu.next_pc[bit],
+                F2_128::from(1u64),
+            )]);
+            extra_b.push(vec![(
+                instance * block_cols + (group - 1) * row_cols + row.cpu.alu.one,
+                F2_128::from(1u64),
+            )]);
+            extra_c.push(vec![(
+                (instance + 1) * block_cols + row.cpu.pc[bit],
+                F2_128::from(1u64),
+            )]);
+        }
+    }
+    let zero = vec![Vec::new(); extra_a.len()];
+    let a0 = SharedBlockMatrix::from_system(&system, MatrixPart::A, groups)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(zero.clone());
+    let b0 = SharedBlockMatrix::from_system(&system, MatrixPart::B, groups)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(zero.clone());
+    let c0 = SharedBlockMatrix::from_system(&system, MatrixPart::C, groups)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(zero);
+    let a1 = SharedBlockMatrix::from_system(&system, MatrixPart::A, groups)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(extra_a);
+    let b1 = SharedBlockMatrix::from_system(&system, MatrixPart::B, groups)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(extra_b);
+    let c1 = SharedBlockMatrix::from_system(&system, MatrixPart::C, groups)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_rows(extra_c);
+    let segments = (0..groups)
+        .map(|instance| {
+            Segment::new(
+                format!("group{instance}"),
+                instance * block_cols,
+                block_cols,
+                SegmentKind::Direct,
+                SegmentOwner::Cpu,
+            )
+        })
+        .collect::<Vec<_>>();
+    let layout =
+        WitnessLayout::new(segments).map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok((z, [a0, b0, c0], [a1, b1, c1], layout))
+}
+
 pub(crate) fn reservation_virtual_specs(
     width: usize,
     cycles: usize,
@@ -2067,6 +2142,72 @@ mod virtual_spec_tests {
         assert!(
             prove_lockstep_bits(&bits, &a0, &b0, &c0, &a1, &b1, &c1, &layout, &backend,).is_err()
         );
+    }
+
+    #[test]
+    fn grouped_lockstep_layout_round_trips() {
+        use magnetar_pcs::P3BinaryPcs;
+        use magnetar_proof::{prove_lockstep_bits, verify_lockstep_bits, DirectBitPcs};
+        let width = 8usize;
+        let program = magnetar_spec::ProgramImage::new(
+            0x10,
+            vec![
+                magnetar_spec::Instruction {
+                    op: magnetar_spec::Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 1,
+                    shamt: 0,
+                }
+                .encode(),
+                magnetar_spec::Instruction {
+                    op: magnetar_spec::Op::Addi,
+                    rd: 2,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 2,
+                    shamt: 0,
+                }
+                .encode(),
+                magnetar_spec::Instruction {
+                    op: magnetar_spec::Op::Addi,
+                    rd: 3,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 3,
+                    shamt: 0,
+                }
+                .encode(),
+                magnetar_spec::Instruction::new(magnetar_spec::Op::Ecall).encode(),
+            ],
+        );
+        let trace = magnetar_executor::execute(
+            &program,
+            magnetar_spec::MachineConfig {
+                entry: 0x10,
+                rom_base: 0x10,
+                ram_base: 0x1000_0000,
+                ram_size: 0x1000,
+                stack_top: 0x1000_1000,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let rows = crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, width)
+            .unwrap();
+        let (z, a0, a1, layout) = super::reservation_grouped_lockstep(width, &rows, 2).unwrap();
+        assert_eq!(z.len(), layout.total_bits);
+        let bits = z.iter().map(|value| value.value() == 1).collect::<Vec<_>>();
+        let backend = DirectBitPcs::new(P3BinaryPcs::new(100));
+        let proof = prove_lockstep_bits(
+            &bits, &a0[0], &a0[1], &a0[2], &a1[0], &a1[1], &a1[2], &layout, &backend,
+        )
+        .unwrap();
+        verify_lockstep_bits(
+            &a0[0], &a0[1], &a0[2], &a1[0], &a1[1], &a1[2], &layout, &proof, &backend,
+        )
+        .unwrap();
     }
 
     #[test]

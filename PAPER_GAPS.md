@@ -3926,3 +3926,10 @@ grouped witness. Verification passes; flipping the first PC of the second
 instance makes proving fail. This exercises the multi-cycle base relation,
 intra-instance cross-step rows, and inter-instance boundary rows together.
 Runtime layout/PCS grouping and the virtual claim layout are still open.
+
+
+`reservation_grouped_lockstep` packages the grouped witness, the two grouped
+shared-matrix relations (inter-instance boundary rows included), and a
+per-instance `WitnessLayout`. `grouped_lockstep_layout_round_trips` commits that
+layout and runs `prove_lockstep_bits`/`verify_lockstep_bits` end to end. The
+grouping is not yet selected by the unified runtime path.
