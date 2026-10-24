@@ -915,6 +915,7 @@ pub fn prove_trace_access(trace: &Trace) -> Result<TraceAccessProof, RuntimeErro
     Ok(TraceAccessProof { registers, ram })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prove_trace_access_shared(
     trace: &Trace,
     witness: &BinaryTwistWitness,
@@ -922,10 +923,11 @@ pub(crate) fn prove_trace_access_shared(
     commitment: &P3MosaicCommitment,
     register_witness: &BinaryTwistWitness,
     register_tables: &BatchTables,
+    ram_index: usize,
     register_index: usize,
 ) -> Result<(TraceAccessProof, MosaicClaims, MosaicClaims), RuntimeError> {
     check_trace_access_bindings(trace, witness)?;
-    let (ram, ram_claims) = prove_binary_twist_claims(tables, witness, commitment, 1)
+    let (ram, ram_claims) = prove_binary_twist_claims(tables, witness, commitment, ram_index)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let (registers, register_claims) = prove_binary_twist_claims(
         register_tables,
@@ -961,12 +963,14 @@ pub fn verify_trace_access(trace: &Trace, proof: &TraceAccessProof) -> Result<()
     check_trace_access_bindings(trace, &witness)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn verify_trace_access_shared(
     trace: &Trace,
     proof: &TraceAccessProof,
     witness: &BinaryTwistWitness,
     commitment: &P3MosaicCommitment,
     register_witness: &BinaryTwistWitness,
+    ram_index: usize,
     register_index: usize,
 ) -> Result<(MosaicClaims, MosaicClaims), RuntimeError> {
     if proof.ram.opening.is_some() {
@@ -980,7 +984,7 @@ pub(crate) fn verify_trace_access_shared(
         ));
     }
     check_trace_access_bindings(trace, witness)?;
-    let Some(ram_claims) = verify_binary_twist_claims(witness, &proof.ram, commitment, 1)
+    let Some(ram_claims) = verify_binary_twist_claims(witness, &proof.ram, commitment, ram_index)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?
     else {
         return Err(RuntimeError::Proof(
@@ -1048,6 +1052,7 @@ pub struct UnifiedTraceProof {
     pub amo: Option<crate::amo_bundle::AmoBundleProof>,
     pub shape: crate::cpu_shape::CpuShape,
     pub register_index: usize,
+    pub ram_index: usize,
     pub shout_index: Option<usize>,
     pub shift_router_index: Option<usize>,
     pub store_router_index: Option<usize>,

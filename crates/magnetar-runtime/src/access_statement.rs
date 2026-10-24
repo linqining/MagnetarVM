@@ -123,6 +123,7 @@ impl AccessStatement {
             &memory,
             &proof.commitment,
             &registers,
+            proof.ram_index,
             proof.register_index,
         )
     }
@@ -156,7 +157,7 @@ pub fn access_claims_from_proof(
     let ram = crate::binary_twist::verify_binary_twist_from_proof(
         &proof.access.ram,
         &proof.commitment,
-        1,
+        proof.ram_index,
     )
     .map_err(|error| crate::RuntimeError::Proof(error.to_string()))?
     .ok_or_else(|| crate::RuntimeError::Proof("RAM access claims rejected".into()))?;

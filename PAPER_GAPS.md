@@ -3021,3 +3021,13 @@ Benchmark: 176,128 B, larger than 161,343 B because the full gated z table and
 reservation columns are bigger than the removed CPU proof/table points. This is
 the architectural B switch, not a size win yet; removing the now-unused CPU
 table 0 and shifting indexes is the next step.
+
+
+### B: CPU table removed from the shared commitment
+
+When the full gated batch is present, the prover no longer commits the per-row
+CPU z table; the RAM table moves to index 0. `UnifiedTraceProof.ram_index`
+records this, and access proving/verification use it instead of hard-coded 1.
+Table-0 opening points are omitted. All targeted unified tests pass with no CPU
+lockstep claims. Benchmark: 176,952 B (still larger than the per-row build
+because the full gated z/reservation table dominates).
