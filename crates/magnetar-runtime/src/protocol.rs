@@ -328,8 +328,7 @@ pub struct ProofBundle {
     pub store_router_index: Option<usize>,
     pub trace_index: usize,
     pub trace_claims: Vec<(magnetar_pcs::P3MosaicPoint, Vec<F2_128>)>,
-    pub access_digest: [u8; 32],
-    pub aux_digest: [u8; 32],
+    pub width: usize,
 }
 
 impl ProofBundle {
@@ -370,8 +369,7 @@ impl ProofBundle {
             store_router_index: proof.store_router_index,
             trace_index: proof.trace_index,
             trace_claims: proof.trace_claims.clone(),
-            access_digest: proof.access_digest,
-            aux_digest: proof.aux_digest,
+            width: proof.width,
         }
     }
 
@@ -415,8 +413,7 @@ impl ProofBundle {
             store_router_index: self.store_router_index,
             trace_index: self.trace_index,
             trace_claims: self.trace_claims,
-            access_digest: self.access_digest,
-            aux_digest: self.aux_digest,
+            width: self.width,
             cpu: cpu.ok_or(ProtocolError::MissingStage(StageId::Cpu))?,
             shout,
             shift_router,
@@ -1513,9 +1510,6 @@ impl<'a> UnifiedProveContext<'a> {
         let (trace_points, trace_values) =
             crate::trace_commitment::trace_claim_points(&self.trace_witness, self.trace_index)?;
         let trace_claims = trace_points.into_iter().zip(trace_values).collect();
-        let access_digest =
-            crate::access_statement::AccessStatement::from_trace(self.trace).digest();
-        let aux_digest = crate::aux_statement::AuxStatement::from_trace(self.trace).digest();
         Ok(UnifiedTraceProof {
             shape: crate::cpu_shape::CpuShape::from_trace(self.trace).zeroed(),
             register_index: self.register_index,
@@ -1524,8 +1518,7 @@ impl<'a> UnifiedProveContext<'a> {
             store_router_index: self.store_router_table.as_ref().map(|(index, _)| *index),
             trace_index: self.trace_index,
             trace_claims,
-            access_digest,
-            aux_digest,
+            width: self.width,
             access: self
                 .access
                 .ok_or_else(|| RuntimeError::Proof("missing access proof".into()))?,

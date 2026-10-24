@@ -603,6 +603,15 @@ pub(crate) fn verify_binary_shout_claims(
     table_index: usize,
     binding: &[u8],
 ) -> Result<Option<ClaimPoints>, ProofError> {
+    verify_binary_shout_from_proof(proof, commitment, table_index, binding)
+}
+
+pub(crate) fn verify_binary_shout_from_proof(
+    proof: &BinaryShoutProof,
+    commitment: &P3MosaicCommitment,
+    table_index: usize,
+    binding: &[u8],
+) -> Result<Option<ClaimPoints>, ProofError> {
     let a = proof.address_bits;
     let n = proof.cycle_bits;
     let total_columns = 2 * a + 2;

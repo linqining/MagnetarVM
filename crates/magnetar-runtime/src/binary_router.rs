@@ -448,6 +448,23 @@ pub struct BinaryRouterProof {
     pub hq_rounds: Vec<Vec<F2_128>>,
     pub valid_rounds: Vec<Vec<F2_128>>,
     pub opening: Option<P3MosaicOpening>,
+    pub claimed_left: F2_128,
+    pub input_evals: Vec<F2_128>,
+    pub coefficient_eval: F2_128,
+    pub offset_evals: Vec<F2_128>,
+    pub offset_public_evals: Vec<F2_128>,
+    pub width_evals: Vec<F2_128>,
+    pub width_public_evals: Vec<F2_128>,
+    pub shift_eval: F2_128,
+    pub shift_public_eval: F2_128,
+    pub valid_evals: Vec<F2_128>,
+    pub valid_public_evals: Vec<F2_128>,
+    pub q_evals: Vec<F2_128>,
+    pub hq_evals: Vec<F2_128>,
+    pub q_claimed: F2_128,
+    pub hq_claimed: F2_128,
+    pub cycle_bits: usize,
+    pub cycles: usize,
 }
 
 fn eq_at_index(point: &[F2_128], index: usize) -> F2_128 {
@@ -757,6 +774,7 @@ pub(crate) fn prove_binary_router_claims(
     let input_bit_evals = (0..INPUT_BITS)
         .map(|bit| fold_all(&witness.input[bit], r_j))
         .collect::<Vec<_>>();
+    let coefficient_eval = fold_all(&coefficient_flat, &challenges);
     let point = if r_j.is_empty() {
         vec![F2_128::from(0u64)]
     } else {
@@ -801,6 +819,14 @@ pub(crate) fn prove_binary_router_claims(
     let offset_evals = (0..3)
         .map(|bit| fold_all(&witness.offset_bits[bit], offset_r_j))
         .collect::<Vec<_>>();
+    let offset_public_evals = (0..3)
+        .map(|bit| {
+            let public = (0..cycles)
+                .map(|cycle| F2_128::from(((witness.routes[cycle].offset() >> bit) & 1) as u64))
+                .collect::<Vec<_>>();
+            fold_all(&public, offset_r_j)
+        })
+        .collect::<Vec<_>>();
     let offset_point = if offset_r_j.is_empty() {
         vec![F2_128::from(0u64)]
     } else {
@@ -844,6 +870,27 @@ pub(crate) fn prove_binary_router_claims(
     let width_evals = (0..4)
         .map(|bit| fold_all(&witness.width_bits[bit], width_r_j))
         .collect::<Vec<_>>();
+    let width_public_evals = (0..4)
+        .map(|bit| {
+            let public = (0..cycles)
+                .map(|cycle| {
+                    let value = if let RouterRoute::Store(route) = witness.routes[cycle] {
+                        let width = match route.width {
+                            StoreWidth::Byte => 0,
+                            StoreWidth::Half => 1,
+                            StoreWidth::Word => 2,
+                            StoreWidth::Double => 3,
+                        };
+                        u64::from(width == bit)
+                    } else {
+                        0
+                    };
+                    F2_128::from(value)
+                })
+                .collect::<Vec<_>>();
+            fold_all(&public, width_r_j)
+        })
+        .collect::<Vec<_>>();
     let width_point = if width_r_j.is_empty() {
         vec![F2_128::from(0u64)]
     } else {
@@ -867,6 +914,12 @@ pub(crate) fn prove_binary_router_claims(
         sumcheck_offset(&shift_factors, &shift_degrees, &mut transcript)?;
     let shift_r_j = &shift_challenges[..n];
     let shift_eval = fold_all(&witness.shift_code, shift_r_j);
+    let shift_public_eval = {
+        let public = (0..cycles)
+            .map(|cycle| F2_128::from(witness.routes[cycle].shift_code()))
+            .collect::<Vec<_>>();
+        fold_all(&public, shift_r_j)
+    };
     let shift_point = if shift_r_j.is_empty() {
         vec![F2_128::from(0u64)]
     } else {
@@ -913,6 +966,22 @@ pub(crate) fn prove_binary_router_claims(
     let valid_evals = [&witness.is_shift, &witness.is_store]
         .into_iter()
         .map(|column| fold_all(column, valid_r_j))
+        .collect::<Vec<_>>();
+
+    let valid_public_evals = [false, true]
+        .iter()
+        .map(|store| {
+            let public = (0..cycles)
+                .map(|cycle| {
+                    F2_128::from(u64::from(if *store {
+                        matches!(witness.routes[cycle], RouterRoute::Store(_))
+                    } else {
+                        matches!(witness.routes[cycle], RouterRoute::Shift(_))
+                    }))
+                })
+                .collect::<Vec<_>>();
+            fold_all(&public, valid_r_j)
+        })
         .collect::<Vec<_>>();
     let valid_point = if valid_r_j.is_empty() {
         vec![F2_128::from(0u64)]
@@ -1084,6 +1153,16 @@ pub(crate) fn prove_binary_router_claims(
         values.push(q_evals.clone());
         values.push(hq_evals.clone());
     }
+    let q_claimed = if has_q {
+        q_eq_claimed(witness, &_q_rho_j)
+    } else {
+        F2_128::from(0u64)
+    };
+    let hq_claimed = if has_q {
+        hq_eq_claimed(witness, &_hq_rho_j)
+    } else {
+        F2_128::from(0u64)
+    };
     Ok((
         BinaryRouterProof {
             boolean,
@@ -1095,6 +1174,23 @@ pub(crate) fn prove_binary_router_claims(
             hq_rounds,
             valid_rounds,
             opening: None,
+            claimed_left: left,
+            input_evals: input_bit_evals.clone(),
+            coefficient_eval,
+            offset_evals,
+            offset_public_evals,
+            width_evals,
+            width_public_evals,
+            shift_eval,
+            shift_public_eval,
+            valid_evals,
+            valid_public_evals,
+            q_evals,
+            hq_evals,
+            q_claimed,
+            hq_claimed,
+            cycle_bits: n,
+            cycles,
         },
         points,
         values,
@@ -1172,19 +1268,23 @@ fn q_eq_claimed(witness: &BinaryRouterWitness, point: &[F2_128]) -> F2_128 {
 
 #[allow(clippy::needless_range_loop)]
 pub(crate) fn verify_binary_router_claims(
-    witness: &BinaryRouterWitness,
+    _witness: &BinaryRouterWitness,
     proof: &BinaryRouterProof,
     commitment: &P3MosaicCommitment,
     table_index: usize,
     binding: &[u8],
 ) -> Result<Option<ClaimPoints>, ProofError> {
-    witness.validate()?;
-    let n = witness.cycle_bits;
-    let cycles = witness.cycles;
-    let has_q = witness
-        .shift_q
-        .iter()
-        .any(|column| column.iter().any(|value| value.value() == 1));
+    verify_binary_router_from_proof(proof, commitment, table_index, binding)
+}
+
+pub(crate) fn verify_binary_router_from_proof(
+    proof: &BinaryRouterProof,
+    commitment: &P3MosaicCommitment,
+    table_index: usize,
+    binding: &[u8],
+) -> Result<Option<ClaimPoints>, ProofError> {
+    let n = proof.cycle_bits;
+    let has_q = !proof.q_evals.is_empty();
     let bit_columns = INPUT_BITS + 9 + 64;
     let hq_columns = bit_columns + 64;
     let total_columns = hq_columns + 1;
@@ -1225,33 +1325,17 @@ pub(crate) fn verify_binary_router_claims(
     let mut transcript = Sha256Transcript::new("magnetar-binary-router");
     absorb_commitment(&mut transcript, commitment);
     transcript.absorb("packed-binding", binding);
-    let rho_o = sample_point(&mut transcript, WORD_BITS.trailing_zeros() as usize);
-    let rho_j = sample_point(&mut transcript, n);
-    let eq_o = eq_vector(&rho_o, WORD_BITS);
-    let eq_j = eq_vector(&rho_j, cycles);
-    let mut left = F2_128::from(0u64);
-    for bit in 0..WORD_BITS {
-        for cycle in 0..cycles {
-            left = left + eq_o[bit] * eq_j[cycle] * witness.output[bit][cycle];
-        }
-    }
+    let _rho_o = sample_point(&mut transcript, WORD_BITS.trailing_zeros() as usize);
+    let _rho_j = sample_point(&mut transcript, n);
+    let left = proof.claimed_left;
     transcript.absorb("claimed", &left.value().to_le_bytes());
     let Some((sum, challenges)) = replay_terms_derived(&proof.rounds, left, &mut transcript) else {
         return Ok(None);
     };
     let r_j = &challenges[..n];
     let r_i = &challenges[n..];
-    let input_bit_evals = (0..INPUT_BITS)
-        .map(|bit| fold_all(&witness.input[bit], r_j))
-        .collect::<Vec<_>>();
-    let coefficients = witness.route_coefficients_from_selectors(&rho_o);
-    let mut coefficient_flat = vec![F2_128::from(0u64); INPUT_BITS * cycles];
-    for bit in 0..INPUT_BITS {
-        for cycle in 0..cycles {
-            coefficient_flat[bit * cycles + cycle] = coefficients[bit][cycle] * eq_j[cycle];
-        }
-    }
-    let coefficient_eval = fold_all(&coefficient_flat, &challenges);
+    let input_bit_evals = proof.input_evals.clone();
+    let coefficient_eval = proof.coefficient_eval;
     let mut input_eval = F2_128::from(0u64);
     for (bit, eval) in input_bit_evals.iter().enumerate() {
         input_eval = input_eval + eq_at_index(r_i, bit) * *eval;
@@ -1273,15 +1357,10 @@ pub(crate) fn verify_binary_router_claims(
         return Ok(None);
     };
     let offset_r_j = &offset_challenges[..n];
-    let offset_evals = (0..3)
-        .map(|bit| fold_all(&witness.offset_bits[bit], offset_r_j))
-        .collect::<Vec<_>>();
+    let offset_evals = proof.offset_evals.clone();
     let mut expected = F2_128::from(0u64);
     for bit in 0..3 {
-        let public = (0..cycles)
-            .map(|cycle| F2_128::from(((witness.routes[cycle].offset() >> bit) & 1) as u64))
-            .collect::<Vec<_>>();
-        expected = expected + deltas[bit] * (offset_evals[bit] - fold_all(&public, offset_r_j));
+        expected = expected + deltas[bit] * (offset_evals[bit] - proof.offset_public_evals[bit]);
     }
     if sum != eq_points(&offset_rho_j, offset_r_j) * expected {
         return Ok(None);
@@ -1300,28 +1379,11 @@ pub(crate) fn verify_binary_router_claims(
         return Ok(None);
     };
     let width_r_j = &width_challenges[..n];
-    let width_evals = (0..4)
-        .map(|bit| fold_all(&witness.width_bits[bit], width_r_j))
-        .collect::<Vec<_>>();
+    let width_evals = proof.width_evals.clone();
     let mut expected = F2_128::from(0u64);
     for bit in 0..4 {
-        let public = (0..cycles)
-            .map(|cycle| {
-                let expected = if let RouterRoute::Store(route) = witness.routes[cycle] {
-                    let width = match route.width {
-                        StoreWidth::Byte => 0,
-                        StoreWidth::Half => 1,
-                        StoreWidth::Word => 2,
-                        StoreWidth::Double => 3,
-                    };
-                    u64::from(width == bit)
-                } else {
-                    0
-                };
-                F2_128::from(expected)
-            })
-            .collect::<Vec<_>>();
-        expected = expected + width_deltas[bit] * (width_evals[bit] - fold_all(&public, width_r_j));
+        expected =
+            expected + width_deltas[bit] * (width_evals[bit] - proof.width_public_evals[bit]);
     }
     if sum != eq_points(&width_rho_j, width_r_j) * expected {
         return Ok(None);
@@ -1337,11 +1399,8 @@ pub(crate) fn verify_binary_router_claims(
         return Ok(None);
     };
     let shift_r_j = &shift_challenges[..n];
-    let shift_eval = fold_all(&witness.shift_code, shift_r_j);
-    let public = (0..cycles)
-        .map(|cycle| F2_128::from(witness.routes[cycle].shift_code()))
-        .collect::<Vec<_>>();
-    if sum != eq_points(&shift_rho_j, shift_r_j) * (shift_eval - fold_all(&public, shift_r_j)) {
+    let shift_eval = proof.shift_eval;
+    if sum != eq_points(&shift_rho_j, shift_r_j) * (shift_eval - proof.shift_public_eval) {
         return Ok(None);
     }
 
@@ -1358,22 +1417,11 @@ pub(crate) fn verify_binary_router_claims(
         return Ok(None);
     };
     let valid_r_j = &valid_challenges[..n];
-    let valid_evals = [
-        fold_all(&witness.is_shift, valid_r_j),
-        fold_all(&witness.is_store, valid_r_j),
-    ];
+    let valid_evals = proof.valid_evals.clone();
     let mut expected = F2_128::from(0u64);
     for bit in 0..2 {
-        let public = (0..cycles)
-            .map(|cycle| {
-                F2_128::from(u64::from(if bit == 0 {
-                    matches!(witness.routes[cycle], RouterRoute::Shift(_))
-                } else {
-                    matches!(witness.routes[cycle], RouterRoute::Store(_))
-                }))
-            })
-            .collect::<Vec<_>>();
-        expected = expected + valid_deltas[bit] * (valid_evals[bit] - fold_all(&public, valid_r_j));
+        expected =
+            expected + valid_deltas[bit] * (valid_evals[bit] - proof.valid_public_evals[bit]);
     }
     if sum != eq_points(&valid_rho_j, valid_r_j) * expected {
         return Ok(None);
@@ -1387,18 +1435,14 @@ pub(crate) fn verify_binary_router_claims(
         transcript.absorb("packed-binding", binding);
         let q_rho_j = sample_point(&mut transcript, n);
         let _q_rho_h = sample_point(&mut transcript, 8);
-        let Some((sum, q_challenges)) = replay_terms_derived(
-            &proof.q_rounds,
-            q_eq_claimed(witness, &q_rho_j),
-            &mut transcript,
-        ) else {
+        let Some((sum, q_challenges)) =
+            replay_terms_derived(&proof.q_rounds, proof.q_claimed, &mut transcript)
+        else {
             return Ok(None);
         };
         let q_r_j = &q_challenges[..n];
         let q_r_h = &q_challenges[n..];
-        let q_evals = (0..64)
-            .map(|h| fold_all(&witness.shift_q[h], q_r_j))
-            .collect::<Vec<_>>();
+        let q_evals = proof.q_evals.clone();
         let mut q_eval = F2_128::from(0u64);
         for (h, eval) in q_evals.iter().enumerate() {
             q_eval = q_eval + eq_at_index(q_r_h, h) * *eval;
@@ -1412,18 +1456,14 @@ pub(crate) fn verify_binary_router_claims(
         transcript.absorb("packed-binding", binding);
         let hq_rho_j = sample_point(&mut transcript, n);
         let _hq_rho_h = sample_point(&mut transcript, 8);
-        let Some((sum, hq_challenges)) = replay_terms_derived(
-            &proof.hq_rounds,
-            hq_eq_claimed(witness, &hq_rho_j),
-            &mut transcript,
-        ) else {
+        let Some((sum, hq_challenges)) =
+            replay_terms_derived(&proof.hq_rounds, proof.hq_claimed, &mut transcript)
+        else {
             return Ok(None);
         };
         let hq_r_j = &hq_challenges[..n];
         let hq_r_h = &hq_challenges[n..];
-        let hq_evals = (0..64)
-            .map(|h| fold_all(&witness.shift_hq[h], hq_r_j))
-            .collect::<Vec<_>>();
+        let hq_evals = proof.hq_evals.clone();
         let mut hq_eval = F2_128::from(0u64);
         for (h, eval) in hq_evals.iter().enumerate() {
             hq_eval = hq_eval + eq_at_index(hq_r_h, h) * *eval;

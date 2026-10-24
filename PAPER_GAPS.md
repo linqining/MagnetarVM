@@ -2802,3 +2802,17 @@ not use a witness at all; `verify_binary_twist_claims` is a compatibility wrappe
 evals, and ROM column evals. `verify_binary_shout_claims` takes the witness only
 for API compatibility and uses proof values for every check; the witness argument
 is unused. Benchmark: 161,579 B (+392 B).
+
+
+### A2a milestone: proof-only core verifier
+
+`UnifiedTraceProof` now carries `width` and all aux table evals. BinaryTwist,
+BinaryShout, and BinaryRouter verifiers are proof-only (witness arguments are
+compatibility wrappers); `CoreStatement` is reduced to `{ width, shape }`, and
+`verify_core_proof(proof)` verifies CPU, gated, RAM/register, Shout, shift/store
+Router, trace claims, and the shared Mosaic opening with **no trace and no
+caller-provided statement**.
+
+The CPU shape is still carried per row in the proof, so proof size remains linear
+in cycles; committing/compressing the shape is the remaining succinctness gap.
+Benchmark: 161,523 B.

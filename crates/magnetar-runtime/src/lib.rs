@@ -1053,8 +1053,7 @@ pub struct UnifiedTraceProof {
     pub store_router_index: Option<usize>,
     pub trace_index: usize,
     pub trace_claims: Vec<(magnetar_pcs::P3MosaicPoint, Vec<F2_128>)>,
-    pub access_digest: [u8; 32],
-    pub aux_digest: [u8; 32],
+    pub width: usize,
 }
 
 pub(crate) struct GatedProveInput {
@@ -2229,7 +2228,15 @@ pub struct CpuStatement {
 pub struct CoreStatement {
     pub width: usize,
     pub shape: crate::cpu_shape::CpuShape,
-    pub aux: Option<crate::aux_statement::AuxStatement>,
+}
+
+/// Verify the whole core proof with no trace or statement.
+pub fn verify_core_proof(proof: &UnifiedTraceProof) -> Result<(), RuntimeError> {
+    let statement = CoreStatement {
+        width: proof.width,
+        shape: proof.shape.clone(),
+    };
+    verify_core_statement(proof, &statement)
 }
 
 /// Verify CPU, gated, and access claims without a trace.
@@ -2241,11 +2248,6 @@ pub fn verify_core_statement(
         width: statement.width,
         shape: statement.shape.clone(),
     };
-    if let Some(aux) = &statement.aux {
-        if aux.digest() != proof.aux_digest {
-            return Err(RuntimeError::Proof("aux statement digest mismatch".into()));
-        }
-    }
     let (ry, cpu_value, gated_ry) = cpu_statement_claims(proof, &cpu)?;
     let (ram_claims, register_claims) = crate::access_statement::access_claims_from_proof(proof)?;
     let (mut points, mut values) = ram_claims;
@@ -2267,21 +2269,31 @@ pub fn verify_core_statement(
         });
         values.push(vec![gated.value]);
     }
-    if let Some(aux) = &statement.aux {
-        if proof.shout.is_some() {
-            let (aux_points, aux_values) = aux.verify_shout(proof)?;
-            points.extend(aux_points);
-            values.extend(aux_values);
-        }
-        if proof.shift_router.is_some() {
-            let (aux_points, aux_values) =
-                aux.verify_router(proof, crate::binary_router::RouterMode::Shifts)?;
-            points.extend(aux_points);
-            values.extend(aux_values);
-        }
-        if proof.store_router.is_some() {
-            let (aux_points, aux_values) =
-                aux.verify_router(proof, crate::binary_router::RouterMode::Stores)?;
+    if let (Some(shout), Some(index)) = (&proof.shout, proof.shout_index) {
+        let (aux_points, aux_values) = crate::binary_shout::verify_binary_shout_from_proof(
+            shout,
+            &proof.cpu.commitment,
+            index,
+            b"",
+        )
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .ok_or_else(|| RuntimeError::Proof("Shout claims rejected".into()))?;
+        points.extend(aux_points);
+        values.extend(aux_values);
+    }
+    for (router, index) in [
+        (&proof.shift_router, proof.shift_router_index),
+        (&proof.store_router, proof.store_router_index),
+    ] {
+        if let (Some(router), Some(index)) = (router, index) {
+            let (aux_points, aux_values) = crate::binary_router::verify_binary_router_from_proof(
+                router,
+                &proof.cpu.commitment,
+                index,
+                b"",
+            )
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?
+            .ok_or_else(|| RuntimeError::Proof("Router claims rejected".into()))?;
             points.extend(aux_points);
             values.extend(aux_values);
         }
@@ -5644,7 +5656,6 @@ mod cpu_statement_tests {
         let statement = CoreStatement {
             width: 8,
             shape: proof.shape.clone(),
-            aux: Some(crate::aux_statement::AuxStatement::from_trace(&trace)),
         };
         let encoded = bincode::serialize(&statement).unwrap();
         let decoded: CoreStatement = bincode::deserialize(&encoded).unwrap();
