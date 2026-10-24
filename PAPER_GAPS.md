@@ -2523,3 +2523,15 @@ one witness dependency from verification.
 count only; the verifier constructs `GatedProveInput` with an empty `z`. Combined
 with the proof-carried gated value, gated claim verification no longer depends
 on gated witness values.
+
+
+### A2 shape finding
+
+A `CpuShape` with only `pc/op/imm/mem presence` reconstructs the CPU system for
+simple Addi/Xor traces but not for LR/SC traces: those row constraints embed
+memory address/value-derived structure. Adding the per-row values (rs1/rs2/rd,
+memory addr/value/width/flag) reproduces the exact CPU constraint system, but
+this shape is not succinct; it is effectively a compact trace.
+
+Therefore A2 needs either a fixed CPU circuit that treats all such values as
+variables (A2a), or a shape that carries the values and is not succinct (A2b).
