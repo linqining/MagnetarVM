@@ -747,14 +747,20 @@ pub(crate) fn grouped_gated_system(
             );
         }
     }
+    let padded_cols = (combined.num_vars + 1).next_power_of_two();
+    combined.num_vars = padded_cols - 1;
     let (z, _, _, _) = reservation_claim_inputs(width, rows)?;
     let row_stride = (row.cpu.relation.num_vars + 1).next_power_of_two();
-    let mut witness = Vec::with_capacity(rows.len() * base_cols);
+    let mut witness = Vec::with_capacity(rows.len() / group * padded_cols);
     for group_start in (0..rows.len()).step_by(group) {
         for local in 0..group {
             let start = (group_start + local) * row_stride;
             witness.extend_from_slice(&z[start..start + base_cols]);
         }
+        witness.resize(
+            witness.len() + padded_cols - group * base_cols,
+            F2_128::from(0u64),
+        );
     }
     Ok((combined, witness, base_cols))
 }
@@ -1932,6 +1938,135 @@ mod virtual_spec_tests {
         assert!(system
             .check(&magnetar_constraint::Witness::new(broken))
             .is_err());
+    }
+
+    #[test]
+    fn grouped_simd_lockstep_proves() {
+        use magnetar_constraint::{Segment, SegmentKind, SegmentOwner, WitnessLayout};
+        use magnetar_pcs::P3BinaryPcs;
+        use magnetar_proof::spartan::MatrixPart;
+        use magnetar_proof::{
+            prove_lockstep_bits, verify_lockstep_bits, DirectBitPcs, SharedBlockMatrix,
+        };
+        let width = 8usize;
+        let program = magnetar_spec::ProgramImage::new(
+            0x10,
+            vec![
+                magnetar_spec::Instruction {
+                    op: magnetar_spec::Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 1,
+                    shamt: 0,
+                }
+                .encode(),
+                magnetar_spec::Instruction {
+                    op: magnetar_spec::Op::Addi,
+                    rd: 2,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 2,
+                    shamt: 0,
+                }
+                .encode(),
+                magnetar_spec::Instruction {
+                    op: magnetar_spec::Op::Addi,
+                    rd: 3,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 3,
+                    shamt: 0,
+                }
+                .encode(),
+                magnetar_spec::Instruction::new(magnetar_spec::Op::Ecall).encode(),
+            ],
+        );
+        let trace = magnetar_executor::execute(
+            &program,
+            magnetar_spec::MachineConfig {
+                entry: 0x10,
+                rom_base: 0x10,
+                ram_base: 0x1000_0000,
+                ram_size: 0x1000,
+                stack_top: 0x1000_1000,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let rows = crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, width)
+            .unwrap();
+        let cycles = rows.len();
+        let group = 2usize;
+        let groups = cycles / group;
+        let (system, z, row_cols) = super::grouped_gated_system(width, &rows, group).unwrap();
+        let block_cols = (system.num_vars + 1).next_power_of_two();
+        eprintln!(
+            "cycles {cycles} groups {groups} block {block_cols} z {}",
+            z.len()
+        );
+        let row = crate::reservation_cpu_row::ReservationCpuRow::new(width);
+        let mut extra_a = Vec::new();
+        let mut extra_b = Vec::new();
+        let mut extra_c = Vec::new();
+        for instance in 0..groups - 1 {
+            for bit in 0..width {
+                extra_a.push(vec![(
+                    instance * block_cols + (group - 1) * row_cols + row.cpu.next_pc[bit],
+                    F2_128::from(1u64),
+                )]);
+                extra_b.push(vec![(
+                    instance * block_cols + (group - 1) * row_cols + row.cpu.alu.one,
+                    F2_128::from(1u64),
+                )]);
+                extra_c.push(vec![(
+                    (instance + 1) * block_cols + row.cpu.pc[bit],
+                    F2_128::from(1u64),
+                )]);
+            }
+        }
+        let zero = vec![Vec::new(); extra_a.len()];
+        let a0 = SharedBlockMatrix::from_system(&system, MatrixPart::A, groups)
+            .unwrap()
+            .with_extra_rows(zero.clone());
+        let b0 = SharedBlockMatrix::from_system(&system, MatrixPart::B, groups)
+            .unwrap()
+            .with_extra_rows(zero.clone());
+        let c0 = SharedBlockMatrix::from_system(&system, MatrixPart::C, groups)
+            .unwrap()
+            .with_extra_rows(zero);
+        let a1 = SharedBlockMatrix::from_system(&system, MatrixPart::A, groups)
+            .unwrap()
+            .with_extra_rows(extra_a);
+        let b1 = SharedBlockMatrix::from_system(&system, MatrixPart::B, groups)
+            .unwrap()
+            .with_extra_rows(extra_b);
+        let c1 = SharedBlockMatrix::from_system(&system, MatrixPart::C, groups)
+            .unwrap()
+            .with_extra_rows(extra_c);
+        let layout = WitnessLayout::new(vec![Segment::new(
+            "cpu",
+            0,
+            z.len(),
+            SegmentKind::Direct,
+            SegmentOwner::Cpu,
+        )])
+        .unwrap();
+        let bits = z.iter().map(|value| value.value() == 1).collect::<Vec<_>>();
+        let backend = DirectBitPcs::new(P3BinaryPcs::new(100));
+        let proof =
+            prove_lockstep_bits(&bits, &a0, &b0, &c0, &a1, &b1, &c1, &layout, &backend).unwrap();
+        verify_lockstep_bits(&a0, &b0, &c0, &a1, &b1, &c1, &layout, &proof, &backend).unwrap();
+        let mut broken = z;
+        let boundary = block_cols + row.cpu.pc[0];
+        broken[boundary] = broken[boundary] + F2_128::from(1u64);
+        let bits = broken
+            .iter()
+            .map(|value| value.value() == 1)
+            .collect::<Vec<_>>();
+        assert!(
+            prove_lockstep_bits(&bits, &a0, &b0, &c0, &a1, &b1, &c1, &layout, &backend,).is_err()
+        );
     }
 
     #[test]

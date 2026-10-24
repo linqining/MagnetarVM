@@ -3915,3 +3915,14 @@ constant-one variable. `grouped_gated_system_links_consecutive_cycles` checks
 that the grouped witness satisfies the combined system and that flipping the
 next row's PC is rejected. Boundary links between instances, PCS/witness layout
 integration, and the runtime grouping policy remain open.
+
+
+### C2: grouped lockstep proof
+
+`grouped_simd_lockstep_proves` builds a four-cycle trace with two grouped SIMD
+instances (two cycles each), adds `next_pc -> pc` boundary rows between the
+instances as extra shared-matrix rows, and runs a full lockstep proof over the
+grouped witness. Verification passes; flipping the first PC of the second
+instance makes proving fail. This exercises the multi-cycle base relation,
+intra-instance cross-step rows, and inter-instance boundary rows together.
+Runtime layout/PCS grouping and the virtual claim layout are still open.
