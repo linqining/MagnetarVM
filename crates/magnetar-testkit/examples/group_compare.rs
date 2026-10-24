@@ -7,7 +7,7 @@ use magnetar_runtime::{prove_unified_trace_group, unified_proof_sizes, verify_un
 use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut rom = (1..=32)
+    let mut rom = (1..=64)
         .map(|index| {
             Instruction {
                 op: Op::Addi,

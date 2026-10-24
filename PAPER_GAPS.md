@@ -4072,3 +4072,8 @@ reading `shift_code` directly. The proof carries the linear-point evaluations
 and a tampered last value is rejected. Size cost: memory +2.0 KB, shifts +2.8 KB,
 mem-loop +6.4 KB; workloads without a Router are unchanged. Register-shift
 virtual expansion remains open.
+
+
+At 64 cycles the group comparison (width 8) is group=2: 347,655 B / 12.5 s and
+group=4: 345,831 B / 12.4 s; group=4 is only ~0.5% smaller with a slower
+verifier, so the default remains group=2 and group=4 stays opt-in.
