@@ -19,6 +19,10 @@ pub struct LrRow {
 }
 
 impl LrRow {
+    pub fn packed_system(&self) -> magnetar_constraint::ConstraintSystem {
+        self.relation.to_system()
+    }
+
     pub fn new(width: usize) -> Self {
         let read = GatedMemoryRow::new(width);
         let mut relation = BitRelation::new(read.relation.num_vars);
@@ -81,6 +85,46 @@ impl LrRow {
     }
 }
 
+pub fn prove_lr_batch(
+    width: usize,
+    rows: &[(u64, u64)],
+) -> Result<
+    magnetar_proof::SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>,
+    crate::RuntimeError,
+> {
+    use magnetar_proof::{prove_shared_simd_spartan, witness_vector};
+    if rows.is_empty() || !rows.len().is_power_of_two() {
+        return Err(crate::RuntimeError::Proof(
+            "LR batch must be a nonzero power of two".into(),
+        ));
+    }
+    let row = LrRow::new(width);
+    let system = row.packed_system();
+    let mut witnesses = Vec::new();
+    for (old, address) in rows {
+        let bits = row.witness(*old, *address);
+        witnesses.push(row.relation.to_witness(&bits));
+    }
+    let _ = witness_vector(&system, &witnesses[0])
+        .map_err(|error| crate::RuntimeError::Proof(error.to_string()))?;
+    let pcs = magnetar_pcs::P3BinaryPcs::new(100);
+    prove_shared_simd_spartan(&system, &witnesses, &pcs)
+        .map_err(|error| crate::RuntimeError::Proof(error.to_string()))
+}
+
+pub fn verify_lr_batch(
+    width: usize,
+    instances: usize,
+    proof: &magnetar_proof::SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>,
+) -> Result<(), crate::RuntimeError> {
+    use magnetar_proof::verify_shared_simd_spartan;
+    let row = LrRow::new(width);
+    let system = row.packed_system();
+    let pcs = magnetar_pcs::P3BinaryPcs::new(100);
+    verify_shared_simd_spartan(&system, instances, proof, &pcs)
+        .map_err(|error| crate::RuntimeError::Proof(error.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,5 +141,8 @@ mod tests {
             .fold(0u64, |v, (bit, var)| v | (u64::from(bits[*var]) << bit));
         assert_eq!(rd, 42);
         assert!(bits[row.reservation]);
+        let rows = [(42u64, 0x100u64), (1, 0x108), (2, 0x110), (3, 0x118)];
+        let proof = prove_lr_batch(8, &rows).unwrap();
+        verify_lr_batch(8, rows.len(), &proof).unwrap();
     }
 }

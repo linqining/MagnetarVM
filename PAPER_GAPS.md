@@ -2256,3 +2256,14 @@ old value to memory history: it finds the latest prior write at the same address
 (or the initial RAM value) before the row cycle, masks to the AMO width, and
 requires it to equal `rd_val`. This avoids changing BinaryTwist while still
 tying the read side to memory state.
+
+
+LR and SC now have standalone batch provers:
+
+```text
+prove_lr_batch / verify_lr_batch
+prove_sc_batch / verify_sc_batch
+```
+
+Tests prove four instances each. They are not yet part of `AmoBundleProof` or
+`UnifiedTraceProof`.

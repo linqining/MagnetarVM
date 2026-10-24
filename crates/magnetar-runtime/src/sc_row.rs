@@ -26,6 +26,10 @@ pub struct ScRow {
 }
 
 impl ScRow {
+    pub fn packed_system(&self) -> magnetar_constraint::ConstraintSystem {
+        self.relation.to_system()
+    }
+
     pub fn new(width: usize) -> Self {
         let read = GatedMemoryRow::new(width);
         let mut relation = BitRelation::new(read.relation.num_vars);
@@ -129,6 +133,46 @@ impl ScRow {
     }
 }
 
+pub fn prove_sc_batch(
+    width: usize,
+    rows: &[(u64, u64, u64, bool)],
+) -> Result<
+    magnetar_proof::SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>,
+    crate::RuntimeError,
+> {
+    use magnetar_proof::{prove_shared_simd_spartan, witness_vector};
+    if rows.is_empty() || !rows.len().is_power_of_two() {
+        return Err(crate::RuntimeError::Proof(
+            "SC batch must be a nonzero power of two".into(),
+        ));
+    }
+    let row = ScRow::new(width);
+    let system = row.packed_system();
+    let mut witnesses = Vec::new();
+    for (old, operand, address, success) in rows {
+        let bits = row.witness(*old, *operand, *address, *success);
+        witnesses.push(row.relation.to_witness(&bits));
+    }
+    let _ = witness_vector(&system, &witnesses[0])
+        .map_err(|error| crate::RuntimeError::Proof(error.to_string()))?;
+    let pcs = magnetar_pcs::P3BinaryPcs::new(100);
+    prove_shared_simd_spartan(&system, &witnesses, &pcs)
+        .map_err(|error| crate::RuntimeError::Proof(error.to_string()))
+}
+
+pub fn verify_sc_batch(
+    width: usize,
+    instances: usize,
+    proof: &magnetar_proof::SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>,
+) -> Result<(), crate::RuntimeError> {
+    use magnetar_proof::verify_shared_simd_spartan;
+    let row = ScRow::new(width);
+    let system = row.packed_system();
+    let pcs = magnetar_pcs::P3BinaryPcs::new(100);
+    verify_shared_simd_spartan(&system, instances, proof, &pcs)
+        .map_err(|error| crate::RuntimeError::Proof(error.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,5 +190,13 @@ mod tests {
                 .fold(0u64, |v, (bit, var)| v | (u64::from(bits[*var]) << bit));
             assert_eq!(rd, u64::from(!success));
         }
+        let rows = [
+            (5u64, 7u64, 0x100u64, true),
+            (5, 9, 0x108, false),
+            (1, 2, 0x110, true),
+            (3, 4, 0x118, false),
+        ];
+        let proof = prove_sc_batch(8, &rows).unwrap();
+        verify_sc_batch(8, rows.len(), &proof).unwrap();
     }
 }
