@@ -468,6 +468,16 @@ fn check_no_rd(index: usize, row: &TraceRow) -> Result<(), CpuError> {
     Ok(())
 }
 
+fn within_word(addr: Addr, width: usize) -> bool {
+    if width == 0 || width > 8 {
+        return false;
+    }
+    let Some(last) = addr.checked_add(width as u64 - 1) else {
+        return false;
+    };
+    addr & !7 == last & !7
+}
+
 fn check_memory(
     index: usize,
     row: &TraceRow,
@@ -476,7 +486,7 @@ fn check_memory(
     is_write: bool,
 ) -> Result<(), CpuError> {
     let access = row.mem.ok_or(CpuError::MissingMemory { row: index })?;
-    if !expected_addr.is_multiple_of(u64::from(expected_width)) {
+    if !within_word(expected_addr, usize::from(expected_width)) {
         return Err(CpuError::Misaligned {
             row: index,
             addr: expected_addr,

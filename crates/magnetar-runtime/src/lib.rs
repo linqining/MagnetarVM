@@ -3584,6 +3584,38 @@ mod tests {
     }
 
     #[test]
+    fn unaligned_within_word_trace_proves() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Lui,
+                    rd: 20,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x1000_0000,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Lw,
+                    rd: 6,
+                    rs1: 20,
+                    rs2: 0,
+                    imm: 2,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(&program, config()).unwrap();
+        assert_eq!(trace.final_state.regs[6], 0);
+        let proof = prove_unified_trace(&trace, 8).unwrap();
+        verify_unified_proof(&proof).unwrap();
+    }
+
+    #[test]
     fn fetch_expansion_adds_no_state_change_rows() {
         let outcome = ReferencePipeline::run(&program(), config(), 2).unwrap();
         let expanded = expand_trace_fetch_micro_ops(&outcome.trace);

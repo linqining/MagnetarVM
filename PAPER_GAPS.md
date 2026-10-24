@@ -3815,3 +3815,20 @@ one-column component table. The point is added to the shared opening. Benchmark:
 gated virtual segments for the main architectural components are now covered by
 committed component claims; the remaining per-cycle CPU/branch segments stay in
 the CPU relation.
+
+
+### C7: unaligned within a word
+
+`magnetar-executor` and `magnetar-cpu` no longer require natural alignment. They
+accept any access whose `lane + width <= 8` (the BinaryTwist lane model), and
+still reject accesses that cross an 8-byte word. `allows_unaligned_within_word_
+loads_and_stores` covers execution; `unaligned_within_word_trace_proves` proves
+and verifies a `Lw` at `ram_base + 2` through the unified path. Cross-word
+unaligned accesses remain an extension.
+
+### B5 branch replacement (negative)
+
+Aggregating the whole branch relation into a component table works in `core`,
+but adds ~46 KB to the opening (152,556 -> 198,832 B), so it was reverted. The
+branch segment remains a CPU/Pcs claim; memory/PC/Router components stay on the
+shared component tables.

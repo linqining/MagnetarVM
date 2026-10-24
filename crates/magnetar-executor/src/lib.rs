@@ -636,6 +636,16 @@ fn execute_one(
     })
 }
 
+fn within_word(addr: Addr, width: usize) -> bool {
+    if width == 0 || width > 8 {
+        return false;
+    }
+    let Some(last) = addr.checked_add(width as u64 - 1) else {
+        return false;
+    };
+    addr & !7 == last & !7
+}
+
 fn load(
     config: &MachineConfig,
     ram: &[u8],
@@ -643,7 +653,7 @@ fn load(
     width: usize,
     kind: &'static str,
 ) -> Result<Word, ExecError> {
-    if !addr.is_multiple_of(width as u64) {
+    if !within_word(addr, width) {
         return Err(ExecError::Misaligned { addr, width, kind });
     }
     let index = config
@@ -662,7 +672,7 @@ fn store(
     value: Word,
     kind: &'static str,
 ) -> Result<(), ExecError> {
-    if !addr.is_multiple_of(width as u64) {
+    if !within_word(addr, width) {
         return Err(ExecError::Misaligned { addr, width, kind });
     }
     let index = config
@@ -1035,6 +1045,20 @@ mod tests {
         assert_eq!(regs[8], u64::MAX);
         assert_eq!(regs[9], u64::MAX);
         assert_eq!(regs[10], 1);
+    }
+
+    #[test]
+    fn allows_unaligned_within_word_loads_and_stores() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                ins(Op::Lui, 20, 0, 0, 0x1000_0000, 0),
+                ins(Op::Lw, 6, 20, 0, 2, 0),
+                ins(Op::Ecall, 0, 0, 0, 0, 0),
+            ],
+        );
+        let trace = execute(&program, config()).unwrap();
+        assert_eq!(trace.final_state.regs[6], 0);
     }
 
     #[test]
