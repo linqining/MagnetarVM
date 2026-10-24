@@ -3342,3 +3342,14 @@ The test compares it against a dense `Mle::eval` and passes.
 opened value against a dense `Mle::eval` and checks that changing the low
 coordinates changes the returned value. This is the interface a native F2
 sum-check can call.
+
+
+### B3 Step 4: native F2 bit-relation proof backend
+
+`NativeF2BitPcs` implements the generic `Pcs` trait for bit-valued vectors: it
+rejects non-0/1 values, commits them with `NativeF2LigeroPcs`, and opens at
+`F2^128` points. `NativeBitBackend` (in `simd_f2.rs`) then proves a `BitRelation`
+with the existing `prove_spartan`/`verify_spartan` reduction, but with native-F2
+commitments/openings instead of the `F2^128` embedding. The XOR relation test
+passes. Remaining B3 work: shared Virtual Spartan lockstep/inner sum-check with
+the packed relation and CPU integration.

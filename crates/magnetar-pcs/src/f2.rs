@@ -55,7 +55,7 @@ fn embed(values: &[F2]) -> Vec<F2_128> {
 // multilinear evaluation is exactly one coefficient bit, so the opening is a
 // Merkle path. This is a native-F2 PCS for F2 challenges; extension-field
 // challenges need a different opening (sumcheck/lift), which is the next step.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct F2NativeCommitment(pub [u8; 32]);
 
 #[derive(Clone, Debug)]
@@ -624,7 +624,7 @@ pub struct NativeF2LigeroPcs {
     pub samples: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NativeF2LigeroCommitment {
     pub root: F2NativeCommitment,
     pub rows: usize,
@@ -682,8 +682,8 @@ impl NativeF2LigeroPcs {
         }
         let encoded = self.encode(bits)?;
         let commitment = F2NativePcs.commit(&encoded)?;
-        let row_bits = self.rows.trailing_zeros() as usize;
-        let lambda = eq_weights(&point[row_bits..]);
+        let low_bits = self.message_columns.trailing_zeros() as usize;
+        let lambda = eq_weights(&point[low_bits..]);
         let codeword_columns = self.message_columns + self.parity_columns;
         let samples = BinaryLigeroCodedProof::sample_columns(
             &commitment,
@@ -714,16 +714,75 @@ impl NativeF2LigeroPcs {
         {
             return Ok(None);
         }
-        let row_bits = self.rows.trailing_zeros() as usize;
-        if point.len() != row_bits + self.message_columns.trailing_zeros() as usize {
+        let low_bits = self.message_columns.trailing_zeros() as usize;
+        if point.len() != self.rows.trailing_zeros() as usize + low_bits {
             return Ok(None);
         }
-        let lambda = eq_weights(&point[row_bits..]);
+        let lambda = eq_weights(&point[low_bits..]);
         if !opening.proof.verify(&commitment.root, &lambda)? {
             return Ok(None);
         }
-        let low = eq_weights(&point[..row_bits]);
+        let low = eq_weights(&point[..low_bits]);
         Ok(Some(opening.proof.mle_value(&low)?))
+    }
+}
+
+/// `Pcs` adapter for bit-valued Spartan vectors. Every value must be 0 or 1;
+/// the native coded Ligero PCS handles the opening at F2^128 points.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NativeF2BitPcs {
+    pub samples: usize,
+}
+
+impl NativeF2BitPcs {
+    fn params(&self, len: usize) -> NativeF2LigeroPcs {
+        NativeF2LigeroPcs::new(1, len, len, self.samples.max(16))
+    }
+
+    fn bits(values: &[F2_128]) -> Result<Vec<F2>, ProofError> {
+        values
+            .iter()
+            .map(|value| match value.value() {
+                0 => Ok(F2::from_u64(0u64)),
+                1 => Ok(F2::from_u64(1u64)),
+                _ => Err(ProofError::Pcs("native F2 PCS expects bit values".into())),
+            })
+            .collect()
+    }
+}
+
+impl Pcs for NativeF2BitPcs {
+    type Commitment = NativeF2LigeroCommitment;
+    type Opening = NativeF2LigeroOpening;
+
+    fn commit(&self, values: &[F2_128]) -> Result<Self::Commitment, ProofError> {
+        let bits = Self::bits(values)?;
+        self.params(bits.len()).commit(&bits)
+    }
+
+    fn open(&self, values: &[F2_128], point: &[F2_128]) -> Result<Self::Opening, ProofError> {
+        let bits = Self::bits(values)?;
+        self.params(bits.len()).open(&bits, point)
+    }
+
+    fn verify(
+        &self,
+        commitment: &Self::Commitment,
+        point: &[F2_128],
+        value: F2_128,
+        opening: &Self::Opening,
+    ) -> Result<bool, ProofError> {
+        let pcs = NativeF2LigeroPcs::new(
+            commitment.rows,
+            commitment.message_columns,
+            commitment.parity_columns,
+            self.samples.max(16),
+        );
+        Ok(matches!(pcs.verify(commitment, point, opening)?, Some(actual) if actual == value))
+    }
+
+    fn commitment_bytes(&self, commitment: &Self::Commitment) -> Vec<u8> {
+        bincode::serialize(commitment).unwrap_or_default()
     }
 }
 
@@ -732,6 +791,21 @@ mod tests {
     use super::*;
     use magnetar_constraint::Field;
     use magnetar_proof::Mle;
+
+    #[test]
+    fn native_f2_bit_pcs_proves_bit_spartan() {
+        use magnetar_proof::dual_field::{BitRelation, BitRow};
+        use magnetar_proof::{prove_spartan, verify_spartan};
+        let mut relation = BitRelation::new(4);
+        relation.add(BitRow::new(vec![0], vec![1], vec![2]));
+        relation.add(BitRow::new(vec![3], vec![3], vec![3]));
+        let witness = vec![false, true, false, true];
+        let system = relation.to_system();
+        let bits = relation.to_witness(&witness);
+        let pcs = NativeF2BitPcs { samples: 32 };
+        let proof = prove_spartan(&system, &bits, &pcs).unwrap();
+        verify_spartan(&system, &proof, &pcs).unwrap();
+    }
 
     #[test]
     fn native_f2_ligero_pcs_round_trips() {

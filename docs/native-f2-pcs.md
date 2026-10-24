@@ -95,6 +95,8 @@ still embed each bit into a larger field.
 4. Native F2 sum-check over the bit relation (next; the PCS interface is now
    `NativeF2LigeroPcs` with commit/open/verify at F2^128 points).
 5. Virtual Spartan lockstep sharing with the packed `F2^128` relation.
+   The native bit relation itself now proves through `NativeF2BitPcs` +
+   `prove_spartan` (`NativeBitBackend`).
 6. CPU schema integration.
 
 ## Open choices

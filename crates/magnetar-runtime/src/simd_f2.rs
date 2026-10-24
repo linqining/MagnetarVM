@@ -12,6 +12,7 @@ use crate::mul_row::GatedMulRow;
 use crate::signed_div_row::SignedDivRow;
 use crate::RuntimeError;
 use magnetar_constraint::{VarId, F2_128};
+use magnetar_pcs::f2::{NativeF2BitPcs, NativeF2LigeroCommitment, NativeF2LigeroOpening};
 use magnetar_proof::dual_field::{BitRelation, BitRow};
 use magnetar_proof::{prove_spartan, verify_spartan, Pcs, SpartanError, SpartanProof};
 
@@ -44,6 +45,33 @@ impl<P: Pcs> BitProofBackend for EmbeddedBitBackend<P> {
 
     fn verify(&self, relation: &BitRelation, proof: &Self::Proof) -> Result<bool, Self::Error> {
         verify_spartan(&relation.to_system(), proof, &self.pcs)?;
+        Ok(true)
+    }
+}
+
+/// Native-F2 proof backend: the bit relation is proved directly with the
+/// coded Ligero PCS instead of embedding bits into a packed `F2_128` system.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NativeBitBackend {
+    pub samples: usize,
+}
+
+impl BitProofBackend for NativeBitBackend {
+    type Proof = SpartanProof<NativeF2LigeroCommitment, NativeF2LigeroOpening>;
+    type Error = SpartanError;
+
+    fn prove(&self, relation: &BitRelation, bits: &[bool]) -> Result<Self::Proof, Self::Error> {
+        let pcs = NativeF2BitPcs {
+            samples: self.samples.max(16),
+        };
+        prove_spartan(&relation.to_system(), &relation.to_witness(bits), &pcs)
+    }
+
+    fn verify(&self, relation: &BitRelation, proof: &Self::Proof) -> Result<bool, Self::Error> {
+        let pcs = NativeF2BitPcs {
+            samples: self.samples.max(16),
+        };
+        verify_spartan(&relation.to_system(), proof, &pcs)?;
         Ok(true)
     }
 }
@@ -372,6 +400,21 @@ impl UniformBitAluRelation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_bit_backend_proves_xor_relation() {
+        let relation = UniformBitAluRelation::xor(4);
+        let mut bits = vec![false; relation.relation.num_vars];
+        for bit in 0..4 {
+            bits[relation.rs1[bit]] = (bit % 2) == 1;
+            bits[relation.rs2[bit]] = (bit % 3) == 0;
+            bits[relation.rd[bit]] = bits[relation.rs1[bit]] ^ bits[relation.rs2[bit]];
+        }
+        bits[relation.one] = true;
+        let backend = NativeBitBackend { samples: 32 };
+        let proof = backend.prove(&relation.relation, &bits).unwrap();
+        assert!(backend.verify(&relation.relation, &proof).unwrap());
+    }
 
     #[test]
     fn xor_and_relations_check_over_f2() {
