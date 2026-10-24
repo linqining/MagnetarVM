@@ -3,7 +3,7 @@
 //! This is intentionally a reference implementation: it executes the program
 //! and records the witness a prover needs. It is not itself a proof system.
 
-use magnetar_spec::syscall::{SYS_EXIT, SYS_HINT, SYS_READ, SYS_WRITE};
+use magnetar_spec::syscall::{SYS_CLOCK, SYS_EXIT, SYS_HINT, SYS_READ, SYS_WRITE};
 use magnetar_spec::{
     addw, decode, decode_compressed, div, divu, mulh, mulhsu, mulhu, rem, remu, sllw, sraw, srlw,
     subw, Addr, CompressedError, DecodeError, Instruction, MachineConfig, MachineState,
@@ -164,6 +164,7 @@ pub fn execute_with_io(
             rs2_val,
             io,
             &mut reservation,
+            cycle,
         )?;
 
         if let Some(access) = outcome.memory {
@@ -270,6 +271,7 @@ fn execute_one(
     rs2_val: Word,
     io: &mut ExecutionIo,
     reservation: &mut Option<Addr>,
+    cycle: u64,
 ) -> Result<StepOutcome, ExecError> {
     let pc = state.pc;
     let next_pc_increment = pc.wrapping_add(u64::from(instruction_len));
@@ -545,6 +547,10 @@ fn execute_one(
                 SYS_HINT => {
                     next_pc = next_pc_increment;
                     syscall_return = Some(0);
+                }
+                SYS_CLOCK => {
+                    next_pc = next_pc_increment;
+                    syscall_return = Some(cycle);
                 }
                 SYS_WRITE => {
                     if a0 != 1 && a0 != 2 {
@@ -1045,6 +1051,21 @@ mod tests {
         assert_eq!(regs[8], u64::MAX);
         assert_eq!(regs[9], u64::MAX);
         assert_eq!(regs[10], 1);
+    }
+
+    #[test]
+    fn clock_syscall_returns_the_cycle_count() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                ins(Op::Addi, 17, 0, 0, 1001, 0),
+                ins(Op::Ecall, 0, 0, 0, 0, 0),
+                ins(Op::Addi, 17, 0, 0, 93, 0),
+                ins(Op::Ecall, 0, 0, 0, 0, 0),
+            ],
+        );
+        let trace = execute(&program, config()).unwrap();
+        assert_eq!(trace.final_state.regs[10], 1);
     }
 
     #[test]

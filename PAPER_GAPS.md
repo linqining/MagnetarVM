@@ -3989,3 +3989,12 @@ opening. It produced 162,416-236,304 B depending on the workload, versus the
 current unified opening around 66 KB. The naive single-column packing is not a
 size win; E5 needs aligned-subcube packing of whole tables/columns before it can
 replace the P3 multi-table opening.
+
+
+### C8: deterministic clock syscall
+
+Added `SYS_CLOCK = 1001`, returning the current execution cycle in a0. The
+executor threads the loop cycle into `execute_one`; `clock_syscall_returns_the_
+cycle_count` checks the value. The workload suite now includes a clock program
+(4 rows, 94,743 B at width 16), which proves and verifies through the grouped
+unified path.

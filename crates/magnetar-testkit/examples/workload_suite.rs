@@ -123,6 +123,12 @@ fn workloads() -> Vec<(&'static str, ProgramImage)> {
         }
         .encode(),
     ]);
+    let clock = program(vec![
+        addi(17, 0, 1001),
+        Instruction::new(Op::Ecall).encode(),
+        addi(17, 0, 93),
+        Instruction::new(Op::Ecall).encode(),
+    ]);
     let branchy = program(vec![
         addi(1, 0, 5),
         addi(2, 0, 0),
@@ -168,6 +174,7 @@ fn workloads() -> Vec<(&'static str, ProgramImage)> {
         ("shifts", shifts),
         ("branchy", branchy),
         ("loop", loop_workload),
+        ("clock", clock),
         ("alu", alu),
     ]
 }
