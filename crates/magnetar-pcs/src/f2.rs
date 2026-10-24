@@ -203,6 +203,20 @@ impl BinaryLigeroCode {
         F2::from_u64(u64::from(bit))
     }
 
+    pub fn parity_ext(&self, row: usize, message: &[F2_128]) -> F2_128 {
+        let mut sum = F2_128::from(0u64);
+        for (column, value) in message.iter().enumerate() {
+            let mut label = Vec::with_capacity(24);
+            label.extend_from_slice(&(row as u64).to_le_bytes());
+            label.extend_from_slice(&(column as u64).to_le_bytes());
+            let hash = magnetar_transcript::sha256_labeled(b"f2-ligero-parity", &label);
+            if hash[0] & 1 == 1 {
+                sum = sum + *value;
+            }
+        }
+        sum
+    }
+
     pub fn encode(&self, message: &[F2]) -> Result<Vec<F2>, ProofError> {
         if message.len() != self.message_bits {
             return Err(ProofError::Pcs("Ligero message length mismatch".into()));
@@ -384,10 +398,221 @@ fn ligero_index_bits(len: usize) -> usize {
     len.saturating_sub(1).next_power_of_two().trailing_zeros() as usize
 }
 
+/// Lagrange weights `eq(point, index)` for an F2^128 point.
+pub fn eq_weights(point: &[F2_128]) -> Vec<F2_128> {
+    let size = 1usize << point.len();
+    (0..size)
+        .map(|index| {
+            point
+                .iter()
+                .enumerate()
+                .fold(F2_128::from(1u64), |weight, (bit, challenge)| {
+                    if (index >> bit) & 1 == 1 {
+                        weight * *challenge
+                    } else {
+                        weight * (F2_128::from(1u64) + *challenge)
+                    }
+                })
+        })
+        .collect()
+}
+
 fn ligero_index_point(index: usize, bits: usize) -> Vec<F2> {
     (0..bits)
         .map(|bit| F2::from_u64(((index >> bit) & 1) as u64))
         .collect()
+}
+
+/// Code-based Ligero linear opening over an interleaved systematic code.
+///
+/// Each row of the message matrix is encoded to `codeword_columns`; the
+/// commitment is over the encoded matrix. The prover sends `s = λ·W`. The
+/// verifier checks that `s` is a codeword (parity equations over `F2_128`) and
+/// samples columns to compare `s_j` with `λ·W[:,j]`. Code distance makes the
+/// unsampled positions sound.
+#[derive(Clone, Debug)]
+pub struct BinaryLigeroCodedProof {
+    pub rows: usize,
+    pub message_columns: usize,
+    pub parity_columns: usize,
+    pub codeword: Vec<F2_128>,
+    pub samples: Vec<BinaryLigeroColumnOpening>,
+}
+
+impl BinaryLigeroCodedProof {
+    pub fn codeword_columns(&self) -> usize {
+        self.message_columns + self.parity_columns
+    }
+
+    pub fn value(&self) -> F2_128 {
+        self.codeword[..self.message_columns]
+            .iter()
+            .fold(F2_128::from(0u64), |sum, value| sum + *value)
+    }
+
+    pub fn sample_columns(
+        commitment: &F2NativeCommitment,
+        lambda: &[F2_128],
+        codeword_columns: usize,
+        count: usize,
+    ) -> Vec<usize> {
+        if codeword_columns == 0 || count == 0 {
+            return Vec::new();
+        }
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&commitment.0);
+        bytes.extend_from_slice(&(codeword_columns as u64).to_le_bytes());
+        for weight in lambda {
+            bytes.extend_from_slice(&weight.value().to_le_bytes());
+        }
+        let seed = magnetar_transcript::sha256_labeled(b"f2-ligero-coded-samples", &bytes);
+        (0..count)
+            .map(|index| {
+                let mut block = Vec::with_capacity(40);
+                block.extend_from_slice(&seed);
+                block.extend_from_slice(&(index as u64).to_le_bytes());
+                let hash = magnetar_transcript::sha256_labeled(b"f2-ligero-coded-column", &block);
+                let mut value = [0u8; 8];
+                value.copy_from_slice(&hash[..8]);
+                (u64::from_le_bytes(value) as usize) % codeword_columns
+            })
+            .collect()
+    }
+
+    pub fn prove(
+        message: &[F2],
+        rows: usize,
+        message_columns: usize,
+        parity_columns: usize,
+        lambda: &[F2_128],
+        samples: &[usize],
+    ) -> Result<Self, ProofError> {
+        if rows == 0 || message_columns == 0 || message.len() != rows * message_columns {
+            return Err(ProofError::Pcs("coded Ligero matrix shape mismatch".into()));
+        }
+        if lambda.len() != rows {
+            return Err(ProofError::Pcs(
+                "coded Ligero lambda length mismatch".into(),
+            ));
+        }
+        let code = BinaryLigeroCode::new(message_columns, parity_columns);
+        let codeword_columns = code.codeword_bits();
+        let mut encoded = Vec::with_capacity(rows * codeword_columns);
+        for row in 0..rows {
+            let message_row = &message[row * message_columns..(row + 1) * message_columns];
+            encoded.extend(code.encode(message_row)?);
+        }
+        let mut codeword = vec![F2_128::from(0u64); codeword_columns];
+        for row in 0..rows {
+            for column in 0..codeword_columns {
+                if encoded[row * codeword_columns + column].value() == 1 {
+                    codeword[column] = codeword[column] + lambda[row];
+                }
+            }
+        }
+        let pcs = F2NativePcs;
+        let index_bits = ligero_index_bits(encoded.len());
+        let mut opened = Vec::with_capacity(samples.len());
+        for &column in samples {
+            if column >= codeword_columns {
+                return Err(ProofError::Pcs("coded Ligero sample out of range".into()));
+            }
+            let mut values = Vec::with_capacity(rows);
+            let mut paths = Vec::with_capacity(rows);
+            for row in 0..rows {
+                let index = row * codeword_columns + column;
+                let point = ligero_index_point(index, index_bits);
+                values.push(encoded[index]);
+                paths.push(pcs.open(&encoded, &point)?);
+            }
+            opened.push(BinaryLigeroColumnOpening {
+                column,
+                values,
+                paths,
+            });
+        }
+        Ok(Self {
+            rows,
+            message_columns,
+            parity_columns,
+            codeword,
+            samples: opened,
+        })
+    }
+
+    pub fn mle_value(&self, low_weights: &[F2_128]) -> Result<F2_128, ProofError> {
+        if low_weights.len() != self.message_columns {
+            return Err(ProofError::Pcs("Ligero MLE weight length mismatch".into()));
+        }
+        Ok(self.codeword[..self.message_columns]
+            .iter()
+            .zip(low_weights)
+            .fold(F2_128::from(0u64), |sum, (value, weight)| {
+                sum + *value * *weight
+            }))
+    }
+
+    pub fn verify(
+        &self,
+        commitment: &F2NativeCommitment,
+        lambda: &[F2_128],
+    ) -> Result<bool, ProofError> {
+        let code = BinaryLigeroCode::new(self.message_columns, self.parity_columns);
+        let codeword_columns = code.codeword_bits();
+        if self.rows == 0
+            || self.message_columns == 0
+            || self.codeword.len() != codeword_columns
+            || lambda.len() != self.rows
+        {
+            return Ok(false);
+        }
+        let message = self.codeword[..self.message_columns].to_vec();
+        let parity = self.codeword[self.message_columns..].to_vec();
+        for row in 0..self.parity_columns {
+            if code.parity_ext(row, &message) != parity[row] {
+                return Ok(false);
+            }
+        }
+        let expected =
+            Self::sample_columns(commitment, lambda, codeword_columns, self.samples.len());
+        if expected.len() != self.samples.len()
+            || self
+                .samples
+                .iter()
+                .zip(&expected)
+                .any(|(sample, column)| sample.column != *column)
+        {
+            return Ok(false);
+        }
+        let pcs = F2NativePcs;
+        let index_bits = ligero_index_bits(self.rows * codeword_columns);
+        for sample in &self.samples {
+            if sample.column >= codeword_columns
+                || sample.values.len() != self.rows
+                || sample.paths.len() != self.rows
+            {
+                return Ok(false);
+            }
+            let mut combined = F2_128::from(0u64);
+            for row in 0..self.rows {
+                if sample.paths[row].value != sample.values[row] {
+                    return Ok(false);
+                }
+                let index = row * codeword_columns + sample.column;
+                let point = ligero_index_point(index, index_bits);
+                if !pcs.verify(commitment, &point, &sample.paths[row])? {
+                    return Ok(false);
+                }
+                if sample.values[row].value() == 1 {
+                    combined = combined + lambda[row];
+                }
+            }
+            if combined != self.codeword[sample.column] {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
 }
 
 #[cfg(test)]
@@ -395,6 +620,94 @@ mod tests {
     use super::*;
     use magnetar_constraint::Field;
     use magnetar_proof::Mle;
+
+    #[test]
+    fn binary_ligero_extension_mle_matches_dense_eval() {
+        use magnetar_proof::Mle;
+        let rows = 8usize;
+        let message_columns = 8usize;
+        let parity_columns = 8usize;
+        let message = (0..rows * message_columns)
+            .map(|index| F2::from_u64(((index * 13 + 7) % 9) as u64 % 2))
+            .collect::<Vec<_>>();
+        let code = BinaryLigeroCode::new(message_columns, parity_columns);
+        let mut encoded = Vec::new();
+        for row in 0..rows {
+            encoded.extend(
+                code.encode(&message[row * message_columns..(row + 1) * message_columns])
+                    .unwrap(),
+            );
+        }
+        let pcs = F2NativePcs;
+        let commitment = pcs.commit(&encoded).unwrap();
+        let point = (0..6u64)
+            .map(|bit| F2_128::from(bit * 17 + 3))
+            .collect::<Vec<_>>();
+        let high = &point[3..];
+        let low = &point[..3];
+        let lambda = eq_weights(high);
+        let low_weights = eq_weights(low);
+        let columns = code.codeword_bits();
+        let samples = BinaryLigeroCodedProof::sample_columns(&commitment, &lambda, columns, 24);
+        let proof = BinaryLigeroCodedProof::prove(
+            &message,
+            rows,
+            message_columns,
+            parity_columns,
+            &lambda,
+            &samples,
+        )
+        .unwrap();
+        assert!(proof.verify(&commitment, &lambda).unwrap());
+        let opened = proof.mle_value(&low_weights).unwrap();
+        let embedded = message
+            .iter()
+            .map(|bit| F2_128::from(u64::from(bit.value())))
+            .collect::<Vec<_>>();
+        let dense = Mle::new(embedded).unwrap().eval(&point).unwrap();
+        assert_eq!(opened, dense);
+    }
+
+    #[test]
+    fn binary_ligero_coded_opening_round_trips() {
+        let rows = 8usize;
+        let message_columns = 8usize;
+        let parity_columns = 8usize;
+        let message = (0..rows * message_columns)
+            .map(|index| F2::from_u64(((index * 11 + 5) % 7) as u64 % 2))
+            .collect::<Vec<_>>();
+        let lambda = (0..rows)
+            .map(|row| F2_128::from((row as u64) * 0x9e37 + 11))
+            .collect::<Vec<_>>();
+        let code = BinaryLigeroCode::new(message_columns, parity_columns);
+        let mut encoded = Vec::new();
+        for row in 0..rows {
+            encoded.extend(
+                code.encode(&message[row * message_columns..(row + 1) * message_columns])
+                    .unwrap(),
+            );
+        }
+        let pcs = F2NativePcs;
+        let commitment = pcs.commit(&encoded).unwrap();
+        let columns = code.codeword_bits();
+        let samples = BinaryLigeroCodedProof::sample_columns(&commitment, &lambda, columns, 16);
+        let proof = BinaryLigeroCodedProof::prove(
+            &message,
+            rows,
+            message_columns,
+            parity_columns,
+            &lambda,
+            &samples,
+        )
+        .unwrap();
+        assert!(proof.verify(&commitment, &lambda).unwrap());
+        let mut bad = proof.clone();
+        bad.codeword[0] = bad.codeword[0] + F2_128::from(1u64);
+        assert!(!bad.verify(&commitment, &lambda).unwrap());
+        let mut bad = proof.clone();
+        bad.samples[0].values[0] = F2::from_u64(u64::from(1 - bad.samples[0].values[0].value()));
+        assert!(!bad.verify(&commitment, &lambda).unwrap());
+    }
 
     #[test]
     fn binary_ligero_linear_opening_round_trips() {

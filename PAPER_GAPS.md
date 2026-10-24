@@ -3320,3 +3320,15 @@ verifier checks `v = Σ s_j`, and Fiat-Shamir-derived columns are opened (Merkle
 paths for each row bit) and checked against `s_j`. Round-trip and tamper tests
 pass. This direct-column variant is not yet the succinct parity-code Ligero
 test: proof size is `O(columns + samples·rows·log k)`.
+
+
+### B3 Step 2/3: coded Ligero extension-point opening
+
+`BinaryLigeroCodedProof` interpolates each message row with the systematic
+`BinaryLigeroCode`, commits the encoded matrix, and sends `s = λ·W`. The
+verifier checks the parity equations over `F2_128`, checks `v = Σ s_j`, and
+samples Fiat-Shamir columns to compare `s_j` with `λ·W[:,j]`; code distance makes
+unsampled positions sound. Because `eq(r,index)` factorises as
+`eq(r_low,col)·eq(r_high,row)`, setting `λ = eq(r_high)` and weighting the
+message columns by `eq(r_low)` gives a native-F2 extension-point MLE opening.
+The test compares it against a dense `Mle::eval` and passes.

@@ -88,7 +88,10 @@ still embed each bit into a larger field.
    has soundness `(1-δ)^t` for a `δ`-fraction of bad columns and proof size
    `O(columns + t·rows·log k)`, so it is not yet the final succinct code-based
    Ligero test; the parity-code/proximity-gap version remains the next step.
-3. Extension-point MLE wrapper using `eq(r, i)`.
+3. Extension-point MLE wrapper using `eq(r, i)` (done:
+   `BinaryLigeroCodedProof::mle_value`). The MLE weight factorises as
+   `eq(r_high,row)·eq(r_low,column)`; the code test binds the row combination,
+   and the verifier reconstructs the dense evaluation from the opened codeword.
 4. Native F2 sum-check over the bit relation.
 5. Virtual Spartan lockstep sharing with the packed `F2^128` relation.
 6. CPU schema integration.
