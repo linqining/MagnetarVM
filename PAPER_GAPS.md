@@ -3597,3 +3597,12 @@ read cell as a zero, unwritten RAM word (error if none exists). With that sentin
 `ram_read_value_eval_matches_gated_data_subsegment` confirms that the
 BinaryTwist `read_value` column and the gated memory `data` subsegment evaluate
 identically at the same cycle point. Idle rows no longer inject a nonzero cell 0.
+
+
+### B5: memory owner split into addr/data subsegments
+
+`reservation_virtual_specs` now emits `memory_addr` and `memory_data` as
+Memory(Ram) segments containing exactly the gated adder-out and data bits, with
+the remaining memory relation variables tagged Cpu. `memory_subsegment_is_filled_from_twist`
+fills these subsegments from BinaryTwist `read_address`/`read_value` and still
+reconstructs the original CPU z after pad/unpad.

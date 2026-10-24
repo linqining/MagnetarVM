@@ -744,10 +744,34 @@ pub(crate) fn reservation_virtual_specs(
     let mut parts: Vec<(&str, usize, usize, SegmentOwner)> = vec![
         ("alu", 0, gated.memory_offset, SegmentOwner::Cpu),
         (
-            "memory",
-            gated.memory_offset,
-            gated.shift_offset,
+            "memory_addr",
+            gated.memory_offset + gated.memory.adder.out[0],
+            gated.memory_offset + gated.memory.adder.out[0] + width,
             SegmentOwner::Memory(MemoryKind::Ram),
+        ),
+        (
+            "memory_data",
+            gated.memory_offset + gated.memory.data[0],
+            gated.memory_offset + gated.memory.data[0] + width,
+            SegmentOwner::Memory(MemoryKind::Ram),
+        ),
+        (
+            "memory_cpu_lo",
+            gated.memory_offset,
+            gated.memory_offset + gated.memory.adder.out[0],
+            SegmentOwner::Cpu,
+        ),
+        (
+            "memory_cpu_mid",
+            gated.memory_offset + gated.memory.adder.out[0] + width,
+            gated.memory_offset + gated.memory.data[0],
+            SegmentOwner::Cpu,
+        ),
+        (
+            "memory_cpu_hi",
+            gated.memory_offset + gated.memory.data[0] + width,
+            gated.shift_offset,
+            SegmentOwner::Cpu,
         ),
         (
             "shift",
@@ -1695,7 +1719,6 @@ mod virtual_spec_tests {
         let specs = reservation_virtual_specs(width, cycles, base_cols);
         let padded = crate::build_padded_virtual_layout(&specs).unwrap();
         let (z, _, _, _) = reservation_claim_inputs(width, &rows).unwrap();
-        let cpu = crate::reservation_cpu_row::ReservationCpuRow::new(width);
         let twist = magnetar_memory::BinaryTwistWitness::from_trace(&trace).unwrap();
         let mut virtual_values = vec![F2_128::from(0u64); padded.layout.total_bits];
         let mut event = 0usize;
@@ -1707,11 +1730,11 @@ mod virtual_spec_tests {
                 .unwrap();
             virtual_values[map.padded_offset..map.padded_offset + spec.len]
                 .copy_from_slice(&z[spec.offset..spec.offset + spec.len]);
-            if spec.name.starts_with("memory") {
+            if spec.name.starts_with("memory_addr") || spec.name.starts_with("memory_data") {
                 let cycle = spec
                     .name
-                    .strip_prefix("memory")
-                    .and_then(|suffix| suffix.parse::<usize>().ok())
+                    .rsplit_once(|c: char| !c.is_ascii_digit())
+                    .and_then(|(_, suffix)| suffix.parse::<usize>().ok())
                     .unwrap();
                 if !matches!(
                     rows[cycle].1.cpu,
@@ -1719,21 +1742,23 @@ mod virtual_spec_tests {
                 ) {
                     continue;
                 }
-                let value = twist.read_value[event].value();
-                for bit in 0..width {
-                    virtual_values[map.padded_offset + cpu.cpu.memory.data[bit]] =
-                        F2_128::from((value >> bit) & 1);
+                if spec.name.starts_with("memory_addr") {
+                    let word = twist.read_address[event]
+                        .iter()
+                        .position(|bit| bit.value() == 1)
+                        .unwrap_or(0);
+                    let address = trace.config.ram_base + 8 * word as u64;
+                    for bit in 0..width {
+                        virtual_values[map.padded_offset + bit] =
+                            F2_128::from((address >> bit) & 1);
+                    }
+                } else {
+                    let value = twist.read_value[event].value();
+                    for bit in 0..width {
+                        virtual_values[map.padded_offset + bit] = F2_128::from((value >> bit) & 1);
+                    }
+                    event += 1;
                 }
-                let word = twist.read_address[event]
-                    .iter()
-                    .position(|bit| bit.value() == 1)
-                    .unwrap_or(0);
-                let address = trace.config.ram_base + 8 * word as u64;
-                for bit in 0..width {
-                    virtual_values[map.padded_offset + cpu.cpu.memory.adder.out[bit]] =
-                        F2_128::from((address >> bit) & 1);
-                }
-                event += 1;
             }
         }
         assert_eq!(padded.unpad_values(&virtual_values), z);
