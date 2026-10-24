@@ -3429,6 +3429,52 @@ mod tests {
     }
 
     #[test]
+    fn full_cycle_ram_twist_proves_and_verifies() {
+        let mut data = vec![0u8; 8];
+        data.copy_from_slice(&0x1122_3344_5566_7788u64.to_le_bytes());
+        let program = ProgramImage::new(
+            0x10,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x40,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Ld,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        )
+        .with_data(data);
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x10,
+                rom_base: 0x10,
+                ram_base: 0x40,
+                ram_size: 0x40,
+                stack_top: 0x80,
+                max_cycles: 8,
+            },
+        )
+        .unwrap();
+        let witness = magnetar_memory::BinaryTwistWitness::from_trace_full_cycles(&trace).unwrap();
+        let proof = crate::binary_twist::prove_binary_twist_ram(&witness).unwrap();
+        assert!(crate::binary_twist::verify_binary_twist_ram(&witness, &proof).unwrap());
+    }
+
+    #[test]
     fn fetch_expansion_adds_no_state_change_rows() {
         let outcome = ReferencePipeline::run(&program(), config(), 2).unwrap();
         let expanded = expand_trace_fetch_micro_ops(&outcome.trace);

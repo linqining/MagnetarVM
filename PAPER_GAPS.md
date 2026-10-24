@@ -3585,3 +3585,8 @@ using an idle read at word 0 for non-memory rows. The test verifies one cycle pe
 row, `validate()`, and that memory-row `read_value`/`write_value` match the
 event-indexed witness. This aligns the RAM domain with the gated/ Router cycle
 domain for component claims.
+
+
+`full_cycle_ram_twist_proves_and_verifies` proves and verifies a
+`from_trace_full_cycles` witness with the existing BinaryTwist RAM prover,
+confirming the full-cycle tables are valid proof inputs.
