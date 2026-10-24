@@ -1191,10 +1191,10 @@ impl<'a> UnifiedProveContext<'a> {
         };
         mosaic_tables.push(trace_table.clone());
 
-        let gated_input = crate::simd_full::gated_rows_from_trace(trace, width)
+        let gated_input = crate::reservation_cpu_row::reservation_cpu_rows_from_trace(trace, width)
             .ok()
             .filter(|rows| width <= 128 && !rows.is_empty() && rows.len().is_power_of_two())
-            .and_then(|rows| crate::simd_dual::gated_claim_inputs(width, &rows).ok())
+            .and_then(|rows| crate::simd_dual::reservation_claim_inputs(width, &rows).ok())
             .map(|(z, a0, a1, layout)| {
                 let table = mosaic_tables.len();
                 mosaic_tables.push(P3MosaicTable {
@@ -1547,7 +1547,7 @@ impl<'a> UnifiedVerifyContext<'a> {
             }
             _ => {}
         }
-        let gated_rows = crate::simd_full::gated_rows_from_trace(trace, width)
+        let gated_rows = crate::reservation_cpu_row::reservation_cpu_rows_from_trace(trace, width)
             .ok()
             .filter(|rows| width <= 128 && !rows.is_empty() && rows.len().is_power_of_two());
         match (gated_rows.is_some(), proof.gated.is_some()) {
@@ -1560,7 +1560,7 @@ impl<'a> UnifiedVerifyContext<'a> {
         }
         let gated_input = gated_rows
             .as_ref()
-            .and_then(|rows| crate::simd_dual::gated_claim_inputs(width, rows).ok())
+            .and_then(|rows| crate::simd_dual::reservation_claim_inputs(width, rows).ok())
             .map(|(z, a0, a1, layout)| crate::GatedProveInput {
                 z,
                 a0,

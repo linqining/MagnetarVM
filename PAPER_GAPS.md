@@ -2444,3 +2444,21 @@ table-count assertion now includes the gated claims table.
 
 A tamper test flips a reservation `pre_valid` in the trace-derived CPU chain and
 confirms the witness-bound verifier rejects it.
+
+
+### C: reservation constraints in unified gated claims
+
+`gated_shared_matrices` now accepts any `GatedRowLike`; `ReservationCpuRow`
+implements it. Unified proving/verification builds reservation CPU rows from the
+trace and uses `reservation_claim_inputs`, so reservation transitions and their
+chain are inside the existing gated claims, not a separate P3 proof.
+
+Small gated trace size:
+
+```text
+before: 156,089 B
+after:  157,433 B  (+1.3 KB)
+```
+
+Targeted tests: `unified_trace_proof_merges`, `unified_lr_sc`,
+`unified_amo_lr_sc`.

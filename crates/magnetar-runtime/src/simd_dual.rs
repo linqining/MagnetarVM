@@ -351,7 +351,7 @@ pub fn prove_gated_dual_batch(
         ));
     }
     let row = GatedCpuRow::new(width);
-    let s1_system = row.relation.to_system();
+    let s1_system = row.relation().to_system();
     let mut s2_system = row.packed_companion_system();
     for _ in s2_system.constraints.len()..s1_system.constraints.len() {
         s2_system.add_constraint(
@@ -360,7 +360,7 @@ pub fn prove_gated_dual_batch(
             magnetar_constraint::Expr::constant(0u64),
         );
     }
-    let base_cols = (row.relation.num_vars + 1).next_power_of_two();
+    let base_cols = (row.relation().num_vars + 1).next_power_of_two();
     let mut extra_a = Vec::new();
     let mut extra_b = Vec::new();
     let mut extra_c = Vec::new();
@@ -375,7 +375,7 @@ pub fn prove_gated_dual_batch(
                 magnetar_constraint::F2_128::from(1u64),
             )]);
             extra_c.push(vec![(
-                (instance + 1) * base_cols + row.pc[bit],
+                (instance + 1) * base_cols + row.pc()[bit],
                 magnetar_constraint::F2_128::from(1u64),
             )]);
         }
@@ -488,7 +488,7 @@ pub fn verify_gated_dual_batch(
                 magnetar_constraint::F2_128::from(1u64),
             )]);
             extra_c.push(vec![(
-                (instance + 1) * base_cols + row.pc[bit],
+                (instance + 1) * base_cols + row.pc()[bit],
                 magnetar_constraint::F2_128::from(1u64),
             )]);
         }
@@ -518,8 +518,59 @@ pub fn verify_gated_dual_batch(
 }
 
 #[allow(clippy::type_complexity)]
-fn gated_shared_matrices(
-    row: &GatedCpuRow,
+pub trait GatedRowLike {
+    fn relation(&self) -> &magnetar_proof::dual_field::BitRelation;
+    fn packed_companion_system(&self) -> magnetar_constraint::ConstraintSystem;
+    fn width(&self) -> usize;
+    fn pc(&self) -> &[magnetar_constraint::VarId];
+    fn next_pc(&self) -> &[magnetar_constraint::VarId];
+    fn one(&self) -> magnetar_constraint::VarId;
+}
+
+impl GatedRowLike for GatedCpuRow {
+    fn relation(&self) -> &magnetar_proof::dual_field::BitRelation {
+        &self.relation
+    }
+    fn packed_companion_system(&self) -> magnetar_constraint::ConstraintSystem {
+        self.packed_companion_system()
+    }
+    fn width(&self) -> usize {
+        self.width
+    }
+    fn pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.pc
+    }
+    fn next_pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.next_pc
+    }
+    fn one(&self) -> magnetar_constraint::VarId {
+        self.alu.one
+    }
+}
+
+impl GatedRowLike for crate::reservation_cpu_row::ReservationCpuRow {
+    fn relation(&self) -> &magnetar_proof::dual_field::BitRelation {
+        &self.relation
+    }
+    fn packed_companion_system(&self) -> magnetar_constraint::ConstraintSystem {
+        self.cpu.packed_companion_system()
+    }
+    fn width(&self) -> usize {
+        self.width
+    }
+    fn pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.cpu.pc
+    }
+    fn next_pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.cpu.next_pc
+    }
+    fn one(&self) -> magnetar_constraint::VarId {
+        self.cpu.alu.one
+    }
+}
+
+fn gated_shared_matrices<R: GatedRowLike>(
+    row: &R,
     cycles: usize,
     statement: Option<(u64, u64)>,
 ) -> Result<
@@ -533,7 +584,7 @@ fn gated_shared_matrices(
     use magnetar_proof::spartan::MatrixPart;
     use magnetar_proof::SharedBlockMatrix;
 
-    let s1_system = row.relation.to_system();
+    let s1_system = row.relation().to_system();
     let mut s2_system = row.packed_companion_system();
     for _ in s2_system.constraints.len()..s1_system.constraints.len() {
         s2_system.add_constraint(
@@ -542,48 +593,48 @@ fn gated_shared_matrices(
             magnetar_constraint::Expr::constant(0u64),
         );
     }
-    let base_cols = (row.relation.num_vars + 1).next_power_of_two();
+    let base_cols = (row.relation().num_vars + 1).next_power_of_two();
     let mut extra_a = Vec::new();
     let mut extra_b = Vec::new();
     let mut extra_c = Vec::new();
     for instance in 0..cycles.saturating_sub(1) {
-        for bit in 0..row.width {
+        for bit in 0..row.width() {
             extra_a.push(vec![(
-                instance * base_cols + row.next_pc[bit],
+                instance * base_cols + row.next_pc()[bit],
                 magnetar_constraint::F2_128::from(1u64),
             )]);
             extra_b.push(vec![(
-                instance * base_cols + row.alu.one,
+                instance * base_cols + row.one(),
                 magnetar_constraint::F2_128::from(1u64),
             )]);
             extra_c.push(vec![(
-                (instance + 1) * base_cols + row.pc[bit],
+                (instance + 1) * base_cols + row.pc()[bit],
                 magnetar_constraint::F2_128::from(1u64),
             )]);
         }
     }
     let mut statement_rows = 0usize;
     if let Some((initial_pc, final_pc)) = statement {
-        statement_rows = 2 * row.width;
+        statement_rows = 2 * row.width();
         for (instance, pc) in [(0usize, initial_pc), (cycles - 1, final_pc)] {
-            for bit in 0..row.width {
+            for bit in 0..row.width() {
                 let value = (pc >> bit) & 1;
                 let var = if instance == 0 {
-                    row.pc[bit]
+                    row.pc()[bit]
                 } else {
-                    row.next_pc[bit]
+                    row.next_pc()[bit]
                 };
                 extra_a.push(vec![(
                     instance * base_cols + var,
                     magnetar_constraint::F2_128::from(1u64),
                 )]);
                 extra_b.push(vec![(
-                    instance * base_cols + row.alu.one,
+                    instance * base_cols + row.one(),
                     magnetar_constraint::F2_128::from(1u64),
                 )]);
                 if value == 1 {
                     extra_c.push(vec![(
-                        instance * base_cols + row.alu.one,
+                        instance * base_cols + row.one(),
                         magnetar_constraint::F2_128::from(1u64),
                     )]);
                 } else {
@@ -592,7 +643,7 @@ fn gated_shared_matrices(
             }
         }
     }
-    let zero_rows = vec![Vec::new(); cycles.saturating_sub(1) * row.width + statement_rows];
+    let zero_rows = vec![Vec::new(); cycles.saturating_sub(1) * row.width() + statement_rows];
     let a0 = SharedBlockMatrix::from_system(&s1_system, MatrixPart::A, cycles)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?
         .with_extra_rows(zero_rows.clone());
@@ -631,6 +682,34 @@ pub(crate) fn gated_claim_inputs(
     let row = GatedCpuRow::new(width);
     let (base_cols, systems0, systems1) = gated_shared_matrices(&row, rows.len(), None)?;
     let bits = gated_batch_bits(&row, base_cols, rows);
+    let layout = segment_layout(bits.len())?;
+    let z = bits
+        .iter()
+        .map(|bit| F2_128::from(u64::from(*bit)))
+        .collect::<Vec<_>>();
+    Ok((z, systems0, systems1, layout))
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn reservation_claim_inputs(
+    width: usize,
+    rows: &[(u64, crate::reservation_cpu_row::ReservationCpuInput)],
+) -> Result<
+    (
+        Vec<F2_128>,
+        [magnetar_proof::SharedBlockMatrix; 3],
+        [magnetar_proof::SharedBlockMatrix; 3],
+        magnetar_constraint::WitnessLayout,
+    ),
+    RuntimeError,
+> {
+    let row = crate::reservation_cpu_row::ReservationCpuRow::new(width);
+    let (base_cols, systems0, systems1) = gated_shared_matrices(&row, rows.len(), None)?;
+    let mut bits = Vec::with_capacity(rows.len() * base_cols);
+    for (pc, input) in rows {
+        bits.extend(row.witness(*pc, *input));
+        bits.resize(bits.len() + base_cols - row.relation.num_vars, false);
+    }
     let layout = segment_layout(bits.len())?;
     let z = bits
         .iter()
