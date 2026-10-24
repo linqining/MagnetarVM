@@ -2274,3 +2274,14 @@ SC rows use the prior memory value as `old`, `rs2_val` as the new value, and
 `rd_val == 0` as success. The bundle test executes AMOADD/AMOSWAP/AMOXOR/AMOMAX
 followed by LR/SC and verifies all batches. Reservation state is still not
 chained in the CPU.
+
+
+`verify_amo_bundle` now checks the trace's reservation chain:
+
+- `reservation_before` must equal the previous `reservation_after`;
+- LR sets the reservation to its address;
+- a successful SC requires `reservation_before == addr` and clears it;
+- stores/AMOs clear it.
+
+A tampered LR `reservation_after` is rejected. This is still verifier-side trace
+checking, not a CPU-row chained constraint.

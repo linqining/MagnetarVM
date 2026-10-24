@@ -322,6 +322,75 @@ fn check_memory_events(trace: &Trace) -> Result<(), RuntimeError> {
     Ok(())
 }
 
+fn is_amo_op(op: Op) -> bool {
+    matches!(
+        op,
+        Op::AmoaddW
+            | Op::AmoaddD
+            | Op::AmoxorW
+            | Op::AmoxorD
+            | Op::AmoandW
+            | Op::AmoandD
+            | Op::AmoorW
+            | Op::AmoorD
+            | Op::AmoswapW
+            | Op::AmoswapD
+            | Op::AmominW
+            | Op::AmominD
+            | Op::AmomaxW
+            | Op::AmomaxD
+            | Op::AmominuW
+            | Op::AmominuD
+            | Op::AmomaxuW
+            | Op::AmomaxuD
+    )
+}
+
+fn is_store_op(op: Op) -> bool {
+    matches!(op, Op::Sb | Op::Sh | Op::Sw | Op::Sd)
+}
+
+fn check_reservations(trace: &Trace) -> Result<(), RuntimeError> {
+    let mut current = None;
+    for row in &trace.rows {
+        if row.reservation_before != current {
+            return Err(RuntimeError::Proof(
+                "reservation_before does not chain".into(),
+            ));
+        }
+        let after = match row.instruction.op {
+            Op::LrW | Op::LrD => {
+                let Some(mem) = row.mem else {
+                    return Err(RuntimeError::Proof("LR without memory access".into()));
+                };
+                Some(mem.addr)
+            }
+            Op::ScW | Op::ScD => {
+                if row.rd_val == 0 {
+                    let Some(mem) = row.mem else {
+                        return Err(RuntimeError::Proof("SC without memory access".into()));
+                    };
+                    if row.reservation_before != Some(mem.addr) {
+                        return Err(RuntimeError::Proof(
+                            "successful SC without matching reservation".into(),
+                        ));
+                    }
+                }
+                None
+            }
+            op if is_amo_op(op) || is_store_op(op) => None,
+            _ => row.reservation_after,
+        };
+        if after != row.reservation_after {
+            return Err(RuntimeError::Proof(
+                "reservation_after does not match the operation".into(),
+            ));
+        }
+        current = after;
+    }
+    Ok(())
+}
+
 #[allow(clippy::type_complexity)]
 pub fn verify_amo_bundle(
     trace: &Trace,
@@ -329,6 +398,7 @@ pub fn verify_amo_bundle(
     proof: &AmoBundleProof,
 ) -> Result<(), RuntimeError> {
     check_memory_events(trace)?;
+    check_reservations(trace)?;
     let rows = collect(trace);
     let expected =
         |rows: &Vec<(u64, u64, u64)>, present: bool, label: &str| -> Result<usize, RuntimeError> {
@@ -474,6 +544,33 @@ mod tests {
                     shamt: 0,
                 }
                 .encode(),
+                Instruction {
+                    op: Op::LrD,
+                    rd: 9,
+                    rs1: 4,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 10,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 9,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::ScD,
+                    rd: 11,
+                    rs1: 4,
+                    rs2: 10,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
                 Instruction::new(Op::Ecall).encode(),
             ],
         );
@@ -491,5 +588,14 @@ mod tests {
         .unwrap();
         let proof = prove_amo_bundle(&trace, 8).unwrap();
         verify_amo_bundle(&trace, 8, &proof).unwrap();
+        let mut bad = trace.clone();
+        if let Some(row) = bad
+            .rows
+            .iter_mut()
+            .find(|row| matches!(row.instruction.op, Op::LrD))
+        {
+            row.reservation_after = None;
+        }
+        assert!(check_reservations(&bad).is_err());
     }
 }
