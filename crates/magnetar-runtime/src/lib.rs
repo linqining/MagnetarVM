@@ -3247,6 +3247,15 @@ mod tests {
         crate::gated_bundle::verify_gated_bundle(8, &rows, &bundle).unwrap();
         let proof = prove_unified_trace(&expanded, 8).unwrap();
         verify_core_proof(&proof).unwrap();
+        eprintln!(
+            "fetch-expanded unified bytes {}",
+            bincode::serialize(&proof).unwrap().len()
+        );
+        let default_proof = prove_unified_trace(&outcome.trace, 8).unwrap();
+        eprintln!(
+            "default unified bytes {}",
+            bincode::serialize(&default_proof).unwrap().len()
+        );
     }
 
     #[test]
