@@ -3847,3 +3847,19 @@ and trace paths. `shift_program_unified_proof_round_trips` covers a Slli/Srli/Xo
 program. The Shout-to-shift-Router link is skipped while the shift router is
 standalone; store Router and all shared component openings are unchanged. The
 shift proof is ~216 KB at width 8 versus 152 KB for the no-shift benchmark.
+
+
+### G3: incremental workload suite
+
+`magnetar-testkit/examples/workload_suite.rs` runs four representative
+workloads through the unified path (width 16):
+
+| workload | rows | bytes | prove ms | verify ms |
+| --- | ---: | ---: | ---: | ---: |
+| fibonacci | 10 | 113,383 | 8,257 | 1,940 |
+| memory | 5 | 126,312 | 7,212 | 976 |
+| shifts | 5 | 217,168 | 3,990 | 975 |
+| alu | 25 | 127,775 | 17,306 | 3,902 |
+
+The shifts row exercises the standalone shift-Router fallback. This is a
+stepping stone toward the paper's 15-workload suite, not a replacement.
