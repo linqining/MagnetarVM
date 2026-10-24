@@ -126,6 +126,12 @@ impl BinaryRouterWitness {
         let mut outputs = Vec::new();
         let mut ram = trace.initial_ram.clone();
         for row in &trace.rows {
+            if row.micro_op == magnetar_spec::MicroOpKind::Fetch {
+                routes.push(RouterRoute::None);
+                inputs.push((0u64, 0u64));
+                outputs.push(0u64);
+                continue;
+            }
             let is_shift = matches!(
                 row.instruction.op,
                 Op::Sll | Op::Srl | Op::Sra | Op::Slli | Op::Srli | Op::Srai

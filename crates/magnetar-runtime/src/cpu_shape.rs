@@ -8,6 +8,7 @@ use magnetar_spec::{MemoryAccess, Op, Trace, TraceRow};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CpuShapeRow {
     pub pc: u64,
+    pub micro_op: magnetar_spec::MicroOpKind,
     pub op: Op,
     pub imm: i64,
     pub mem_width: Option<u8>,
@@ -27,6 +28,7 @@ impl CpuShape {
                 .iter()
                 .map(|row| CpuShapeRow {
                     pc: row.pc,
+                    micro_op: row.micro_op,
                     op: row.instruction.op,
                     imm: row.instruction.imm,
                     mem_width: row.mem.map(|m| m.width),
@@ -44,6 +46,7 @@ impl CpuShape {
         self.rows.len() == trace.rows.len()
             && self.rows.iter().zip(trace.rows.iter()).all(|(shape, row)| {
                 shape.pc == row.pc
+                    && shape.micro_op == row.micro_op
                     && shape.op == row.instruction.op
                     && shape.imm == row.instruction.imm
                     && shape.mem_width == row.mem.map(|m| m.width)
@@ -100,8 +103,12 @@ impl CpuShape {
                 cycle: 0,
                 pc: shape.pc,
                 micro_pc: shape.pc,
-                micro_op: magnetar_spec::MicroOpKind::Execute,
-                next_pc: shape.pc.wrapping_add(4),
+                micro_op: shape.micro_op,
+                next_pc: if shape.micro_op == magnetar_spec::MicroOpKind::Fetch {
+                    shape.pc
+                } else {
+                    shape.pc.wrapping_add(4)
+                },
                 instruction_word: 0,
                 instruction_len: 4,
                 instruction,

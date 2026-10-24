@@ -243,6 +243,25 @@ fn reservation_cpu_rows(
             ));
             continue;
         };
+        if row.micro_op == magnetar_spec::MicroOpKind::Fetch {
+            result.push((
+                *pc,
+                ReservationCpuInput {
+                    cpu: *cpu,
+                    addr: 0,
+                    res_addr: 0,
+                    pre_valid: false,
+                    is_lr: false,
+                    is_sc: false,
+                    is_invalidate: false,
+                    next_pre_valid: false,
+                    next_pre_addr: 0,
+                    value: 0,
+                    has_value: false,
+                },
+            ));
+            continue;
+        }
         let next_pre = trace
             .rows
             .get(index + 1)

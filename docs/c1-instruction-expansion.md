@@ -2,6 +2,10 @@
 
 ## Current state
 
+An opt-in `expand_trace_fetch_micro_ops` now inserts a Fetch row before each
+Execute row, and the gated bundle proves the expanded trace. The default
+executor still emits identity Execute rows.
+
 `preprocess` emits one `BytecodeRow` per instruction with `micro_pc = rv_pc`.
 `preprocess::expand_bytecode` now turns rows into scheduled `MicroOp`s:
 

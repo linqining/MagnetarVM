@@ -73,6 +73,21 @@ pub fn check_trace(trace: &Trace) -> Result<(), CpuError> {
 }
 
 pub fn check_row(index: usize, row: &TraceRow) -> Result<(), CpuError> {
+    if row.micro_op == magnetar_spec::MicroOpKind::Fetch {
+        if row.next_pc != row.pc
+            || row.rd.is_some()
+            || row.mem.is_some()
+            || !row.extra_mem.is_empty()
+            || row.reservation_after != row.reservation_before
+        {
+            return Err(CpuError::NextPc {
+                row: index,
+                expected: row.pc,
+                actual: row.next_pc,
+            });
+        }
+        return Ok(());
+    }
     let pc = row.pc;
     let imm = row.instruction.imm as Word;
     let rs1 = row.rs1_val;

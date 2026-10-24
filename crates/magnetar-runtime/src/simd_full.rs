@@ -222,6 +222,18 @@ fn gated_rows_from_trace_impl(
 
     let mut rows = Vec::new();
     for row in &trace.rows {
+        if row.micro_op == magnetar_spec::MicroOpKind::Fetch {
+            rows.push((
+                row.pc,
+                GatedCpuRowInput::Branch {
+                    left: 0,
+                    right: 0,
+                    imm: 0,
+                    kind: crate::branch_row::BranchKind::Beq,
+                },
+            ));
+            continue;
+        }
         let shift_kind = match row.instruction.op {
             magnetar_spec::Op::Sll | magnetar_spec::Op::Slli => {
                 Some(crate::simd_f2::BitShiftKind::Sll)

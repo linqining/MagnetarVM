@@ -1152,6 +1152,13 @@ pub(crate) fn row_cpu_relation(
     row: &magnetar_spec::TraceRow,
     width: usize,
 ) -> Result<Option<(ConstraintSystem, Witness)>, RuntimeError> {
+    if row.micro_op == magnetar_spec::MicroOpKind::Fetch {
+        let (system, layout) = magnetar_cpu::uniform_branch_layout(width);
+        return Ok(Some((
+            system,
+            layout.witness(magnetar_cpu::BranchOp::Beq, row.pc, 0, 0, 0),
+        )));
+    }
     let imm = row.instruction.imm as u64;
     if row.instruction.op.amo_width().is_some() {
         let access = row
@@ -1810,6 +1817,37 @@ fn check_io_writes(trace: &Trace) -> Result<(), RuntimeError> {
         ));
     }
     Ok(())
+}
+
+/// Expand each executed row with a preceding `Fetch` micro-op row.
+///
+/// This is the opt-in C1 expansion path: it does not change architectural
+/// state, but doubles the trace rows and gives every instruction a fetch row
+/// with `next_pc = pc`. The current default executor still emits the identity
+/// micro-op encoding.
+pub fn expand_trace_fetch_micro_ops(trace: &Trace) -> Trace {
+    let mut rows = Vec::with_capacity(trace.rows.len() * 2);
+    for row in &trace.rows {
+        let mut fetch = row.clone();
+        fetch.micro_op = magnetar_spec::MicroOpKind::Fetch;
+        fetch.next_pc = fetch.pc;
+        fetch.micro_pc = fetch.pc;
+        fetch.rs1 = None;
+        fetch.rs2 = None;
+        fetch.rd = None;
+        fetch.rs1_val = 0;
+        fetch.rs2_val = 0;
+        fetch.rd_val = 0;
+        fetch.mem = None;
+        fetch.extra_mem.clear();
+        fetch.reservation_after = fetch.reservation_before;
+        fetch.syscall = None;
+        rows.push(fetch);
+        rows.push(row.clone());
+    }
+    let mut expanded = trace.clone();
+    expanded.rows = rows;
+    expanded
 }
 
 pub(crate) fn check_trace_linkage(trace: &Trace) -> Result<(), RuntimeError> {
@@ -3189,6 +3227,24 @@ mod tests {
             stack_top: 0x1000_1000,
             max_cycles: 100,
         }
+    }
+
+    #[test]
+    fn fetch_expansion_adds_no_state_change_rows() {
+        let outcome = ReferencePipeline::run(&program(), config(), 2).unwrap();
+        let expanded = expand_trace_fetch_micro_ops(&outcome.trace);
+        assert_eq!(expanded.rows.len(), outcome.trace.rows.len() * 2);
+        check_trace(&expanded).unwrap();
+        check_trace_linkage(&expanded).unwrap();
+        for pair in expanded.rows.chunks(2) {
+            assert_eq!(pair[0].micro_op, magnetar_spec::MicroOpKind::Fetch);
+            assert_eq!(pair[0].pc, pair[1].pc);
+            assert_eq!(pair[0].next_pc, pair[0].pc);
+            assert_eq!(pair[1].micro_op, magnetar_spec::MicroOpKind::Execute);
+        }
+        let rows = crate::simd_full::gated_rows_from_trace(&expanded, 8).unwrap();
+        let bundle = crate::gated_bundle::prove_gated_bundle(8, &rows).unwrap();
+        crate::gated_bundle::verify_gated_bundle(8, &rows, &bundle).unwrap();
     }
 
     #[test]
