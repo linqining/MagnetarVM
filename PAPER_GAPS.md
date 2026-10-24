@@ -3979,3 +3979,13 @@ otherwise. `group_four_unified_proof_round_trips` proves/verifies group=4
 through both verifier entry points. A 32-cycle width-8 comparison
 (`group_compare`) gives group=2: 127,327 B / 6.0 s and group=4: 128,031 B /
 6.0 s, so group=2 stays the default.
+
+
+### E5: packed-opening probe (negative)
+
+A diagnostic built `PackedSharedPcs::from_mosaic` over the actual unified tables,
+points and values (one component per claimed column) and measured the packed
+opening. It produced 162,416-236,304 B depending on the workload, versus the
+current unified opening around 66 KB. The naive single-column packing is not a
+size win; E5 needs aligned-subcube packing of whole tables/columns before it can
+replace the P3 multi-table opening.
