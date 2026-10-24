@@ -1493,6 +1493,7 @@ impl<'a> UnifiedProveContext<'a> {
             self.gated_claims = Some(crate::GatedCpuClaims {
                 proof,
                 cycles: input.cycles,
+                component_claims: vec![None; input.layout.segments.len()],
                 layout: input.layout.clone(),
             });
             self.gated_ry = None;

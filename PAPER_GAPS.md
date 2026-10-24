@@ -3654,3 +3654,9 @@ individual layout segment claims (for example with component bit-column
 evaluations) before reconstructing the full witness claim and checking the
 lockstep inner product/PCS opening. The existing verifier calls it with no
 replacements; a tampered replacement is rejected in the DirectBitPcs test.
+
+
+`GatedCpuClaims` now carries `component_claims: Vec<Option<F2_128>>`, and the
+unified CPU verifier calls `verify_lockstep_bits_with_replacements` with them.
+The vector is currently all `None`; the next step is to fill memory_addr /
+memory_data overrides from verified component bit-column openings.

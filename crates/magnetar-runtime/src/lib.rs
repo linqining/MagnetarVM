@@ -1088,6 +1088,8 @@ pub struct GatedCpuClaims {
         LockstepProof<P3MosaicCommitment, magnetar_proof::RingSwitchOpening<P3MosaicOpening>>,
     pub cycles: usize,
     pub layout: magnetar_constraint::WitnessLayout,
+    /// Optional per-segment claim overrides from component proofs.
+    pub component_claims: Vec<Option<F2_128>>,
 }
 
 fn step_op_for(op: magnetar_spec::Op) -> Option<magnetar_cpu::StepOp> {
@@ -2708,7 +2710,7 @@ pub(crate) fn cpu_statement_claims(
             let backend = magnetar_proof::RingSwitchPackedBitPcs::new(
                 magnetar_pcs::P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()),
             );
-            magnetar_proof::verify_lockstep_bits(
+            magnetar_proof::verify_lockstep_bits_with_replacements(
                 &a0[0],
                 &a0[1],
                 &a0[2],
@@ -2718,6 +2720,7 @@ pub(crate) fn cpu_statement_claims(
                 gated_layout,
                 &gated.proof,
                 &backend,
+                &gated.component_claims,
             )
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
             let groups = magnetar_proof::virtual_spartan::route_segment_claims_by_owner(
