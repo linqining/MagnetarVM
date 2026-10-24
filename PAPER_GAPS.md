@@ -3280,5 +3280,6 @@ being stored in `TableBatchProof`. Points are ordered by a deterministic
 list. Only tables with at least 6 points and at most 3 row bits are batched.
 
 Benchmark: 138,064 -> 137,120 B; opening 67,809 -> 65,537 B. The size win is
-real but prove/verify time on the benchmark rose from ~2-5 s to ~10-26 s, because
-each batched table adds a batching sumcheck and an all-column opening point.
+real. Debug test time rose to ~10-26 s, but the release benchmark binary runs the
+whole prove+verify in ~1.1 s; the extra cost is batching sumcheck plus an
+all-column opening point per selected table.
