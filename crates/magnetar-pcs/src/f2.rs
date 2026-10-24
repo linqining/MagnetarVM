@@ -58,7 +58,7 @@ fn embed(values: &[F2]) -> Vec<F2_128> {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct F2NativeCommitment(pub [u8; 32]);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct F2NativeOpening {
     pub value: F2,
     pub path: Vec<[u8; 32]>,
@@ -240,7 +240,7 @@ impl BinaryLigeroCode {
 }
 
 /// One column opening for the binary Ligero linear-functional check.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct BinaryLigeroColumnOpening {
     pub column: usize,
     pub values: Vec<F2>,
@@ -252,7 +252,7 @@ pub struct BinaryLigeroColumnOpening {
 /// This is the Ligero-style linear test: the prover sends the combined column
 /// vector `s = λ·M`, the verifier checks `v = Σ_j s_j`, and samples columns to
 /// check that each opened `M[·][j]` reproduces `s_j`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct BinaryLigeroLinearProof {
     pub rows: usize,
     pub columns: usize,
@@ -445,7 +445,7 @@ fn ligero_index_point(index: usize, bits: usize) -> Vec<F2> {
 /// verifier checks that `s` is a codeword (parity equations over `F2_128`) and
 /// samples columns to compare `s_j` with `λ·W[:,j]`. Code distance makes the
 /// unsampled positions sound.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct BinaryLigeroCodedProof {
     pub rows: usize,
     pub message_columns: usize,
@@ -653,7 +653,7 @@ pub struct NativeF2LigeroCommitment {
     pub parity_columns: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct NativeF2LigeroOpening {
     pub proof: BinaryLigeroCodedProof,
 }

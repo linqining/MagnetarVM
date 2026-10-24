@@ -3373,3 +3373,13 @@ The dense parity matrix made encoding O(k²): the native gated-bundle test took
 positions makes encoding linear and the same test runs in ~1.1 s. The test is no
 longer ignored. The distance/proximity gap of this sparse code still needs
 analysis; the dense construction is the fallback reference.
+
+
+### Native F2 lockstep vs ring-switch size
+
+With the sparse code, the native F2 gated-bundle test runs in ~1.1 s, but the CPU
+lockstep proof is 534,656 B versus 49,056 B for `RingSwitchPackedBitPcs` on the
+same 8-bit two-row bundle (about 11x). The native path is therefore kept as the
+B3 reference backend, not the default unified CPU backend. Reducing this needs a
+smaller codeword/sampling strategy or a native Ligero-like PCS with succinct
+linear tests.
