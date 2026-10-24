@@ -100,6 +100,59 @@ impl CpuShape {
         self.system_with_len(trace, width).map(|(system, _)| system)
     }
 
+    pub fn system_without_trace(
+        &self,
+        width: usize,
+    ) -> Result<(magnetar_constraint::ConstraintSystem, usize), crate::RuntimeError> {
+        let mut merged = magnetar_constraint::ConstraintSystem::new(0);
+        let mut values = Vec::new();
+        for shape in &self.rows {
+            let instruction = magnetar_spec::Instruction {
+                op: shape.op,
+                rd: 0,
+                rs1: 0,
+                rs2: 0,
+                imm: shape.imm,
+                shamt: 0,
+            };
+            let row = TraceRow {
+                cycle: 0,
+                pc: shape.pc,
+                next_pc: shape.pc.wrapping_add(4),
+                instruction_word: 0,
+                instruction_len: 4,
+                instruction,
+                rs1: None,
+                rs2: None,
+                rd: None,
+                rs1_val: 0,
+                rs2_val: 0,
+                rd_val: 0,
+                mem: shape.mem.map(|(_, _, width, is_write)| MemoryAccess {
+                    addr: 0,
+                    value: 0,
+                    width,
+                    is_write,
+                }),
+                extra_mem: Vec::new(),
+                reservation_before: None,
+                reservation_after: None,
+                syscall: None,
+            };
+            if let Some((system, witness)) = crate::row_cpu_relation(&row, width)? {
+                let offset = merged.merge(system);
+                if values.len() != offset {
+                    return Err(crate::RuntimeError::Proof("shape witness layout".into()));
+                }
+                values.extend_from_slice(witness.values());
+            }
+        }
+        let witness = magnetar_constraint::Witness::new(values);
+        let z = magnetar_proof::witness_vector(&merged, &witness)
+            .map_err(|error| crate::RuntimeError::Proof(error.to_string()))?;
+        Ok((merged, z.len()))
+    }
+
     pub fn system_with_len(
         &self,
         trace: &Trace,

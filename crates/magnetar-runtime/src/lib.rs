@@ -1121,7 +1121,7 @@ fn branch_op_for(op: magnetar_spec::Op) -> Option<magnetar_cpu::BranchOp> {
     }
 }
 
-fn row_cpu_relation(
+pub(crate) fn row_cpu_relation(
     row: &magnetar_spec::TraceRow,
     width: usize,
 ) -> Result<Option<(ConstraintSystem, Witness)>, RuntimeError> {
@@ -2205,6 +2205,29 @@ pub fn prove_unified_revealed(
     let mut proof = prove_unified_trace(trace, width)?;
     proof.opening = None;
     Ok(proof)
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct CpuStatement {
+    pub width: usize,
+    pub shape: crate::cpu_shape::CpuShape,
+}
+
+/// Verify only the CPU lockstep claims, without a trace.
+pub fn verify_cpu_statement(
+    proof: &UnifiedTraceProof,
+    statement: &CpuStatement,
+) -> Result<(), RuntimeError> {
+    if proof.shape != statement.shape {
+        return Err(RuntimeError::Proof("CPU statement shape mismatch".into()));
+    }
+    let (system, witness_len) = statement.shape.system_without_trace(statement.width)?;
+    let (system_a, system_b) = split_cpu_relations(&system);
+    let layout = cpu_segment_layout(witness_len)?;
+    let pcs = magnetar_pcs::P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+    magnetar_proof::verify_lockstep_claims(&system_a, &system_b, &layout, &proof.cpu, &pcs)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok(())
 }
 
 pub fn verify_unified_trace(
@@ -5427,5 +5450,59 @@ mod tests {
         let pcs = P3BinaryPcs::new(100);
         let proof = prove_spartan_with_matrices(&z, &a, &b, &c, &pcs).unwrap();
         verify_spartan_with_matrices(&a, &b, &c, &proof, &pcs).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod cpu_statement_tests {
+    use super::*;
+
+    #[test]
+    fn cpu_statement_verifies_without_trace() {
+        use magnetar_executor::execute;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Xor,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let proof = prove_unified_trace(&trace, 8).unwrap();
+        let statement = CpuStatement {
+            width: 8,
+            shape: proof.shape.clone(),
+        };
+        verify_cpu_statement(&proof, &statement).unwrap();
     }
 }

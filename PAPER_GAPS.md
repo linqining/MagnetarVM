@@ -2642,3 +2642,13 @@ identical SparseMatrix entries.
 the CPU system and witness length from it, with an AMO trace fallback. Proofs for
 branch, MUL/DIV, JAL, AUIPC, JALR, and LR/SC all pass. The gated benchmark is
 156,184 B (+95 B vs before the shape field).
+
+
+### A2a: CPU-only verifier without a trace
+
+`CpuShape::system_without_trace(width)` builds a synthetic `TraceRow` per shape
+row and reconstructs the merged CPU system/witness length with no `Trace` input.
+`CpuStatement { width, shape }` plus `verify_cpu_statement` verifies the CPU
+lockstep claims against that system. The new
+`cpu_statement_verifies_without_trace` test calls it successfully; this is the
+first real succinct-verifier API (CPU claims only, no access/aux yet).
