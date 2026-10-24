@@ -4134,3 +4134,9 @@ paper's dual bit-level + packed-field relations over one witness.
 `op_probe` now covers 64 cases, adding signed/unsigned sub-word sign-extension
 loads (Lb/Lh/Lw vs Lbu/Lhu/Lwu) and unaligned-within-word Lw at offsets 2 and 4.
 All verify.
+
+
+`gated_rows_cover_supported_ops_without_truncation` adds a fast CI guard that
+`reservation_cpu_rows_from_trace_full` covers at least every trace row for
+Or/Xori/Ori/Andi/Slti/Sltiu/Mul/Div/Rem/Mulh and an AmoswapD program, catching
+the silent gated-row truncation class without running proofs.

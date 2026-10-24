@@ -3742,6 +3742,107 @@ mod tests {
     }
 
     #[test]
+    fn gated_rows_cover_supported_ops_without_truncation() {
+        let alu = [
+            Op::Or,
+            Op::Xori,
+            Op::Ori,
+            Op::Andi,
+            Op::Slti,
+            Op::Sltiu,
+            Op::Mul,
+            Op::Div,
+            Op::Rem,
+            Op::Mulh,
+        ];
+        for op in alu {
+            let program = ProgramImage::new(
+                0x1000,
+                vec![
+                    Instruction {
+                        op: Op::Addi,
+                        rd: 1,
+                        rs1: 0,
+                        rs2: 0,
+                        imm: 5,
+                        shamt: 0,
+                    }
+                    .encode(),
+                    Instruction {
+                        op,
+                        rd: 3,
+                        rs1: 1,
+                        rs2: 1,
+                        imm: 3,
+                        shamt: 0,
+                    }
+                    .encode(),
+                    Instruction::new(Op::Ecall).encode(),
+                ],
+            );
+            let trace = execute(&program, config()).unwrap();
+            let rows = crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, 8)
+                .unwrap();
+            assert!(rows.len() >= trace.rows.len(), "{op:?}");
+        }
+        let amo = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Lui,
+                    rd: 20,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x1000_0000,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 2,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 5,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Sd,
+                    rd: 0,
+                    rs1: 20,
+                    rs2: 2,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 3,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 3,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::AmoswapD,
+                    rd: 4,
+                    rs1: 20,
+                    rs2: 3,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(&amo, config()).unwrap();
+        let rows =
+            crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, 8).unwrap();
+        assert!(rows.len() >= trace.rows.len());
+    }
+
+    #[test]
     fn immediate_logical_ops_round_trip_unified() {
         let mut program = vec![Instruction {
             op: Op::Addi,
