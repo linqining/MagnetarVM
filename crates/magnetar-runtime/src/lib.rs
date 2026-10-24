@@ -1251,16 +1251,9 @@ fn row_cpu_relation(
             Ok(Some((system, layout.witness(row.pc, imm))))
         }
         magnetar_spec::Op::Jalr => {
-            let (system, layout) = magnetar_cpu::uniform_jalr_row_relation_with_increment(
-                width,
-                row.pc,
-                row.rs1_val,
-                imm,
-                row.next_pc,
-                row.rd_val,
-                u64::from(row.instruction_len),
-            );
-            Ok(Some((system, layout.witness(row.rs1_val, imm))))
+            let (system, layout) =
+                magnetar_cpu::uniform_jalr_layout(width, u64::from(row.instruction_len));
+            Ok(Some((system, layout.witness_at(row.pc, row.rs1_val, imm))))
         }
         magnetar_spec::Op::Auipc => {
             let (system, layout) = magnetar_cpu::uniform_auipc_layout(width);
@@ -3702,6 +3695,60 @@ mod tests {
                     rs1: 0,
                     rs2: 0,
                     imm: 0x1000,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let proof = prove_unified_trace(&trace, 8).unwrap();
+        verify_unified_trace(&trace, &proof, 8).unwrap();
+    }
+
+    #[test]
+    fn unified_jalr_round_trips() {
+        use magnetar_executor::execute;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Lui,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x1000,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Jalr,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 8,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 3,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 1,
                     shamt: 0,
                 }
                 .encode(),

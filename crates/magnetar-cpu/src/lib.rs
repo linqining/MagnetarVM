@@ -2542,6 +2542,9 @@ pub struct UniformJalrLayout {
     pub link: u64,
     pub pc: u64,
     pub link_increment: u64,
+    pub pc_in: Vec<VarId>,
+    pub target_out: Vec<VarId>,
+    pub link_out: Vec<VarId>,
     pub num_vars: usize,
 }
 
@@ -2572,12 +2575,32 @@ impl UniformJalrLayout {
     }
 
     pub fn witness(&self, rs1: u64, imm: u64) -> Witness {
+        self.witness_at(self.pc, rs1, imm)
+    }
+
+    pub fn witness_at(&self, pc: u64, rs1: u64, imm: u64) -> Witness {
         let mut values = vec![F2_128::from(0u64); self.num_vars];
         self.target_adder.fill_witness(&mut values, rs1, imm);
         self.link_adder
-            .fill_witness(&mut values, self.pc, self.link_increment);
+            .fill_witness(&mut values, pc, self.link_increment);
+        for (bit, var) in self.pc_in.iter().enumerate() {
+            values[*var] = F2_128::from((pc >> bit) & 1);
+        }
+        for (bit, var) in self.target_out.iter().enumerate() {
+            values[*var] = F2_128::from((rs1.wrapping_add(imm) >> bit) & 1);
+        }
+        for (bit, var) in self.link_out.iter().enumerate() {
+            values[*var] = F2_128::from((pc.wrapping_add(self.link_increment) >> bit) & 1);
+        }
         Witness::new(values)
     }
+}
+
+pub fn uniform_jalr_layout(
+    width: usize,
+    link_increment: u64,
+) -> (ConstraintSystem, UniformJalrLayout) {
+    uniform_jalr_inner(width, 0, 0, 0, link_increment, false)
 }
 
 pub fn uniform_jalr_relation(
@@ -2596,6 +2619,17 @@ pub fn uniform_jalr_relation_with_increment(
     pc: u64,
     link_increment: u64,
 ) -> (ConstraintSystem, UniformJalrLayout) {
+    uniform_jalr_inner(width, target, link, pc, link_increment, true)
+}
+
+fn uniform_jalr_inner(
+    width: usize,
+    target: u64,
+    link: u64,
+    pc: u64,
+    link_increment: u64,
+    pin: bool,
+) -> (ConstraintSystem, UniformJalrLayout) {
     assert!(width > 0 && width <= 64);
     assert_eq!(target & 1, 0, "jalr target must be even");
     let (mut system, target_adder) = bit_addition_constraints(width);
@@ -2607,29 +2641,59 @@ pub fn uniform_jalr_relation_with_increment(
         let target_bit = (target >> index) & 1;
         let link_bit = (link >> index) & 1;
         let pc_bit = (pc >> index) & 1;
-        if index != 0 {
+        if pin {
+            if index != 0 {
+                system.add_constraint(
+                    Expr::var(target_adder.sum[index]),
+                    one.clone(),
+                    Expr::constant(target_bit),
+                );
+            }
             system.add_constraint(
-                Expr::var(target_adder.sum[index]),
+                Expr::var(link_adder.sum[index]),
                 one.clone(),
-                Expr::constant(target_bit),
+                Expr::constant(link_bit),
+            );
+            system.add_constraint(
+                Expr::var(link_adder.a[index]),
+                one.clone(),
+                Expr::constant(pc_bit),
             );
         }
-        system.add_constraint(
-            Expr::var(link_adder.sum[index]),
-            one.clone(),
-            Expr::constant(link_bit),
-        );
-        system.add_constraint(
-            Expr::var(link_adder.a[index]),
-            one.clone(),
-            Expr::constant(pc_bit),
-        );
         system.add_constraint(
             Expr::var(link_adder.b[index]),
             one.clone(),
             Expr::constant((link_increment >> index) & 1),
         );
     }
+    let pc_in: Vec<VarId> = system.alloc(width).collect();
+    let target_out: Vec<VarId> = system.alloc(width).collect();
+    let link_out: Vec<VarId> = system.alloc(width).collect();
+    for index in 0..width {
+        system.add_constraint(
+            Expr::var(link_adder.a[index]),
+            one.clone(),
+            Expr::var(pc_in[index]),
+        );
+        system.add_constraint(
+            Expr::var(target_out[index]),
+            one.clone(),
+            Expr::var(target_adder.sum[index]),
+        );
+        system.add_constraint(
+            Expr::var(link_out[index]),
+            one.clone(),
+            Expr::var(link_adder.sum[index]),
+        );
+        if pin {
+            system.add_constraint(
+                Expr::var(pc_in[index]),
+                one.clone(),
+                Expr::constant((pc >> index) & 1),
+            );
+        }
+    }
+    system.add_constraint(Expr::var(target_out[0]), one.clone(), Expr::constant(0u64));
     let num_vars = system.num_vars;
     (
         system,
@@ -2641,6 +2705,9 @@ pub fn uniform_jalr_relation_with_increment(
             link,
             pc,
             link_increment,
+            pc_in,
+            target_out,
+            link_out,
             num_vars,
         },
     )

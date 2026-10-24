@@ -2584,3 +2584,14 @@ system; runtime JAL uses it with `layout.witness(pc, imm)`. New
 `UniformAuipcLayout` now has `value_out` variables constrained to the adder sum;
 `uniform_auipc_layout(width)` leaves pc/imm as variables and `witness_at(pc,
 imm)` fills the row. New `unified_auipc_round_trips` passes. JALR remains pinned.
+
+
+### A2a: JALR fixed and zero-value shape check
+
+`UniformJalrLayout` now exposes `pc_in`, `target_out`, `link_out`;
+`uniform_jalr_layout(width, increment)` leaves values as variables and
+`witness_at(pc, rs1, imm)` fills them. `unified_jalr_round_trips` passes.
+
+With ALU/memory/branch/MUL/DIV/JAL/JALR/AUIPC systems fixed, zeroing every
+value in `CpuShape` still reconstructs the same CPU constraint system for an
+LR/SC trace (exact debug equality). AMO rows still pin values.
