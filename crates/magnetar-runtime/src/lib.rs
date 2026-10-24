@@ -1088,7 +1088,6 @@ pub struct GatedCpuClaims {
     pub proof:
         LockstepProof<P3MosaicCommitment, magnetar_proof::RingSwitchOpening<P3MosaicOpening>>,
     pub cycles: usize,
-    pub layout: magnetar_constraint::WitnessLayout,
     /// Optional per-segment claim overrides from component proofs.
     pub component_claims: Vec<Option<F2_128>>,
 }
@@ -2744,11 +2743,11 @@ pub(crate) fn cpu_statement_claims(
         )
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         let groups = magnetar_proof::virtual_spartan::route_segment_claims_by_owner(
-            &gated.layout,
+            &gated_layout,
             &gated.proof.segments,
         )
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        magnetar_proof::virtual_spartan::VirtualClaimRouter::new(&gated.layout)
+        magnetar_proof::virtual_spartan::VirtualClaimRouter::new(&gated_layout)
             .verify(&groups)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         None

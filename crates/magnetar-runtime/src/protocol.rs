@@ -1512,7 +1512,6 @@ impl<'a> UnifiedProveContext<'a> {
                 proof,
                 cycles: input.cycles,
                 component_claims: vec![None; input.layout.segments.len()],
-                layout: input.layout.clone(),
             });
             self.gated_ry = None;
         }

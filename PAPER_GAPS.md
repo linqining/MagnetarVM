@@ -3685,3 +3685,12 @@ prover and both verifier paths wrap the CPU matrices with `ScatterMatrix` and
 prove/verify over the virtual witness. `core_statement`, `unified_lr_sc`, gated
 bundle and chunked tests pass. This removes the B5 witness-ordering blocker;
 component claim replacement is the remaining step.
+
+
+### B5 virtual witness size
+
+After making the virtual layout the gated witness, removing the redundant
+`layout` field from `GatedCpuClaims` (the verifier recomputes it from width and
+cycles) reduces the benchmark from 152,912 to 150,902 B; the gated component is
+70,635 B. The remaining growth over the 137,120 B baseline is the per-owner
+segment split and its claims.
