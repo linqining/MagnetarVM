@@ -139,6 +139,28 @@ pub fn prove_amo_bundle(trace: &Trace, width: usize) -> Result<AmoBundleProof, R
 }
 
 #[allow(clippy::type_complexity)]
+fn memory_before(trace: &Trace, addr: u64, width: u8, cycle: u64, mask: u64) -> Option<u64> {
+    let mut value = None;
+    for event in &trace.memory_events {
+        if event.cycle >= cycle {
+            break;
+        }
+        if event.access.addr == addr && event.access.is_write {
+            value = Some(event.access.value & mask);
+        }
+    }
+    if value.is_some() {
+        return value;
+    }
+    let index = trace.config.ram_index(addr, width as usize)?;
+    let bytes = trace.initial_ram.get(index..index + width as usize)?;
+    let mut value = 0u64;
+    for (byte, shift) in bytes.iter().zip(0..) {
+        value |= u64::from(*byte) << (8 * shift);
+    }
+    Some(value & mask)
+}
+
 fn check_memory_events(trace: &Trace) -> Result<(), RuntimeError> {
     for row in &trace.rows {
         let Some(mem) = row.mem else {
@@ -223,6 +245,13 @@ fn check_memory_events(trace: &Trace) -> Result<(), RuntimeError> {
             Op::AmomaxuW | Op::AmomaxuD => old.max(operand),
             _ => continue,
         } & mask;
+        if let Some(prior) = memory_before(trace, mem.addr, mem.width, row.cycle, mask) {
+            if prior != old {
+                return Err(RuntimeError::Proof(
+                    "AMO old value is not the latest memory value".into(),
+                ));
+            }
+        }
         let write_ok = trace.memory_events.iter().any(|event| {
             event.access.addr == mem.addr
                 && event.access.is_write

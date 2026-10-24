@@ -2249,3 +2249,10 @@ BinaryTwist memory proof (`memory write does not match BinaryTwist`): the
 current witness/claim construction assumes one memory access per row. The
 executor change was reverted. Binding the AMO old value as a first-class memory
 read requires extending BinaryTwist to handle a read+write pair per row.
+
+
+Without adding an executor read event, `verify_amo_bundle` now binds the AMO
+old value to memory history: it finds the latest prior write at the same address
+(or the initial RAM value) before the row cycle, masks to the AMO width, and
+requires it to equal `rd_val`. This avoids changing BinaryTwist while still
+tying the read side to memory state.
