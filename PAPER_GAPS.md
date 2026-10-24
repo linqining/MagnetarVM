@@ -2833,3 +2833,13 @@ cycle). All targeted tests pass; benchmark 161,454 B.
 directly. `gated_aux` dispatches to it without a witness. Tests:
 `packed_shout_round_trips`, `gated_aux` (3) pass. This closes the remaining
 witness-derived column check noted for packed Shout.
+
+
+### Packed Shout in the unified proof
+
+`UnifiedTraceProof` now carries `packed_shout: Option<PackedShoutProof>`. The
+prover no longer commits a reference Shout table and `shout` is `None`; the
+verifier checks the packed proof (witness-blind) instead of the reference Shout
+claims. Table indexes shift down by one and the reference shout check is skipped
+when a packed proof is present. All targeted tests pass; benchmark 161,343 B
+(slightly smaller than the reference-Shout build).

@@ -275,7 +275,7 @@ mod tests {
         assert_eq!(format!("{real_shout:?}"), format!("{shout:?}"));
         assert_eq!(format!("{real_shift:?}"), format!("{shift:?}"));
         let proof = crate::prove_unified_trace(&trace, 8).unwrap();
-        statement.verify_shout(&proof).unwrap();
+        crate::packed_shout::verify_packed_shout(proof.packed_shout.as_ref().unwrap()).unwrap();
         statement
             .verify_router(&proof, crate::binary_router::RouterMode::Shifts)
             .unwrap();

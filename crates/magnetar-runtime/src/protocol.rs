@@ -329,6 +329,7 @@ pub struct ProofBundle {
     pub trace_index: usize,
     pub trace_claims: Vec<(magnetar_pcs::P3MosaicPoint, Vec<F2_128>)>,
     pub width: usize,
+    pub packed_shout: Option<crate::packed_shout::PackedShoutProof>,
 }
 
 impl ProofBundle {
@@ -370,6 +371,7 @@ impl ProofBundle {
             trace_index: proof.trace_index,
             trace_claims: proof.trace_claims.clone(),
             width: proof.width,
+            packed_shout: proof.packed_shout.clone(),
         }
     }
 
@@ -414,8 +416,9 @@ impl ProofBundle {
             trace_index: self.trace_index,
             trace_claims: self.trace_claims,
             width: self.width,
+            packed_shout: self.packed_shout,
             cpu: cpu.ok_or(ProtocolError::MissingStage(StageId::Cpu))?,
-            shout,
+            shout: None,
             shift_router,
             store_router,
         })
@@ -1184,14 +1187,7 @@ impl<'a> UnifiedProveContext<'a> {
             tables.write_value.clone(),
         ];
         let mut next_table = 6usize;
-        let shout_table = shout_witness.as_ref().map(|witness| {
-            let index = next_table;
-            next_table += 1;
-            (index, witness.table())
-        });
-        if let Some((_, table)) = &shout_table {
-            mosaic_tables.push(table.clone());
-        }
+        let shout_table: Option<(usize, P3MosaicTable)> = None;
         let shift_router_table = shift_router_witness.as_ref().map(|witness| {
             let index = next_table;
             next_table += 1;
@@ -1510,6 +1506,11 @@ impl<'a> UnifiedProveContext<'a> {
         let (trace_points, trace_values) =
             crate::trace_commitment::trace_claim_points(&self.trace_witness, self.trace_index)?;
         let trace_claims = trace_points.into_iter().zip(trace_values).collect();
+        let packed_shout = self
+            .shout_witness
+            .as_ref()
+            .map(crate::packed_shout::prove_packed_shout)
+            .transpose()?;
         Ok(UnifiedTraceProof {
             shape: crate::cpu_shape::CpuShape::from_trace(self.trace).zeroed(),
             register_index: self.register_index,
@@ -1519,6 +1520,7 @@ impl<'a> UnifiedProveContext<'a> {
             trace_index: self.trace_index,
             trace_claims,
             width: self.width,
+            packed_shout,
             access: self
                 .access
                 .ok_or_else(|| RuntimeError::Proof("missing access proof".into()))?,
@@ -1581,13 +1583,15 @@ impl<'a> UnifiedVerifyContext<'a> {
             BinaryRouterWitness::from_trace_mode(trace, RouterMode::Shifts).ok();
         let store_router_witness =
             BinaryRouterWitness::from_trace_mode(trace, RouterMode::Stores).ok();
-        match (&shout_witness, &proof.shout) {
-            (Some(_), None) | (None, Some(_)) => {
-                return Err(RuntimeError::Proof(
-                    "BinaryShout proof presence does not match the trace".into(),
-                ));
+        if proof.packed_shout.is_none() {
+            match (&shout_witness, &proof.shout) {
+                (Some(_), None) | (None, Some(_)) => {
+                    return Err(RuntimeError::Proof(
+                        "BinaryShout proof presence does not match the trace".into(),
+                    ));
+                }
+                _ => {}
             }
-            _ => {}
         }
         match (&shift_router_witness, &proof.shift_router) {
             (Some(_), None) | (None, Some(_)) => {
@@ -1633,7 +1637,6 @@ impl<'a> UnifiedVerifyContext<'a> {
                 cycles,
             });
         let expected_tables = 12
-            + usize::from(shout_witness.is_some())
             + usize::from(shift_router_witness.is_some())
             + usize::from(store_router_witness.is_some())
             + usize::from(gated_input.is_some());
@@ -1643,11 +1646,7 @@ impl<'a> UnifiedVerifyContext<'a> {
             ));
         }
         let mut next_table = 6usize;
-        let shout_index = shout_witness.as_ref().map(|_| {
-            let index = next_table;
-            next_table += 1;
-            index
-        });
+        let shout_index: Option<usize> = None;
         let shift_router_index = shift_router_witness.as_ref().map(|_| {
             let index = next_table;
             next_table += 1;

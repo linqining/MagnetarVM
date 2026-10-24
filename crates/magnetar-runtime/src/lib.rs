@@ -1054,6 +1054,7 @@ pub struct UnifiedTraceProof {
     pub trace_index: usize,
     pub trace_claims: Vec<(magnetar_pcs::P3MosaicPoint, Vec<F2_128>)>,
     pub width: usize,
+    pub packed_shout: Option<crate::packed_shout::PackedShoutProof>,
 }
 
 pub(crate) struct GatedProveInput {
@@ -2304,6 +2305,9 @@ pub fn verify_core_statement(
     for (point, value) in &proof.trace_claims {
         points.push(point.clone());
         values.push(value.clone());
+    }
+    if let Some(packed) = &proof.packed_shout {
+        crate::packed_shout::verify_packed_shout(packed)?;
     }
     let mut pairs = points.into_iter().zip(values).collect::<Vec<_>>();
     pairs.sort_by_key(|(point, _)| point.table);
