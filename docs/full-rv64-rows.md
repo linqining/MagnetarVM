@@ -54,3 +54,18 @@ A starts as an isolated `GatedBranchRow` (BEQ/BNE first), with:
 - `pc + 4` sequential value;
 - `next_pc = taken ? target : sequential`;
 - tests across 8-bit pc/imm/operands before fusing into `GatedCpuRow`.
+
+
+## MUL row plan
+
+The first C component is MUL. Planned row:
+
+1. partial products `pp[i][j] = a[i] & b[j]`;
+2. `width` shift-add rounds over a `2*width` accumulator;
+3. per-round ripple carry with full-adder rows;
+4. output low/high `width` bits.
+
+Variable cost is `Theta(width^2)`; a width-8 prototype is the validation target
+before considering 64-bit fusion. DIV/REM require a separate iterative row and
+are deferred until MUL is validated. AMO remains a combined CPU/RAM row and is
+deferred after memory binding.
