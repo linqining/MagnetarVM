@@ -2440,3 +2440,7 @@ claim list.
 `gated_rows_from_trace` now maps ADDI to an ALU ADD with the immediate as the
 right operand. This makes simple LUI/ADDI/LR/SC traces fully gated; the unified
 table-count assertion now includes the gated claims table.
+
+
+A tamper test flips a reservation `pre_valid` in the trace-derived CPU chain and
+confirms the witness-bound verifier rejects it.

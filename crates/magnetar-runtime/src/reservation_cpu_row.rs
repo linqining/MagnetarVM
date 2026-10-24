@@ -241,6 +241,9 @@ mod tests {
         ];
         let proof = prove_reservation_cpu_batch(8, &rows).unwrap();
         verify_reservation_cpu_batch(8, &rows, &proof).unwrap();
+        let mut tampered = rows.clone();
+        tampered[1].1.pre_valid = false;
+        assert!(verify_reservation_cpu_batch(8, &tampered, &proof).is_err());
 
         use magnetar_executor::execute;
         use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
