@@ -2979,3 +2979,12 @@ raised the benchmark to 180,247 B because the per-row CPU proof/table is still
 present. Removing that duplicate requires making `cpu` optional and moving the
 shared commitment onto `UnifiedTraceProof`; the CPU table index shift is the
 remaining work. The protocol change was reverted for this commit.
+
+
+### B groundwork: commitment on UnifiedTraceProof
+
+`UnifiedTraceProof`/`ProofBundle` now carry `commitment: P3MosaicCommitment`
+separately, and all access/aux/opening code reads `proof.commitment` instead of
+`proof.cpu.commitment`. The CPU proof is still present, so the benchmark grows
+to 161,607 B (+264 B) from the duplicated commitment. This is preparation for
+making `cpu` optional and removing the per-row CPU table.

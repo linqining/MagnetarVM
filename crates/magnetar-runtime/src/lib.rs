@@ -1054,6 +1054,7 @@ pub struct UnifiedTraceProof {
     pub trace_index: usize,
     pub trace_claims: Vec<(magnetar_pcs::P3MosaicPoint, Vec<F2_128>)>,
     pub width: usize,
+    pub commitment: P3MosaicCommitment,
     pub packed_shout: Option<crate::packed_shout::PackedShoutProof>,
 }
 
@@ -2273,7 +2274,7 @@ pub fn verify_core_statement(
     if let (Some(shout), Some(index)) = (&proof.shout, proof.shout_index) {
         let (aux_points, aux_values) = crate::binary_shout::verify_binary_shout_from_proof(
             shout,
-            &proof.cpu.commitment,
+            &proof.commitment,
             index,
             b"",
         )
@@ -2289,7 +2290,7 @@ pub fn verify_core_statement(
         if let (Some(router), Some(index)) = (router, index) {
             let (aux_points, aux_values) = crate::binary_router::verify_binary_router_from_proof(
                 router,
-                &proof.cpu.commitment,
+                &proof.commitment,
                 index,
                 b"",
             )
@@ -3392,7 +3393,7 @@ mod tests {
         let proof = prove_unified_trace(&trace, 8).unwrap();
         assert!(proof.gated.is_some());
         assert_eq!(
-            proof.cpu.commitment.tables.len(),
+            proof.commitment.tables.len(),
             7 + usize::from(proof.shout.is_some())
                 + usize::from(proof.shift_router.is_some())
                 + usize::from(proof.store_router.is_some())
@@ -4000,7 +4001,7 @@ mod tests {
         assert!(proof.amo.is_none());
         assert!(proof.access.ram.opening.is_none());
         assert_eq!(
-            proof.cpu.commitment.tables.len(),
+            proof.commitment.tables.len(),
             6 + usize::from(proof.gated.is_some())
                 + usize::from(proof.shout.is_some())
                 + usize::from(proof.shift_router.is_some())

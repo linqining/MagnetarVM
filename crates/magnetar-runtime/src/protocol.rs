@@ -329,6 +329,7 @@ pub struct ProofBundle {
     pub trace_index: usize,
     pub trace_claims: Vec<(magnetar_pcs::P3MosaicPoint, Vec<F2_128>)>,
     pub width: usize,
+    pub commitment: P3MosaicCommitment,
     pub packed_shout: Option<crate::packed_shout::PackedShoutProof>,
 }
 
@@ -371,6 +372,7 @@ impl ProofBundle {
             trace_index: proof.trace_index,
             trace_claims: proof.trace_claims.clone(),
             width: proof.width,
+            commitment: proof.commitment.clone(),
             packed_shout: proof.packed_shout.clone(),
         }
     }
@@ -416,6 +418,7 @@ impl ProofBundle {
             trace_index: self.trace_index,
             trace_claims: self.trace_claims,
             width: self.width,
+            commitment: self.commitment,
             packed_shout: self.packed_shout,
             cpu: cpu.ok_or(ProtocolError::MissingStage(StageId::Cpu))?,
             shout: None,
@@ -1520,6 +1523,10 @@ impl<'a> UnifiedProveContext<'a> {
             trace_index: self.trace_index,
             trace_claims,
             width: self.width,
+            commitment: self
+                .commitment
+                .clone()
+                .ok_or_else(|| RuntimeError::Proof("missing CPU commitment".into()))?,
             packed_shout,
             access: self
                 .access
@@ -1640,7 +1647,7 @@ impl<'a> UnifiedVerifyContext<'a> {
             + usize::from(shift_router_witness.is_some())
             + usize::from(store_router_witness.is_some())
             + usize::from(gated_input.is_some());
-        if proof.cpu.commitment.tables.len() != expected_tables {
+        if proof.commitment.tables.len() != expected_tables {
             return Err(RuntimeError::Proof(
                 "unified proof does not commit the expected CPU/RAM/aux tables".into(),
             ));
@@ -1695,7 +1702,7 @@ impl<'a> UnifiedVerifyContext<'a> {
             self.trace,
             &self.proof.access,
             &self.witness,
-            &self.proof.cpu.commitment,
+            &self.proof.commitment,
             &self.register_witness,
             self.register_index,
         )?;
@@ -1712,7 +1719,7 @@ impl<'a> UnifiedVerifyContext<'a> {
             return Ok(());
         };
         let Some((points, values)) =
-            verify_binary_shout_claims(witness, claim, &self.proof.cpu.commitment, index, b"")
+            verify_binary_shout_claims(witness, claim, &self.proof.commitment, index, b"")
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?
         else {
             return Err(RuntimeError::Proof("BinaryShout proof rejected".into()));
@@ -1731,7 +1738,7 @@ impl<'a> UnifiedVerifyContext<'a> {
             return Ok(());
         };
         let Some((points, values)) =
-            verify_binary_router_claims(witness, claim, &self.proof.cpu.commitment, index, b"")
+            verify_binary_router_claims(witness, claim, &self.proof.commitment, index, b"")
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?
         else {
             return Err(RuntimeError::Proof(
@@ -1752,7 +1759,7 @@ impl<'a> UnifiedVerifyContext<'a> {
             return Ok(());
         };
         let Some((points, values)) =
-            verify_binary_router_claims(witness, claim, &self.proof.cpu.commitment, index, b"")
+            verify_binary_router_claims(witness, claim, &self.proof.commitment, index, b"")
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?
         else {
             return Err(RuntimeError::Proof(
@@ -1838,7 +1845,7 @@ impl<'a> UnifiedVerifyContext<'a> {
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?,
         );
         if let (Some(input), Some(gated)) = (&self.gated_input, &self.proof.gated) {
-            if gated.claims.commitment != self.proof.cpu.commitment {
+            if gated.claims.commitment != self.proof.commitment {
                 return Err(RuntimeError::Proof(
                     "gated claims do not share the legacy commitment".into(),
                 ));
@@ -1921,7 +1928,7 @@ impl<'a> UnifiedVerifyContext<'a> {
         let commitment = P3BinaryPcs::with_params(100, 4, 16, 3)
             .commit_mosaic(&context.mosaic_tables)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        if commitment != self.proof.cpu.commitment {
+        if commitment != self.proof.commitment {
             return Err(RuntimeError::Proof(
                 "revealed tables do not match the committed mosaic".into(),
             ));
