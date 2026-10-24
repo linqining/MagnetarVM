@@ -22,6 +22,7 @@ pub mod packed_shout;
 pub mod pc_row;
 pub mod protocol;
 pub mod register_twist;
+pub mod signed_div_row;
 pub mod simd_cpu;
 pub mod simd_dual;
 pub mod simd_f2;

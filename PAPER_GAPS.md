@@ -2097,3 +2097,16 @@ selectors and trace adapter) is next.
 `divu_trace_proves_through_gated_dual` runs LUI/SRLI/DIVU/REMU and proves the
 quotient/remainder. Width-64 `compiled_guest_elf_runs_and_proves` still passes;
 the product fold now takes only the low width bits.
+
+
+### C: signed DIV/REM row
+
+`signed_div_row::SignedDivRow` wraps unsigned division:
+
+1. take absolute values with `0 - x` ALUs;
+2. run unsigned `GatedDivRow` on the magnitudes;
+3. negate quotient when signs differ;
+4. negate remainder when the dividend is negative.
+
+Tests cover `-5/5`, `5/-5`, `-5/-5`, `1/3`. The INT_MIN/-1 wrap path is handled
+by two's-complement negation. Integration into the CPU row and DIVW/REMW remain.
