@@ -823,6 +823,14 @@ impl P3SharedPcs {
         }
     }
 
+    fn pcs_for(bits: usize) -> P3BinaryPcs {
+        if bits >= 4 {
+            P3BinaryPcs::with_params(100, 4, 16, 3)
+        } else {
+            P3BinaryPcs::new(100)
+        }
+    }
+
     fn tables(&self, values: &[F2_128]) -> Vec<P3MosaicTable> {
         let mut tables = Vec::with_capacity(1 + self.aux_tables.len());
         tables.push(P3MosaicTable {
@@ -850,11 +858,23 @@ impl Pcs for P3SharedPcs {
     type Opening = P3MosaicOpening;
 
     fn commit(&self, values: &[F2_128]) -> Result<Self::Commitment, ProofError> {
-        P3BinaryPcs::new(self.security_level).commit_mosaic(&self.tables(values))
+        let tables = self.tables(values);
+        let bits = tables
+            .iter()
+            .map(|table| table.columns[0].len().trailing_zeros() as usize)
+            .max()
+            .unwrap_or(0);
+        Self::pcs_for(bits).commit_mosaic(&tables)
     }
 
     fn open(&self, values: &[F2_128], point: &[F2_128]) -> Result<Self::Opening, ProofError> {
-        P3BinaryPcs::new(self.security_level).open_mosaic(&self.tables(values), &self.points(point))
+        let tables = self.tables(values);
+        let bits = tables
+            .iter()
+            .map(|table| table.columns[0].len().trailing_zeros() as usize)
+            .max()
+            .unwrap_or(0);
+        Self::pcs_for(bits).open_mosaic(&tables, &self.points(point))
     }
 
     fn verify(
@@ -870,7 +890,15 @@ impl Pcs for P3SharedPcs {
         let mut values = Vec::with_capacity(1 + self.aux_values.len());
         values.push(vec![value]);
         values.extend(self.aux_values.clone());
-        P3BinaryPcs::new(self.security_level).verify_mosaic(opening, &self.points(point), &values)
+        Self::pcs_for(
+            commitment
+                .tables
+                .iter()
+                .map(|table| table.num_variables)
+                .max()
+                .unwrap_or(0),
+        )
+        .verify_mosaic(opening, &self.points(point), &values)
     }
 
     fn commitment_bytes(&self, commitment: &Self::Commitment) -> Vec<u8> {

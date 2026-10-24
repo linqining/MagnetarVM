@@ -3080,3 +3080,19 @@ Commit/open used the primary value length, verify used
 the opening, so the table shape does not recover the same choice reliably. The
 attempt was reverted. P3 parameter tuning remains blocked on carrying the
 parameter choice explicitly with the commitment/opening.
+
+
+### P3 parameter tuning unblocked
+
+`P3SharedPcs` now selects `P3BinaryPcs::with_params(100, 4, 16, 3)` when the
+largest table has at least 4 variables, otherwise `P3BinaryPcs::new(100)`.
+Commit/open use the max over all tables; verify uses the max committed table
+`num_variables`, so the choice is recoverable from the commitment. The
+shared-PCS tests and all unified tests pass.
+
+Benchmark:
+
+```text
+before tuning: 138,640 B (gated 71,577)
+after tuning:  123,928 B (gated 56,865)
+```
