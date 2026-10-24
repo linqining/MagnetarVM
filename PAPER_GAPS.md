@@ -135,11 +135,11 @@ E5/E6 单 packed PCS/Ligerito 集成。
 
 | # | 论文要求（§） | 当前实现 | 状态 | 剩余工作 |
 |---|---|---|---|---|
-| A1 | 协议只发送一个 commitment，所有 claims 由一个 PCS evaluation 证明（§5.5） | unified proof 中 CPU/RAM/Shout/Router 共享一个 P3 commitment/opening；但 chunked/per-row 仍有独立 P3 proof，register access 仍有 Merkle | 🟡 | 把 register、chunk、per-row 也并入同一 packed commitment；去掉额外 opening |
+| A1 | 协议只发送一个 commitment，所有 claims 由一个 PCS evaluation 证明（§5.5） | unified shared 路径把 CPU/gated、RAM Twist、register Twist、Shout、Router 的 claims 放入同一个 P3 commitment/opening；`verify_trace_access_shared` 拒绝 standalone RAM/register opening；chunked/per-row 仍各自 P3 | 🟡 | unified 路径满足 A1；chunked/standalone 未统一 |
 | A2 | 证明大小不随 trace 行数线性增长；verifier 不重建 trace（§2、§5.5） | unified proof 携带 shape/claims、不携带 rows；`verify_unified_proof(proof)`（= `verify_core_proof`）完全 proof-only，验证 CPU/gated、access、aux、packed Shout 和 shared opening；benchmark 137,120 B；chunked/standalone 仍接收 trace | 🟡 | unified shared 路径完成 A2；chunked/standalone 仍需 shape/commitment 改造 |
 | A3 | verifier 只做 hash 和 binary-field 运算（§2.1） | P3/hash-based PCS，无 trusted setup；但 verifier 还重建约束系统/trace | 🟡 | 去掉 verifier 的 trace/系统重建；预计算 public layout |
 | A4 | 透明、无 trusted setup、标准 hash、post-quantum（§1） | P3 binary-field PCS + SHA-256 transcript；默认路径无 trusted setup | ✅ | 保持；KZG 后端只是可选 |
-| A5 | 一个 commitment 在 challenge 前发送（§5.5） | unified 路径满足；standalone Shout/Router/Chunked 仍各自 commit | 🟡 | 统一所有 proof 变体的 commit 顺序与 commitment 数量 |
+| A5 | 一个 commitment 在 challenge 前发送（§5.5） | unified 路径先 commit 再产生所有 claims；standalone Shout/Router/Chunked 仍各自 commit | 🟡 | unified 满足；其他 proof 变体未统一 |
 
 ### B. 证明系统
 
