@@ -3262,3 +3262,11 @@ batched row point. Integrated into the unified opening it reduced the opening
 from 67,809 to 65,825 B, but the stored per-table claims and batching proofs add
 about 19 KB and prove time rose from ~2 s to 11-17 s on the small benchmark.
 Total grew to 154,976 B. Reverted; the prototype test stays in magnetar-pcs.
+
+
+### Negative result: selective per-table batching
+
+Batching only tables with at least 4 points reduced the opening from 67,809 to
+65,249 B, but stored claims/batch proofs raised the total to 148,464 B. Raising
+the threshold to 8 points gave 148,352 B (opening 66,241). In both cases the
+claim storage outweighs the saved opening points; reverted.
