@@ -729,6 +729,78 @@ pub(crate) fn reservation_claim_matrices(
     Ok((systems0, systems1, layout))
 }
 
+#[allow(dead_code, clippy::type_complexity)]
+pub(crate) fn reservation_virtual_specs(
+    width: usize,
+    cycles: usize,
+    base_cols: usize,
+) -> Vec<crate::VirtualSegmentSpec> {
+    let row = crate::reservation_cpu_row::ReservationCpuRow::new(width);
+    let gated = &row.cpu;
+    let pc_start = gated.pc[0];
+    let seq_start = pc_start + width;
+    let reservation_start = row.reservation_offset;
+    let gated_end = reservation_start;
+    let mut parts: Vec<(&str, usize, usize, SegmentOwner)> = vec![
+        ("alu", 0, gated.memory_offset, SegmentOwner::Cpu),
+        (
+            "memory",
+            gated.memory_offset,
+            gated.shift_offset,
+            SegmentOwner::Memory(MemoryKind::Ram),
+        ),
+        (
+            "shift",
+            gated.shift_offset,
+            gated.branch_offset,
+            SegmentOwner::Routing(RoutingKind::Shifts),
+        ),
+        (
+            "branch",
+            gated.branch_offset,
+            gated.mul_offset,
+            SegmentOwner::Pcs,
+        ),
+        ("mul", gated.mul_offset, gated.div_offset, SegmentOwner::Cpu),
+        (
+            "div",
+            gated.div_offset,
+            gated.sdiv_offset,
+            SegmentOwner::Cpu,
+        ),
+        ("sdiv", gated.sdiv_offset, pc_start, SegmentOwner::Cpu),
+        ("pc", pc_start, seq_start, SegmentOwner::Pcs),
+        ("tail", seq_start, gated_end, SegmentOwner::Cpu),
+        (
+            "reservation",
+            reservation_start,
+            row.relation.num_vars,
+            SegmentOwner::Cpu,
+        ),
+        (
+            "padding",
+            row.relation.num_vars,
+            base_cols,
+            SegmentOwner::Cpu,
+        ),
+    ];
+    parts.retain(|(_, start, end, _)| end > start);
+    let mut specs = Vec::with_capacity(parts.len() * cycles);
+    for cycle in 0..cycles {
+        let base = cycle * base_cols;
+        for (name, start, end, owner) in &parts {
+            specs.push(crate::VirtualSegmentSpec {
+                name: format!("{name}{cycle}"),
+                offset: base + start,
+                len: end - start,
+                owner: *owner,
+                projection: owner.projection(),
+            });
+        }
+    }
+    specs
+}
+
 #[allow(clippy::type_complexity)]
 pub(crate) fn reservation_claim_inputs(
     width: usize,
@@ -1413,5 +1485,34 @@ mod tests {
             &a0[0], &a0[1], &a0[2], &a1[0], &a1[1], &a1[2], &layout, &claims, &pcs,
         )
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod virtual_spec_tests {
+    use super::*;
+
+    #[test]
+    fn reservation_specs_cover_each_gated_instance() {
+        let cycles = 4usize;
+        let width = 8usize;
+        let (_, _, layout) = reservation_claim_matrices(width, cycles).unwrap();
+        let base_cols = layout.total_bits / cycles;
+        let specs = reservation_virtual_specs(width, cycles, base_cols);
+        for cycle in 0..cycles {
+            let covered = specs
+                .iter()
+                .filter(|spec| spec.offset / base_cols == cycle)
+                .map(|spec| spec.len)
+                .sum::<usize>();
+            assert_eq!(covered, base_cols);
+        }
+        assert!(specs
+            .iter()
+            .any(|spec| spec.owner == SegmentOwner::Memory(MemoryKind::Ram)));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.owner == SegmentOwner::Routing(RoutingKind::Shifts)));
+        assert!(specs.iter().any(|spec| spec.owner == SegmentOwner::Pcs));
     }
 }

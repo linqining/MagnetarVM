@@ -3520,3 +3520,14 @@ merged original order. The CPU metadata test now round-trips
 `pad_values`/`unpad_values` and still routes claims through
 `VirtualClaimRouter`. This is the layout substrate for splitting a CPU row into
 PC/RAM/Router subsegments.
+
+
+### B5: variable-group virtual specs
+
+`reservation_virtual_specs` splits each gated instance into contiguous
+variable-group subsegments with owners/projections: alu, memory (Ram), shift
+(Routing(Shifts)), branch (Pcs), mul/div/sdiv, pc (Pcs), tail/reservation, and
+padding. The test `reservation_specs_cover_each_gated_instance` checks that the
+segments cover every gated instance exactly and include Memory/Routing/Pcs
+owners. This is the subsegment schema needed before reconstructing CPU z from
+component claims.
