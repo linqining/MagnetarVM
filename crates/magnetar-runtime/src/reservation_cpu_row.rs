@@ -58,6 +58,13 @@ impl ReservationCpuRow {
         relation.num_vars = cursor + 1;
         let one = reservation_offset + reservation.one;
         let post_valid = reservation_offset + reservation.post_valid;
+        for bit in 0..width {
+            relation.add(BitRow::new(
+                vec![reservation_offset + reservation.addr[bit]],
+                vec![cpu.alu.one],
+                vec![cpu.memory_offset + cpu.memory.adder.out[bit]],
+            ));
+        }
         relation.add(BitRow::new(
             vec![post_valid, next_pre_valid],
             vec![one],
@@ -200,16 +207,16 @@ pub fn reservation_cpu_rows_from_trace(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::simd_f2::GatedAluOp;
 
     #[test]
     fn reservation_cpu_row_checks_both_relations() {
         let row = ReservationCpuRow::new(8);
         let input = ReservationCpuInput {
-            cpu: GatedCpuRowInput::Alu {
-                left: 5,
-                right: 3,
-                op: GatedAluOp::Add,
+            cpu: GatedCpuRowInput::Memory {
+                rs1: 5,
+                imm: 0,
+                value: 5,
+                is_mem: true,
             },
             addr: 5,
             res_addr: 0,

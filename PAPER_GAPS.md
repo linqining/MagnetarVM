@@ -2470,3 +2470,13 @@ Reservation transitions are now in the unified gated claims, so the standalone
 `AmoBundleProof.reservation` batch was removed. AMO/LR/SC bundles now contain
 only their operation proofs; reservation presence is checked through the gated
 claims.
+
+
+### C: bind reservation address to CPU memory claims
+
+`ReservationCpuRow` now constrains its reservation address bits to the CPU
+memory adder output. For LR/SC rows this is the memory access address; for
+non-memory rows both are zero. This ties the reservation chain to the same
+memory claim used by the CPU/gated proof, not only to trace fields.
+
+Targeted tests: `reservation_cpu_row`, `unified_lr_sc`, `unified_amo_lr_sc`.
