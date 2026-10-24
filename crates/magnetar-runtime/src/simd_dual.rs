@@ -2492,4 +2492,62 @@ mod projection_tests {
         assert!(pcs.verify_mosaic(&opening, &points, &[values]).unwrap());
         let _ = commitment;
     }
+    #[test]
+    fn p3_component_point_with_many_tables() {
+        use magnetar_pcs::{P3BinaryPcs, P3MosaicPoint, P3MosaicTable};
+        use magnetar_proof::Mle;
+        let len = 64usize;
+        let mut tables = Vec::new();
+        for table in 0..12 {
+            tables.push(P3MosaicTable {
+                columns: vec![(0..len)
+                    .map(|index| F2_128::from(((index + table * 3) & 1) as u64))
+                    .collect()],
+            });
+        }
+        let data = (0..len)
+            .map(|index| F2_128::from(((index * 3 + 1) & 1) as u64))
+            .collect::<Vec<_>>();
+        let address = (0..len)
+            .map(|index| F2_128::from(((index * 5 + 2) & 1) as u64))
+            .collect::<Vec<_>>();
+        tables.push(P3MosaicTable {
+            columns: vec![data.clone(), address.clone()],
+        });
+        let mut points = Vec::new();
+        let mut values = Vec::new();
+        for (table, table_data) in tables.iter().take(12).enumerate() {
+            let point = (0..len.trailing_zeros() as usize)
+                .map(|bit| F2_128::from(((bit + table) & 1) as u64))
+                .collect::<Vec<_>>();
+            values.push(vec![Mle::new(table_data.columns[0].clone())
+                .unwrap()
+                .eval(&point)
+                .unwrap()]);
+            points.push(P3MosaicPoint {
+                table,
+                point,
+                columns: vec![0],
+                next_columns: Vec::new(),
+            });
+        }
+        let point = (0..len.trailing_zeros() as usize)
+            .map(|bit| F2_128::from(((bit * 9 + 3) & 1) as u64))
+            .collect::<Vec<_>>();
+        values.push(vec![
+            Mle::new(data).unwrap().eval(&point).unwrap(),
+            Mle::new(address).unwrap().eval(&point).unwrap(),
+        ]);
+        points.push(P3MosaicPoint {
+            table: 12,
+            point,
+            columns: vec![0, 1],
+            next_columns: Vec::new(),
+        });
+        let pcs = P3BinaryPcs::with_params(100, 4, 16, 3);
+        let commitment = pcs.commit_mosaic(&tables).unwrap();
+        let opening = pcs.open_mosaic(&tables, &points).unwrap();
+        assert!(pcs.verify_mosaic(&opening, &points, &values).unwrap());
+        let _ = commitment;
+    }
 }

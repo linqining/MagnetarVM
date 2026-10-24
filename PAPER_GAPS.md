@@ -3748,3 +3748,9 @@ load-only data/address replacement.
 two columns opened at one point, even alongside a second table. Therefore the
 shared-commitment failure is not a P3 multi-column limitation; it is in the
 integration point list or table indexing.
+
+
+`p3_component_point_with_many_tables` also passes: 12 single-column tables plus
+the two-column component table, all opened in one P3 mosaic proof. The shared
+integration failure is therefore in the unified point/batch wiring, not P3 table
+count or multi-column support.
