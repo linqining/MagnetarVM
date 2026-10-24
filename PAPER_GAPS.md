@@ -3146,3 +3146,8 @@ packed bit at `cycle * 2^col_bits + column`. The disagreement is therefore only
 in the evaluation point padding used by the packed opening, not in the data or
 columns. The next fix must derive the padded row/column point from the same
 helper that builds `packed_bits`, including the padded row bits.
+
+
+A small probe confirmed `Mle::eval` treats `point[0]` as the least-significant
+index bit (values[1] is selected by point [1,0]). So the packed Shout layout is
+LSB-first; the remaining metadata mismatch is not due to point bit order.
