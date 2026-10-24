@@ -2402,3 +2402,18 @@ row-local reservation transition. It has a batch prover whose verifier rebuilds
 both witnesses and compares the PCS commitment (`verify_*_with_witnesses`).
 Tests cover an LR transition and a successful SC transition. The cross-row
 chain is still not part of this row.
+
+
+### C: reservation CPU link
+
+`ReservationCpuRow` now carries `next_pre_valid`/`next_pre_addr` and enforces:
+
+```text
+post_valid == next_pre_valid
+post_addr  == next_pre_addr   when post_valid
+next_pre_addr == 0            when !next_pre_valid
+```
+
+The address equality is gated by `post_valid`. A four-instance batch is chained
+(LR -> SC -> LR -> SC) and verifies. This is still a standalone row batch, not
+yet the unified CPU row list.

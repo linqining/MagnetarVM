@@ -15,6 +15,8 @@ pub struct ReservationCpuInput {
     pub is_lr: bool,
     pub is_sc: bool,
     pub is_invalidate: bool,
+    pub next_pre_valid: bool,
+    pub next_pre_addr: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -23,6 +25,8 @@ pub struct ReservationCpuRow {
     pub cpu: GatedCpuRow,
     pub reservation: ReservationRow,
     pub reservation_offset: usize,
+    pub next_pre_valid: VarId,
+    pub next_pre_addr: Vec<VarId>,
     pub relation: BitRelation,
 }
 
@@ -47,11 +51,34 @@ impl ReservationCpuRow {
             };
             relation.add(BitRow::new(shift(&row.a), shift(&row.b), shift(&row.c)));
         }
+        let mut cursor = relation.num_vars;
+        let next_pre_addr = (cursor..cursor + width).collect::<Vec<_>>();
+        cursor += width;
+        let next_pre_valid = cursor;
+        relation.num_vars = cursor + 1;
+        let one = reservation_offset + reservation.one;
+        let post_valid = reservation_offset + reservation.post_valid;
+        relation.add(BitRow::new(
+            vec![post_valid, next_pre_valid],
+            vec![one],
+            Vec::new(),
+        ));
+        for (bit, next) in next_pre_addr.iter().enumerate() {
+            let post = reservation_offset + reservation.post_addr[bit];
+            relation.add(BitRow::new(vec![post, *next], vec![post_valid], Vec::new()));
+            relation.add(BitRow::new(
+                vec![*next],
+                vec![one, next_pre_valid],
+                Vec::new(),
+            ));
+        }
         Self {
             width,
             cpu,
             reservation,
             reservation_offset,
+            next_pre_valid,
+            next_pre_addr,
             relation,
         }
     }
@@ -71,6 +98,11 @@ impl ReservationCpuRow {
             input.is_invalidate,
         );
         bits.extend(reservation);
+        bits.resize(self.relation.num_vars, false);
+        bits[self.next_pre_valid] = input.next_pre_valid;
+        for (bit, var) in self.next_pre_addr.iter().enumerate() {
+            bits[*var] = (input.next_pre_addr >> bit) & 1 == 1;
+        }
         bits
     }
 
@@ -146,6 +178,8 @@ mod tests {
             is_lr: true,
             is_sc: false,
             is_invalidate: false,
+            next_pre_valid: true,
+            next_pre_addr: 5,
         };
         let bits = row.witness(0x1000, input);
         assert!(row.relation_check(&bits));
@@ -156,6 +190,8 @@ mod tests {
         bad.is_sc = true;
         bad.addr = 5;
         bad.res_addr = 5;
+        bad.next_pre_valid = false;
+        bad.next_pre_addr = 0;
         let bits = row.witness(0x1000, bad);
         assert!(row.relation_check(&bits));
         let rows = [
