@@ -3724,3 +3724,19 @@ source value, not RAM `read_value`).
 The component proof is a separate P3 opening, so the benchmark grows to
 188,616 B. Moving the component table into the shared Mosaic commitment is the
 next step to avoid the extra opening.
+
+
+### B5 opening integration attempts (negative)
+
+Two follow-up attempts were reverted:
+
+1. Moving the component table into the shared Mosaic commitment and adding the
+   component point at `gated_ry` made `core opening rejected`, even though the
+   prover/verifier component columns and values matched. The P3 shared-opening
+   interaction needs isolation (likely point/column ordering or table indexing).
+2. Projecting store frames into the aggregate `memory_data` column (using
+   `access.value`) still mismatched the gated `memory.data` segment claim, so
+   store replacement remains disabled.
+
+The stable state remains the separate component P3 opening (188,616 B) with
+load-only data/address replacement.
