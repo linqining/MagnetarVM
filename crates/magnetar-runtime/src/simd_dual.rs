@@ -884,6 +884,59 @@ pub(crate) fn reservation_claim_inputs(
     Ok((z, systems0, systems1, layout))
 }
 
+#[allow(clippy::type_complexity)]
+pub(crate) fn reservation_virtual_inputs(
+    width: usize,
+    rows: &[(u64, crate::reservation_cpu_row::ReservationCpuInput)],
+) -> Result<
+    (
+        Vec<F2_128>,
+        [magnetar_proof::SharedBlockMatrix; 3],
+        [magnetar_proof::SharedBlockMatrix; 3],
+        magnetar_constraint::WitnessLayout,
+        Vec<usize>,
+    ),
+    RuntimeError,
+> {
+    let cycles = rows.len();
+    let (z, a0, a1, _) = reservation_claim_inputs(width, rows)?;
+    let base_cols = a0[0].cols() / cycles;
+    let specs = reservation_virtual_specs(width, cycles, base_cols);
+    let padded = crate::build_padded_virtual_layout(&specs)?;
+    let mut mapping = vec![0usize; z.len()];
+    for map in &padded.mapping {
+        let mut cursor = map.padded_offset;
+        for (original, len) in &map.sources {
+            for offset in 0..*len {
+                mapping[original + offset] = cursor + offset;
+            }
+            cursor += len;
+        }
+    }
+    Ok((padded.pad_values(&z), a0, a1, padded.layout, mapping))
+}
+
+pub(crate) fn reservation_virtual_view(
+    width: usize,
+    cycles: usize,
+    base_cols: usize,
+) -> Result<(magnetar_constraint::WitnessLayout, Vec<usize>, usize), RuntimeError> {
+    let specs = reservation_virtual_specs(width, cycles, base_cols);
+    let padded = crate::build_padded_virtual_layout(&specs)?;
+    let total = cycles * base_cols;
+    let mut mapping = vec![0usize; total];
+    for map in &padded.mapping {
+        let mut cursor = map.padded_offset;
+        for (original, len) in &map.sources {
+            for offset in 0..*len {
+                mapping[original + offset] = cursor + offset;
+            }
+            cursor += len;
+        }
+    }
+    Ok((padded.layout, mapping, total))
+}
+
 pub(crate) fn gated_batch_bits(
     row: &GatedCpuRow,
     base_cols: usize,
@@ -1527,6 +1580,57 @@ mod tests {
     }
 }
 
+/// A matrix view over a virtual (padded/gathered) witness layout.
+///
+/// `mapping[original] = virtual` places each original column in the virtual
+/// witness; unused virtual columns are padding.
+pub struct ScatterMatrix<M: magnetar_proof::SpartanMatrix> {
+    pub inner: M,
+    pub mapping: Vec<usize>,
+    pub cols: usize,
+}
+
+impl<M: magnetar_proof::SpartanMatrix> magnetar_proof::SpartanMatrix for ScatterMatrix<M> {
+    fn rows(&self) -> usize {
+        self.inner.rows()
+    }
+
+    fn cols(&self) -> usize {
+        self.cols
+    }
+
+    fn mul_vec(&self, z: &[F2_128]) -> Result<Vec<F2_128>, magnetar_proof::SpartanError> {
+        let mut original = vec![F2_128::from(0u64); self.mapping.len()];
+        for (index, virtual_index) in self.mapping.iter().enumerate() {
+            original[index] = z[*virtual_index];
+        }
+        self.inner.mul_vec(&original)
+    }
+
+    fn row_combination(
+        &self,
+        row_point: &[F2_128],
+    ) -> Result<Vec<F2_128>, magnetar_proof::SpartanError> {
+        let original = self.inner.row_combination(row_point)?;
+        let mut virtual_values = vec![F2_128::from(0u64); self.cols];
+        for (index, value) in original.into_iter().enumerate() {
+            virtual_values[self.mapping[index]] = value;
+        }
+        Ok(virtual_values)
+    }
+
+    fn eval_mle(
+        &self,
+        row_point: &[F2_128],
+        col_point: &[F2_128],
+    ) -> Result<F2_128, magnetar_proof::SpartanError> {
+        let values = self.row_combination(row_point)?;
+        magnetar_proof::Mle::new(values)
+            .and_then(|mle| mle.eval(col_point))
+            .map_err(magnetar_proof::SpartanError::Proof)
+    }
+}
+
 #[cfg(test)]
 mod virtual_spec_tests {
     use super::*;
@@ -1724,6 +1828,78 @@ mod virtual_spec_tests {
             }
         }
         assert_eq!(padded.unpad_values(&virtual_values), z);
+    }
+
+    #[test]
+    fn virtual_witness_lockstep_proves() {
+        use magnetar_pcs::P3BinaryPcs;
+        use magnetar_proof::{prove_lockstep_bits, verify_lockstep_bits, DirectBitPcs};
+        let width = 8usize;
+        let trace = simple_trace();
+        let rows = crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, width)
+            .unwrap();
+        let cycles = rows.len();
+        let (a0, a1, _) = reservation_claim_matrices(width, cycles).unwrap();
+        let (z, _, _, _) = reservation_claim_inputs(width, &rows).unwrap();
+        let base_cols = a0[0].cols() / cycles;
+        let specs = reservation_virtual_specs(width, cycles, base_cols);
+        let padded = crate::build_padded_virtual_layout(&specs).unwrap();
+        let z_virtual = padded.pad_values(&z);
+        assert_eq!(z_virtual.len(), padded.layout.total_bits);
+        let mut mapping = vec![0usize; z.len()];
+        for map in &padded.mapping {
+            let mut cursor = map.padded_offset;
+            for (original, len) in &map.sources {
+                for offset in 0..*len {
+                    mapping[original + offset] = cursor + offset;
+                }
+                cursor += len;
+            }
+        }
+        let wrap = |matrix| ScatterMatrix {
+            inner: matrix,
+            mapping: mapping.clone(),
+            cols: padded.layout.total_bits,
+        };
+        let va0 = [
+            wrap(a0[0].clone()),
+            wrap(a0[1].clone()),
+            wrap(a0[2].clone()),
+        ];
+        let va1 = [
+            wrap(a1[0].clone()),
+            wrap(a1[1].clone()),
+            wrap(a1[2].clone()),
+        ];
+        let bits = z_virtual
+            .iter()
+            .map(|value| value.value() == 1)
+            .collect::<Vec<_>>();
+        let backend = DirectBitPcs::new(P3BinaryPcs::new(100));
+        let proof = prove_lockstep_bits(
+            &bits,
+            &va0[0],
+            &va0[1],
+            &va0[2],
+            &va1[0],
+            &va1[1],
+            &va1[2],
+            &padded.layout,
+            &backend,
+        )
+        .unwrap();
+        verify_lockstep_bits(
+            &va0[0],
+            &va0[1],
+            &va0[2],
+            &va1[0],
+            &va1[1],
+            &va1[2],
+            &padded.layout,
+            &proof,
+            &backend,
+        )
+        .unwrap();
     }
 
     #[test]

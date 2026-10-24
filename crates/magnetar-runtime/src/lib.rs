@@ -1078,6 +1078,7 @@ pub(crate) struct GatedProveInput {
     pub a0: [magnetar_proof::SharedBlockMatrix; 3],
     pub a1: [magnetar_proof::SharedBlockMatrix; 3],
     pub layout: magnetar_constraint::WitnessLayout,
+    pub mapping: Vec<usize>,
     pub table: usize,
     pub cycles: usize,
 }
@@ -2702,39 +2703,58 @@ pub(crate) fn cpu_statement_claims(
     } else {
         (None, None)
     };
-    let gated_ry =
-        if let Some(gated) = &proof.gated {
-            let (a0, a1, _) =
-                crate::simd_dual::reservation_claim_matrices(statement.width, gated.cycles)?;
-            let gated_layout = &gated.layout;
-            let backend = magnetar_proof::RingSwitchPackedBitPcs::new(
-                magnetar_pcs::P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()),
-            );
-            magnetar_proof::verify_lockstep_bits_with_replacements(
-                &a0[0],
-                &a0[1],
-                &a0[2],
-                &a1[0],
-                &a1[1],
-                &a1[2],
-                gated_layout,
-                &gated.proof,
-                &backend,
-                &gated.component_claims,
-            )
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-            let groups = magnetar_proof::virtual_spartan::route_segment_claims_by_owner(
-                &gated.layout,
-                &gated.proof.segments,
-            )
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-            magnetar_proof::virtual_spartan::VirtualClaimRouter::new(&gated.layout)
-                .verify(&groups)
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-            None
-        } else {
-            None
+    let gated_ry = if let Some(gated) = &proof.gated {
+        let (a0, a1, _) =
+            crate::simd_dual::reservation_claim_matrices(statement.width, gated.cycles)?;
+        let base_cols = a0[0].cols() / gated.cycles;
+        let (gated_layout, mapping, _) =
+            crate::simd_dual::reservation_virtual_view(statement.width, gated.cycles, base_cols)?;
+        let wrap = |matrix| crate::simd_dual::ScatterMatrix {
+            inner: matrix,
+            mapping: mapping.clone(),
+            cols: gated_layout.total_bits,
         };
+        let va0 = [
+            wrap(a0[0].clone()),
+            wrap(a0[1].clone()),
+            wrap(a0[2].clone()),
+        ];
+        let va1 = [
+            wrap(a1[0].clone()),
+            wrap(a1[1].clone()),
+            wrap(a1[2].clone()),
+        ];
+        let backend = magnetar_proof::RingSwitchPackedBitPcs::new(magnetar_pcs::P3SharedPcs::new(
+            100,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ));
+        magnetar_proof::verify_lockstep_bits_with_replacements(
+            &va0[0],
+            &va0[1],
+            &va0[2],
+            &va1[0],
+            &va1[1],
+            &va1[2],
+            &gated_layout,
+            &gated.proof,
+            &backend,
+            &gated.component_claims,
+        )
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        let groups = magnetar_proof::virtual_spartan::route_segment_claims_by_owner(
+            &gated.layout,
+            &gated.proof.segments,
+        )
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        magnetar_proof::virtual_spartan::VirtualClaimRouter::new(&gated.layout)
+            .verify(&groups)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        None
+    } else {
+        None
+    };
     Ok((ry, value, gated_ry))
 }
 

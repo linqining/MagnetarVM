@@ -1262,18 +1262,21 @@ impl<'a> UnifiedProveContext<'a> {
                 .filter(|rows| width <= 128 && !rows.is_empty() && rows.len().is_power_of_two())
                 .and_then(|rows| {
                     let cycles = rows.len();
-                    crate::simd_dual::reservation_claim_inputs(width, &rows)
+                    crate::simd_dual::reservation_virtual_inputs(width, &rows)
                         .ok()
-                        .map(|(z, a0, a1, layout)| (z, a0, a1, layout, cycles))
+                        .map(|(z, a0, a1, layout, mapping)| (z, a0, a1, layout, mapping, cycles))
                 })
-                .map(|(z, a0, a1, layout, cycles)| crate::GatedProveInput {
-                    z,
-                    a0,
-                    a1,
-                    layout,
-                    table: 0,
-                    cycles,
-                });
+                .map(
+                    |(z, a0, a1, layout, mapping, cycles)| crate::GatedProveInput {
+                        z,
+                        a0,
+                        a1,
+                        layout,
+                        mapping,
+                        table: 0,
+                        cycles,
+                    },
+                );
 
         Ok(Self {
             trace,
@@ -1478,14 +1481,29 @@ impl<'a> UnifiedProveContext<'a> {
                 Vec::new(),
                 Vec::new(),
             ));
+            let wrap = |matrix| crate::simd_dual::ScatterMatrix {
+                inner: matrix,
+                mapping: input.mapping.clone(),
+                cols: input.layout.total_bits,
+            };
+            let va0 = [
+                wrap(input.a0[0].clone()),
+                wrap(input.a0[1].clone()),
+                wrap(input.a0[2].clone()),
+            ];
+            let va1 = [
+                wrap(input.a1[0].clone()),
+                wrap(input.a1[1].clone()),
+                wrap(input.a1[2].clone()),
+            ];
             let proof = magnetar_proof::prove_lockstep_bits(
                 &bits,
-                &input.a0[0],
-                &input.a0[1],
-                &input.a0[2],
-                &input.a1[0],
-                &input.a1[1],
-                &input.a1[2],
+                &va0[0],
+                &va0[1],
+                &va0[2],
+                &va1[0],
+                &va1[1],
+                &va1[2],
                 &input.layout,
                 &backend,
             )
@@ -1792,6 +1810,7 @@ impl<'a> UnifiedVerifyContext<'a> {
                 a0,
                 a1,
                 layout,
+                mapping: Vec::new(),
                 table: 0,
                 cycles,
             });
@@ -1988,16 +2007,35 @@ impl<'a> UnifiedVerifyContext<'a> {
                 Vec::new(),
                 Vec::new(),
             ));
-            magnetar_proof::verify_lockstep_bits(
-                &input.a0[0],
-                &input.a0[1],
-                &input.a0[2],
-                &input.a1[0],
-                &input.a1[1],
-                &input.a1[2],
-                &input.layout,
+            let base_cols = input.a0[0].cols() / input.cycles;
+            let (layout, mapping, _) =
+                crate::simd_dual::reservation_virtual_view(self.width, input.cycles, base_cols)?;
+            let wrap = |matrix| crate::simd_dual::ScatterMatrix {
+                inner: matrix,
+                mapping: mapping.clone(),
+                cols: layout.total_bits,
+            };
+            let va0 = [
+                wrap(input.a0[0].clone()),
+                wrap(input.a0[1].clone()),
+                wrap(input.a0[2].clone()),
+            ];
+            let va1 = [
+                wrap(input.a1[0].clone()),
+                wrap(input.a1[1].clone()),
+                wrap(input.a1[2].clone()),
+            ];
+            magnetar_proof::verify_lockstep_bits_with_replacements(
+                &va0[0],
+                &va0[1],
+                &va0[2],
+                &va1[0],
+                &va1[1],
+                &va1[2],
+                &layout,
                 &gated.proof,
                 &backend,
+                &gated.component_claims,
             )
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
             self.gated_ry = None;

@@ -3673,3 +3673,15 @@ requires making the virtual layout the primary gated witness and conjugating the
 CPU matrices by the gather permutation (or building the matrices directly over
 virtual segments). The current layout/replacement API is a prerequisite, not
 sufficient by itself.
+
+
+### B5: virtual witness is now the gated witness
+
+Added `ScatterMatrix`: it maps virtual columns to original columns, reconstructs
+the original witness for `mul_vec`, scatters `row_combination`, and evaluates the
+permuted matrix MLE. `reservation_virtual_inputs` now returns the padded/gathered
+`z`, virtual layout and mapping; `GatedProveInput` carries the mapping. The gated
+prover and both verifier paths wrap the CPU matrices with `ScatterMatrix` and
+prove/verify over the virtual witness. `core_statement`, `unified_lr_sc`, gated
+bundle and chunked tests pass. This removes the B5 witness-ordering blocker;
+component claim replacement is the remaining step.
