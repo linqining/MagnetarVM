@@ -2148,3 +2148,11 @@ That is a 26% total reduction at the same 100-bit setting. The standalone
 
 This reduces P3 overhead but does not provide hiding or the 10x reduction of a
 new succinct backend.
+
+
+### C: 32-bit word DIV row
+
+`word_div_row::WordDivRow` runs 32-bit signed and unsigned division on the low
+halves and sign-extends the 32-bit result to 64 bits. Tests cover `100/7` for
+both signedness and the `0x8000_0000 / 0xffff_ffff` overflow/magnitude cases.
+CPU fusion for DIVW/REMW/DIVUW/REMUW is the next step.

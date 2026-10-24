@@ -30,6 +30,7 @@ pub mod simd_full;
 pub mod simd_memory;
 pub mod trace_commitment;
 pub mod unified_gated;
+pub mod word_div_row;
 
 use crate::binary_router::{
     prove_binary_router_claims, verify_binary_router_claims, BinaryRouterWitness, RouterMode,
