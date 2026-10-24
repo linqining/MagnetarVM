@@ -4045,3 +4045,13 @@ Two attempts to shrink the gated virtual witness:
 The aligned padded layout is therefore retained for now. Reducing gated size
 needs fewer claims at the same witness size (or a cheaper bit PCS), not just
 tighter packing.
+
+
+### More layout/batching experiments (negative)
+
+Sorting segments by size before placement removes alignment gaps and keeps
+aligned offsets, but the workload sum grew by ~7.5 KB (branchy/alu regressions)
+despite a ~1 KB benchmark improvement; reverted. Relaxing table batching to
+allow tables with up to 64 rows raised mem-loop to 382,942 B and its proving
+time to ~98 s; reverted to the 8-row threshold. The aligned padded layout and
+the current batching policy remain the best measured configuration.
