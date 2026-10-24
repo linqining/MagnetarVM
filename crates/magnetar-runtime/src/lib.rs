@@ -1385,15 +1385,14 @@ pub struct CpuWitnessMetadata {
 #[derive(Clone, Debug)]
 pub struct VirtualSegmentSpec {
     pub name: String,
-    pub offset: usize,
-    pub len: usize,
+    pub sources: Vec<(usize, usize)>,
     pub owner: SegmentOwner,
     pub projection: magnetar_constraint::ProjectionKind,
 }
 
 #[derive(Clone, Debug)]
 pub struct VirtualSegmentMap {
-    pub original_offset: usize,
+    pub sources: Vec<(usize, usize)>,
     pub padded_offset: usize,
     pub len: usize,
     pub owner: SegmentOwner,
@@ -1413,7 +1412,8 @@ pub fn build_padded_virtual_layout(
     let mut mapping = Vec::with_capacity(specs.len());
     let mut offset = 0usize;
     for spec in specs {
-        let size = spec.len.next_power_of_two();
+        let len = spec.sources.iter().map(|(_, len)| *len).sum::<usize>();
+        let size = len.next_power_of_two();
         let aligned = (offset + size - 1) & !(size - 1);
         segments.push(Segment::new(
             spec.name.clone(),
@@ -1423,9 +1423,9 @@ pub fn build_padded_virtual_layout(
             spec.owner,
         ));
         mapping.push(VirtualSegmentMap {
-            original_offset: spec.offset,
+            sources: spec.sources.clone(),
             padded_offset: aligned,
-            len: spec.len,
+            len,
             owner: spec.owner,
             projection: spec.projection,
         });
@@ -1443,14 +1443,18 @@ impl PaddedVirtualLayout {
         let original_len = self
             .mapping
             .iter()
-            .map(|map| map.original_offset + map.len)
+            .flat_map(|map| map.sources.iter().map(|(offset, len)| offset + len))
             .max()
             .unwrap_or(0);
         let mut values = vec![F2_128::from(0u64); original_len];
         for map in &self.mapping {
-            if map.padded_offset + map.len <= padded.len() {
-                values[map.original_offset..map.original_offset + map.len]
-                    .copy_from_slice(&padded[map.padded_offset..map.padded_offset + map.len]);
+            let mut cursor = map.padded_offset;
+            for (original, len) in &map.sources {
+                if cursor + len <= padded.len() {
+                    values[*original..*original + len]
+                        .copy_from_slice(&padded[cursor..cursor + len]);
+                }
+                cursor += len;
             }
         }
         values
@@ -1459,10 +1463,13 @@ impl PaddedVirtualLayout {
     pub fn pad_values(&self, values: &[F2_128]) -> Vec<F2_128> {
         let mut padded = vec![F2_128::from(0u64); self.layout.total_bits];
         for map in &self.mapping {
-            let end = map.original_offset + map.len;
-            if end <= values.len() {
-                padded[map.padded_offset..map.padded_offset + map.len]
-                    .copy_from_slice(&values[map.original_offset..end]);
+            let mut cursor = map.padded_offset;
+            for (original, len) in &map.sources {
+                let end = original + len;
+                if end <= values.len() {
+                    padded[cursor..cursor + len].copy_from_slice(&values[*original..end]);
+                }
+                cursor += len;
             }
         }
         padded
@@ -1482,8 +1489,7 @@ impl CpuWitnessMetadata {
             .enumerate()
             .map(|(index, segment)| VirtualSegmentSpec {
                 name: format!("virtual{index}_{:?}", segment.row_kind),
-                offset: segment.offset,
-                len: segment.len,
+                sources: vec![(segment.offset, segment.len)],
                 owner: segment.owner,
                 projection: segment.owner.projection(),
             })

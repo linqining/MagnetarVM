@@ -3615,3 +3615,12 @@ columns over cycles. `docs/b5-aggregate-segments.md` describes the aggregate
 virtual segment (`sources` gather, cycle-major field vectors) that makes
 segment claims and component column evals identical at the same local point.
 This is the next B5 schema step.
+
+
+### B5: aggregate virtual segments
+
+`VirtualSegmentSpec` now carries `sources: Vec<(offset, len)>`; `build_padded_virtual_layout`
+concatenates them, `pad_values` gathers and `unpad_values` scatters. Memory owner
+segments are aggregated across cycles (`memory_addr`, `memory_data`), while CPU
+ranges remain per-cycle. The PC/RAM/shift fill tests and metadata round-trip pass
+with the gather layout.

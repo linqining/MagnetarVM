@@ -744,18 +744,6 @@ pub(crate) fn reservation_virtual_specs(
     let mut parts: Vec<(&str, usize, usize, SegmentOwner)> = vec![
         ("alu", 0, gated.memory_offset, SegmentOwner::Cpu),
         (
-            "memory_addr",
-            gated.memory_offset + gated.memory.adder.out[0],
-            gated.memory_offset + gated.memory.adder.out[0] + width,
-            SegmentOwner::Memory(MemoryKind::Ram),
-        ),
-        (
-            "memory_data",
-            gated.memory_offset + gated.memory.data[0],
-            gated.memory_offset + gated.memory.data[0] + width,
-            SegmentOwner::Memory(MemoryKind::Ram),
-        ),
-        (
             "memory_cpu_lo",
             gated.memory_offset,
             gated.memory_offset + gated.memory.adder.out[0],
@@ -815,13 +803,40 @@ pub(crate) fn reservation_virtual_specs(
         for (name, start, end, owner) in &parts {
             specs.push(crate::VirtualSegmentSpec {
                 name: format!("{name}{cycle}"),
-                offset: base + start,
-                len: end - start,
+                sources: vec![(base + start, end - start)],
                 owner: *owner,
                 projection: owner.projection(),
             });
         }
     }
+    let addr_sources = (0..cycles)
+        .map(|cycle| {
+            (
+                cycle * base_cols + gated.memory_offset + gated.memory.adder.out[0],
+                width,
+            )
+        })
+        .collect::<Vec<_>>();
+    let data_sources = (0..cycles)
+        .map(|cycle| {
+            (
+                cycle * base_cols + gated.memory_offset + gated.memory.data[0],
+                width,
+            )
+        })
+        .collect::<Vec<_>>();
+    specs.push(crate::VirtualSegmentSpec {
+        name: "memory_addr".into(),
+        sources: addr_sources,
+        owner: SegmentOwner::Memory(MemoryKind::Ram),
+        projection: SegmentOwner::Memory(MemoryKind::Ram).projection(),
+    });
+    specs.push(crate::VirtualSegmentSpec {
+        name: "memory_data".into(),
+        sources: data_sources,
+        owner: SegmentOwner::Memory(MemoryKind::Ram),
+        projection: SegmentOwner::Memory(MemoryKind::Ram).projection(),
+    });
     specs
 }
 
@@ -1621,10 +1636,14 @@ mod virtual_spec_tests {
             let map = padded
                 .mapping
                 .iter()
-                .find(|map| map.original_offset == spec.offset && map.len == spec.len)
+                .find(|map| map.sources == spec.sources)
                 .unwrap();
-            virtual_values[map.padded_offset..map.padded_offset + spec.len]
-                .copy_from_slice(&z[spec.offset..spec.offset + spec.len]);
+            let mut cursor = map.padded_offset;
+            for (original, len) in &spec.sources {
+                virtual_values[cursor..cursor + len]
+                    .copy_from_slice(&z[*original..*original + len]);
+                cursor += len;
+            }
             if spec.name.starts_with("shift") {
                 let cycle = spec
                     .name
@@ -1662,14 +1681,11 @@ mod virtual_spec_tests {
         let (_, _, layout) = reservation_claim_matrices(width, cycles).unwrap();
         let base_cols = layout.total_bits / cycles;
         let specs = reservation_virtual_specs(width, cycles, base_cols);
-        for cycle in 0..cycles {
-            let covered = specs
-                .iter()
-                .filter(|spec| spec.offset / base_cols == cycle)
-                .map(|spec| spec.len)
-                .sum::<usize>();
-            assert_eq!(covered, base_cols);
-        }
+        let covered = specs
+            .iter()
+            .map(|spec| spec.sources.iter().map(|(_, len)| *len).sum::<usize>())
+            .sum::<usize>();
+        assert_eq!(covered, cycles * base_cols);
         assert!(specs
             .iter()
             .any(|spec| spec.owner == SegmentOwner::Memory(MemoryKind::Ram)));
@@ -1686,8 +1702,14 @@ mod virtual_spec_tests {
             let map = padded
                 .mapping
                 .iter()
-                .find(|map| map.original_offset == spec.offset && map.len == spec.len)
+                .find(|map| map.sources == spec.sources)
                 .unwrap();
+            let mut cursor = map.padded_offset;
+            for (original, len) in &spec.sources {
+                virtual_values[cursor..cursor + len]
+                    .copy_from_slice(&z[*original..*original + len]);
+                cursor += len;
+            }
             if let Some(cycle) = spec
                 .name
                 .strip_prefix("pc")
@@ -1695,13 +1717,10 @@ mod virtual_spec_tests {
             {
                 let (pc, _) = &rows[cycle];
                 let component = pc_row.witness(*pc, *pc, true);
-                for bit in 0..spec.len {
+                for bit in 0..spec.sources.iter().map(|(_, len)| *len).sum::<usize>() {
                     virtual_values[map.padded_offset + bit] =
                         F2_128::from(u64::from(component[pc_row.pc[bit]]));
                 }
-            } else {
-                virtual_values[map.padded_offset..map.padded_offset + spec.len]
-                    .copy_from_slice(&z[spec.offset..spec.offset + spec.len]);
             }
         }
         assert_eq!(padded.unpad_values(&virtual_values), z);
@@ -1721,43 +1740,53 @@ mod virtual_spec_tests {
         let (z, _, _, _) = reservation_claim_inputs(width, &rows).unwrap();
         let twist = magnetar_memory::BinaryTwistWitness::from_trace(&trace).unwrap();
         let mut virtual_values = vec![F2_128::from(0u64); padded.layout.total_bits];
-        let mut event = 0usize;
         for spec in &specs {
             let map = padded
                 .mapping
                 .iter()
-                .find(|map| map.original_offset == spec.offset && map.len == spec.len)
+                .find(|map| map.sources == spec.sources)
                 .unwrap();
-            virtual_values[map.padded_offset..map.padded_offset + spec.len]
-                .copy_from_slice(&z[spec.offset..spec.offset + spec.len]);
-            if spec.name.starts_with("memory_addr") || spec.name.starts_with("memory_data") {
-                let cycle = spec
-                    .name
-                    .rsplit_once(|c: char| !c.is_ascii_digit())
-                    .and_then(|(_, suffix)| suffix.parse::<usize>().ok())
-                    .unwrap();
-                if !matches!(
-                    rows[cycle].1.cpu,
-                    crate::simd_f2::GatedCpuRowInput::Memory { .. }
-                ) {
-                    continue;
+            let mut cursor = map.padded_offset;
+            for (original, len) in &spec.sources {
+                virtual_values[cursor..cursor + len]
+                    .copy_from_slice(&z[*original..*original + len]);
+                cursor += len;
+            }
+            if spec.name == "memory_addr" {
+                let mut cursor = map.padded_offset;
+                let mut event = 0usize;
+                for (cycle, (_, len)) in spec.sources.iter().enumerate() {
+                    if matches!(
+                        rows[cycle].1.cpu,
+                        crate::simd_f2::GatedCpuRowInput::Memory { .. }
+                    ) {
+                        let word = twist.read_address[event]
+                            .iter()
+                            .position(|bit| bit.value() == 1)
+                            .unwrap_or(0);
+                        let address = trace.config.ram_base + 8 * word as u64;
+                        for bit in 0..*len {
+                            virtual_values[cursor + bit] = F2_128::from((address >> bit) & 1);
+                        }
+                        event += 1;
+                    }
+                    cursor += len;
                 }
-                if spec.name.starts_with("memory_addr") {
-                    let word = twist.read_address[event]
-                        .iter()
-                        .position(|bit| bit.value() == 1)
-                        .unwrap_or(0);
-                    let address = trace.config.ram_base + 8 * word as u64;
-                    for bit in 0..width {
-                        virtual_values[map.padded_offset + bit] =
-                            F2_128::from((address >> bit) & 1);
+            } else if spec.name == "memory_data" {
+                let mut cursor = map.padded_offset;
+                let mut event = 0usize;
+                for (cycle, (_, len)) in spec.sources.iter().enumerate() {
+                    if matches!(
+                        rows[cycle].1.cpu,
+                        crate::simd_f2::GatedCpuRowInput::Memory { .. }
+                    ) {
+                        let value = twist.read_value[event].value();
+                        for bit in 0..*len {
+                            virtual_values[cursor + bit] = F2_128::from((value >> bit) & 1);
+                        }
+                        event += 1;
                     }
-                } else {
-                    let value = twist.read_value[event].value();
-                    for bit in 0..width {
-                        virtual_values[map.padded_offset + bit] = F2_128::from((value >> bit) & 1);
-                    }
-                    event += 1;
+                    cursor += len;
                 }
             }
         }
