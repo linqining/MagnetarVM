@@ -3432,3 +3432,12 @@ pass again.
 The chunked verifier also now rebuilds the chunk witness, commits it, and
 compares the commitment bytes with `ChunkCpuProof.cpu.commitment` before
 verification, binding chunk proofs to the supplied rows.
+
+
+### C1 expansion plan
+
+`preprocess::expand_bytecode` and `MicroOp { micro_pc, rv_pc, kind }` are in
+place (identity expansion today). The executor/CPU-relation migration is
+documented in `docs/c1-instruction-expansion.md`: trace rows need `micro_pc` and
+`MicroOpKind`, the gated row needs a fetch selector with `next_pc = pc`, and
+Shout must read by `micro_pc`. This is the next C1 step.
