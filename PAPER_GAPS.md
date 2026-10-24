@@ -3481,3 +3481,14 @@ claims with `route_segment_claims_by_owner` and validates them with
 `VirtualClaimRouter` before accepting the gated proof. This is integrated
 routing/consumption validation; Twist/Shout/Router still need to consume the
 routed values themselves.
+
+
+### B5 semantic protocol design
+
+The remaining B5 work is a schema change, not wiring: CPU segment claims are
+evaluations of CPU row variables, while Ram/Router/Shout claims are evaluations
+of separate tables at different points. `docs/b5-virtual-segments.md` describes
+the target: split the CPU witness into component-owned virtual witnesses and
+prove a public projection from each component table to its virtual segment
+before reconstructing the CPU witness. Owner metadata, padded layouts, routing,
+and consumption validation are already implemented.
