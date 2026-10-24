@@ -1383,10 +1383,21 @@ pub struct CpuWitnessMetadata {
 }
 
 #[derive(Clone, Debug)]
+pub struct VirtualSegmentSpec {
+    pub name: String,
+    pub offset: usize,
+    pub len: usize,
+    pub owner: SegmentOwner,
+    pub projection: magnetar_constraint::ProjectionKind,
+}
+
+#[derive(Clone, Debug)]
 pub struct VirtualSegmentMap {
     pub original_offset: usize,
     pub padded_offset: usize,
     pub len: usize,
+    pub owner: SegmentOwner,
+    pub projection: magnetar_constraint::ProjectionKind,
 }
 
 #[derive(Clone, Debug)]
@@ -1395,7 +1406,56 @@ pub struct PaddedVirtualLayout {
     pub mapping: Vec<VirtualSegmentMap>,
 }
 
+pub fn build_padded_virtual_layout(
+    specs: &[VirtualSegmentSpec],
+) -> Result<PaddedVirtualLayout, RuntimeError> {
+    let mut segments = Vec::with_capacity(specs.len());
+    let mut mapping = Vec::with_capacity(specs.len());
+    let mut offset = 0usize;
+    for spec in specs {
+        let size = spec.len.next_power_of_two();
+        let aligned = (offset + size - 1) & !(size - 1);
+        segments.push(Segment::new(
+            spec.name.clone(),
+            aligned,
+            size,
+            SegmentKind::Direct,
+            spec.owner,
+        ));
+        mapping.push(VirtualSegmentMap {
+            original_offset: spec.offset,
+            padded_offset: aligned,
+            len: spec.len,
+            owner: spec.owner,
+            projection: spec.projection,
+        });
+        offset = aligned + size;
+    }
+    Ok(PaddedVirtualLayout {
+        layout: WitnessLayout::new(segments)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?,
+        mapping,
+    })
+}
+
 impl PaddedVirtualLayout {
+    pub fn unpad_values(&self, padded: &[F2_128]) -> Vec<F2_128> {
+        let original_len = self
+            .mapping
+            .iter()
+            .map(|map| map.original_offset + map.len)
+            .max()
+            .unwrap_or(0);
+        let mut values = vec![F2_128::from(0u64); original_len];
+        for map in &self.mapping {
+            if map.padded_offset + map.len <= padded.len() {
+                values[map.original_offset..map.original_offset + map.len]
+                    .copy_from_slice(&padded[map.padded_offset..map.padded_offset + map.len]);
+            }
+        }
+        values
+    }
+
     pub fn pad_values(&self, values: &[F2_128]) -> Vec<F2_128> {
         let mut padded = vec![F2_128::from(0u64); self.layout.total_bits];
         for map in &self.mapping {
@@ -1416,35 +1476,21 @@ impl CpuWitnessMetadata {
     /// row segment is padded to the next power of two and placed at an aligned
     /// offset. `pad_values` transfers the merged witness into this layout.
     pub fn padded_virtual_layout(&self) -> Result<PaddedVirtualLayout, RuntimeError> {
-        let mut segments = Vec::with_capacity(self.segments.len());
-        let mut mapping = Vec::with_capacity(self.segments.len());
-        let mut offset = 0usize;
-        for (index, segment) in self.segments.iter().enumerate() {
-            let size = segment.len.next_power_of_two();
-            let aligned = (offset + size - 1) & !(size - 1);
-            segments.push(Segment::new(
-                format!("virtual{index}_{:?}", segment.row_kind),
-                aligned,
-                size,
-                SegmentKind::Direct,
-                segment.owner,
-            ));
-            mapping.push(VirtualSegmentMap {
-                original_offset: segment.offset,
-                padded_offset: aligned,
+        let specs = self
+            .segments
+            .iter()
+            .enumerate()
+            .map(|(index, segment)| VirtualSegmentSpec {
+                name: format!("virtual{index}_{:?}", segment.row_kind),
+                offset: segment.offset,
                 len: segment.len,
-            });
-            offset = aligned + size;
-        }
-        Ok(PaddedVirtualLayout {
-            layout: WitnessLayout::new(segments)
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?,
-            mapping,
-        })
+                owner: segment.owner,
+                projection: segment.owner.projection(),
+            })
+            .collect::<Vec<_>>();
+        build_padded_virtual_layout(&specs)
     }
-}
 
-impl CpuWitnessMetadata {
     pub fn total_len(&self) -> usize {
         self.segments
             .last()

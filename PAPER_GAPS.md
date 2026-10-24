@@ -3509,3 +3509,14 @@ Pcs       -> PcBits
 `segment_owners_expose_their_projection` covers the mapping. This is the layout
 metadata the shared segment protocol needs before reconstructing CPU z from
 component tables.
+
+
+### B5: generic padded virtual segment specs
+
+`VirtualSegmentSpec` (offset/len/owner/projection) + `build_padded_virtual_layout`
+build a power-of-two aligned virtual layout for arbitrary row subsegments;
+`PaddedVirtualLayout::unpad_values` scatters a virtual witness back to the
+merged original order. The CPU metadata test now round-trips
+`pad_values`/`unpad_values` and still routes claims through
+`VirtualClaimRouter`. This is the layout substrate for splitting a CPU row into
+PC/RAM/Router subsegments.

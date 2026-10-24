@@ -2323,6 +2323,7 @@ mod metadata_tests {
         let padded = metadata.padded_virtual_layout().unwrap();
         let values = padded.pad_values(witness.values());
         assert_eq!(values.len(), padded.layout.total_bits);
+        assert_eq!(padded.unpad_values(&values), witness.values());
         let point = vec![
             magnetar_constraint::F2_128::from(0u64);
             padded.layout.total_bits.trailing_zeros() as usize
