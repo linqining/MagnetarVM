@@ -3754,3 +3754,18 @@ integration point list or table indexing.
 the two-column component table, all opened in one P3 mosaic proof. The shared
 integration failure is therefore in the unified point/batch wiring, not P3 table
 count or multi-column support.
+
+
+### B5: component table in the shared commitment
+
+The earlier shared-opening failure was a point-lifetime bug: component points were
+pushed during `prove_cpu`, but the later Access stage overwrites `self.points`.
+The points are now appended at the end of `prove_register_and_trace` (after
+Access/Shout/Routers) using the stored gated `ry`; the verifier appends the same
+points in `verify_opening` (context) and in `verify_core_statement` (core).
+`GatedCpuClaims` carries `component_columns`/`component_index`; the separate
+component P3 commitment/opening is gone.
+
+Benchmark: 188,616 -> 151,415 B; gated 108,349 -> 70,716 B. Load-only RAM
+data/address replacements are covered by the shared opening and the tamper test
+still rejects altered replacements. Store data replacement remains skipped.

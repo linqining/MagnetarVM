@@ -1165,6 +1165,8 @@ pub(crate) struct UnifiedProveContext<'a> {
     cpu: Option<LockstepClaims<magnetar_pcs::P3MosaicCommitment>>,
     cpu_ry: Option<Vec<F2_128>>,
     gated_input: Option<crate::GatedProveInput>,
+    component_index: Option<usize>,
+    component_ry: Option<Vec<F2_128>>,
     gated_claims: Option<crate::GatedCpuClaims>,
     gated_ry: Option<Vec<F2_128>>,
     packed_shout: Option<crate::packed_shout::PackedShoutProof>,
@@ -1206,70 +1208,14 @@ fn gated_component_columns(
     Ok((data, address))
 }
 
-fn gated_component_opening(
-    trace: &magnetar_spec::Trace,
-    width: usize,
-    cycles: usize,
-    layout: &magnetar_constraint::WitnessLayout,
-    ry: &[F2_128],
-    replacements: &[Option<F2_128>],
-) -> Result<
-    Option<(
-        magnetar_pcs::P3MosaicCommitment,
-        magnetar_pcs::P3MosaicOpening,
-    )>,
-    RuntimeError,
-> {
-    let (data, address) = gated_component_columns(trace, width, cycles)?;
-    let table = magnetar_pcs::P3MosaicTable {
-        columns: vec![data, address],
-    };
-    let pcs = magnetar_pcs::P3BinaryPcs::new(100);
-    let commitment = pcs
-        .commit_mosaic(std::slice::from_ref(&table))
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    let mut points = Vec::new();
-    let mut values = Vec::new();
-    for (index, segment) in layout.segments.iter().enumerate() {
-        if replacements[index].is_none() {
-            continue;
-        }
-        let (column, name) = if segment.name == "memory_data" {
-            (0usize, "memory_data")
-        } else if segment.name == "memory_addr" {
-            (1usize, "memory_addr")
-        } else {
-            continue;
-        };
-        let _ = name;
-        let bits = segment.len.trailing_zeros() as usize;
-        if bits > ry.len() {
-            return Err(RuntimeError::Proof("component opening point arity".into()));
-        }
-        points.push(magnetar_pcs::P3MosaicPoint {
-            table: 0,
-            point: ry[..bits].to_vec(),
-            columns: vec![column],
-            next_columns: Vec::new(),
-        });
-        values.push(vec![replacements[index].unwrap()]);
-    }
-    if points.is_empty() {
-        return Ok(None);
-    }
-    let opening = pcs
-        .open_mosaic(std::slice::from_ref(&table), &points)
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    Ok(Some((commitment, opening)))
-}
-
+#[allow(clippy::type_complexity)]
 fn gated_component_claims(
     trace: &magnetar_spec::Trace,
     width: usize,
     cycles: usize,
     layout: &magnetar_constraint::WitnessLayout,
     ry: &[F2_128],
-) -> Result<Vec<Option<F2_128>>, RuntimeError> {
+) -> Result<(Vec<Option<F2_128>>, Vec<(usize, usize)>), RuntimeError> {
     let full = magnetar_memory::BinaryTwistWitness::from_trace_full_cycles(trace)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     if full.cycles != cycles {
@@ -1305,6 +1251,7 @@ fn gated_component_claims(
         .iter()
         .any(|row| row.mem.is_some_and(|access| access.is_write));
     let mut replacements = vec![None; layout.segments.len()];
+    let mut columns = Vec::new();
     for (index, segment) in layout.segments.iter().enumerate() {
         if segment.name != "memory_data" && segment.name != "memory_addr" {
             continue;
@@ -1323,9 +1270,11 @@ fn gated_component_claims(
         if segment.name == "memory_data" && has_store {
             continue;
         }
+        let column = if segment.name == "memory_data" { 0 } else { 1 };
+        columns.push((column, bits));
         replacements[index] = Some(component);
     }
-    Ok(replacements)
+    Ok((replacements, columns))
 }
 
 impl<'a> UnifiedProveContext<'a> {
@@ -1433,6 +1382,16 @@ impl<'a> UnifiedProveContext<'a> {
                         cycles,
                     },
                 );
+        let component_index = if let Some(input) = &gated_input {
+            let (data, address) = gated_component_columns(trace, width, input.cycles)?;
+            let index = mosaic_tables.len();
+            mosaic_tables.push(magnetar_pcs::P3MosaicTable {
+                columns: vec![data, address],
+            });
+            Some(index)
+        } else {
+            None
+        };
 
         Ok(Self {
             trace,
@@ -1470,6 +1429,8 @@ impl<'a> UnifiedProveContext<'a> {
             cpu: None,
             cpu_ry: None,
             gated_input,
+            component_index,
+            component_ry: None,
             gated_claims: None,
             gated_ry: None,
             packed_shout: None,
@@ -1598,6 +1559,34 @@ impl<'a> UnifiedProveContext<'a> {
             });
             self.values.push(vec![claim.value]);
         }
+        if let (Some(index), Some(ry), Some(gated)) = (
+            self.component_index,
+            self.component_ry.as_ref(),
+            self.gated_claims.as_ref(),
+        ) {
+            let component_values = gated
+                .component_claims
+                .iter()
+                .filter_map(|value| *value)
+                .collect::<Vec<_>>();
+            if let Some((_, bits)) = gated.component_columns.first() {
+                let mut pairs = gated
+                    .component_columns
+                    .iter()
+                    .copied()
+                    .zip(component_values)
+                    .collect::<Vec<_>>();
+                pairs.sort_by_key(|(column, _)| column.0);
+                self.points.push(P3MosaicPoint {
+                    table: index,
+                    point: ry[..*bits].to_vec(),
+                    columns: pairs.iter().map(|(column, _)| column.0).collect(),
+                    next_columns: Vec::new(),
+                });
+                self.values
+                    .push(pairs.into_iter().map(|(_, value)| value).collect());
+            }
+        }
         Ok(())
     }
 
@@ -1664,29 +1653,20 @@ impl<'a> UnifiedProveContext<'a> {
                 &backend,
             )
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-            let component_claims = gated_component_claims(
+            let (component_claims, component_columns) = gated_component_claims(
                 self.trace,
                 self.width,
                 input.cycles,
                 &input.layout,
                 &gated_ry,
             )?;
-            let component_open = gated_component_opening(
-                self.trace,
-                self.width,
-                input.cycles,
-                &input.layout,
-                &gated_ry,
-                &component_claims,
-            )?;
+            self.component_ry = Some(gated_ry.clone());
             self.gated_claims = Some(crate::GatedCpuClaims {
                 proof,
                 cycles: input.cycles,
                 component_claims,
-                component_commitment: component_open
-                    .as_ref()
-                    .map(|(commitment, _)| commitment.clone()),
-                component_opening: component_open.map(|(_, opening)| opening),
+                component_columns,
+                component_index: self.component_index,
             });
             self.gated_ry = None;
         }
@@ -1909,6 +1889,7 @@ pub(crate) struct UnifiedVerifyContext<'a> {
     cpu_value: Option<F2_128>,
     gated_input: Option<crate::GatedProveInput>,
     gated_ry: Option<Vec<F2_128>>,
+    component_points: Vec<(P3MosaicPoint, Vec<F2_128>)>,
 }
 
 impl<'a> UnifiedVerifyContext<'a> {
@@ -2021,6 +2002,7 @@ impl<'a> UnifiedVerifyContext<'a> {
             cpu_value: None,
             gated_input,
             gated_ry: None,
+            component_points: Vec::new(),
         })
     }
 
@@ -2199,7 +2181,7 @@ impl<'a> UnifiedVerifyContext<'a> {
                 wrap(input.a1[1].clone()),
                 wrap(input.a1[2].clone()),
             ];
-            magnetar_proof::verify_lockstep_bits_with_replacements(
+            let gated_point = magnetar_proof::verify_lockstep_bits_with_replacements_point(
                 &va0[0],
                 &va0[1],
                 &va0[2],
@@ -2212,7 +2194,32 @@ impl<'a> UnifiedVerifyContext<'a> {
                 &gated.component_claims,
             )
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-            self.gated_ry = None;
+            if let Some(index) = gated.component_index {
+                let component_values = gated
+                    .component_claims
+                    .iter()
+                    .filter_map(|value| *value)
+                    .collect::<Vec<_>>();
+                if let Some((_, bits)) = gated.component_columns.first() {
+                    let mut pairs = gated
+                        .component_columns
+                        .iter()
+                        .copied()
+                        .zip(component_values)
+                        .collect::<Vec<_>>();
+                    pairs.sort_by_key(|(column, _)| column.0);
+                    self.component_points.push((
+                        P3MosaicPoint {
+                            table: index,
+                            point: gated_point[..*bits].to_vec(),
+                            columns: pairs.iter().map(|(column, _)| column.0).collect(),
+                            next_columns: Vec::new(),
+                        },
+                        pairs.into_iter().map(|(_, value)| value).collect(),
+                    ));
+                }
+            }
+            self.gated_ry = Some(gated_point);
         } else if self.proof.gated.is_some() {
             return Err(RuntimeError::Proof("gated input missing".into()));
         }
@@ -2241,6 +2248,10 @@ impl<'a> UnifiedVerifyContext<'a> {
                 self.points.push(point);
                 self.values.push(values);
             }
+        }
+        for (point, values) in &self.component_points {
+            self.points.push(point.clone());
+            self.values.push(values.clone());
         }
         let mut pairs = self
             .points

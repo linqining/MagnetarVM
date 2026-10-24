@@ -1090,8 +1090,8 @@ pub struct GatedCpuClaims {
     pub cycles: usize,
     /// Optional per-segment claim overrides from component proofs.
     pub component_claims: Vec<Option<F2_128>>,
-    pub component_commitment: Option<P3MosaicCommitment>,
-    pub component_opening: Option<P3MosaicOpening>,
+    pub component_columns: Vec<(usize, usize)>,
+    pub component_index: Option<usize>,
 }
 
 fn step_op_for(op: magnetar_spec::Op) -> Option<magnetar_cpu::StepOp> {
@@ -2573,7 +2573,7 @@ pub fn verify_core_statement(
         width: statement.width,
         shape: statement.shape.clone(),
     };
-    let (ry, cpu_value, _gated_ry) = cpu_statement_claims(proof, &cpu)?;
+    let (ry, cpu_value, gated_ry) = cpu_statement_claims(proof, &cpu)?;
     let (ram_claims, register_claims) = crate::access_statement::access_claims_from_proof(proof)?;
     let (mut points, mut values) = ram_claims;
     points.extend(register_claims.0);
@@ -2586,6 +2586,31 @@ pub fn verify_core_statement(
             next_columns: Vec::new(),
         });
         values.push(vec![cpu_value]);
+    }
+    if let (Some(gated), Some(gated_point)) = (&proof.gated, gated_ry) {
+        if let Some(index) = gated.component_index {
+            let component_values = gated
+                .component_claims
+                .iter()
+                .filter_map(|value| *value)
+                .collect::<Vec<_>>();
+            if let Some((_, bits)) = gated.component_columns.first() {
+                let mut pairs = gated
+                    .component_columns
+                    .iter()
+                    .copied()
+                    .zip(component_values)
+                    .collect::<Vec<_>>();
+                pairs.sort_by_key(|(column, _)| column.0);
+                points.push(magnetar_pcs::P3MosaicPoint {
+                    table: index,
+                    point: gated_point[..*bits].to_vec(),
+                    columns: pairs.iter().map(|(column, _)| column.0).collect(),
+                    next_columns: Vec::new(),
+                });
+                values.push(pairs.into_iter().map(|(_, value)| value).collect());
+            }
+        }
     }
     if let (Some(shout), Some(index)) = (&proof.shout, proof.shout_index) {
         let (aux_points, aux_values) = crate::binary_shout::verify_binary_shout_from_proof(
@@ -2731,7 +2756,7 @@ pub(crate) fn cpu_statement_claims(
             Vec::new(),
             Vec::new(),
         ));
-        magnetar_proof::verify_lockstep_bits_with_replacements(
+        let gated_point = magnetar_proof::verify_lockstep_bits_with_replacements_point(
             &va0[0],
             &va0[1],
             &va0[2],
@@ -2752,7 +2777,7 @@ pub(crate) fn cpu_statement_claims(
         magnetar_proof::virtual_spartan::VirtualClaimRouter::new(&gated_layout)
             .verify(&groups)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        None
+        Some(gated_point)
     } else {
         None
     };
