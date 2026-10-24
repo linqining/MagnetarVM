@@ -1947,8 +1947,11 @@ impl<'a> UnifiedProveContext<'a> {
             .iter()
             .enumerate()
             .filter(|(index, count)| {
-                **count >= 6
-                    && (self.mosaic_tables[*index].columns[0].len().trailing_zeros() as usize) <= 3
+                **count >= 6 && {
+                    let bits =
+                        self.mosaic_tables[*index].columns[0].len().trailing_zeros() as usize;
+                    bits <= 3 || (bits == 4 && **count <= 8)
+                }
             })
             .map(|(index, _)| index)
             .collect::<std::collections::HashSet<_>>();
