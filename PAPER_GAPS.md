@@ -2499,3 +2499,11 @@ address. The small gated benchmark is 155,833 B after the change.
 `reservation_cpu_rows_from_trace` now marks `Sd` (and the other store widths) as
 `is_invalidate`, so a store clears the reservation in the gated chain instead
 of preserving it. Unified LR/SC tests still pass.
+
+
+### C: AMO clears reservation in the gated chain
+
+`reservation_cpu_rows_from_trace` now marks AMO rows as `is_invalidate`. A new
+`amo_chain_rows_check` test builds LUI/ADDI/SD/ADDI/AMOADD.D/ADD/ADD/ADD rows and
+checks every combined CPU+reservation relation. `unified_amo_lr_sc` also still
+passes.

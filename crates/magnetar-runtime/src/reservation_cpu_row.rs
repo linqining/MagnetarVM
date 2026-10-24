@@ -234,7 +234,7 @@ pub fn reservation_cpu_rows_from_trace(
                         | magnetar_spec::Op::Sh
                         | magnetar_spec::Op::Sw
                         | magnetar_spec::Op::Sd
-                ),
+                ) || row.instruction.op.amo_width().is_some(),
                 next_pre_valid: next_pre.is_some(),
                 next_pre_addr: next_pre.unwrap_or(0),
                 value: if matches!(
@@ -266,6 +266,112 @@ pub fn reservation_cpu_rows_from_trace(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn amo_chain_rows_check() {
+        use magnetar_executor::execute;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Lui,
+                    rd: 4,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x1000_0000,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 10,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Sd,
+                    rd: 0,
+                    rs1: 4,
+                    rs2: 1,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 2,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 5,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::AmoaddD,
+                    rd: 3,
+                    rs1: 4,
+                    rs2: 2,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Add,
+                    rd: 5,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Add,
+                    rd: 6,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Add,
+                    rd: 7,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x100,
+                stack_top: 0x1000_0080,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let rows = reservation_cpu_rows_from_trace(&trace, 8).unwrap();
+        let row = ReservationCpuRow::new(8);
+        for (index, (pc, input)) in rows.iter().enumerate() {
+            let bits = row.witness(*pc, *input);
+            assert!(
+                row.relation_check(&bits),
+                "row {index} inv {}",
+                input.is_invalidate
+            );
+        }
+    }
 
     #[test]
     fn reservation_cpu_row_checks_both_relations() {
