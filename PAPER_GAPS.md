@@ -2881,3 +2881,16 @@ B1-B3 shared-matrix SIMD / native F2 dual relation still absent
 D9/D10 bytecode/Shout-authenticated selectors, Router Q/Inc routing still partial
 C1/C3/C4 bytecode/micro-PC/PC/reservation still trace/statement checked
 ```
+
+
+### P1 D5: linear-time LT
+
+Replaced the quadratic `lt_mle` double loop with the bitwise prefix formula
+
+```text
+LT(a,b) = sum_i (prod_{j>i} (1 + a_j + b_j)) * (1 + a_i) * b_i
+```
+
+for bits MSB to LSB. `lt_mle_matches_quadratic` checks bits 1..=5 against the
+quadratic definition. All BinaryTwist/unified tests still pass; benchmark
+161,343 B unchanged.

@@ -1009,15 +1009,14 @@ fn interpolate_values(values: &[F2_128], r: F2_128) -> F2_128 {
     result
 }
 
-fn lt_mle(jp_point: &[F2_128], j_point: &[F2_128], cycles: usize) -> F2_128 {
+fn lt_mle(jp_point: &[F2_128], j_point: &[F2_128], _cycles: usize) -> F2_128 {
+    let mut prefix = F2_128::from(1u64);
     let mut sum = F2_128::from(0u64);
-    for jp in 0..cycles {
-        let wp = eq_at_index(jp_point, jp);
-        for j in 0..cycles {
-            if jp < j {
-                sum = sum + wp * eq_at_index(j_point, j);
-            }
-        }
+    for index in (0..jp_point.len()).rev() {
+        let a = jp_point[index];
+        let b = j_point[index];
+        sum = sum + prefix * (F2_128::from(1u64) + a) * b;
+        prefix = prefix * (F2_128::from(1u64) + a + b);
     }
     sum
 }
@@ -2282,6 +2281,28 @@ mod ram_tests {
         let mut bad_witness = witness;
         bad_witness.initial[0] = bad_witness.initial[0] + F2_128::from(1u64);
         assert!(!verify_binary_twist_ram(&bad_witness, &proof).unwrap());
+    }
+
+    #[test]
+    fn lt_mle_matches_quadratic() {
+        for bits in 1..6 {
+            let cycles = 1usize << bits;
+            let jp = (0..bits)
+                .map(|index| F2_128::from((index * 7 + 3) as u64))
+                .collect::<Vec<_>>();
+            let j = (0..bits)
+                .map(|index| F2_128::from((index * 5 + 1) as u64))
+                .collect::<Vec<_>>();
+            let mut quadratic = F2_128::from(0u64);
+            for previous in 0..cycles {
+                for cycle in 0..cycles {
+                    if previous < cycle {
+                        quadratic = quadratic + eq_at_index(&jp, previous) * eq_at_index(&j, cycle);
+                    }
+                }
+            }
+            assert_eq!(lt_mle(&jp, &j, cycles), quadratic);
+        }
     }
 }
 
