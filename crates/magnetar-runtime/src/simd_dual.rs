@@ -832,6 +832,14 @@ pub(crate) fn group_virtual_specs(
     grouped
 }
 
+pub(crate) fn choose_group(cycles: usize) -> usize {
+    if cycles >= 4 && cycles.is_multiple_of(2) {
+        2
+    } else {
+        1
+    }
+}
+
 #[allow(dead_code, clippy::type_complexity)]
 fn grouped_virtual_layout(
     width: usize,

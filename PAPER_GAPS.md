@@ -3968,3 +3968,14 @@ against the grouped segment values, and the workload suite passes with the
 grouped path. The no-shift benchmark is 152,687 B (group field/layout overhead
 about 131 B); workload prover times drop noticeably (e.g. fibonacci 8.2s -> 5.8s,
 branchy 17.1s -> 11.7s, loop 3.9s -> 2.9s).
+
+
+### C2: configurable SIMD group
+
+`prove_unified_trace_group` / `Orchestrator::prove_group` select a group size
+explicitly; `GatedCpuClaims.group` drives both core and trace verification.
+The default remains `choose_group = 2` for at least four even cycles and 1
+otherwise. `group_four_unified_proof_round_trips` proves/verifies group=4
+through both verifier entry points. A 32-cycle width-8 comparison
+(`group_compare`) gives group=2: 127,327 B / 6.0 s and group=4: 128,031 B /
+6.0 s, so group=2 stays the default.

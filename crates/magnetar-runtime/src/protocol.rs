@@ -968,7 +968,25 @@ impl Orchestrator {
         trace: &magnetar_spec::Trace,
         width: usize,
     ) -> Result<UnifiedTraceProof, crate::RuntimeError> {
-        let proof = crate::prove_unified_with_plan(trace, width, &self.plan)?;
+        self.prove_group_opt(trace, width, None)
+    }
+
+    pub fn prove_group(
+        &self,
+        trace: &magnetar_spec::Trace,
+        width: usize,
+        group: usize,
+    ) -> Result<UnifiedTraceProof, crate::RuntimeError> {
+        self.prove_group_opt(trace, width, Some(group))
+    }
+
+    fn prove_group_opt(
+        &self,
+        trace: &magnetar_spec::Trace,
+        width: usize,
+        group: Option<usize>,
+    ) -> Result<UnifiedTraceProof, crate::RuntimeError> {
+        let proof = crate::prove_unified_with_plan_group(trace, width, &self.plan, group)?;
         let bundle = ProofBundle::from_unified(&proof);
         self.plan
             .check_bundle(&bundle)
@@ -1371,6 +1389,14 @@ pub(crate) fn gated_component_claims(
 
 impl<'a> UnifiedProveContext<'a> {
     pub(crate) fn new(trace: &'a Trace, width: usize) -> Result<Self, RuntimeError> {
+        Self::new_with_group(trace, width, None)
+    }
+
+    pub(crate) fn new_with_group(
+        trace: &'a Trace,
+        width: usize,
+        group: Option<usize>,
+    ) -> Result<Self, RuntimeError> {
         check_trace_linkage(trace)?;
         let witness = BinaryTwistWitness::from_trace(trace)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
@@ -1455,11 +1481,14 @@ impl<'a> UnifiedProveContext<'a> {
                 .filter(|rows| width <= 128 && !rows.is_empty() && rows.len().is_power_of_two())
                 .and_then(|rows| {
                     let cycles = rows.len();
-                    let group = if cycles >= 4 && cycles.is_multiple_of(2) {
-                        2
-                    } else {
-                        1
-                    };
+                    let group = group.unwrap_or_else(|| crate::simd_dual::choose_group(cycles));
+                    if group > 1
+                        && (!group.is_power_of_two()
+                            || group > cycles
+                            || !cycles.is_multiple_of(group))
+                    {
+                        return None;
+                    }
                     let inputs = if group > 1 {
                         crate::simd_dual::reservation_grouped_virtual_inputs(width, &rows, group)
                             .ok()
@@ -2132,11 +2161,11 @@ impl<'a> UnifiedVerifyContext<'a> {
         }
         let gated_input = gated_rows.as_ref().and_then(|rows| {
             let cycles = rows.len();
-            let group = if cycles >= 4 && cycles.is_multiple_of(2) {
-                2
-            } else {
-                1
-            };
+            let group = proof
+                .gated
+                .as_ref()
+                .map(|gated| gated.group)
+                .unwrap_or_else(|| crate::simd_dual::choose_group(cycles));
             if group > 1 {
                 crate::simd_dual::reservation_grouped_virtual_view(width, cycles, group)
                     .ok()

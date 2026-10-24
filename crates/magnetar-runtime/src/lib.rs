@@ -2321,7 +2321,16 @@ pub(crate) fn prove_unified_with_plan(
     width: usize,
     plan: &crate::protocol::ProtocolPlan,
 ) -> Result<UnifiedTraceProof, RuntimeError> {
-    let mut context = crate::protocol::UnifiedProveContext::new(trace, width)?;
+    prove_unified_with_plan_group(trace, width, plan, None)
+}
+
+pub(crate) fn prove_unified_with_plan_group(
+    trace: &Trace,
+    width: usize,
+    plan: &crate::protocol::ProtocolPlan,
+    group: Option<usize>,
+) -> Result<UnifiedTraceProof, RuntimeError> {
+    let mut context = crate::protocol::UnifiedProveContext::new_with_group(trace, width, group)?;
     for stage in plan.execution() {
         match stage {
             crate::protocol::ExecutionStage::Commit => context.commit()?,
@@ -2349,6 +2358,14 @@ pub(crate) fn prove_unified_inner(
 
 pub fn prove_unified_trace(trace: &Trace, width: usize) -> Result<UnifiedTraceProof, RuntimeError> {
     crate::protocol::Orchestrator::default().prove(trace, width)
+}
+
+pub fn prove_unified_trace_group(
+    trace: &Trace,
+    width: usize,
+    group: usize,
+) -> Result<UnifiedTraceProof, RuntimeError> {
+    crate::protocol::Orchestrator::default().prove_group(trace, width, group)
 }
 
 pub(crate) fn verify_unified_with_plan(
@@ -3676,6 +3693,29 @@ mod tests {
         let trace = execute(&program, config()).unwrap();
         let proof = prove_unified_trace(&trace, 8).unwrap();
         verify_unified_proof(&proof).unwrap();
+    }
+
+    #[test]
+    fn group_four_unified_proof_round_trips() {
+        let mut rom = (1..=8)
+            .map(|index| {
+                Instruction {
+                    op: Op::Addi,
+                    rd: (index % 8) as u8,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: index,
+                    shamt: 0,
+                }
+                .encode()
+            })
+            .collect::<Vec<_>>();
+        rom.push(Instruction::new(Op::Ecall).encode());
+        let program = ProgramImage::new(0x1000, rom);
+        let trace = execute(&program, config()).unwrap();
+        let proof = prove_unified_trace_group(&trace, 8, 4).unwrap();
+        verify_unified_proof(&proof).unwrap();
+        verify_unified_trace(&trace, &proof, 8).unwrap();
     }
 
     #[test]
