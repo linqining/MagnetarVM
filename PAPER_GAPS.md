@@ -4160,3 +4160,12 @@ B (gated 71,108 -> 68,580 B).
 drops from 142,927 to 135,263 B (gated 68,580 -> 61,652 B); the 11 workload sizes
 are unchanged from the pow=20 setting. Core, LR/SC, AMO, shift, grouped and
 clang/clippy checks pass.
+
+
+### Opening PCS: 18 proof-of-work bits
+
+The shared P3 opening now uses `(rate=3, pow=18, fold=2)` instead of pow=16.
+The no-shift benchmark drops 135,263 -> 134,223 B (opening 58,833 -> 57,793 B);
+workloads shrink by 1-4 KB each (fibonacci 237,505 -> 235,329; mem-loop
+372,326 -> 371,222) for ~2% more AMO latency. Pow=20/24 saved more but pushed the
+AMO test to 6.7/19.5 s, so 18 is the chosen opening point.

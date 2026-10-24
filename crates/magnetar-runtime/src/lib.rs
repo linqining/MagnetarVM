@@ -2747,7 +2747,7 @@ pub fn verify_core_statement(
         filtered.into_iter().unzip()
     };
     if let Some(opening) = &proof.opening {
-        let pcs = magnetar_pcs::P3BinaryPcs::with_params(100, 3, 16, 2);
+        let pcs = magnetar_pcs::P3BinaryPcs::with_params(100, 3, 18, 2);
         if !pcs
             .verify_mosaic(opening, &points, &values)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?
