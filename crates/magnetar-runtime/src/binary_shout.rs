@@ -79,7 +79,7 @@ impl BinaryShoutWitness {
                 ));
             }
             let offset = row
-                .pc
+                .micro_pc
                 .checked_sub(trace.config.rom_base)
                 .ok_or_else(|| ProofError::Pcs("row pc is below the ROM base".into()))?;
             if offset % 2 != 0 {
@@ -95,7 +95,7 @@ impl BinaryShoutWitness {
             is_32[cycle] = F2_128::from(u64::from(row.instruction_len == 4));
             let bytecode_row = bytecode
                 .as_ref()
-                .and_then(|rows| rows.get(&row.pc).copied());
+                .and_then(|rows| rows.get(&row.micro_pc).copied());
             let (shift_kind, shift_shamt, store_width, is_halt) = if let Some(bytecode_row) =
                 bytecode_row
             {
