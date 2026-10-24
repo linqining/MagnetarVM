@@ -1391,6 +1391,8 @@ pub struct UniformJalLayout {
     pub link: BitAdderLayout,
     pub target: BitAdderLayout,
     pub link_increment: u64,
+    pub next: Vec<VarId>,
+    pub rd: Vec<VarId>,
     pub num_vars: usize,
 }
 
@@ -1416,8 +1418,21 @@ impl UniformJalLayout {
         let mut values = vec![F2_128::from(0u64); self.num_vars];
         self.link.fill_witness(&mut values, pc, self.link_increment);
         self.target.fill_witness(&mut values, pc, imm);
+        for (bit, var) in self.next.iter().enumerate() {
+            values[*var] = F2_128::from((pc.wrapping_add(imm) >> bit) & 1);
+        }
+        for (bit, var) in self.rd.iter().enumerate() {
+            values[*var] = F2_128::from((pc.wrapping_add(self.link_increment) >> bit) & 1);
+        }
         Witness::new(values)
     }
+}
+
+pub fn uniform_jal_layout(
+    width: usize,
+    link_increment: u64,
+) -> (ConstraintSystem, UniformJalLayout) {
+    uniform_jal_inner(width, 0, 0, link_increment, false)
 }
 
 pub fn uniform_jal_relation(
@@ -1434,6 +1449,16 @@ pub fn uniform_jal_relation_with_increment(
     imm: u64,
     link_increment: u64,
 ) -> (ConstraintSystem, UniformJalLayout) {
+    uniform_jal_inner(width, pc, imm, link_increment, true)
+}
+
+fn uniform_jal_inner(
+    width: usize,
+    pc: u64,
+    imm: u64,
+    link_increment: u64,
+    pin: bool,
+) -> (ConstraintSystem, UniformJalLayout) {
     assert!(width > 0 && width <= 64);
     let (mut system, link) = bit_addition_constraints(width);
     let (target_system, target_layout) = bit_addition_constraints(width);
@@ -1447,7 +1472,7 @@ pub fn uniform_jal_relation_with_increment(
             one.clone(),
             Expr::constant(expected),
         );
-        {
+        if pin {
             system.add_constraint(
                 Expr::var(link.a[index]),
                 one.clone(),
@@ -1465,6 +1490,20 @@ pub fn uniform_jal_relation_with_increment(
             );
         }
     }
+    let next: Vec<VarId> = system.alloc(width).collect();
+    let rd: Vec<VarId> = system.alloc(width).collect();
+    for index in 0..width {
+        system.add_constraint(
+            Expr::var(next[index]),
+            one.clone(),
+            Expr::var(target.sum[index]),
+        );
+        system.add_constraint(
+            Expr::var(rd[index]),
+            one.clone(),
+            Expr::var(link.sum[index]),
+        );
+    }
     let num_vars = system.num_vars;
     (
         system,
@@ -1473,6 +1512,8 @@ pub fn uniform_jal_relation_with_increment(
             link,
             target,
             link_increment,
+            next,
+            rd,
             num_vars,
         },
     )

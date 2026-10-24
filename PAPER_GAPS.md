@@ -2569,3 +2569,11 @@ use `uniform_mulh_relation(width, signed_a, signed_b)`; DIVU/REMU use
 `uniform_div_relation(width)`; DIV/REM use `uniform_signed_div_relation(width)`.
 The row systems no longer pin operands/results. New `unified_mul_div_round_trips`
 proves MUL and DIVU traces.
+
+
+### A2a: fixed JAL CPU system
+
+`UniformJalLayout` now exposes `next`/`rd` output variables constrained to the
+target/link sums. `uniform_jal_layout(width, increment)` builds the unpinned
+system; runtime JAL uses it with `layout.witness(pc, imm)`. New
+`unified_jal_round_trips` passes. JALR/AUIPC still pin values.

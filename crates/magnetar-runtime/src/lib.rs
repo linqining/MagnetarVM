@@ -1246,14 +1246,8 @@ fn row_cpu_relation(
     }
     match row.instruction.op {
         magnetar_spec::Op::Jal => {
-            let (system, layout) = magnetar_cpu::uniform_jal_row_relation_with_increment(
-                width,
-                row.pc,
-                imm,
-                row.next_pc,
-                row.rd_val,
-                u64::from(row.instruction_len),
-            );
+            let (system, layout) =
+                magnetar_cpu::uniform_jal_layout(width, u64::from(row.instruction_len));
             Ok(Some((system, layout.witness(row.pc, imm))))
         }
         magnetar_spec::Op::Jalr => {
@@ -3648,6 +3642,51 @@ mod tests {
             let proof = prove_unified_trace(&trace, 8).unwrap();
             verify_unified_trace(&trace, &proof, 8).unwrap();
         }
+    }
+
+    #[test]
+    fn unified_jal_round_trips() {
+        use magnetar_executor::execute;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Jal,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 4,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 2,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 2,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let proof = prove_unified_trace(&trace, 8).unwrap();
+        verify_unified_trace(&trace, &proof, 8).unwrap();
     }
 
     #[test]
