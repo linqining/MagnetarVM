@@ -2386,3 +2386,9 @@ regression.
 from_unified/into_unified roundtrip dropped gated claims, and verification
 failed with "gated CPU claims presence does not match the trace". The combined
 AMO/LR/SC test now roundtrips the bundle and verifies the restored proof.
+
+
+`verify_gated_memory_batch_bound` rebuilds the memory-row witnesses from the
+supplied rows and compares their PCS commitment to the proof. A tampered value
+is rejected. This closes the same witness-binding gap for the standalone memory
+batch.

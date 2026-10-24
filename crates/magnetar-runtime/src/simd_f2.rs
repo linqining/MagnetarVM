@@ -1091,6 +1091,26 @@ pub fn verify_gated_memory_batch(
         .map_err(|error| RuntimeError::Proof(error.to_string()))
 }
 
+pub fn verify_gated_memory_batch_bound(
+    width: usize,
+    rows: &[(u64, u64, u64, bool)],
+    proof: &magnetar_proof::SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>,
+) -> Result<(), RuntimeError> {
+    use magnetar_proof::{verify_shared_simd_spartan_with_witnesses, witness_vector};
+    let row = GatedMemoryRow::new(width);
+    let system = row.packed_system();
+    let mut witnesses = Vec::new();
+    for (rs1, imm, value, is_mem) in rows {
+        let bits = row.witness(*rs1, *imm, *value, *is_mem);
+        witnesses.push(row.relation.to_witness(&bits));
+    }
+    let _ = witness_vector(&system, &witnesses[0])
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let pcs = magnetar_pcs::P3BinaryPcs::new(100);
+    verify_shared_simd_spartan_with_witnesses(&system, &witnesses, proof, &pcs)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))
+}
+
 #[cfg(test)]
 mod gated_memory_tests {
     use super::*;
@@ -1117,6 +1137,10 @@ mod gated_memory_tests {
         let batch =
             prove_gated_memory_batch(8, &[(0x10, 2, 0x34, true), (0x20, 4, 0x56, false)]).unwrap();
         verify_gated_memory_batch(8, 2, &batch).unwrap();
+        let rows = [(0x10u64, 2u64, 0x34u64, true), (0x20, 4, 0x56, false)];
+        verify_gated_memory_batch_bound(8, &rows, &batch).unwrap();
+        let tampered = [(0x10u64, 2u64, 0x35u64, true), (0x20, 4, 0x56, false)];
+        assert!(verify_gated_memory_batch_bound(8, &tampered, &batch).is_err());
     }
 }
 
