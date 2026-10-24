@@ -3556,3 +3556,12 @@ subsegment with the Router witness for a shift trace: `is_shift` matches for
 every cycle, and the gated shamt bits match the Router `shift_q` one-hot column.
 Together with PcBits and RamBits data, each owner now has a verified projection
 prototype.
+
+
+### B5: virtual subsegments reconstruct CPU z
+
+`reservation_specs_cover_each_gated_instance` now also fills a virtual witness
+from the gated z subsegments, pads it through `build_padded_virtual_layout`, and
+scatters it back with `unpad_values`; the result equals the original z. This
+verifies the segment-to-CPU reconstruction mapping. The values still come from z
+itself; the next step is to fill them from component table openings.
