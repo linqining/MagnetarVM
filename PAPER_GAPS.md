@@ -2009,3 +2009,11 @@ Tampering the reconstructed commitment is rejected.
 This is a real size reduction but not a production PCS: it reveals the tables
 and relies on the verifier having the trace. It is the first working B backend
 and a baseline for a future succinct/hiding replacement.
+
+
+The 9,976 B unified proof contains only the claims/commitment; it does **not**
+carry the table vectors. The verifier rebuilds the tables from the trace, checks
+the reconstructed P3 commitment, and evaluates the claim points. So this is a
+witness-checked, opening-free backend: proof size is small, but verification
+work is non-succinct and there is no zero-knowledge/hiding guarantee. A
+production succinct/hiding opening remains future work.
