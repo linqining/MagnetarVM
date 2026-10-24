@@ -4029,3 +4029,19 @@ total 377,614 B. Gated segment claims and the opening are the dominant A2 cost.
 Workload totals at width 16 are now: fibonacci 243,153; memory 246,114; shifts
 247,120; branchy 261,419; loop 210,749; clock 192,309; mem-loop 377,614; alu
 280,223.
+
+
+### Layout packing experiments (negative)
+
+Two attempts to shrink the gated virtual witness:
+
+1. Splitting every non-component segment into exact power-of-two chunks removed
+   padding (gated opening 146,888 -> 127,216 B for mem-loop) but raised the
+   segment count from 1,032 to 3,983; gated grew to 206,169 B and total to
+   413,955 B, so chunking was rejected.
+2. Packing padded segments without per-segment alignment failed core
+   verification (PackedMosaic component index error) and was reverted.
+
+The aligned padded layout is therefore retained for now. Reducing gated size
+needs fewer claims at the same witness size (or a cheaper bit PCS), not just
+tighter packing.
