@@ -33,3 +33,24 @@ BinaryTwist: proof-only (verify_binary_twist_from_proof)
 BinaryShout: proof-only (witness argument unused)
 BinaryRouter: table evals still depend on witness.routes
 ```
+
+# Linking Router public route to Shout
+
+The Router public-route columns are now committed and opened against the
+selector columns, so the internal gap is closed. The remaining D10 link is to
+the Shout metadata (`store_width`, `shift_code`, `is_shift`) which currently
+lives in the separate packed Shout commitment.
+
+Options:
+
+1. Move the Router public-route columns into the packed Shout table commitment,
+   then one opening binds both.
+2. Keep two commitments and add a bridge proof:
+   - sample a common point `r_j` from both commitments;
+   - open Shout metadata columns and Router public columns at `r_j`;
+   - require the two evaluation vectors to match.
+3. Authenticate the route from bytecode directly (Shout selector), which is the
+   paper's `Q` link.
+
+Option 2 is the smallest change but adds two extra openings; option 1 is the
+cleanest but requires moving the Router table into the Shout packed table.
