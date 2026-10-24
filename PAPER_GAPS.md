@@ -3470,3 +3470,14 @@ now pads each row segment to the next power of two, aligns it, and returns a
 mapping back to the merged witness; `pad_values` places the witness in the
 virtual layout. The metadata test builds this layout, splits claims, routes them
 to owners, and verifies the `VirtualClaimRouter`.
+
+
+### B5: owner-tagged gated layout and verifier routing
+
+`reservation_claim_inputs` now builds a per-instance gated `WitnessLayout` with
+owners: Memory(Ram), Routing(Stores/Shifts), Pcs, or Cpu. `GatedCpuClaims`
+carries this layout, and the unified CPU verifier routes the lockstep segment
+claims with `route_segment_claims_by_owner` and validates them with
+`VirtualClaimRouter` before accepting the gated proof. This is integrated
+routing/consumption validation; Twist/Shout/Router still need to consume the
+routed values themselves.

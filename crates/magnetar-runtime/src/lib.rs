@@ -1087,6 +1087,7 @@ pub struct GatedCpuClaims {
     pub proof:
         LockstepProof<P3MosaicCommitment, magnetar_proof::RingSwitchOpening<P3MosaicOpening>>,
     pub cycles: usize,
+    pub layout: magnetar_constraint::WitnessLayout,
 }
 
 fn step_op_for(op: magnetar_spec::Op) -> Option<magnetar_cpu::StepOp> {
@@ -2649,8 +2650,9 @@ pub(crate) fn cpu_statement_claims(
     };
     let gated_ry =
         if let Some(gated) = &proof.gated {
-            let (a0, a1, gated_layout) =
+            let (a0, a1, _) =
                 crate::simd_dual::reservation_claim_matrices(statement.width, gated.cycles)?;
+            let gated_layout = &gated.layout;
             let backend = magnetar_proof::RingSwitchPackedBitPcs::new(
                 magnetar_pcs::P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()),
             );
@@ -2661,11 +2663,19 @@ pub(crate) fn cpu_statement_claims(
                 &a1[0],
                 &a1[1],
                 &a1[2],
-                &gated_layout,
+                gated_layout,
                 &gated.proof,
                 &backend,
             )
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            let groups = magnetar_proof::virtual_spartan::route_segment_claims_by_owner(
+                &gated.layout,
+                &gated.proof.segments,
+            )
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            magnetar_proof::virtual_spartan::VirtualClaimRouter::new(&gated.layout)
+                .verify(&groups)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
             None
         } else {
             None

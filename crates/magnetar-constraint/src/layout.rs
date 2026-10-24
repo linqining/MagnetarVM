@@ -36,7 +36,7 @@ pub enum SegmentOwner {
     Pcs,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Segment {
     pub name: String,
     pub offset: usize,
@@ -71,7 +71,7 @@ impl Segment {
 ///
 /// Segments occupy aligned subcubes. `total_bits` is padded to the next power
 /// of two so it can be committed as one multilinear polynomial.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct WitnessLayout {
     pub total_bits: usize,
     pub segments: Vec<Segment>,

@@ -1,7 +1,9 @@
 //! Dual-relation lockstep: an F2 bit XOR relation over the packed CPU row's
 //! rs1/rs2/rd variables, plus the packed CPU ALU system, over one witness.
 
-use magnetar_constraint::{Segment, SegmentKind, SegmentOwner, WitnessLayout};
+use magnetar_constraint::{
+    MemoryKind, RoutingKind, Segment, SegmentKind, SegmentOwner, WitnessLayout,
+};
 use magnetar_cpu::simd::uniform_cpu_row_layout;
 use magnetar_cpu::{CpuVarKind, StepOp};
 use magnetar_pcs::{P3MosaicCommitment, P3MosaicOpening, P3SharedPcs};
@@ -107,6 +109,25 @@ fn bit_relation(layout: &magnetar_cpu::simd::UniformCpuRowLayout, op: StepOp) ->
         _ => panic!("unsupported dual CPU op"),
     }
     relation
+}
+
+pub(crate) fn gated_segment_layout(
+    cycles: usize,
+    base_cols: usize,
+    owners: &[SegmentOwner],
+) -> Result<WitnessLayout, RuntimeError> {
+    let segments = (0..cycles)
+        .map(|index| {
+            Segment::new(
+                format!("gated{index}"),
+                index * base_cols,
+                base_cols,
+                SegmentKind::Direct,
+                owners.get(index).copied().unwrap_or(SegmentOwner::Cpu),
+            )
+        })
+        .collect();
+    WitnessLayout::new(segments).map_err(|error| RuntimeError::Proof(error.to_string()))
 }
 
 fn segment_layout(z_len: usize) -> Result<WitnessLayout, RuntimeError> {
@@ -704,7 +725,7 @@ pub(crate) fn reservation_claim_matrices(
 > {
     let row = crate::reservation_cpu_row::ReservationCpuRow::new(width);
     let (base_cols, systems0, systems1) = gated_shared_matrices(&row, cycles, None)?;
-    let layout = segment_layout(cycles * base_cols)?;
+    let layout = gated_segment_layout(cycles, base_cols, &[])?;
     Ok((systems0, systems1, layout))
 }
 
@@ -728,7 +749,23 @@ pub(crate) fn reservation_claim_inputs(
         bits.extend(row.witness(*pc, *input));
         bits.resize(bits.len() + base_cols - row.relation.num_vars, false);
     }
-    let layout = segment_layout(bits.len())?;
+    let owners = rows
+        .iter()
+        .map(|(_, input)| match input.cpu {
+            crate::simd_f2::GatedCpuRowInput::Memory { .. } if input.is_invalidate => {
+                SegmentOwner::Routing(RoutingKind::Stores)
+            }
+            crate::simd_f2::GatedCpuRowInput::Memory { .. } => {
+                SegmentOwner::Memory(MemoryKind::Ram)
+            }
+            crate::simd_f2::GatedCpuRowInput::Shift { .. } => {
+                SegmentOwner::Routing(RoutingKind::Shifts)
+            }
+            crate::simd_f2::GatedCpuRowInput::Branch { .. } => SegmentOwner::Pcs,
+            _ => SegmentOwner::Cpu,
+        })
+        .collect::<Vec<_>>();
+    let layout = gated_segment_layout(rows.len(), base_cols, &owners)?;
     let z = bits
         .iter()
         .map(|bit| F2_128::from(u64::from(*bit)))
