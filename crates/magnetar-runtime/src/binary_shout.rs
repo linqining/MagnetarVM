@@ -581,7 +581,7 @@ pub(crate) fn prove_binary_shout_claims(
         P3MosaicPoint {
             table: table_index,
             point: boolean_point,
-            columns: (0..total_columns).collect(),
+            columns: (0..2 * a + 2).collect(),
             next_columns: Vec::new(),
         },
         P3MosaicPoint {
@@ -730,7 +730,7 @@ pub(crate) fn verify_binary_shout_from_proof(
         P3MosaicPoint {
             table: table_index,
             point: boolean_point,
-            columns: (0..total_columns).collect(),
+            columns: (0..2 * a + 2).collect(),
             next_columns: Vec::new(),
         },
         P3MosaicPoint {

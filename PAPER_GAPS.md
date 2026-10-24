@@ -3418,3 +3418,17 @@ The gated CPU row already constrains `next_pc` (sequential PC+4, jump/branch
 targets) and the shared matrices chain `next_pc(instance)` to
 `pc(instance+1)`, so PC linkage is inside the proof for this path. The
 reservation relation is included in `ReservationCpuRow` on the shared-CPU path.
+
+
+### Fix: chunked aux Shout point after link columns
+
+Adding the 12 Shout link columns changed `total_columns` from `2a+2` to
+`2a+2+12`, but the auxiliary Shout boolean point still opened all
+`total_columns` while its value vector has only `2a+2` entries. The opening then
+failed (`chunked aux opening rejected`). The boolean point now opens exactly
+`2a+2` columns; the read point still opens all columns. All three chunked tests
+pass again.
+
+The chunked verifier also now rebuilds the chunk witness, commits it, and
+compares the commitment bytes with `ChunkCpuProof.cpu.commitment` before
+verification, binding chunk proofs to the supplied rows.

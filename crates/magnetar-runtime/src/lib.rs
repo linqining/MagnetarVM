@@ -3056,7 +3056,21 @@ pub fn verify_chunked_trace(
                 "chunk {index} proof digest mismatch"
             )));
         }
-        let (system, _) = merged_cpu_system_for_rows(&trace.rows[chunk.start..chunk.end], width)?;
+        let (system, witness) =
+            merged_cpu_system_for_rows(&trace.rows[chunk.start..chunk.end], width)?;
+        let values = magnetar_proof::witness_vector(&system, &witness)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        let expected = backend
+            .pcs
+            .commit(&values)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        if bincode::serialize(&expected).unwrap_or_default()
+            != bincode::serialize(&chunk.cpu.commitment).unwrap_or_default()
+        {
+            return Err(RuntimeError::Proof(format!(
+                "chunk {index} witness does not match the proof commitment"
+            )));
+        }
         backend.verify(&system, &chunk.cpu)?;
         expected_start = chunk.end;
     }
