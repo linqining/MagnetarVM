@@ -2223,7 +2223,7 @@ pub struct CpuStatement {
     pub shape: crate::cpu_shape::CpuShape,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CoreStatement {
     pub width: usize,
     pub shape: crate::cpu_shape::CpuShape,
@@ -5641,7 +5641,9 @@ mod cpu_statement_tests {
             access: crate::access_statement::AccessStatement::from_trace(&trace),
             aux: Some(crate::aux_statement::AuxStatement::from_trace(&trace)),
         };
-        verify_core_statement(&proof, &statement).unwrap();
+        let encoded = bincode::serialize(&statement).unwrap();
+        let decoded: CoreStatement = bincode::deserialize(&encoded).unwrap();
+        verify_core_statement(&proof, &decoded).unwrap();
         let mut bad = statement.clone();
         bad.shape.rows[0].pc = bad.shape.rows[0].pc.wrapping_add(4);
         assert!(verify_core_statement(&proof, &bad).is_err());
