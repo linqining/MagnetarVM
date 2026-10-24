@@ -323,6 +323,9 @@ pub struct ProofBundle {
     pub gated: Option<crate::GatedCpuClaims>,
     pub shape: crate::cpu_shape::CpuShape,
     pub register_index: usize,
+    pub shout_index: Option<usize>,
+    pub shift_router_index: Option<usize>,
+    pub store_router_index: Option<usize>,
 }
 
 impl ProofBundle {
@@ -358,6 +361,9 @@ impl ProofBundle {
             gated: proof.gated.clone(),
             shape: proof.shape.clone(),
             register_index: proof.register_index,
+            shout_index: proof.shout_index,
+            shift_router_index: proof.shift_router_index,
+            store_router_index: proof.store_router_index,
         }
     }
 
@@ -396,6 +402,9 @@ impl ProofBundle {
             gated: self.gated,
             shape: self.shape,
             register_index: self.register_index,
+            shout_index: self.shout_index,
+            shift_router_index: self.shift_router_index,
+            store_router_index: self.store_router_index,
             cpu: cpu.ok_or(ProtocolError::MissingStage(StageId::Cpu))?,
             shout,
             shift_router,
@@ -1486,6 +1495,9 @@ impl<'a> UnifiedProveContext<'a> {
         Ok(UnifiedTraceProof {
             shape: crate::cpu_shape::CpuShape::from_trace(self.trace).zeroed(),
             register_index: self.register_index,
+            shout_index: self.shout_table.as_ref().map(|(index, _)| *index),
+            shift_router_index: self.shift_router_table.as_ref().map(|(index, _)| *index),
+            store_router_index: self.store_router_table.as_ref().map(|(index, _)| *index),
             access: self
                 .access
                 .ok_or_else(|| RuntimeError::Proof("missing access proof".into()))?,

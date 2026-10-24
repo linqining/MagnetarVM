@@ -1047,6 +1047,9 @@ pub struct UnifiedTraceProof {
     pub amo: Option<crate::amo_bundle::AmoBundleProof>,
     pub shape: crate::cpu_shape::CpuShape,
     pub register_index: usize,
+    pub shout_index: Option<usize>,
+    pub shift_router_index: Option<usize>,
+    pub store_router_index: Option<usize>,
 }
 
 pub(crate) struct GatedProveInput {

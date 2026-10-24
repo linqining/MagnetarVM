@@ -2695,3 +2695,9 @@ the statement.
 
 The core-statement test now tampers a shape PC and a memory-event value; both
 `verify_core_statement` calls are rejected.
+
+
+`UnifiedTraceProof` now records `shout_index`, `shift_router_index`, and
+`store_router_index`, and `ProofBundle` preserves them. This is groundwork for
+moving Shout/Router claims into the trace-free statement; no verification
+behavior changes yet.
