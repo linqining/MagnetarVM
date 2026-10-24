@@ -3660,3 +3660,16 @@ replacements; a tampered replacement is rejected in the DirectBitPcs test.
 unified CPU verifier calls `verify_lockstep_bits_with_replacements` with them.
 The vector is currently all `None`; the next step is to fill memory_addr /
 memory_data overrides from verified component bit-column openings.
+
+
+### B5 proof integration boundary
+
+The lockstep verifier checks CPU matrices at the same `ry` used to reconstruct
+the committed witness. Component aggregate claims live in a **virtual layout**
+(padded/gathered); replacing segment claims only works if `z` itself is ordered
+by that virtual layout. Otherwise `reconstruct_segment_claim` reconstructs a
+different vector than the matrix evaluation uses. Completing B5 therefore
+requires making the virtual layout the primary gated witness and conjugating the
+CPU matrices by the gather permutation (or building the matrices directly over
+virtual segments). The current layout/replacement API is a prerequisite, not
+sufficient by itself.
