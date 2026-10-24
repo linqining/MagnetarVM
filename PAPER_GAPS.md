@@ -4191,3 +4191,12 @@ The 9-variable `P3SharedPcs` branch now uses `(rate=3, pow=24, fold=2)`.
 The unified benchmark drops 134,159 -> 132,063 B (gated 61,652 -> 59,556 B) and
 the example runs in ~2.1 s; the 11 workload sizes are unchanged because they use
 larger gated tables. Pow=26 saved another 1.4 KB but took ~52 s, so 24 is kept.
+
+
+### Opening PCS: 21 grinding bits
+
+Shared opening moves to `(rate=3, pow=21, fold=2)`. Benchmark: 132,063 ->
+130,287 B (gated 59,556 B, opening 55,953 B). The 11-workload sum drops
+2,728,168 -> 2,703,720 B; AMO verify stays ~6.4 s. Pow=22/23 shaved more
+(benchmark 130,047/129,151) but pushed some workloads hard (bitops proving
+6.5 -> 19.8 s at pow=23), so 21 is the chosen opening point.
