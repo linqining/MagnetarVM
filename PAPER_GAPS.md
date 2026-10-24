@@ -3546,7 +3546,7 @@ bit range. RamBits/RouterBits projections remain.
 `ram_data_bits_match_twist_read_value` builds a load trace, extracts the gated
 memory `data` subsegment (accounting for `memory_offset`), and compares it
 bit-for-bit with the BinaryTwist `read_value` low bits. The memory data bits are
-the RAM value bits; address projection still needs the RAM-base affine offset.
+the RAM value bits; the RAM address affine projection is also checked: gated address = `ram_base + 8 * word_index`, where `word_index` is the BinaryTwist one-hot read address.
 
 
 ### B5: RouterBits projection verified

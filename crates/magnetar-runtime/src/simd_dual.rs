@@ -1635,6 +1635,21 @@ mod projection_tests {
                 "RAM data bit {bit} projection mismatch"
             );
         }
+        let mut gated_addr = 0u64;
+        for bit in 0..16 {
+            if gated_bits[cpu.cpu.memory_offset + cpu.cpu.memory.adder.out[bit]] {
+                gated_addr |= 1 << bit;
+            }
+        }
+        let twist_word = twist.read_address[0]
+            .iter()
+            .position(|bit| bit.value() == 1)
+            .unwrap_or(0);
+        assert_eq!(
+            gated_addr,
+            trace.config.ram_base + 8 * twist_word as u64,
+            "RAM address affine projection mismatch"
+        );
     }
 
     #[test]
