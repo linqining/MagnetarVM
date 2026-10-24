@@ -2661,3 +2661,11 @@ trace-free `verify_cpu_statement` rebuilds the gated matrices from
 `(width, cycles)` and verifies the gated claims with
 `verify_lockstep_claims_with_matrices`. The test program asserts `gated` is
 present and passes without a trace.
+
+
+### A2a: LR/SC gated claims without a trace
+
+`lr_sc_cpu_statement_verifies_without_trace` proves a LUI/LR.D/SC.D/ADD trace
+and then verifies CPU + gated claims using only `CpuStatement { width, shape }`.
+The gated reservation chain is included in those claims. Access/aux/opening are
+still outside this API.
