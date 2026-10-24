@@ -10,10 +10,8 @@ pub struct CpuShapeRow {
     pub pc: u64,
     pub op: Op,
     pub imm: i64,
-    pub rs1_val: u64,
-    pub rs2_val: u64,
-    pub rd_val: u64,
-    pub mem: Option<(u64, u64, u8, bool)>,
+    pub mem_width: Option<u8>,
+    pub mem_write: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
@@ -31,31 +29,15 @@ impl CpuShape {
                     pc: row.pc,
                     op: row.instruction.op,
                     imm: row.instruction.imm,
-                    rs1_val: row.rs1_val,
-                    rs2_val: row.rs2_val,
-                    rd_val: row.rd_val,
-                    mem: row.mem.map(|m| (m.addr, m.value, m.width, m.is_write)),
+                    mem_width: row.mem.map(|m| m.width),
+                    mem_write: row.mem.is_some_and(|m| m.is_write),
                 })
                 .collect(),
         }
     }
 
     pub fn zeroed(&self) -> Self {
-        Self {
-            rows: self
-                .rows
-                .iter()
-                .map(|row| CpuShapeRow {
-                    pc: row.pc,
-                    op: row.op,
-                    imm: row.imm,
-                    rs1_val: 0,
-                    rs2_val: 0,
-                    rd_val: 0,
-                    mem: row.mem.map(|(_, _, width, write)| (0, 0, width, write)),
-                })
-                .collect(),
-        }
+        self.clone()
     }
 
     pub fn matches_structure(&self, trace: &Trace) -> bool {
@@ -64,7 +46,8 @@ impl CpuShape {
                 shape.pc == row.pc
                     && shape.op == row.instruction.op
                     && shape.imm == row.instruction.imm
-                    && shape.mem.map(|m| (m.2, m.3)) == row.mem.map(|m| (m.width, m.is_write))
+                    && shape.mem_width == row.mem.map(|m| m.width)
+                    && shape.mem_write == row.mem.is_some_and(|m| m.is_write)
             })
     }
 
@@ -76,17 +59,15 @@ impl CpuShape {
                 let mut synthetic = row.clone();
                 synthetic.instruction.op = shape.op;
                 synthetic.instruction.imm = shape.imm;
-                synthetic.rs1_val = shape.rs1_val;
-                synthetic.rs2_val = shape.rs2_val;
-                synthetic.rd_val = shape.rd_val;
-                synthetic.mem = shape
-                    .mem
-                    .map(|(addr, value, width, is_write)| MemoryAccess {
-                        addr,
-                        value,
-                        width,
-                        is_write,
-                    });
+                synthetic.rs1_val = 0;
+                synthetic.rs2_val = 0;
+                synthetic.rd_val = 0;
+                synthetic.mem = shape.mem_width.map(|width| MemoryAccess {
+                    addr: 0,
+                    value: 0,
+                    width,
+                    is_write: shape.mem_write,
+                });
                 synthetic
             })
             .collect()
@@ -128,11 +109,11 @@ impl CpuShape {
                 rs1_val: 0,
                 rs2_val: 0,
                 rd_val: 0,
-                mem: shape.mem.map(|(_, _, width, is_write)| MemoryAccess {
+                mem: shape.mem_width.map(|width| MemoryAccess {
                     addr: 0,
                     value: 0,
                     width,
-                    is_write,
+                    is_write: shape.mem_write,
                 }),
                 extra_mem: Vec::new(),
                 reservation_before: None,

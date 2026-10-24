@@ -2816,3 +2816,11 @@ caller-provided statement**.
 The CPU shape is still carried per row in the proof, so proof size remains linear
 in cycles; committing/compressing the shape is the remaining succinctness gap.
 Benchmark: 161,523 B.
+
+
+### A2a: value-free CpuShape in the proof
+
+`CpuShapeRow` is now only `{ pc, op, imm, mem_width, mem_write }`; all register
+and memory values were removed. This is possible because the SC row was fixed
+earlier. The proof shape is therefore value-free (though still one row per
+cycle). All targeted tests pass; benchmark 161,454 B.
