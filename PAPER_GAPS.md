@@ -2611,3 +2611,10 @@ verifier CPU system failed with a lockstep mismatch on the LUI/ADDI/SD/LR/SC
 trace. The field was reverted. The shape test still shows zeroed reconstruction
 for the LR/SC/Add trace, so the remaining difference is specific to one of the
 extra rows (likely ADDI/SD layout details) and needs isolated debugging.
+
+
+The zeroed shape test was extended to the exact LUI/ADDI/SD/LR/SC/ADDI/SC
+program and still reproduces the CPU constraint system and z length. A second
+attempt to use it in `UnifiedTraceProof` nevertheless failed with a lockstep
+inner mismatch, so the proof field was reverted again. The remaining difference
+is not system constraints or z length; it must be in the claim/layout wiring.

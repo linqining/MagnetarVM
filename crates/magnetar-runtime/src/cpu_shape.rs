@@ -5,7 +5,7 @@
 
 use magnetar_spec::{MemoryAccess, Op, Trace, TraceRow};
 
-#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CpuShapeRow {
     pub pc: u64,
     pub op: Op,
@@ -16,7 +16,7 @@ pub struct CpuShapeRow {
     pub mem: Option<(u64, u64, u8, bool)>,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub struct CpuShape {
     pub rows: Vec<CpuShapeRow>,
 }
