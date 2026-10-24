@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::amo_add_row::{prove_amo_add_batch, verify_amo_add_batch};
 use crate::amo_logic_row::{prove_amo_logic_batch, verify_amo_logic_batch, AmoLogicKind};
 use crate::amo_minmax_row::{prove_amo_minmax_batch, verify_amo_minmax_batch, AmoMinMaxKind};
+use crate::lr_row::{prove_lr_batch, verify_lr_batch};
+use crate::sc_row::{prove_sc_batch, verify_sc_batch};
 use crate::RuntimeError;
 
 type AmoProof = magnetar_proof::SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>;
@@ -21,6 +23,8 @@ pub struct AmoBundleProof {
     pub max: Option<AmoProof>,
     pub minu: Option<AmoProof>,
     pub maxu: Option<AmoProof>,
+    pub lr: Option<AmoProof>,
+    pub sc: Option<AmoProof>,
 }
 
 #[derive(Default)]
@@ -34,6 +38,8 @@ struct Rows {
     max: Vec<(u64, u64, u64)>,
     minu: Vec<(u64, u64, u64)>,
     maxu: Vec<(u64, u64, u64)>,
+    lr: Vec<(u64, u64)>,
+    sc: Vec<(u64, u64, u64, bool)>,
 }
 
 fn collect(trace: &Trace) -> Rows {
@@ -53,6 +59,24 @@ fn collect(trace: &Trace) -> Rows {
             Op::AmomaxW | Op::AmomaxD => rows.max.push(event),
             Op::AmominuW | Op::AmominuD => rows.minu.push(event),
             Op::AmomaxuW | Op::AmomaxuD => rows.maxu.push(event),
+            Op::LrW | Op::LrD => {
+                let mask = if mem.width >= 8 {
+                    u64::MAX
+                } else {
+                    (1u64 << (u32::from(mem.width) * 8)) - 1
+                };
+                rows.lr.push((row.rd_val & mask, mem.addr));
+            }
+            Op::ScW | Op::ScD => {
+                let mask = if mem.width >= 8 {
+                    u64::MAX
+                } else {
+                    (1u64 << (u32::from(mem.width) * 8)) - 1
+                };
+                let old = memory_before(trace, mem.addr, mem.width, row.cycle, mask).unwrap_or(0);
+                rows.sc
+                    .push((old, row.rs2_val & mask, mem.addr, row.rd_val == 0));
+            }
             _ => {}
         }
     }
@@ -80,6 +104,8 @@ impl AmoBundleProof {
             && self.max.is_none()
             && self.minu.is_none()
             && self.maxu.is_none()
+            && self.lr.is_none()
+            && self.sc.is_none()
     }
 }
 
@@ -94,6 +120,28 @@ pub fn has_amo_events(trace: &Trace) -> bool {
         || !rows.max.is_empty()
         || !rows.minu.is_empty()
         || !rows.maxu.is_empty()
+        || !rows.lr.is_empty()
+        || !rows.sc.is_empty()
+}
+
+fn pad_lr(mut rows: Vec<(u64, u64)>) -> Option<Vec<(u64, u64)>> {
+    if rows.is_empty() {
+        return None;
+    }
+    while !rows.len().is_power_of_two() {
+        rows.push((0, 0));
+    }
+    Some(rows)
+}
+
+fn pad_sc(mut rows: Vec<(u64, u64, u64, bool)>) -> Option<Vec<(u64, u64, u64, bool)>> {
+    if rows.is_empty() {
+        return None;
+    }
+    while !rows.len().is_power_of_two() {
+        rows.push((0, 0, 0, false));
+    }
+    Some(rows)
 }
 
 pub fn prove_amo_bundle(trace: &Trace, width: usize) -> Result<AmoBundleProof, RuntimeError> {
@@ -125,6 +173,12 @@ pub fn prove_amo_bundle(trace: &Trace, width: usize) -> Result<AmoBundleProof, R
     let maxu = pad(rows.maxu)
         .map(|rows| prove_amo_minmax_batch(width, AmoMinMaxKind::Maxu, &rows))
         .transpose()?;
+    let lr = pad_lr(rows.lr)
+        .map(|rows| prove_lr_batch(width, &rows))
+        .transpose()?;
+    let sc = pad_sc(rows.sc)
+        .map(|rows| prove_sc_batch(width, &rows))
+        .transpose()?;
     Ok(AmoBundleProof {
         add,
         xor,
@@ -135,6 +189,8 @@ pub fn prove_amo_bundle(trace: &Trace, width: usize) -> Result<AmoBundleProof, R
         max,
         minu,
         maxu,
+        lr,
+        sc,
     })
 }
 
@@ -317,6 +373,20 @@ pub fn verify_amo_bundle(
         } else {
             let _ = expected(rows, false, label)?;
         }
+    }
+    if let Some(proof) = &proof.lr {
+        let rows = pad_lr(rows.lr.clone())
+            .ok_or_else(|| RuntimeError::Proof("LR bundle missing".into()))?;
+        verify_lr_batch(width, rows.len(), proof)?;
+    } else if !rows.lr.is_empty() {
+        return Err(RuntimeError::Proof("LR bundle presence".into()));
+    }
+    if let Some(proof) = &proof.sc {
+        let rows = pad_sc(rows.sc.clone())
+            .ok_or_else(|| RuntimeError::Proof("SC bundle missing".into()))?;
+        verify_sc_batch(width, rows.len(), proof)?;
+    } else if !rows.sc.is_empty() {
+        return Err(RuntimeError::Proof("SC bundle presence".into()));
     }
     Ok(())
 }

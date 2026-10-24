@@ -2267,3 +2267,10 @@ prove_sc_batch / verify_sc_batch
 
 Tests prove four instances each. They are not yet part of `AmoBundleProof` or
 `UnifiedTraceProof`.
+
+
+`AmoBundleProof` now includes LR and SC batches. LR rows use `rd_val`/`mem.addr`;
+SC rows use the prior memory value as `old`, `rs2_val` as the new value, and
+`rd_val == 0` as success. The bundle test executes AMOADD/AMOSWAP/AMOXOR/AMOMAX
+followed by LR/SC and verifies all batches. Reservation state is still not
+chained in the CPU.
