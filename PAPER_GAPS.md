@@ -2304,3 +2304,8 @@ the latest prior value, and a successful SC's write must appear in
 
 
 A tamper test mutates LR `rd_val` and confirms `check_lr_sc_memory` rejects it.
+
+
+Reservation batches are now only generated when the trace has AMO/LR/SC
+events. A plain trace keeps `proof.amo == None`, avoiding reservation overhead
+on every unified proof; `unified_trace_proof_merges_row_constraints` asserts it.

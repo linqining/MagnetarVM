@@ -136,7 +136,6 @@ pub fn has_amo_events(trace: &Trace) -> bool {
         || !rows.maxu.is_empty()
         || !rows.lr.is_empty()
         || !rows.sc.is_empty()
-        || !rows.reservation.is_empty()
 }
 
 fn pad_lr(mut rows: Vec<(u64, u64)>) -> Option<Vec<(u64, u64)>> {
@@ -174,6 +173,17 @@ fn pad_sc(mut rows: Vec<(u64, u64, u64, bool)>) -> Option<Vec<(u64, u64, u64, bo
 
 pub fn prove_amo_bundle(trace: &Trace, width: usize) -> Result<AmoBundleProof, RuntimeError> {
     let rows = collect(trace);
+    let has_events = !rows.add.is_empty()
+        || !rows.xor.is_empty()
+        || !rows.and.is_empty()
+        || !rows.or.is_empty()
+        || !rows.swap.is_empty()
+        || !rows.min.is_empty()
+        || !rows.max.is_empty()
+        || !rows.minu.is_empty()
+        || !rows.maxu.is_empty()
+        || !rows.lr.is_empty()
+        || !rows.sc.is_empty();
     let add = pad(rows.add)
         .map(|rows| prove_amo_add_batch(width, &rows))
         .transpose()?;
@@ -201,9 +211,13 @@ pub fn prove_amo_bundle(trace: &Trace, width: usize) -> Result<AmoBundleProof, R
     let maxu = pad(rows.maxu)
         .map(|rows| prove_amo_minmax_batch(width, AmoMinMaxKind::Maxu, &rows))
         .transpose()?;
-    let reservation = pad_reservation(rows.reservation)
-        .map(|rows| prove_reservation_batch(width, &rows))
-        .transpose()?;
+    let reservation = if has_events {
+        pad_reservation(rows.reservation)
+            .map(|rows| prove_reservation_batch(width, &rows))
+            .transpose()?
+    } else {
+        None
+    };
     let lr = pad_lr(rows.lr)
         .map(|rows| prove_lr_batch(width, &rows))
         .transpose()?;
@@ -536,11 +550,12 @@ pub fn verify_amo_bundle(
     } else if !rows.sc.is_empty() {
         return Err(RuntimeError::Proof("SC bundle presence".into()));
     }
+    let wants_reservation = has_amo_events(trace);
     if let Some(proof) = &proof.reservation {
         let rows = pad_reservation(rows.reservation.clone())
             .ok_or_else(|| RuntimeError::Proof("reservation bundle missing".into()))?;
         verify_reservation_batch(width, rows.len(), proof)?;
-    } else if !rows.reservation.is_empty() {
+    } else if wants_reservation {
         return Err(RuntimeError::Proof("reservation bundle presence".into()));
     }
     Ok(())

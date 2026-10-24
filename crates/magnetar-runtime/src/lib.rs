@@ -3528,6 +3528,7 @@ mod tests {
         assert_eq!(trace.final_state.reg(4), 35);
 
         let proof = prove_unified_trace(&trace, 8).unwrap();
+        assert!(proof.amo.is_none());
         assert!(proof.access.ram.opening.is_none());
         assert_eq!(
             proof.cpu.commitment.tables.len(),
