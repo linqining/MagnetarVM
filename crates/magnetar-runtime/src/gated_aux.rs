@@ -47,7 +47,7 @@ pub fn verify_gated_aux(trace: &Trace, proof: &GatedAuxProof) -> Result<(), Runt
     let shout_witness = BinaryShoutWitness::from_trace(trace)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     if let Some(packed) = &proof.packed_shout {
-        verify_packed_shout(&shout_witness, packed)?;
+        verify_packed_shout(packed)?;
     } else if let Some(reference) = &proof.shout {
         verify_binary_shout(&shout_witness, reference)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;

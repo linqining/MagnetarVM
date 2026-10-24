@@ -12,9 +12,7 @@ use magnetar_pcs::{P3BinaryPcs, P3MosaicCommitment, P3MosaicOpening, P3SharedPcs
 use magnetar_proof::{BitPcs, RingSwitchOpening, RingSwitchPackedBitPcs};
 use magnetar_transcript::Sha256Transcript;
 
-use crate::binary_shout::{
-    prove_binary_shout_claims, verify_binary_shout_claims, BinaryShoutProof, BinaryShoutWitness,
-};
+use crate::binary_shout::{prove_binary_shout_claims, BinaryShoutProof, BinaryShoutWitness};
 use crate::RuntimeError;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -135,16 +133,17 @@ pub fn prove_packed_shout(witness: &BinaryShoutWitness) -> Result<PackedShoutPro
     })
 }
 
-pub fn verify_packed_shout(
-    witness: &BinaryShoutWitness,
-    proof: &PackedShoutProof,
-) -> Result<(), RuntimeError> {
+pub fn verify_packed_shout(proof: &PackedShoutProof) -> Result<(), RuntimeError> {
     let mut binding = bincode::serialize(&proof.table_commitment).unwrap_or_default();
     binding.extend_from_slice(&bincode::serialize(&proof.packed_commitment).unwrap_or_default());
     let binding = magnetar_transcript::sha256(&binding);
-    let Some((_points, values)) =
-        verify_binary_shout_claims(witness, &proof.claims, &proof.table_commitment, 0, &binding)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?
+    let Some((_points, values)) = crate::binary_shout::verify_binary_shout_from_proof(
+        &proof.claims,
+        &proof.table_commitment,
+        0,
+        &binding,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?
     else {
         return Err(RuntimeError::Proof("packed Shout claims rejected".into()));
     };
@@ -227,14 +226,14 @@ mod tests {
         .unwrap();
         let witness = BinaryShoutWitness::from_trace(&trace).unwrap();
         let proof = prove_packed_shout(&witness).unwrap();
-        verify_packed_shout(&witness, &proof).unwrap();
+        verify_packed_shout(&proof).unwrap();
 
         let mut tampered = proof.clone();
         tampered.leaves[0] = tampered.leaves[0] + F2_128::from(1u64);
-        assert!(verify_packed_shout(&witness, &tampered).is_err());
+        assert!(verify_packed_shout(&tampered).is_err());
 
         let mut tampered = proof;
         tampered.packed_value = tampered.packed_value + F2_128::from(1u64);
-        assert!(verify_packed_shout(&witness, &tampered).is_err());
+        assert!(verify_packed_shout(&tampered).is_err());
     }
 }

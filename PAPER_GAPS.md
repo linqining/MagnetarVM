@@ -2824,3 +2824,12 @@ Benchmark: 161,523 B.
 and memory values were removed. This is possible because the SC row was fixed
 earlier. The proof shape is therefore value-free (though still one row per
 cycle). All targeted tests pass; benchmark 161,454 B.
+
+
+### Packed Shout is now witness-blind
+
+`verify_packed_shout(proof)` no longer takes a `BinaryShoutWitness`; it calls
+`verify_binary_shout_from_proof` and checks the packed leaves/table opening
+directly. `gated_aux` dispatches to it without a witness. Tests:
+`packed_shout_round_trips`, `gated_aux` (3) pass. This closes the remaining
+witness-derived column check noted for packed Shout.
