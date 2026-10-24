@@ -4008,3 +4008,11 @@ this point is near the size minimum. The no-shift benchmark drops from
 152,687 to 145,551 B (opening 66,577 -> 59,441 B). Workload sizes at width 16:
 fibonacci 111,255; memory 124,920; shifts 125,800; branchy 111,031; loop 95,783;
 clock 93,911; alu 128,159. All core, grouped, chunked and workload tests pass.
+
+
+### G3: memory loop workload
+
+The suite now includes `mem-loop` (44 rows, 191,112 B, ~24.5 s prove at width
+16), exercising a backward branch with store/load each iteration. It verifies
+through the grouped unified path, but its size shows the remaining
+per-row/trace-claim growth that A2 still has to address.

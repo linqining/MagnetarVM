@@ -123,6 +123,48 @@ fn workloads() -> Vec<(&'static str, ProgramImage)> {
         }
         .encode(),
     ]);
+    let mem_loop = program(vec![
+        Instruction {
+            op: Op::Lui,
+            rd: 20,
+            rs1: 0,
+            rs2: 0,
+            imm: 0x1000_0000,
+            shamt: 0,
+        }
+        .encode(),
+        addi(1, 0, 0),
+        addi(2, 0, 8),
+        Instruction {
+            op: Op::Sd,
+            rd: 0,
+            rs1: 20,
+            rs2: 1,
+            imm: 0,
+            shamt: 0,
+        }
+        .encode(),
+        Instruction {
+            op: Op::Ld,
+            rd: 3,
+            rs1: 20,
+            rs2: 0,
+            imm: 0,
+            shamt: 0,
+        }
+        .encode(),
+        addi(1, 1, 1),
+        addi(2, 2, -1),
+        Instruction {
+            op: Op::Bne,
+            rd: 0,
+            rs1: 2,
+            rs2: 0,
+            imm: -16,
+            shamt: 0,
+        }
+        .encode(),
+    ]);
     let clock = program(vec![
         addi(17, 0, 1001),
         Instruction::new(Op::Ecall).encode(),
@@ -175,6 +217,7 @@ fn workloads() -> Vec<(&'static str, ProgramImage)> {
         ("branchy", branchy),
         ("loop", loop_workload),
         ("clock", clock),
+        ("mem-loop", mem_loop),
         ("alu", alu),
     ]
 }
