@@ -2289,3 +2289,10 @@ checking, not a CPU-row chained constraint.
 
 `unified_lr_sc_bundle_round_trips` executes LUI/ADDI/SD/LR.D/ADDI/SC.D and
 verifies the unified proof with both LR and SC batches present.
+
+
+`AmoBundleProof.reservation` now proves one `ReservationRow` per trace row and
+verifies it. The witness uses the width-masked address for the match bit, which
+fixed a false mismatch when a 64-bit address was truncated. This binds the
+reservation transition fields cryptographically per row, while the cross-row
+chain check remains verifier-side.

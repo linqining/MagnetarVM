@@ -37,6 +37,10 @@ fn alloc(relation: &mut BitRelation, count: usize) -> Vec<VarId> {
 }
 
 impl ReservationRow {
+    pub fn packed_system(&self) -> magnetar_constraint::ConstraintSystem {
+        self.relation.to_system()
+    }
+
     pub fn new(width: usize) -> Self {
         let mut relation = BitRelation::new(0);
         let addr = alloc(&mut relation, width);
@@ -167,7 +171,12 @@ impl ReservationRow {
         bits[self.is_invalidate] = is_invalidate;
         bits[self.is_other] = !(is_lr || is_sc || is_invalidate);
         bits[self.pre_valid] = pre_valid;
-        let match_addr = addr == res_addr;
+        let mask = if self.width == 64 {
+            u64::MAX
+        } else {
+            (1u64 << self.width) - 1
+        };
+        let match_addr = (addr & mask) == (res_addr & mask);
         bits[self.match_addr] = match_addr;
         let success = pre_valid && match_addr;
         bits[self.success] = success;
@@ -201,6 +210,51 @@ impl ReservationRow {
     }
 }
 
+pub fn prove_reservation_batch(
+    width: usize,
+    rows: &[(u64, u64, bool, bool, bool, bool)],
+) -> Result<
+    magnetar_proof::SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>,
+    crate::RuntimeError,
+> {
+    use magnetar_proof::{prove_shared_simd_spartan, witness_vector};
+    if rows.is_empty() || !rows.len().is_power_of_two() {
+        return Err(crate::RuntimeError::Proof(
+            "reservation batch must be a nonzero power of two".into(),
+        ));
+    }
+    let row = ReservationRow::new(width);
+    let system = row.packed_system();
+    let mut witnesses = Vec::new();
+    for (index, (addr, res_addr, pre, lr, sc, invalidate)) in rows.iter().enumerate() {
+        let bits = row.witness(*addr, *res_addr, *pre, *lr, *sc, *invalidate);
+        if !row.relation.check(&bits) {
+            return Err(crate::RuntimeError::Proof(format!(
+                "reservation witness {index} invalid: {addr} {res_addr} {pre} {lr} {sc} {invalidate}"
+            )));
+        }
+        witnesses.push(row.relation.to_witness(&bits));
+    }
+    let _ = witness_vector(&system, &witnesses[0])
+        .map_err(|error| crate::RuntimeError::Proof(error.to_string()))?;
+    let pcs = magnetar_pcs::P3BinaryPcs::new(100);
+    prove_shared_simd_spartan(&system, &witnesses, &pcs)
+        .map_err(|error| crate::RuntimeError::Proof(error.to_string()))
+}
+
+pub fn verify_reservation_batch(
+    width: usize,
+    instances: usize,
+    proof: &magnetar_proof::SpartanProof<magnetar_pcs::P3Commitment, magnetar_pcs::P3Opening>,
+) -> Result<(), crate::RuntimeError> {
+    use magnetar_proof::verify_shared_simd_spartan;
+    let row = ReservationRow::new(width);
+    let system = row.packed_system();
+    let pcs = magnetar_pcs::P3BinaryPcs::new(100);
+    verify_shared_simd_spartan(&system, instances, proof, &pcs)
+        .map_err(|error| crate::RuntimeError::Proof(error.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,5 +285,13 @@ mod tests {
         let clear = row.witness(5, 5, true, false, false, true);
         assert!(row.relation.check(&clear));
         assert!(!clear[row.post_valid]);
+        let rows = [
+            (5u64, 0u64, false, true, false, false),
+            (5, 5, true, false, true, false),
+            (6, 5, true, false, true, false),
+            (5, 5, true, false, false, true),
+        ];
+        let proof = prove_reservation_batch(8, &rows).unwrap();
+        verify_reservation_batch(8, rows.len(), &proof).unwrap();
     }
 }
