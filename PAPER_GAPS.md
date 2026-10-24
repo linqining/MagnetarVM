@@ -2728,3 +2728,11 @@ passing a `Trace` to the verifier.
 This is a statement-based verifier, not a succinct proof: the statement still
 contains the trace witness, access records, and aux rows. But the verifier API
 no longer needs the execution trace itself.
+
+
+### A2a: trace claims move into the proof
+
+`UnifiedTraceProof.trace_claims` now carries the trace table points/values
+(generated from the trace witness at prove time). `CoreStatement` no longer
+contains the full `TraceWitness`; `verify_core_statement` uses the proof-carried
+claims. The gated benchmark is 156,515 B (+331 B) while the statement shrinks.

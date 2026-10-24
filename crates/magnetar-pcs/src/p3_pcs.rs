@@ -125,7 +125,7 @@ pub struct P3MosaicTable {
 }
 
 /// A local opening point owned by one mosaic table.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct P3MosaicPoint {
     pub table: usize,
     pub point: Vec<F2_128>,

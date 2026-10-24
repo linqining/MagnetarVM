@@ -109,6 +109,48 @@ pub fn verify_trace_commitment(
     Ok(())
 }
 
+pub fn trace_claim_points(
+    witness: &TraceWitness,
+    table: usize,
+) -> Result<(Vec<magnetar_pcs::P3MosaicPoint>, Vec<Vec<F2_128>>), RuntimeError> {
+    let claims = magnetar_proof::virtual_spartan::split_segment_claims(
+        &witness.layout,
+        &witness.values,
+        &witness.point,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let value = Mle::new(witness.values.clone())
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .eval(&witness.point)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    magnetar_proof::virtual_spartan::verify_segment_claims(
+        &witness.layout,
+        &claims,
+        &witness.point,
+        value,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let total_bits = witness.layout.total_bits.trailing_zeros() as usize;
+    let mut points = Vec::new();
+    let mut values = Vec::new();
+    for (segment, claim) in witness.layout.segments.iter().zip(&claims) {
+        let size_bits = segment.len.trailing_zeros() as usize;
+        let suffix = segment.offset >> size_bits;
+        let mut point = witness.point[..size_bits].to_vec();
+        for bit in 0..total_bits - size_bits {
+            point.push(F2_128::from(((suffix >> bit) & 1) as u64));
+        }
+        points.push(magnetar_pcs::P3MosaicPoint {
+            table,
+            point,
+            columns: vec![0],
+            next_columns: Vec::new(),
+        });
+        values.push(vec![claim.value]);
+    }
+    Ok((points, values))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
