@@ -3060,3 +3060,13 @@ gated component:     71,577 B
 
 This is below the old per-row CPU build (161,343 B). The remaining cost is the
 ring-switch gated opening; shrinking div/sdiv row widths is now the next lever.
+
+
+### Negative result: global P3SharedPcs parameter tuning
+
+Changing `P3SharedPcs` to always use `with_params(90, 4, 16, 3)` makes every
+unified test fail with "folding factor log 3 must be in 1..=1" on small tables.
+The tuned parameters are only valid for large polynomials. An adaptive choice
+would need the verifier to recover the parameter set from the commitment shape,
+because verify() does not receive the values. The attempt was reverted; the
+benchmark is still 138,640 B.
