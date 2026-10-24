@@ -2964,3 +2964,18 @@ ALU row.
 
 AMO/LR/SC still map to a zero ALU fallback rather than a semantic row, so their
 CPU facets are not yet in the shared matrix.
+
+
+### B: full CPU+reservation shared batch proves
+
+`reservation_cpu_rows_from_trace_full` maps every trace row (padded to a power of
+two) to `ReservationCpuInput`; unknown padding rows get zero reservation fields.
+`full_reservation_rows_prove_shared` proves/verifies a 5-row (4 ALU + Ecall)
+trace padded to 8 rows through `reservation_claim_inputs` and
+`verify_lockstep_claims_with_matrices`.
+
+Switching the unified gated input to these full rows succeeded functionally but
+raised the benchmark to 180,247 B because the per-row CPU proof/table is still
+present. Removing that duplicate requires making `cpu` optional and moving the
+shared commitment onto `UnifiedTraceProof`; the CPU table index shift is the
+remaining work. The protocol change was reverted for this commit.

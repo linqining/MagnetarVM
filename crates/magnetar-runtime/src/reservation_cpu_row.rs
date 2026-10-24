@@ -202,13 +202,47 @@ pub fn reservation_cpu_rows_from_trace(
     trace: &magnetar_spec::Trace,
     width: usize,
 ) -> Result<Vec<(u64, ReservationCpuInput)>, crate::RuntimeError> {
-    let rows = crate::simd_full::gated_rows_from_trace(trace, width)?;
+    reservation_cpu_rows(trace, width, false)
+}
+
+pub fn reservation_cpu_rows_from_trace_full(
+    trace: &magnetar_spec::Trace,
+    width: usize,
+) -> Result<Vec<(u64, ReservationCpuInput)>, crate::RuntimeError> {
+    reservation_cpu_rows(trace, width, true)
+}
+
+fn reservation_cpu_rows(
+    trace: &magnetar_spec::Trace,
+    width: usize,
+    full: bool,
+) -> Result<Vec<(u64, ReservationCpuInput)>, crate::RuntimeError> {
+    let rows = if full {
+        crate::simd_full::gated_rows_from_trace_padded(trace, width)?
+    } else {
+        crate::simd_full::gated_rows_from_trace(trace, width)?
+    };
     let mut result = Vec::with_capacity(rows.len());
     for (index, (pc, cpu)) in rows.iter().enumerate() {
-        let row = trace
-            .rows
-            .get(index)
-            .ok_or_else(|| crate::RuntimeError::Proof("reservation trace row".into()))?;
+        let Some(row) = trace.rows.get(index) else {
+            result.push((
+                *pc,
+                ReservationCpuInput {
+                    cpu: *cpu,
+                    addr: 0,
+                    res_addr: 0,
+                    pre_valid: false,
+                    is_lr: false,
+                    is_sc: false,
+                    is_invalidate: false,
+                    next_pre_valid: false,
+                    next_pre_addr: 0,
+                    value: 0,
+                    has_value: false,
+                },
+            ));
+            continue;
+        };
         let next_pre = trace
             .rows
             .get(index + 1)
@@ -486,5 +520,85 @@ mod tests {
         assert_eq!(rows.len(), 4);
         let proof = prove_reservation_cpu_batch(8, &rows).unwrap();
         verify_reservation_cpu_batch(8, &rows, &proof).unwrap();
+    }
+
+    #[test]
+    fn full_reservation_rows_prove_shared() {
+        use crate::simd_dual::{reservation_claim_inputs, reservation_claim_matrices};
+        use magnetar_executor::execute;
+        use magnetar_pcs::P3SharedPcs;
+        use magnetar_proof::spartan::prove_lockstep_claims_with_matrices;
+        use magnetar_proof::spartan::verify_lockstep_claims_with_matrices;
+        use magnetar_proof::Pcs;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 5,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Add,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 1,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Xor,
+                    rd: 3,
+                    rs1: 2,
+                    rs2: 1,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 4,
+                    rs1: 3,
+                    rs2: 0,
+                    imm: 1,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let rows = reservation_cpu_rows_from_trace_full(&trace, 8).unwrap();
+        assert_eq!(rows.len(), 8);
+        let (z, a0, a1, layout) = reservation_claim_inputs(8, &rows).unwrap();
+        let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+        let commitment = pcs.commit(&z).unwrap();
+        let (claims, _ry) = prove_lockstep_claims_with_matrices(
+            &z, &a0[0], &a0[1], &a0[2], &a1[0], &a1[1], &a1[2], &layout, &pcs, commitment,
+        )
+        .unwrap();
+        let (v0, v1, layout2) = reservation_claim_matrices(8, rows.len()).unwrap();
+        verify_lockstep_claims_with_matrices(
+            &v0[0], &v0[1], &v0[2], &v1[0], &v1[1], &v1[2], &layout2, &claims, &pcs,
+        )
+        .unwrap();
     }
 }
