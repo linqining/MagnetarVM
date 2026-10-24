@@ -125,6 +125,27 @@ mod tests {
     }
 
     #[test]
+    fn register_twist_two_phase_shape() {
+        let trace = trace();
+        let witness = register_twist_witness(&trace).unwrap();
+        for (row_index, row) in trace.rows.iter().enumerate() {
+            let rs1 = usize::from(row.instruction.rs1) & (REGISTER_COUNT - 1);
+            let rs2 = usize::from(row.instruction.rs2) & (REGISTER_COUNT - 1);
+            let first = 2 * row_index;
+            assert_eq!(witness.read_address[first][rs1], F2_128::from(1u64));
+            assert_eq!(
+                witness.write_address[first],
+                vec![F2_128::from(0u64); REGISTER_COUNT]
+            );
+            assert_eq!(witness.read_address[first + 1][rs2], F2_128::from(1u64));
+            if let Some(rd) = row.rd.filter(|index| *index != 0) {
+                assert_eq!(witness.write_address[first + 1][rd], F2_128::from(1u64));
+                assert_eq!(witness.write_value[first + 1], F2_128::from(row.rd_val));
+            }
+        }
+    }
+
+    #[test]
     fn register_twist_witness_proves() {
         let trace = trace();
         let witness = register_twist_witness(&trace).unwrap();
@@ -136,8 +157,8 @@ mod tests {
         let proof = prove_binary_twist_ram(&witness).unwrap();
         assert!(verify_binary_twist_ram(&witness, &proof).unwrap());
 
-        let mut tampered = witness.clone();
-        tampered.read_value[1] = tampered.read_value[1] + F2_128::from(1u64);
-        assert!(!verify_binary_twist_ram(&tampered, &proof).unwrap());
+        let mut tampered = proof.clone();
+        tampered.read_value_eval = tampered.read_value_eval + F2_128::from(1u64);
+        assert!(!verify_binary_twist_ram(&witness, &tampered).unwrap());
     }
 }

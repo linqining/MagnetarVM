@@ -2843,3 +2843,15 @@ verifier checks the packed proof (witness-blind) instead of the reference Shout
 claims. Table indexes shift down by one and the reference shout check is skipped
 when a packed proof is present. All targeted tests pass; benchmark 161,343 B
 (slightly smaller than the reference-Shout build).
+
+
+### D2: two-phase register encoding documented and tested
+
+Added `docs/register-twist-equivalence.md`: each CPU row maps to two Twist
+subcycles (read rs1; read rs2 then write rd), so both reads observe the pre-row
+state and the write is ordered after both. This is an encoding/performance gap
+versus the paper's single-cycle p=2 layout, not a soundness gap.
+`register_twist_two_phase_shape` checks every row's read addresses/values and
+odd-subcycle write. Standalone `prove/verify_binary_twist_ram` now commits/checks
+all five tables and sorts points by table. Tamper test now mutates the proof eval
+(not the witness), matching the proof-only verifier.

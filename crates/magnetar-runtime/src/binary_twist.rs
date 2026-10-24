@@ -1786,10 +1786,19 @@ pub fn prove_binary_twist_ram(
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
     let tables = batch_tables(witness)?;
     let pcs = P3BinaryPcs::new(100);
-    let mosaic_tables = vec![tables.addr.clone(), tables.inc.clone()];
+    let mosaic_tables = vec![
+        tables.addr.clone(),
+        tables.inc.clone(),
+        tables.initial.clone(),
+        tables.read_value.clone(),
+        tables.write_value.clone(),
+    ];
     let commitment = pcs.commit_mosaic(&mosaic_tables)?;
     let (mut proof, (points, expected)) =
         prove_binary_twist_claims(&tables, witness, &commitment, 0)?;
+    let mut pairs = points.into_iter().zip(expected).collect::<Vec<_>>();
+    pairs.sort_by_key(|(point, _)| point.table);
+    let (points, expected): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
     let opening = pcs.open_mosaic(&mosaic_tables, &points)?;
     debug_assert!(pcs.verify_mosaic(&opening, &points, &expected)?);
     proof.opening = Some(opening);
@@ -2155,7 +2164,7 @@ pub fn verify_binary_twist_ram(
     let Some(opening) = &proof.opening else {
         return Ok(false);
     };
-    if opening.commitment.tables.len() != 2 {
+    if opening.commitment.tables.len() != 5 {
         return Ok(false);
     }
     let Some((points, expected)) =
@@ -2163,6 +2172,9 @@ pub fn verify_binary_twist_ram(
     else {
         return Ok(false);
     };
+    let mut pairs = points.into_iter().zip(expected).collect::<Vec<_>>();
+    pairs.sort_by_key(|(point, _)| point.table);
+    let (points, expected): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
     P3BinaryPcs::new(100).verify_mosaic(opening, &points, &expected)
 }
 
