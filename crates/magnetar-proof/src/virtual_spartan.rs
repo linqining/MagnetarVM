@@ -71,6 +71,23 @@ pub fn route_segment_claims(
         .collect())
 }
 
+/// Group routed claims by their owning component.
+pub fn route_segment_claims_by_owner(
+    layout: &WitnessLayout,
+    claims: &[SegmentClaim],
+) -> Result<Vec<(SegmentOwner, Vec<RoutedSegmentClaim>)>, VirtualSpartanError> {
+    let routed = route_segment_claims(layout, claims)?;
+    let mut groups: Vec<(SegmentOwner, Vec<RoutedSegmentClaim>)> = Vec::new();
+    for claim in routed {
+        if let Some(group) = groups.iter_mut().find(|(owner, _)| *owner == claim.owner) {
+            group.1.push(claim);
+        } else {
+            groups.push((claim.owner, vec![claim]));
+        }
+    }
+    Ok(groups)
+}
+
 pub fn split_segment_claims(
     layout: &WitnessLayout,
     values: &[F2_128],
@@ -163,6 +180,14 @@ mod tests {
         let claims = split_segment_claims(&layout, &values, &point).unwrap();
         let routed = route_segment_claims(&layout, &claims).unwrap();
         assert_eq!(routed.len(), layout.segments.len());
+        let grouped = route_segment_claims_by_owner(&layout, &claims).unwrap();
+        assert_eq!(
+            grouped
+                .iter()
+                .map(|(_, claims)| claims.len())
+                .sum::<usize>(),
+            claims.len()
+        );
         for (routed, segment) in routed.iter().zip(&layout.segments) {
             assert_eq!(routed.name, segment.name);
             assert_eq!(routed.owner, segment.owner);
