@@ -3178,6 +3178,20 @@ mod tests {
     }
 
     #[test]
+    fn trace_rows_fetch_the_bytecode_micro_pc() {
+        use magnetar_preprocess::preprocess;
+        let outcome = ReferencePipeline::run(&program(), config(), 2).unwrap();
+        let prepared = preprocess(&program(), config()).unwrap();
+        for row in &outcome.trace.rows {
+            let bytecode = prepared
+                .bytecode_row(row.pc)
+                .expect("trace PC must be a bytecode micro-PC");
+            assert_eq!(bytecode.micro_pc, row.pc);
+            assert_eq!(bytecode.instruction, row.instruction);
+        }
+    }
+
+    #[test]
     fn reference_pipeline_runs_end_to_end() {
         let outcome = ReferencePipeline::run(&program(), config(), 2).unwrap();
         assert_eq!(outcome.trace.final_state.reg(3), 12);
