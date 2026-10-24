@@ -2894,3 +2894,16 @@ LT(a,b) = sum_i (prod_{j>i} (1 + a_j + b_j)) * (1 + a_i) * b_i
 for bits MSB to LSB. `lt_mle_matches_quadratic` checks bits 1..=5 against the
 quadratic definition. All BinaryTwist/unified tests still pass; benchmark
 161,343 B unchanged.
+
+
+### D10 soundness gap: proof-carried public route evals
+
+After making the Router verifier proof-only, `offset_public_evals`,
+`width_public_evals`, `shift_public_eval`, and `valid_public_evals` are sent in
+`BinaryRouterProof` and compared against the committed selector-column evals.
+They are not bound to a committed public route table or to bytecode/Shout.
+
+So the current Router proof proves consistency between two proof-chosen values,
+not that the route matches the program. Fixing this needs committed public
+route columns (offset/width/shift/is_shift/is_store) opened at the same points,
+or a Shout/bytecode selector binding. Do not claim D10 complete before that.
