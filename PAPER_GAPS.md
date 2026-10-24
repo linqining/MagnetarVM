@@ -2701,3 +2701,17 @@ The core-statement test now tampers a shape PC and a memory-event value; both
 `store_router_index`, and `ProofBundle` preserves them. This is groundwork for
 moving Shout/Router claims into the trace-free statement; no verification
 behavior changes yet.
+
+
+### A2a: AuxStatement for Shout/Router claims
+
+`AuxStatement` carries config/rom/initial RAM/initial PC and compact `AuxRow`s.
+Its synthetic trace rebuilds `BinaryShoutWitness` and `BinaryRouterWitness`
+exactly (test compares debug). `verify_shout` / `verify_router` return the aux
+claim points from the statement. `CoreStatement` optionally includes the aux
+statement and verifies those claims.
+
+Adding aux points back into the opening did not verify ("core opening
+rejected"), so the core statement currently verifies the opening only when
+`aux` is absent. The aux claim points or table indexes still have a mismatch to
+debug.

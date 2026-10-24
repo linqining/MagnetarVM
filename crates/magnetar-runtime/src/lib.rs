@@ -9,6 +9,7 @@ pub mod amo_add_row;
 pub mod amo_bundle;
 pub mod amo_logic_row;
 pub mod amo_minmax_row;
+pub mod aux_statement;
 pub mod binary_router;
 pub mod binary_shout;
 pub mod binary_twist;
@@ -2225,6 +2226,7 @@ pub struct CoreStatement {
     pub width: usize,
     pub shape: crate::cpu_shape::CpuShape,
     pub access: crate::access_statement::AccessStatement,
+    pub aux: Option<crate::aux_statement::AuxStatement>,
 }
 
 /// Verify CPU, gated, and access claims without a trace.
@@ -2257,10 +2259,29 @@ pub fn verify_core_statement(
         });
         values.push(vec![gated.value]);
     }
+    if let Some(aux) = &statement.aux {
+        if proof.shout.is_some() {
+            let (aux_points, aux_values) = aux.verify_shout(proof)?;
+            points.extend(aux_points);
+            values.extend(aux_values);
+        }
+        if proof.shift_router.is_some() {
+            let (aux_points, aux_values) =
+                aux.verify_router(proof, crate::binary_router::RouterMode::Shifts)?;
+            points.extend(aux_points);
+            values.extend(aux_values);
+        }
+        if proof.store_router.is_some() {
+            let (aux_points, aux_values) =
+                aux.verify_router(proof, crate::binary_router::RouterMode::Stores)?;
+            points.extend(aux_points);
+            values.extend(aux_values);
+        }
+    }
     let mut pairs = points.into_iter().zip(values).collect::<Vec<_>>();
     pairs.sort_by_key(|(point, _)| point.table);
     let (points, values): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
-    if proof.shout.is_none() && proof.shift_router.is_none() && proof.store_router.is_none() {
+    if statement.aux.is_none() {
         if let Some(opening) = &proof.opening {
             let pcs = magnetar_pcs::P3BinaryPcs::with_params(100, 4, 16, 3);
             if !pcs
@@ -5611,6 +5632,7 @@ mod cpu_statement_tests {
             width: 8,
             shape: proof.shape.clone(),
             access: crate::access_statement::AccessStatement::from_trace(&trace),
+            aux: Some(crate::aux_statement::AuxStatement::from_trace(&trace)),
         };
         verify_core_statement(&proof, &statement).unwrap();
         let mut bad = statement.clone();
