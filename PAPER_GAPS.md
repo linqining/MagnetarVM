@@ -4108,3 +4108,7 @@ ALU ops, shifts, mul/div/rem/mulh, word ops, Auipc/Jal/Jalr, the six branches,
 all load widths/signedness, all store widths, AmoswapD, and an LrD/ScD pair. All
 pass. This exercises the gated ALU/memory/branch mappings end to end and guards
 the OR/immediate-op fixes.
+
+
+`immediate_logical_ops_round_trip_unified` adds a CI test for Xori/Ori/Andi/
+Slti/Sltiu through prove/verify, guarding the gated-row mapping fixes.

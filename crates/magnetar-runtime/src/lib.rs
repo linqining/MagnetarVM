@@ -3742,6 +3742,42 @@ mod tests {
     }
 
     #[test]
+    fn immediate_logical_ops_round_trip_unified() {
+        let mut program = vec![Instruction {
+            op: Op::Addi,
+            rd: 1,
+            rs1: 0,
+            rs2: 0,
+            imm: 0x5a5,
+            shamt: 0,
+        }
+        .encode()];
+        for (op, imm) in [
+            (Op::Xori, 0x3c3i64),
+            (Op::Ori, 0x3c3),
+            (Op::Andi, 0x3c3),
+            (Op::Slti, 3),
+            (Op::Sltiu, 3),
+        ] {
+            program.push(
+                Instruction {
+                    op,
+                    rd: 3,
+                    rs1: 1,
+                    rs2: 0,
+                    imm,
+                    shamt: 0,
+                }
+                .encode(),
+            );
+        }
+        program.push(Instruction::new(Op::Ecall).encode());
+        let trace = execute(&ProgramImage::new(0x1000, program), config()).unwrap();
+        let proof = prove_unified_trace(&trace, 8).unwrap();
+        verify_unified_proof(&proof).unwrap();
+    }
+
+    #[test]
     fn fetch_expansion_adds_no_state_change_rows() {
         let outcome = ReferencePipeline::run(&program(), config(), 2).unwrap();
         let expanded = expand_trace_fetch_micro_ops(&outcome.trace);
