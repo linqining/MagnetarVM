@@ -2380,3 +2380,9 @@ transition and target witnesses from the trace and compares their PCS
 commitment with the proof. A tampered `next_pc` is rejected. The batch remains
 standalone; it is not in the unified proof because of the measured size
 regression.
+
+
+`ProofBundle` now preserves `gated: Option<GatedCpuClaims>`. Previously a
+from_unified/into_unified roundtrip dropped gated claims, and verification
+failed with "gated CPU claims presence does not match the trace". The combined
+AMO/LR/SC test now roundtrips the bundle and verifies the restored proof.

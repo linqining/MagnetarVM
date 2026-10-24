@@ -320,6 +320,7 @@ pub struct ProofBundle {
     pub opening: Option<magnetar_pcs::P3MosaicOpening>,
     pub stages: Vec<(StageId, StageProof)>,
     pub amo: Option<crate::amo_bundle::AmoBundleProof>,
+    pub gated: Option<crate::GatedCpuClaims>,
 }
 
 impl ProofBundle {
@@ -352,6 +353,7 @@ impl ProofBundle {
             opening: proof.opening.clone(),
             stages,
             amo: proof.amo.clone(),
+            gated: proof.gated.clone(),
         }
     }
 
@@ -387,8 +389,8 @@ impl ProofBundle {
             trace_commitment: self.trace_commitment,
             opening: self.opening,
             amo: self.amo,
+            gated: self.gated,
             cpu: cpu.ok_or(ProtocolError::MissingStage(StageId::Cpu))?,
-            gated: None,
             shout,
             shift_router,
             store_router,
