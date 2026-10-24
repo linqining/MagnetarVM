@@ -4183,3 +4183,11 @@ The prover and both verifier openings use the same merge. Benchmark opening
 57,793 -> 57,729 B (total 134,223 -> 134,159 B); the 11-workload sum drops ~0.6 KB
 and AMO latency stays 5.7 s. Merging all tables (including batched ones) was
 rejected earlier because it made the AMO test 5x slower.
+
+
+### 9-variable gated tables: 24 grinding bits
+
+The 9-variable `P3SharedPcs` branch now uses `(rate=3, pow=24, fold=2)`.
+The unified benchmark drops 134,159 -> 132,063 B (gated 61,652 -> 59,556 B) and
+the example runs in ~2.1 s; the 11 workload sizes are unchanged because they use
+larger gated tables. Pow=26 saved another 1.4 KB but took ~52 s, so 24 is kept.
