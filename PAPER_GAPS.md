@@ -2069,3 +2069,18 @@ signed, and the trace adapter maps MULH/MULHSU.
 `mulh_trace_proves_through_gated_dual` executes LUI/MULH/MULHSU and verifies.
 The width-64 `compiled_guest_elf_runs_and_proves` also passes again; the witness
 high bits are read from the committed product instead of a 64-bit host multiply.
+
+
+### C: isolated DIV/REM row
+
+`div_row::GatedDivRow` proves unsigned division as a multiplication check:
+
+```text
+num = q*den + rem
+rem < den
+```
+
+It reuses `GatedMulRow` for `q*den`, an ADD ALU for `product_low + rem`, and a
+SUB ALU for `rem - den`. Tests cover `17/5`, `255/7`, `100/10`, `1/3` with the
+expected quotient and remainder. Integration into `GatedCpuRow` (DIVU/REMU
+selectors and trace adapter) is next.
