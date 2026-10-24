@@ -1227,24 +1227,7 @@ fn row_cpu_relation(
             }
             _ => imm,
         };
-        if let Some((system, witness)) = magnetar_cpu::simple_alu_row_relation(
-            width,
-            step_op,
-            row.rs1_val,
-            row.rs2_val,
-            row.rd_val,
-            alu_imm,
-        ) {
-            return Ok(Some((system, witness)));
-        }
-        let (system, layout) = magnetar_cpu::uniform_alu_row_relation(
-            width,
-            step_op,
-            row.rs1_val,
-            row.rs2_val,
-            row.rd_val,
-            alu_imm,
-        );
+        let (system, layout) = magnetar_cpu::uniform_alu_relation(width);
         return Ok(Some((
             system,
             layout.witness(step_op, row.rs1_val, row.rs2_val, alu_imm),
@@ -1289,18 +1272,17 @@ fn row_cpu_relation(
     }
     if let Some(access) = row.mem {
         if access.is_write {
-            let (system, layout) = magnetar_cpu::uniform_store_row_relation(
-                64,
-                access.addr,
-                row.rs2_val,
-                row.rs1_val,
-                imm,
-            );
-            return Ok(Some((system, layout.witness(row.rs1_val, imm))));
+            let (system, layout) = magnetar_cpu::simd::uniform_memory_row_layout(64);
+            return Ok(Some((
+                system,
+                layout.witness(row.pc, row.rs1_val, imm, access.value, false),
+            )));
         }
-        let (system, layout) =
-            magnetar_cpu::uniform_load_row_relation(64, access.addr, row.rd_val, row.rs1_val, imm);
-        return Ok(Some((system, layout.witness(row.rs1_val, imm))));
+        let (system, layout) = magnetar_cpu::simd::uniform_memory_row_layout(64);
+        return Ok(Some((
+            system,
+            layout.witness(row.pc, row.rs1_val, imm, row.rd_val, true),
+        )));
     }
     match row.instruction.op {
         magnetar_spec::Op::Jal => {

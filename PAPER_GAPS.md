@@ -2535,3 +2535,19 @@ this shape is not succinct; it is effectively a compact trace.
 
 Therefore A2 needs either a fixed CPU circuit that treats all such values as
 variables (A2a), or a shape that carries the values and is not succinct (A2b).
+
+
+### A2a: fixed ALU and memory CPU systems
+
+The CPU row relation no longer pins ALU operands/results to constants:
+
+```text
+uniform_alu_row_relation(...)  -> uniform_alu_relation(width) + layout.witness(...)
+```
+
+Loads/stores now use the fixed `uniform_memory_row_layout(64)` with data as a
+variable, instead of `uniform_load_row_relation`/`uniform_store_row_relation`
+with address/value constants. `unified_lr_sc`, `unified_trace_proof_merges`, and
+`unified_amo_lr_sc` pass; the gated benchmark is ~156 KB.
+
+Branch/MUL/DIV/JAL rows still pin values and must be converted next.
