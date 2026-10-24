@@ -639,7 +639,7 @@ pub(crate) fn gated_claim_inputs(
     Ok((z, systems0, systems1, layout))
 }
 
-fn gated_batch_bits(
+pub(crate) fn gated_batch_bits(
     row: &GatedCpuRow,
     base_cols: usize,
     rows: &[(u64, GatedCpuRowInput)],

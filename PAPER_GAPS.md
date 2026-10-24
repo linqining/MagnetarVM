@@ -2392,3 +2392,13 @@ AMO/LR/SC test now roundtrips the bundle and verifies the restored proof.
 supplied rows and compares their PCS commitment to the proof. A tampered value
 is rejected. This closes the same witness-binding gap for the standalone memory
 batch.
+
+
+### C: reservation combined with CPU row
+
+`reservation_cpu_row::ReservationCpuRow` concatenates a `GatedCpuRow` relation
+with a `ReservationRow` relation, using the CPU witness builder and a
+row-local reservation transition. It has a batch prover whose verifier rebuilds
+both witnesses and compares the PCS commitment (`verify_*_with_witnesses`).
+Tests cover an LR transition and a successful SC transition. The cross-row
+chain is still not part of this row.

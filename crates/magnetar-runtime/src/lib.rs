@@ -29,6 +29,7 @@ pub mod pc_target_row;
 pub mod pc_transition_row;
 pub mod protocol;
 pub mod register_twist;
+pub mod reservation_cpu_row;
 pub mod reservation_row;
 pub mod sc_row;
 pub mod signed_div_row;
