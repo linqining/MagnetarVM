@@ -781,7 +781,6 @@ pub(crate) fn reservation_virtual_specs(
             SegmentOwner::Cpu,
         ),
         ("sdiv", gated.sdiv_offset, pc_start, SegmentOwner::Cpu),
-        ("pc", pc_start, seq_start, SegmentOwner::Pcs),
         ("tail", seq_start, gated_end, SegmentOwner::Cpu),
         (
             "reservation",
@@ -825,6 +824,15 @@ pub(crate) fn reservation_virtual_specs(
             )
         })
         .collect::<Vec<_>>();
+    let pc_sources = (0..cycles)
+        .map(|cycle| (cycle * base_cols + pc_start, seq_start - pc_start))
+        .collect::<Vec<_>>();
+    specs.push(crate::VirtualSegmentSpec {
+        name: "pc_bits".into(),
+        sources: pc_sources,
+        owner: SegmentOwner::Pcs,
+        projection: SegmentOwner::Pcs.projection(),
+    });
     specs.push(crate::VirtualSegmentSpec {
         name: "memory_addr".into(),
         sources: addr_sources,

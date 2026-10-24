@@ -1174,31 +1174,38 @@ pub(crate) struct UnifiedProveContext<'a> {
     opening: Option<magnetar_pcs::P3MosaicOpening>,
 }
 
+#[allow(clippy::type_complexity)]
 fn gated_component_columns(
     trace: &magnetar_spec::Trace,
     width: usize,
     cycles: usize,
-) -> Result<(Vec<F2_128>, Vec<F2_128>), RuntimeError> {
+) -> Result<(Vec<F2_128>, Vec<F2_128>, Vec<F2_128>), RuntimeError> {
+    let rows = crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(trace, width)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if rows.len() != cycles {
+        return Err(RuntimeError::Proof(
+            "gated component cycles do not match trace rows".into(),
+        ));
+    }
     let mut data = vec![F2_128::from(0u64); cycles * width];
     let mut address = vec![F2_128::from(0u64); cycles * width];
-    for cycle in 0..cycles {
-        let Some(row) = trace.rows.get(cycle) else {
-            continue;
-        };
-        let Some(access) = row.mem else {
-            continue;
-        };
-        let value = if access.is_write {
-            access.value
-        } else {
-            row.rd_val
-        };
+    let mut pc = vec![F2_128::from(0u64); cycles * width];
+    for (cycle, (pc_value, input)) in rows.iter().enumerate() {
         for bit in 0..width {
-            data[cycle * width + bit] = F2_128::from((value >> bit) & 1);
-            address[cycle * width + bit] = F2_128::from((access.addr >> bit) & 1);
+            pc[cycle * width + bit] = F2_128::from((pc_value >> bit) & 1);
+        }
+        if let crate::simd_f2::GatedCpuRowInput::Memory {
+            rs1, imm, value, ..
+        } = input.cpu
+        {
+            let byte_address = rs1.wrapping_add(imm);
+            for bit in 0..width {
+                data[cycle * width + bit] = F2_128::from((value >> bit) & 1);
+                address[cycle * width + bit] = F2_128::from((byte_address >> bit) & 1);
+            }
         }
     }
-    Ok((data, address))
+    Ok((data, address, pc))
 }
 
 #[allow(clippy::type_complexity)]
@@ -1209,15 +1216,20 @@ fn gated_component_claims(
     layout: &magnetar_constraint::WitnessLayout,
     ry: &[F2_128],
 ) -> Result<(Vec<Option<F2_128>>, Vec<(usize, usize)>), RuntimeError> {
-    let (data, address) = gated_component_columns(trace, width, cycles)?;
+    let (data, address, pc) = gated_component_columns(trace, width, cycles)?;
     let data_mle =
         magnetar_proof::Mle::new(data).map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let address_mle = magnetar_proof::Mle::new(address)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let pc_mle =
+        magnetar_proof::Mle::new(pc).map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let mut replacements = vec![None; layout.segments.len()];
     let mut columns = Vec::new();
     for (index, segment) in layout.segments.iter().enumerate() {
-        if segment.name != "memory_data" && segment.name != "memory_addr" {
+        if segment.name != "memory_data"
+            && segment.name != "memory_addr"
+            && segment.name != "pc_bits"
+        {
             continue;
         }
         let bits = segment.len.trailing_zeros() as usize;
@@ -1227,11 +1239,19 @@ fn gated_component_claims(
         let point = &ry[..bits];
         let component = if segment.name == "memory_data" {
             data_mle.eval(point)
-        } else {
+        } else if segment.name == "memory_addr" {
             address_mle.eval(point)
+        } else {
+            pc_mle.eval(point)
         }
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        let column = if segment.name == "memory_data" { 0 } else { 1 };
+        let column = if segment.name == "memory_data" {
+            0
+        } else if segment.name == "memory_addr" {
+            1
+        } else {
+            2
+        };
         columns.push((column, bits));
         replacements[index] = Some(component);
     }
@@ -1344,10 +1364,10 @@ impl<'a> UnifiedProveContext<'a> {
                     },
                 );
         let component_index = if let Some(input) = &gated_input {
-            let (data, address) = gated_component_columns(trace, width, input.cycles)?;
+            let (data, address, pc) = gated_component_columns(trace, width, input.cycles)?;
             let index = mosaic_tables.len();
             mosaic_tables.push(magnetar_pcs::P3MosaicTable {
-                columns: vec![data, address],
+                columns: vec![data, address, pc],
             });
             Some(index)
         } else {

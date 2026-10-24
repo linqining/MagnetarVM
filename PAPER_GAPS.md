@@ -3781,3 +3781,14 @@ stores, so `memory_data` replacement is no longer skipped. The column is a
 committed gated-memory component table (for stores it represents the store
 source, not RAM `read_value`); routing that value to the register component is a
 later paper-fidelity step.
+
+
+### B5: PC aggregate replacement and shared component columns
+
+`reservation_virtual_specs` now has an aggregate `pc_bits` segment (one source per
+cycle) owned by Pcs. The shared component table gains a third PC column, built
+from the gated row PCs. `gated_component_columns` now derives data/address/PC
+from the gated inputs themselves (Memory value and rs1+imm; row PC), so loads,
+stores and padding rows match the gated virtual segments exactly. Component
+claims include `memory_data`, `memory_addr` and `pc_bits`; all are covered by the
+shared opening. Benchmark: 151,415 -> 151,124 B; gated 70,185 B.
