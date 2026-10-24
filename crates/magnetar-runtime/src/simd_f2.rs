@@ -9,6 +9,7 @@
 use crate::branch_row::{BranchKind, GatedBranchRow};
 use crate::div_row::GatedDivRow;
 use crate::mul_row::GatedMulRow;
+use crate::signed_div_row::SignedDivRow;
 use crate::RuntimeError;
 use magnetar_constraint::{VarId, F2_128};
 use magnetar_proof::dual_field::{BitRelation, BitRow};
@@ -1605,6 +1606,10 @@ pub struct GatedCpuRow {
     pub div_offset: usize,
     pub div_rem: VarId,
     pub div_out: Vec<VarId>,
+    pub sdiv: SignedDivRow,
+    pub sdiv_offset: usize,
+    pub sdiv_rem: VarId,
+    pub sdiv_out: Vec<VarId>,
     pub pc: Vec<VarId>,
     pub next_pc: Vec<VarId>,
     pub sequential: VarId,
@@ -1680,6 +1685,21 @@ impl GatedCpuRow {
                 shift_vars(&row.c),
             ));
         }
+        let sdiv = SignedDivRow::new(width);
+        let sdiv_offset = relation.num_vars;
+        relation.num_vars += sdiv.relation.num_vars;
+        for row in &sdiv.relation.rows {
+            let shift_vars = |vars: &[VarId]| {
+                vars.iter()
+                    .map(|var| *var + sdiv_offset)
+                    .collect::<Vec<_>>()
+            };
+            relation.add(BitRow::new(
+                shift_vars(&row.a),
+                shift_vars(&row.b),
+                shift_vars(&row.c),
+            ));
+        }
         let mul_high = relation.num_vars;
         relation.num_vars += 1;
         let mul_signed = relation.num_vars;
@@ -1692,6 +1712,24 @@ impl GatedCpuRow {
         relation.num_vars += 1;
         let div_out = (relation.num_vars..relation.num_vars + width).collect::<Vec<_>>();
         relation.num_vars += width;
+        let sdiv_rem = relation.num_vars;
+        relation.num_vars += 1;
+        let sdiv_out = (relation.num_vars..relation.num_vars + width).collect::<Vec<_>>();
+        relation.num_vars += width;
+        relation.add(BitRow::new(
+            vec![sdiv_rem],
+            vec![sdiv_rem, alu.one],
+            Vec::new(),
+        ));
+        for (bit, out_bit) in sdiv_out.iter().enumerate() {
+            let quotient = sdiv_offset + sdiv.quotient[bit];
+            let remainder = sdiv_offset + sdiv.remainder[bit];
+            relation.add(BitRow::new(
+                vec![sdiv_rem],
+                vec![quotient, remainder],
+                vec![*out_bit, quotient],
+            ));
+        }
         relation.add(BitRow::new(
             vec![div_rem],
             vec![div_rem, alu.one],
@@ -1739,6 +1777,7 @@ impl GatedCpuRow {
                 branch_offset + branch.is_branch,
                 mul_offset + mul.is_mul,
                 div_offset + div.is_div,
+                sdiv_offset + sdiv.is_sdiv,
             ],
             vec![alu.one],
             vec![alu.one],
@@ -1882,6 +1921,10 @@ impl GatedCpuRow {
             div_offset,
             div_rem,
             div_out,
+            sdiv,
+            sdiv_offset,
+            sdiv_rem,
+            sdiv_out,
             pc,
             next_pc,
             sequential,
@@ -2021,6 +2064,7 @@ impl GatedCpuRow {
         bits.extend(self.branch.witness(pc, imm, left, right, kind));
         bits.extend(self.mul.inactive_witness());
         bits.extend(self.div.inactive_witness());
+        bits.extend(self.sdiv.inactive_witness());
         let taken = match kind {
             BranchKind::Beq => left == right,
             BranchKind::Bne => left != right,
@@ -2066,6 +2110,7 @@ impl GatedCpuRow {
         });
         bits.extend(mul_bits);
         bits.extend(self.div.inactive_witness());
+        bits.extend(self.sdiv.inactive_witness());
         let mut bits = self.finish(bits, pc, pc.wrapping_add(4), true);
         bits[self.mul_high] = high;
         bits[self.mul_signed] = signed_a || signed_b;
@@ -2087,10 +2132,34 @@ impl GatedCpuRow {
         bits.extend(self.branch.inactive_witness());
         bits.extend(self.mul.inactive_witness());
         bits.extend(self.div.witness(num, den));
+        bits.extend(self.sdiv.inactive_witness());
         let mut bits = self.finish(bits, pc, pc.wrapping_add(4), true);
         bits[self.div_rem] = is_rem;
         for bit in 0..self.width {
             bits[self.div_out[bit]] = (out >> bit) & 1 == 1;
+        }
+        bits
+    }
+
+    pub fn sdiv_witness_at(
+        &self,
+        pc: u64,
+        num: u64,
+        den: u64,
+        out: u64,
+        is_rem: bool,
+    ) -> Vec<bool> {
+        let mut bits = self.alu.witness(0, 0, GatedAluOp::Inactive);
+        bits.extend(self.memory.witness(0, 0, 0, false));
+        bits.extend(self.shift.inactive_witness());
+        bits.extend(self.branch.inactive_witness());
+        bits.extend(self.mul.inactive_witness());
+        bits.extend(self.div.inactive_witness());
+        bits.extend(self.sdiv.witness(num, den));
+        let mut bits = self.finish(bits, pc, pc.wrapping_add(4), true);
+        bits[self.sdiv_rem] = is_rem;
+        for bit in 0..self.width {
+            bits[self.sdiv_out[bit]] = (out >> bit) & 1 == 1;
         }
         bits
     }
@@ -2123,6 +2192,7 @@ impl GatedCpuRow {
         bits.extend(self.branch.inactive_witness());
         bits.extend(self.mul.inactive_witness());
         bits.extend(self.div.inactive_witness());
+        bits.extend(self.sdiv.inactive_witness());
         let jump = matches!(op, GatedAluOp::Jal | GatedAluOp::Jalr);
         let next_pc = if op == GatedAluOp::Jalr {
             left.wrapping_add(right) & !1
@@ -2151,6 +2221,7 @@ impl GatedCpuRow {
         bits.extend(self.branch.inactive_witness());
         bits.extend(self.mul.inactive_witness());
         bits.extend(self.div.inactive_witness());
+        bits.extend(self.sdiv.inactive_witness());
         self.finish(bits, pc, pc.wrapping_add(4), true)
     }
 
@@ -2169,6 +2240,7 @@ impl GatedCpuRow {
         bits.extend(self.branch.inactive_witness());
         bits.extend(self.mul.inactive_witness());
         bits.extend(self.div.inactive_witness());
+        bits.extend(self.sdiv.inactive_witness());
         self.finish(bits, pc, pc.wrapping_add(4), true)
     }
 }
@@ -2307,6 +2379,17 @@ mod gated_cpu_row_tests {
                 value | (u64::from(div[*var]) << bit)
             });
         assert_eq!(quotient, 3);
+        let sdiv = row.sdiv_witness_at(0x1000, 0xfb, 5, 0xff, false);
+        assert!(row.relation.check(&sdiv));
+        let sdiv_q = row
+            .sdiv_out
+            .iter()
+            .enumerate()
+            .fold(0u64, |value, (bit, var)| {
+                value | (u64::from(sdiv[*var]) << bit)
+            });
+        assert_eq!(sdiv_q, 0xff);
+
         let rem = row.div_witness_at(0x1000, 17, 5, 2, true);
         assert!(row.relation.check(&rem));
         let remainder = row
@@ -2375,6 +2458,12 @@ pub enum GatedCpuRowInput {
         out: u64,
         is_rem: bool,
     },
+    SDiv {
+        num: u64,
+        den: u64,
+        out: u64,
+        is_rem: bool,
+    },
 }
 
 pub fn prove_gated_cpu_batch(
@@ -2426,6 +2515,12 @@ pub fn prove_gated_cpu_batch(
                 out,
                 is_rem,
             } => row.div_witness_at(0, *num, *den, *out, *is_rem),
+            GatedCpuRowInput::SDiv {
+                num,
+                den,
+                out,
+                is_rem,
+            } => row.sdiv_witness_at(0, *num, *den, *out, *is_rem),
         };
         witnesses.push(row.relation.to_witness(&bits));
     }
@@ -2558,6 +2653,12 @@ pub fn prove_gated_cpu_batch_pc(
                 out,
                 is_rem,
             } => row.div_witness_at(*pc, *num, *den, *out, *is_rem),
+            GatedCpuRowInput::SDiv {
+                num,
+                den,
+                out,
+                is_rem,
+            } => row.sdiv_witness_at(*pc, *num, *den, *out, *is_rem),
         };
         z.extend(
             witness_vector(&system, &row.relation.to_witness(&bits))
@@ -2642,7 +2743,8 @@ mod claim_routing_tests {
                 GatedCpuRowInput::Shift { .. } => ClaimKind::Shift,
                 GatedCpuRowInput::Branch { .. }
                 | GatedCpuRowInput::Mul { .. }
-                | GatedCpuRowInput::Div { .. } => ClaimKind::Direct,
+                | GatedCpuRowInput::Div { .. }
+                | GatedCpuRowInput::SDiv { .. } => ClaimKind::Direct,
             };
             claims.push(crate::protocol::Claim::new(
                 kind,

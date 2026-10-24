@@ -33,6 +33,7 @@ pub struct SignedDivRow {
     pub sign_q: VarId,
     pub zero: VarId,
     pub one: VarId,
+    pub is_sdiv: VarId,
     pub relation: BitRelation,
 }
 
@@ -81,8 +82,10 @@ impl SignedDivRow {
         let sign_q = cursor + 2;
         let zero = cursor + 3;
         let one = cursor + 4;
-        relation.num_vars = cursor + 5;
+        let is_sdiv = cursor + 5;
+        relation.num_vars = cursor + 6;
         relation.add(BitRow::new(vec![zero], vec![one], Vec::new()));
+        relation.add(BitRow::new(vec![is_sdiv], vec![is_sdiv, one], Vec::new()));
         relation.add(BitRow::new(vec![one], vec![one], vec![one]));
         for selector in [sign_num, sign_den, sign_q] {
             relation.add(BitRow::new(vec![selector], vec![selector, one], Vec::new()));
@@ -198,8 +201,15 @@ impl SignedDivRow {
             sign_q,
             zero,
             one,
+            is_sdiv,
             relation,
         }
+    }
+
+    pub fn inactive_witness(&self) -> Vec<bool> {
+        let mut bits = self.witness(0, 1);
+        bits[self.is_sdiv] = false;
+        bits
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -220,6 +230,7 @@ impl SignedDivRow {
         bits[self.sign_num] = sign_num;
         bits[self.sign_den] = sign_den;
         bits[self.sign_q] = sign_num ^ sign_den;
+        bits[self.is_sdiv] = true;
         let q_abs = self
             .div
             .q

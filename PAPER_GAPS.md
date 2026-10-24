@@ -2116,3 +2116,14 @@ Attempting to fuse `SignedDivRow` into `GatedCpuRow` produced a lockstep
 sumcheck mismatch on an 8-row signed DIV/REM trace even though the isolated row
 passes. The CPU integration was reverted; `SignedDivRow` remains an isolated,
 tested component until the row offsets/top-selector interaction is debugged.
+
+
+### C: signed DIV/REM fused into GatedCpuRow
+
+The earlier lockstep mismatch was a test-vector problem, not a row problem:
+a width-8 trace derived `0xfb` with SRLI, so the 64-bit executor saw +251
+while the width-8 row saw -5. Sign-extending with SRAI makes the trace and row
+agree, and the signed DIV/REM trace now proves/verifies.
+
+`GatedCpuRow` has `is_sdiv`, `sdiv_rem`, and `sdiv_out`; DIV/REM map to
+`SignedDivRow`.
