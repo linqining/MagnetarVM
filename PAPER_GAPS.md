@@ -2494,3 +2494,8 @@ value == cpu.memory.data_in
 The trace builder sets it to `rd_val` for LR and to the memory write value for
 SC. This binds the LR read / SC write data to the same CPU memory claim as the
 address. The small gated benchmark is 155,833 B after the change.
+
+
+`reservation_cpu_rows_from_trace` now marks `Sd` (and the other store widths) as
+`is_invalidate`, so a store clears the reservation in the gated chain instead
+of preserving it. Unified LR/SC tests still pass.

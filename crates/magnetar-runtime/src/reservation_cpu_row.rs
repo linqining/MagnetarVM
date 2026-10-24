@@ -228,7 +228,13 @@ pub fn reservation_cpu_rows_from_trace(
                     row.instruction.op,
                     magnetar_spec::Op::ScW | magnetar_spec::Op::ScD
                 ),
-                is_invalidate: false,
+                is_invalidate: matches!(
+                    row.instruction.op,
+                    magnetar_spec::Op::Sb
+                        | magnetar_spec::Op::Sh
+                        | magnetar_spec::Op::Sw
+                        | magnetar_spec::Op::Sd
+                ),
                 next_pre_valid: next_pre.is_some(),
                 next_pre_addr: next_pre.unwrap_or(0),
                 value: if matches!(
