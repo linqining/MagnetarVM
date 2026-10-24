@@ -3070,3 +3070,13 @@ The tuned parameters are only valid for large polynomials. An adaptive choice
 would need the verifier to recover the parameter set from the commitment shape,
 because verify() does not receive the values. The attempt was reverted; the
 benchmark is still 138,640 B.
+
+
+### Negative result: adaptive P3 params by table size
+
+Tried selecting `(4,16,3)` only when `values.len().trailing_zeros() >= 4`.
+Commit/open used the primary value length, verify used
+`commitment.tables[0].num_variables`, and the existing shared-PCS test rejected
+the opening, so the table shape does not recover the same choice reliably. The
+attempt was reverted. P3 parameter tuning remains blocked on carrying the
+parameter choice explicitly with the commitment/opening.
