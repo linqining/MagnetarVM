@@ -1455,12 +1455,24 @@ impl<'a> UnifiedProveContext<'a> {
                 .filter(|rows| width <= 128 && !rows.is_empty() && rows.len().is_power_of_two())
                 .and_then(|rows| {
                     let cycles = rows.len();
-                    crate::simd_dual::reservation_virtual_inputs(width, &rows)
-                        .ok()
-                        .map(|(z, a0, a1, layout, mapping)| (z, a0, a1, layout, mapping, cycles))
+                    let group = if cycles >= 4 && cycles.is_multiple_of(2) {
+                        2
+                    } else {
+                        1
+                    };
+                    let inputs = if group > 1 {
+                        crate::simd_dual::reservation_grouped_virtual_inputs(width, &rows, group)
+                            .ok()
+                            .map(|(z, a0, a1, layout, mapping, _)| (z, a0, a1, layout, mapping))
+                    } else {
+                        crate::simd_dual::reservation_virtual_inputs(width, &rows).ok()
+                    };
+                    inputs.map(|(z, a0, a1, layout, mapping)| {
+                        (z, a0, a1, layout, mapping, cycles, group)
+                    })
                 })
                 .map(
-                    |(z, a0, a1, layout, mapping, cycles)| crate::GatedProveInput {
+                    |(z, a0, a1, layout, mapping, cycles, group)| crate::GatedProveInput {
                         z,
                         a0,
                         a1,
@@ -1468,6 +1480,7 @@ impl<'a> UnifiedProveContext<'a> {
                         mapping,
                         table: 0,
                         cycles,
+                        group,
                     },
                 );
         let component_index = if let Some(input) = &gated_input {
@@ -1826,6 +1839,7 @@ impl<'a> UnifiedProveContext<'a> {
                 component_claims,
                 component_columns,
                 component_index: self.component_index,
+                group: input.group,
                 shift_claims,
                 shift_columns,
                 shift_index: self.shift_index,
@@ -2116,23 +2130,41 @@ impl<'a> UnifiedVerifyContext<'a> {
             }
             _ => {}
         }
-        let gated_input = gated_rows
-            .as_ref()
-            .and_then(|rows| {
-                let cycles = rows.len();
+        let gated_input = gated_rows.as_ref().and_then(|rows| {
+            let cycles = rows.len();
+            let group = if cycles >= 4 && cycles.is_multiple_of(2) {
+                2
+            } else {
+                1
+            };
+            if group > 1 {
+                crate::simd_dual::reservation_grouped_virtual_view(width, cycles, group)
+                    .ok()
+                    .map(|(a0, a1, layout, mapping, _)| crate::GatedProveInput {
+                        z: Vec::new(),
+                        a0,
+                        a1,
+                        layout,
+                        mapping,
+                        table: 0,
+                        cycles,
+                        group,
+                    })
+            } else {
                 crate::simd_dual::reservation_claim_matrices(width, cycles)
                     .ok()
-                    .map(|(a0, a1, layout)| (a0, a1, layout, cycles))
-            })
-            .map(|(a0, a1, layout, cycles)| crate::GatedProveInput {
-                z: Vec::new(),
-                a0,
-                a1,
-                layout,
-                mapping: Vec::new(),
-                table: 0,
-                cycles,
-            });
+                    .map(|(a0, a1, layout)| crate::GatedProveInput {
+                        z: Vec::new(),
+                        a0,
+                        a1,
+                        layout,
+                        mapping: Vec::new(),
+                        table: 0,
+                        cycles,
+                        group,
+                    })
+            }
+        });
         let shout_index = proof.shout_index;
         let shift_router_index = proof.shift_router_index;
         let store_router_index = proof.store_router_index;
@@ -2327,9 +2359,17 @@ impl<'a> UnifiedVerifyContext<'a> {
                 Vec::new(),
                 Vec::new(),
             ));
-            let base_cols = input.a0[0].cols() / input.cycles;
-            let (layout, mapping, _) =
-                crate::simd_dual::reservation_virtual_view(self.width, input.cycles, base_cols)?;
+            let (layout, mapping) = if input.group > 1 {
+                (input.layout.clone(), input.mapping.clone())
+            } else {
+                let base_cols = input.a0[0].cols() / input.cycles;
+                let (layout, mapping, _) = crate::simd_dual::reservation_virtual_view(
+                    self.width,
+                    input.cycles,
+                    base_cols,
+                )?;
+                (layout, mapping)
+            };
             let wrap = |matrix| crate::simd_dual::ScatterMatrix {
                 inner: matrix,
                 mapping: mapping.clone(),

@@ -3954,3 +3954,17 @@ cycle-major component columns at the grouped virtual layout's local points and
 checks every filled replacement equals the corresponding grouped segment claim.
 This shows the B5 component tables remain valid under C2 grouping; the unified
 gated path still needs to select the grouped matrices/layout.
+
+
+### C2: grouped path enabled in the unified gated prover
+
+The gated prover now selects `group=2` when the padded cycle count is at least
+four and even; otherwise it keeps `group=1`. `reservation_grouped_virtual_inputs`
+builds the grouped witness/matrices and the grouped owner-segment virtual layout;
+the core and trace verifiers rebuild the same grouped view (a dummy-row view is
+used when no rows are available) and wrap the matrices with `ScatterMatrix`.
+`GatedCpuClaims` carries the group size. Grouped component claims were checked
+against the grouped segment values, and the workload suite passes with the
+grouped path. The no-shift benchmark is 152,687 B (group field/layout overhead
+about 131 B); workload prover times drop noticeably (e.g. fibonacci 8.2s -> 5.8s,
+branchy 17.1s -> 11.7s, loop 3.9s -> 2.9s).
