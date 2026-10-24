@@ -1142,7 +1142,7 @@ impl<'a> UnifiedProveContext<'a> {
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         let register_tables = batch_tables(&register_witness)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        let pcs = P3BinaryPcs::new(100);
+        let pcs = P3BinaryPcs::with_params(100, 4, 16, 3);
         let mut mosaic_tables = vec![
             P3MosaicTable {
                 columns: vec![z.clone()],
@@ -1815,7 +1815,7 @@ impl<'a> UnifiedVerifyContext<'a> {
         self.points = points;
         self.values = values;
         if let Some(opening) = &self.proof.opening {
-            let pcs = P3BinaryPcs::new(100);
+            let pcs = P3BinaryPcs::with_params(100, 4, 16, 3);
             if !pcs
                 .verify_mosaic(opening, &self.points, &self.values)
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?
@@ -1830,7 +1830,7 @@ impl<'a> UnifiedVerifyContext<'a> {
 
     fn verify_revealed_opening(&self) -> Result<(), RuntimeError> {
         let context = UnifiedProveContext::new(self.trace, self.width)?;
-        let commitment = P3BinaryPcs::new(100)
+        let commitment = P3BinaryPcs::with_params(100, 4, 16, 3)
             .commit_mosaic(&context.mosaic_tables)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         if commitment != self.proof.cpu.commitment {

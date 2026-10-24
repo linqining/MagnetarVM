@@ -2127,3 +2127,24 @@ agree, and the signed DIV/REM trace now proves/verifies.
 
 `GatedCpuRow` has `is_sdiv`, `sdiv_rem`, and `sdiv_out`; DIV/REM map to
 `SignedDivRow`.
+
+
+### B: parameter-tuned P3 backend
+
+`P3BinaryPcs` now carries `log_inv_rate`, `pow_bits`, and `log_folding_factor`
+and uses `BinaryPcsConfig::try_new_with_folding`. The unified proof uses
+`(rate=4, pow=16, folding=3)`.
+
+Measured unified proof:
+
+```text
+default (rate2, pow4, fold1): 209,720 B total, 199,745 B opening
+tuned   (rate4, pow16, fold3): 156,088 B total, 145,857 B opening
+```
+
+That is a 26% total reduction at the same 100-bit setting. The standalone
+12-variable sweep (`p3_param_sweep`) ranges from 162,080 B at the default to
+97,328 B at `(rate3, pow16, fold2)`; the unified layout favors `(4,16,3)`.
+
+This reduces P3 overhead but does not provide hiding or the 10x reduction of a
+new succinct backend.

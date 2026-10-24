@@ -147,14 +147,42 @@ impl std::fmt::Debug for P3Opening {
 }
 
 /// Multilinear PCS over the 128-bit binary tower.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct P3BinaryPcs {
     pub security_level: usize,
+    pub log_inv_rate: usize,
+    pub pow_bits: usize,
+    pub log_folding_factor: usize,
+}
+
+impl Default for P3BinaryPcs {
+    fn default() -> Self {
+        Self::new(100)
+    }
 }
 
 impl P3BinaryPcs {
     pub fn new(security_level: usize) -> Self {
-        Self { security_level }
+        Self {
+            security_level,
+            log_inv_rate: 2,
+            pow_bits: 4,
+            log_folding_factor: 1,
+        }
+    }
+
+    pub fn with_params(
+        security_level: usize,
+        log_inv_rate: usize,
+        pow_bits: usize,
+        log_folding_factor: usize,
+    ) -> Self {
+        Self {
+            security_level,
+            log_inv_rate,
+            pow_bits,
+            log_folding_factor,
+        }
     }
 
     fn mmcs() -> P3Mmcs {
@@ -169,14 +197,24 @@ impl P3BinaryPcs {
         P3Challenger::from_hasher(Vec::new(), Keccak256Hash)
     }
 
-    fn backend(num_variables: usize, security_level: usize) -> Result<P3PcsBackend, ProofError> {
+    fn backend_with(
+        num_variables: usize,
+        security_level: usize,
+        log_inv_rate: usize,
+        pow_bits: usize,
+        log_folding_factor: usize,
+    ) -> Result<P3PcsBackend, ProofError> {
         let params = BinaryPcsParams {
-            log_inv_rate: 2,
-            pow_bits: 4,
+            log_inv_rate,
+            pow_bits,
             security_level,
         };
-        let config = BinaryPcsConfig::try_new::<F, F>(num_variables, params)
-            .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        let config = BinaryPcsConfig::try_new_with_folding::<F, F>(
+            num_variables,
+            params,
+            log_folding_factor,
+        )
+        .map_err(|error| ProofError::Pcs(error.to_string()))?;
         P3PcsBackend::new(config, Self::mmcs(), Self::mmcs())
             .map_err(|error| ProofError::Pcs(error.to_string()))
     }
@@ -307,7 +345,13 @@ impl P3BinaryPcs {
     pub fn commit_batch(&self, columns: &[Vec<F2_128>]) -> Result<P3BatchCommitment, ProofError> {
         let (table, num_variables, num_columns) = Self::batch_table(columns)?;
         let stacked_variables = Self::stacked_variables(num_variables, num_columns);
-        let backend = Self::backend(stacked_variables, self.security_level)?;
+        let backend = Self::backend_with(
+            stacked_variables,
+            self.security_level,
+            self.log_inv_rate,
+            self.pow_bits,
+            self.log_folding_factor,
+        )?;
         let mut challenger = Self::challenger();
         let witness = SuffixProver::<F, F>::new_witness(vec![table], 0);
         let (cap, _) = backend
@@ -333,7 +377,13 @@ impl P3BinaryPcs {
         }
         let stacked_variables = Self::stacked_variables(num_variables, num_columns);
         let protocol = Self::batch_protocol(num_variables, num_columns, points)?;
-        let backend = Self::backend(stacked_variables, self.security_level)?;
+        let backend = Self::backend_with(
+            stacked_variables,
+            self.security_level,
+            self.log_inv_rate,
+            self.pow_bits,
+            self.log_folding_factor,
+        )?;
         let mut challenger = Self::challenger();
         let witness = SuffixProver::<F, F>::new_witness(vec![table], 0);
         let (cap, data) = backend
@@ -378,7 +428,13 @@ impl P3BinaryPcs {
                 Ok(protocol) => protocol,
                 Err(_) => return Ok(false),
             };
-        let backend = Self::backend(commitment.stacked_variables, self.security_level)?;
+        let backend = Self::backend_with(
+            commitment.stacked_variables,
+            self.security_level,
+            self.log_inv_rate,
+            self.pow_bits,
+            self.log_folding_factor,
+        )?;
         let mut challenger = Self::challenger();
         backend.observe_commitment(&commitment.cap, &mut challenger);
         let p3_points = points
@@ -523,7 +579,13 @@ impl P3BinaryPcs {
             shapes.push(shape);
         }
         let stacked_variables = Self::mosaic_stacked_variables(&shapes)?;
-        let backend = Self::backend(stacked_variables, self.security_level)?;
+        let backend = Self::backend_with(
+            stacked_variables,
+            self.security_level,
+            self.log_inv_rate,
+            self.pow_bits,
+            self.log_folding_factor,
+        )?;
         let mut challenger = Self::challenger();
         let witness = SuffixProver::<F, F>::new_witness(p3_tables, 0);
         let (cap, _) = backend
@@ -551,7 +613,13 @@ impl P3BinaryPcs {
         }
         let stacked_variables = Self::mosaic_stacked_variables(&shapes)?;
         let (protocol, p3_points) = Self::mosaic_schedule(&shapes, points)?;
-        let backend = Self::backend(stacked_variables, self.security_level)?;
+        let backend = Self::backend_with(
+            stacked_variables,
+            self.security_level,
+            self.log_inv_rate,
+            self.pow_bits,
+            self.log_folding_factor,
+        )?;
         let mut challenger = Self::challenger();
         let witness = SuffixProver::<F, F>::new_witness(p3_tables, 0);
         let (cap, data) = backend
@@ -592,7 +660,13 @@ impl P3BinaryPcs {
             Ok(schedule) => schedule,
             Err(_) => return Ok(false),
         };
-        let backend = Self::backend(commitment.stacked_variables, self.security_level)?;
+        let backend = Self::backend_with(
+            commitment.stacked_variables,
+            self.security_level,
+            self.log_inv_rate,
+            self.pow_bits,
+            self.log_folding_factor,
+        )?;
         let mut challenger = Self::challenger();
         backend.observe_commitment(&commitment.cap, &mut challenger);
         let Ok(evals) = backend.verify_at(
@@ -633,7 +707,13 @@ impl Pcs for P3BinaryPcs {
 
     fn commit(&self, values: &[F2_128]) -> Result<Self::Commitment, ProofError> {
         let (_, num_variables, pcs_log) = Self::table(values)?;
-        let backend = Self::backend(pcs_log, self.security_level)?;
+        let backend = Self::backend_with(
+            pcs_log,
+            self.security_level,
+            self.log_inv_rate,
+            self.pow_bits,
+            self.log_folding_factor,
+        )?;
         let mut challenger = Self::challenger();
         let (cap, _) = Self::commit_with(&backend, values, &mut challenger)?;
         Ok(P3Commitment { cap, num_variables })
@@ -647,7 +727,13 @@ impl Pcs for P3BinaryPcs {
                 actual: point.len(),
             });
         }
-        let backend = Self::backend(pcs_log, self.security_level)?;
+        let backend = Self::backend_with(
+            pcs_log,
+            self.security_level,
+            self.log_inv_rate,
+            self.pow_bits,
+            self.log_folding_factor,
+        )?;
         let mut challenger = Self::challenger();
         let (cap, data) = Self::commit_with(&backend, values, &mut challenger)?;
         let proof = backend
@@ -678,7 +764,13 @@ impl Pcs for P3BinaryPcs {
             return Ok(false);
         }
         let pcs_log = commitment.num_variables.max(1);
-        let backend = Self::backend(pcs_log, self.security_level)?;
+        let backend = Self::backend_with(
+            pcs_log,
+            self.security_level,
+            self.log_inv_rate,
+            self.pow_bits,
+            self.log_folding_factor,
+        )?;
         let mut challenger = Self::challenger();
         backend.observe_commitment(&commitment.cap, &mut challenger);
         let Ok(evals) = backend.verify_at(
