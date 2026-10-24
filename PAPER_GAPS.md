@@ -4077,3 +4077,11 @@ virtual expansion remains open.
 At 64 cycles the group comparison (width 8) is group=2: 347,655 B / 12.5 s and
 group=4: 345,831 B / 12.4 s; group=4 is only ~0.5% smaller with a slower
 verifier, so the default remains group=2 and group=4 stays opt-in.
+
+
+### Table batching threshold 16 rows
+
+Allowing table batching for up to 16-row tables (row bits <= 4) reduces the
+workload total by ~6 KB: loop 210,749 -> 209,621; mem-loop 383,974 -> 380,038;
+shifts 249,960 -> 249,024, with other workloads unchanged. Core, unified LR/SC
+and AMO, shift, grouped and chunked tests still pass.
