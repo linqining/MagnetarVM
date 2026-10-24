@@ -3592,9 +3592,8 @@ domain for component claims.
 confirming the full-cycle tables are valid proof inputs.
 
 
-The full-cycle witness pads to the trace-cycle power of two. Its idle reads use
-word 0, so `read_value` at idle cycles equals the current cell 0 value, while the
-gated memory `data` bits are zero on non-memory rows. A same-point evaluation
-therefore does not match in general (`0x7788` idle value vs zero gated data).
-B5 RAM proof integration needs either a guaranteed-zero idle sentinel cell or an
-event-to-cycle lookup, not identity over a full-cycle column.
+The full-cycle witness pads to the trace-cycle power of two and selects the idle
+read cell as a zero, unwritten RAM word (error if none exists). With that sentinel,
+`ram_read_value_eval_matches_gated_data_subsegment` confirms that the
+BinaryTwist `read_value` column and the gated memory `data` subsegment evaluate
+identically at the same cycle point. Idle rows no longer inject a nonzero cell 0.

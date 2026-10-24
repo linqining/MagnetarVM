@@ -147,6 +147,28 @@ impl BinaryTwistWitness {
                 F2_128::from(u64::from_le_bytes(chunk.try_into().expect("eight bytes")));
         }
         let initial = current.clone();
+        let written = trace
+            .memory_events
+            .iter()
+            .filter(|event| event.access.is_write)
+            .filter_map(|event| {
+                event
+                    .access
+                    .addr
+                    .checked_sub(trace.config.ram_base)
+                    .and_then(|offset| usize::try_from(offset / 8).ok())
+            })
+            .collect::<std::collections::HashSet<_>>();
+        let idle_word = initial
+            .iter()
+            .enumerate()
+            .find(|(index, value)| value.value() == 0 && !written.contains(index))
+            .map(|(index, _)| index)
+            .ok_or_else(|| {
+                MemoryError::InvalidBinaryTwist(
+                    "full-cycle RAM witness needs a zero, unwritten idle cell".into(),
+                )
+            })?;
         let mut read_address = Vec::new();
         let mut write_address = Vec::new();
         let mut increment = Vec::new();
@@ -163,11 +185,11 @@ impl BinaryTwistWitness {
             value.push(current.clone());
             let Some(access) = row.mem else {
                 let mut read = vec![F2_128::from(0u64); cells];
-                read[0] = F2_128::from(1u64);
+                read[idle_word] = F2_128::from(1u64);
                 read_address.push(read);
                 write_address.push(vec![F2_128::from(0u64); cells]);
                 increment.push(F2_128::from(0u64));
-                read_value.push(current[0]);
+                read_value.push(current[idle_word]);
                 write_value.push(F2_128::from(0u64));
                 continue;
             };
@@ -230,11 +252,11 @@ impl BinaryTwistWitness {
         while value.len() < cycles {
             value.push(current.clone());
             let mut read = vec![F2_128::from(0u64); cells];
-            read[0] = F2_128::from(1u64);
+            read[idle_word] = F2_128::from(1u64);
             read_address.push(read);
             write_address.push(vec![F2_128::from(0u64); cells]);
             increment.push(F2_128::from(0u64));
-            read_value.push(current[0]);
+            read_value.push(current[idle_word]);
             write_value.push(F2_128::from(0u64));
         }
         Ok(Self {

@@ -1742,6 +1742,7 @@ mod virtual_spec_tests {
 
 #[cfg(test)]
 mod projection_tests {
+    use super::*;
     use crate::simd_f2::GatedCpuRowInput;
     use magnetar_executor::execute;
     use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
@@ -1801,6 +1802,77 @@ mod projection_tests {
                 assert_eq!(shamt, router_shamt, "shift shamt mismatch at {index}");
             }
         }
+    }
+
+    #[test]
+    fn ram_read_value_eval_matches_gated_data_subsegment() {
+        use magnetar_proof::Mle;
+        let mut data = vec![0u8; 8];
+        data.copy_from_slice(&0x7788u64.to_le_bytes());
+        let program = ProgramImage::new(
+            0x10,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x40,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Ld,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        )
+        .with_data(data);
+        let config = MachineConfig {
+            entry: 0x10,
+            rom_base: 0x10,
+            ram_base: 0x40,
+            ram_size: 0x40,
+            stack_top: 0x80,
+            max_cycles: 8,
+        };
+        let trace = execute(&program, config).unwrap();
+        let width = 16usize;
+        let rows = crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, width)
+            .unwrap();
+        let cycles = rows.len();
+        let (_, _, layout) = reservation_claim_matrices(width, cycles).unwrap();
+        let base_cols = layout.total_bits / cycles;
+        let (z, _, _, _) = reservation_claim_inputs(width, &rows).unwrap();
+        let cpu = crate::reservation_cpu_row::ReservationCpuRow::new(width);
+        let mut gated_values = Vec::with_capacity(cycles);
+        for cycle in 0..cycles {
+            let mut value = 0u64;
+            for bit in 0..width {
+                let index = cycle * base_cols + cpu.cpu.memory_offset + cpu.cpu.memory.data[bit];
+                if z[index].value() == 1 {
+                    value |= 1 << bit;
+                }
+            }
+            gated_values.push(F2_128::from(value));
+        }
+        let full = magnetar_memory::BinaryTwistWitness::from_trace_full_cycles(&trace).unwrap();
+        let tables = crate::binary_twist::batch_tables(&full).unwrap();
+        let point = (0..cycles.trailing_zeros() as usize)
+            .map(|bit| F2_128::from((bit * 7 + 3) as u64))
+            .collect::<Vec<_>>();
+        let gated_eval = Mle::new(gated_values).unwrap().eval(&point).unwrap();
+        let twist_eval = Mle::new(tables.read_value.columns[0].clone())
+            .unwrap()
+            .eval(&point)
+            .unwrap();
+        assert_eq!(gated_eval, twist_eval);
     }
 
     #[test]
