@@ -2110,3 +2110,9 @@ the product fold now takes only the low width bits.
 
 Tests cover `-5/5`, `5/-5`, `-5/-5`, `1/3`. The INT_MIN/-1 wrap path is handled
 by two's-complement negation. Integration into the CPU row and DIVW/REMW remain.
+
+
+Attempting to fuse `SignedDivRow` into `GatedCpuRow` produced a lockstep
+sumcheck mismatch on an 8-row signed DIV/REM trace even though the isolated row
+passes. The CPU integration was reverted; `SignedDivRow` remains an isolated,
+tested component until the row offsets/top-selector interaction is debugged.
