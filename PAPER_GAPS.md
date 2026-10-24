@@ -3563,5 +3563,6 @@ prototype.
 `reservation_specs_cover_each_gated_instance` now also fills a virtual witness
 from the gated z subsegments, pads it through `build_padded_virtual_layout`, and
 scatters it back with `unpad_values`; the result equals the original z. This
-verifies the segment-to-CPU reconstruction mapping. The values still come from z
-itself; the next step is to fill them from component table openings.
+verifies the segment-to-CPU reconstruction mapping. The PC subsegments are now filled from the `PcTransitionRow` component witness
+(not from z), padded, and unpad-rounded back to z; the reconstruction still
+equals z. Other owners are still copied from z.
