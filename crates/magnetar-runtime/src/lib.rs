@@ -2233,8 +2233,41 @@ pub fn verify_core_statement(
         width: statement.width,
         shape: statement.shape.clone(),
     };
-    verify_cpu_statement(proof, &cpu)?;
-    statement.access.verify_access(proof)?;
+    let (ry, cpu_value, gated_ry) = cpu_statement_claims(proof, &cpu)?;
+    let (ram_claims, register_claims) = statement.access.verify_access_claims(proof)?;
+    let (mut points, mut values) = ram_claims;
+    points.extend(register_claims.0);
+    values.extend(register_claims.1);
+    points.push(magnetar_pcs::P3MosaicPoint {
+        table: 0,
+        point: ry,
+        columns: vec![0],
+        next_columns: Vec::new(),
+    });
+    values.push(vec![cpu_value]);
+    if let (Some(gated), Some(gated_ry)) = (&proof.gated, gated_ry) {
+        points.push(magnetar_pcs::P3MosaicPoint {
+            table: gated.table,
+            point: gated_ry,
+            columns: vec![0],
+            next_columns: Vec::new(),
+        });
+        values.push(vec![gated.value]);
+    }
+    let mut pairs = points.into_iter().zip(values).collect::<Vec<_>>();
+    pairs.sort_by_key(|(point, _)| point.table);
+    let (points, values): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+    if proof.shout.is_none() && proof.shift_router.is_none() && proof.store_router.is_none() {
+        if let Some(opening) = &proof.opening {
+            let pcs = magnetar_pcs::P3BinaryPcs::with_params(100, 4, 16, 3);
+            if !pcs
+                .verify_mosaic(opening, &points, &values)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?
+            {
+                return Err(RuntimeError::Proof("core opening rejected".into()));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -2243,6 +2276,14 @@ pub fn verify_cpu_statement(
     proof: &UnifiedTraceProof,
     statement: &CpuStatement,
 ) -> Result<(), RuntimeError> {
+    cpu_statement_claims(proof, statement).map(|_| ())
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn cpu_statement_claims(
+    proof: &UnifiedTraceProof,
+    statement: &CpuStatement,
+) -> Result<(Vec<F2_128>, F2_128, Option<Vec<F2_128>>), RuntimeError> {
     if proof.shape != statement.shape {
         return Err(RuntimeError::Proof("CPU statement shape mismatch".into()));
     }
@@ -2250,25 +2291,30 @@ pub fn verify_cpu_statement(
     let (system_a, system_b) = split_cpu_relations(&system);
     let layout = cpu_segment_layout(witness_len)?;
     let pcs = magnetar_pcs::P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
-    magnetar_proof::verify_lockstep_claims(&system_a, &system_b, &layout, &proof.cpu, &pcs)
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    if let Some(gated) = &proof.gated {
+    let (ry, _segments, value) =
+        magnetar_proof::verify_lockstep_claims(&system_a, &system_b, &layout, &proof.cpu, &pcs)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let gated_ry = if let Some(gated) = &proof.gated {
         let (a0, a1, gated_layout) =
             crate::simd_dual::reservation_claim_matrices(statement.width, gated.cycles)?;
-        magnetar_proof::spartan::verify_lockstep_claims_with_matrices(
-            &a0[0],
-            &a0[1],
-            &a0[2],
-            &a1[0],
-            &a1[1],
-            &a1[2],
-            &gated_layout,
-            &gated.claims,
-            &pcs,
-        )
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    }
-    Ok(())
+        let (gated_ry, _segments, _value) =
+            magnetar_proof::spartan::verify_lockstep_claims_with_matrices(
+                &a0[0],
+                &a0[1],
+                &a0[2],
+                &a1[0],
+                &a1[1],
+                &a1[2],
+                &gated_layout,
+                &gated.claims,
+                &pcs,
+            )
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        Some(gated_ry)
+    } else {
+        None
+    };
+    Ok((ry, value, gated_ry))
 }
 
 pub fn verify_unified_trace(

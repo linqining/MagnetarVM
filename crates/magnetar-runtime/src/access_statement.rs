@@ -99,22 +99,35 @@ impl AccessStatement {
             .map_err(|error| crate::RuntimeError::Proof(error.to_string()))
     }
 
-    pub fn verify_access(
+    pub fn verify_access_claims(
         &self,
         proof: &crate::UnifiedTraceProof,
-    ) -> Result<crate::binary_twist::MosaicClaims, crate::RuntimeError> {
+    ) -> Result<
+        (
+            crate::binary_twist::MosaicClaims,
+            crate::binary_twist::MosaicClaims,
+        ),
+        crate::RuntimeError,
+    > {
         let synthetic = self.synthetic_trace();
         let memory = self.memory_witness()?;
         let registers = self.register_witness()?;
-        let (ram_claims, _register_claims) = crate::verify_trace_access_shared(
+        crate::verify_trace_access_shared(
             &synthetic,
             &proof.access,
             &memory,
             &proof.cpu.commitment,
             &registers,
             proof.register_index,
-        )?;
-        Ok(ram_claims)
+        )
+    }
+
+    pub fn verify_access(
+        &self,
+        proof: &crate::UnifiedTraceProof,
+    ) -> Result<crate::binary_twist::MosaicClaims, crate::RuntimeError> {
+        self.verify_access_claims(proof)
+            .map(|(ram_claims, _register_claims)| ram_claims)
     }
 
     pub fn register_witness(

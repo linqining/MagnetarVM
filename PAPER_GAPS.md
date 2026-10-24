@@ -2680,3 +2680,14 @@ combines it with `CpuStatement`; `verify_core_statement` verifies CPU, gated, an
 access claims without passing a `Trace`. The new
 `core_statement_verifies_without_trace` test proves a LUI/ADDI/SD/LD trace and
 verifies with the statement. Shout/Router/opening remain outside.
+
+
+### A2a: CoreStatement (CPU + gated + access)
+
+`AccessStatement` rebuilds both BinaryTwist witnesses from a compact access
+record. `verify_access_claims` returns RAM and register claims, and
+`verify_core_statement` combines them with `cpu_statement_claims` (CPU + gated)
+and, when no Shout/Router proof is present, checks the shared opening. The
+`core_statement_verifies_without_trace` test passes without a `Trace`; opening is
+skipped when Shout/Router tables are present because those claims are not yet in
+the statement.
