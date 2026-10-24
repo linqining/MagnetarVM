@@ -257,7 +257,10 @@ pub fn gated_rows_from_trace(
         }
         if matches!(
             row.instruction.op,
-            magnetar_spec::Op::Mul | magnetar_spec::Op::Mulhu
+            magnetar_spec::Op::Mul
+                | magnetar_spec::Op::Mulhu
+                | magnetar_spec::Op::Mulh
+                | magnetar_spec::Op::Mulhsu
         ) {
             rows.push((
                 row.pc,
@@ -265,7 +268,17 @@ pub fn gated_rows_from_trace(
                     left: row.rs1_val,
                     right: row.rs2_val,
                     out: row.rd_val,
-                    high: row.instruction.op == magnetar_spec::Op::Mulhu,
+                    high: matches!(
+                        row.instruction.op,
+                        magnetar_spec::Op::Mulhu
+                            | magnetar_spec::Op::Mulh
+                            | magnetar_spec::Op::Mulhsu
+                    ),
+                    signed_a: matches!(
+                        row.instruction.op,
+                        magnetar_spec::Op::Mulh | magnetar_spec::Op::Mulhsu
+                    ),
+                    signed_b: row.instruction.op == magnetar_spec::Op::Mulh,
                 },
             ));
             continue;
@@ -579,6 +592,72 @@ mod auipc_trace_tests {
             rows[1].1,
             GatedCpuRowInput::Mul { high: true, .. }
         ));
+        use crate::simd_dual::{prove_gated_dual_batch_bits, verify_gated_dual_batch_bits};
+        use magnetar_pcs::P3SharedPcs;
+        use magnetar_proof::DirectBitPcs;
+        let backend = DirectBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
+        let (proof, layout) = prove_gated_dual_batch_bits(8, &rows, &backend).unwrap();
+        verify_gated_dual_batch_bits(8, &rows, &proof, &layout, &backend).unwrap();
+    }
+
+    #[test]
+    fn mulh_trace_proves_through_gated_dual() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Lui,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0xfb,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Lui,
+                    rd: 2,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0xfb,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Mulh,
+                    rd: 3,
+                    rs1: 1,
+                    rs2: 2,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Mulhsu,
+                    rd: 4,
+                    rs1: 1,
+                    rs2: 2,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let rows = gated_rows_from_trace(&trace, 8).unwrap();
+        assert_eq!(rows.len(), 4);
         use crate::simd_dual::{prove_gated_dual_batch_bits, verify_gated_dual_batch_bits};
         use magnetar_pcs::P3SharedPcs;
         use magnetar_proof::DirectBitPcs;

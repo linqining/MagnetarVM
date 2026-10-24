@@ -2052,3 +2052,20 @@ and proves/verifies through the gated dual backend.
 executes `lui x1,255; mulhu x2,x1,x1` and verifies the high product.
 
 MULH/MULHSU still need signed correction and are the next C item.
+
+
+### C: MULH and MULHSU
+
+The multiplier now computes a signed high correction:
+
+```text
+signed_high = high_unsigned - sign_a·b - sign_b·a  (mod 2^w)
+```
+
+Two-w's-complement subtractors are built from full adders; tests cover
+`-5 * 3` high `0xff`. The CPU selects the signed high when either operand is
+signed, and the trace adapter maps MULH/MULHSU.
+
+`mulh_trace_proves_through_gated_dual` executes LUI/MULH/MULHSU and verifies.
+The width-64 `compiled_guest_elf_runs_and_proves` also passes again; the witness
+high bits are read from the committed product instead of a 64-bit host multiply.

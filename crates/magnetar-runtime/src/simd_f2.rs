@@ -1597,6 +1597,8 @@ pub struct GatedCpuRow {
     pub mul: GatedMulRow,
     pub mul_offset: usize,
     pub mul_high: VarId,
+    pub mul_signed: VarId,
+    pub mul_high_sel: Vec<VarId>,
     pub mul_out: Vec<VarId>,
     pub pc: Vec<VarId>,
     pub next_pc: Vec<VarId>,
@@ -1663,19 +1665,34 @@ impl GatedCpuRow {
         }
         let mul_high = relation.num_vars;
         relation.num_vars += 1;
+        let mul_signed = relation.num_vars;
+        relation.num_vars += 1;
+        let mul_high_sel = (relation.num_vars..relation.num_vars + width).collect::<Vec<_>>();
+        relation.num_vars += width;
         let mul_out = (relation.num_vars..relation.num_vars + width).collect::<Vec<_>>();
         relation.num_vars += width;
-        relation.add(BitRow::new(
-            vec![mul_high],
-            vec![mul_high, alu.one],
-            Vec::new(),
-        ));
+        for selector in [mul_high, mul_signed] {
+            relation.add(BitRow::new(
+                vec![selector],
+                vec![selector, alu.one],
+                Vec::new(),
+            ));
+        }
+        for (bit, selected) in mul_high_sel.iter().enumerate() {
+            let high = mul_offset + mul.product[width + bit];
+            let signed = mul_offset + mul.signed_high[bit];
+            relation.add(BitRow::new(
+                vec![mul_signed],
+                vec![signed, high],
+                vec![*selected, high],
+            ));
+        }
         for (bit, out_bit) in mul_out.iter().enumerate() {
             let low = mul_offset + mul.product[bit];
-            let high = mul_offset + mul.product[width + bit];
+            let selected = *mul_high_sel.get(bit).unwrap_or(&low);
             relation.add(BitRow::new(
                 vec![mul_high],
-                vec![low, high],
+                vec![selected, low],
                 vec![*out_bit, low],
             ));
         }
@@ -1822,6 +1839,8 @@ impl GatedCpuRow {
             mul,
             mul_offset,
             mul_high,
+            mul_signed,
+            mul_high_sel,
             mul_out,
             pc,
             next_pc,
@@ -1977,6 +1996,7 @@ impl GatedCpuRow {
         self.finish(bits, pc, next_pc, false)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn mul_witness_at(
         &self,
         pc: u64,
@@ -1984,15 +2004,35 @@ impl GatedCpuRow {
         right: u64,
         out: u64,
         high: bool,
+        signed_a: bool,
+        signed_b: bool,
     ) -> Vec<bool> {
         let mut bits = self.alu.witness(0, 0, GatedAluOp::Inactive);
         bits.extend(self.memory.witness(0, 0, 0, false));
         bits.extend(self.shift.inactive_witness());
         bits.extend(self.branch.inactive_witness());
-        bits.extend(self.mul.witness(left, right));
+        let mul_bits = self.mul.witness_with_signs(left, right, signed_a, signed_b);
+        let signed_high = self
+            .mul
+            .signed_high
+            .iter()
+            .enumerate()
+            .fold(0u64, |value, (bit, var)| {
+                value | (u64::from(mul_bits[*var]) << bit)
+            });
+        let unsigned_high = (0..self.width).fold(0u64, |value, bit| {
+            value | (u64::from(mul_bits[self.mul.product[self.width + bit]]) << bit)
+        });
+        bits.extend(mul_bits);
         let mut bits = self.finish(bits, pc, pc.wrapping_add(4), true);
         bits[self.mul_high] = high;
+        bits[self.mul_signed] = signed_a || signed_b;
         for bit in 0..self.width {
+            bits[self.mul_high_sel[bit]] = if signed_a || signed_b {
+                (signed_high >> bit) & 1 == 1
+            } else {
+                (unsigned_high >> bit) & 1 == 1
+            };
             bits[self.mul_out[bit]] = (out >> bit) & 1 == 1;
         }
         bits
@@ -2184,7 +2224,7 @@ mod gated_cpu_row_tests {
         let branch_witness = row.relation.to_witness(&branch);
         assert!(row.packed_companion_system().check(&branch_witness).is_ok());
 
-        let mul = row.mul_witness_at(0x1000, 5, 3, 15, false);
+        let mul = row.mul_witness_at(0x1000, 5, 3, 15, false, false, false);
         assert!(row.relation.check(&mul));
         let mul_product = row
             .mul_out
@@ -2245,6 +2285,8 @@ pub enum GatedCpuRowInput {
         right: u64,
         out: u64,
         high: bool,
+        signed_a: bool,
+        signed_b: bool,
     },
 }
 
@@ -2288,7 +2330,9 @@ pub fn prove_gated_cpu_batch(
                 right,
                 out,
                 high,
-            } => row.mul_witness_at(0, *left, *right, *out, *high),
+                signed_a,
+                signed_b,
+            } => row.mul_witness_at(0, *left, *right, *out, *high, *signed_a, *signed_b),
         };
         witnesses.push(row.relation.to_witness(&bits));
     }
@@ -2412,7 +2456,9 @@ pub fn prove_gated_cpu_batch_pc(
                 right,
                 out,
                 high,
-            } => row.mul_witness_at(*pc, *left, *right, *out, *high),
+                signed_a,
+                signed_b,
+            } => row.mul_witness_at(*pc, *left, *right, *out, *high, *signed_a, *signed_b),
         };
         z.extend(
             witness_vector(&system, &row.relation.to_witness(&bits))
