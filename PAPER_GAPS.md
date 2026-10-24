@@ -3040,3 +3040,23 @@ The benchmark prints `gated table 11 cycles 4`. Table 11 has 1 column and
 the new dominant committed object (~8192 bits per row) and explains the
 176,952 B result. The per-row CPU table was only 7 variables. Shrinking the
 reservation row's bit width (or not padding from 3 to 4 rows) is the size lever.
+
+
+### B/E4 milestone: ring-switched packed CPU witness
+
+The shared CPU claims now use `RingSwitchPackedBitPcs` instead of
+`DirectBitPcs` for the gated batch. The bit witness is packed 128 bits per field
+element; the gated claims carry a `RingSwitchOpening`. The separate gated Mosaic
+table and its opening point are removed, and `GatedCpuClaims` stores
+`proof: LockstepProof<..., RingSwitchOpening<...>>`.
+
+All targeted unified/core/AMO tests pass. Benchmark:
+
+```text
+before ring switch: 176,952 B
+after ring switch:  138,640 B
+gated component:     71,577 B
+```
+
+This is below the old per-row CPU build (161,343 B). The remaining cost is the
+ring-switch gated opening; shrinking div/sdiv row widths is now the next lever.

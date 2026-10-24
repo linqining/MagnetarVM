@@ -1074,9 +1074,8 @@ pub(crate) struct GatedProveInput {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct GatedCpuClaims {
-    pub claims: LockstepClaims<P3MosaicCommitment>,
-    pub table: usize,
-    pub value: F2_128,
+    pub proof:
+        LockstepProof<P3MosaicCommitment, magnetar_proof::RingSwitchOpening<P3MosaicOpening>>,
     pub cycles: usize,
 }
 
@@ -2255,7 +2254,7 @@ pub fn verify_core_statement(
         width: statement.width,
         shape: statement.shape.clone(),
     };
-    let (ry, cpu_value, gated_ry) = cpu_statement_claims(proof, &cpu)?;
+    let (ry, cpu_value, _gated_ry) = cpu_statement_claims(proof, &cpu)?;
     let (ram_claims, register_claims) = crate::access_statement::access_claims_from_proof(proof)?;
     let (mut points, mut values) = ram_claims;
     points.extend(register_claims.0);
@@ -2268,15 +2267,6 @@ pub fn verify_core_statement(
             next_columns: Vec::new(),
         });
         values.push(vec![cpu_value]);
-    }
-    if let (Some(gated), Some(gated_ry)) = (&proof.gated, gated_ry) {
-        points.push(magnetar_pcs::P3MosaicPoint {
-            table: gated.table,
-            point: gated_ry,
-            columns: vec![0],
-            next_columns: Vec::new(),
-        });
-        values.push(vec![gated.value]);
     }
     if let (Some(shout), Some(index)) = (&proof.shout, proof.shout_index) {
         let (aux_points, aux_values) = crate::binary_shout::verify_binary_shout_from_proof(
@@ -2360,11 +2350,14 @@ pub(crate) fn cpu_statement_claims(
     } else {
         (None, None)
     };
-    let gated_ry = if let Some(gated) = &proof.gated {
-        let (a0, a1, gated_layout) =
-            crate::simd_dual::reservation_claim_matrices(statement.width, gated.cycles)?;
-        let (gated_ry, _segments, _value) =
-            magnetar_proof::spartan::verify_lockstep_claims_with_matrices(
+    let gated_ry =
+        if let Some(gated) = &proof.gated {
+            let (a0, a1, gated_layout) =
+                crate::simd_dual::reservation_claim_matrices(statement.width, gated.cycles)?;
+            let backend = magnetar_proof::RingSwitchPackedBitPcs::new(
+                magnetar_pcs::P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()),
+            );
+            magnetar_proof::verify_lockstep_bits(
                 &a0[0],
                 &a0[1],
                 &a0[2],
@@ -2372,14 +2365,14 @@ pub(crate) fn cpu_statement_claims(
                 &a1[1],
                 &a1[2],
                 &gated_layout,
-                &gated.claims,
-                &pcs,
+                &gated.proof,
+                &backend,
             )
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        Some(gated_ry)
-    } else {
-        None
-    };
+            None
+        } else {
+            None
+        };
     Ok((ry, value, gated_ry))
 }
 

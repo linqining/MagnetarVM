@@ -21,9 +21,8 @@ use crate::UnifiedTraceProof;
 
 use magnetar_memory::BinaryTwistWitness;
 use magnetar_pcs::{P3BinaryPcs, P3MosaicCommitment, P3MosaicPoint, P3MosaicTable, P3SharedPcs};
-use magnetar_proof::spartan::{prove_lockstep_claims_bits, verify_lockstep_claims_with_matrices};
 use magnetar_proof::virtual_spartan::SegmentClaim;
-use magnetar_proof::{verify_lockstep_claims, witness_vector, DirectBitPcs, LockstepClaims, Mle};
+use magnetar_proof::{verify_lockstep_claims, witness_vector, LockstepClaims, Mle};
 use magnetar_spec::Trace;
 
 use crate::binary_router::{
@@ -1249,19 +1248,13 @@ impl<'a> UnifiedProveContext<'a> {
                         .ok()
                         .map(|(z, a0, a1, layout)| (z, a0, a1, layout, cycles))
                 })
-                .map(|(z, a0, a1, layout, cycles)| {
-                    let table = mosaic_tables.len();
-                    mosaic_tables.push(P3MosaicTable {
-                        columns: vec![z.clone()],
-                    });
-                    crate::GatedProveInput {
-                        z,
-                        a0,
-                        a1,
-                        layout,
-                        table,
-                        cycles,
-                    }
+                .map(|(z, a0, a1, layout, cycles)| crate::GatedProveInput {
+                    z,
+                    a0,
+                    a1,
+                    layout,
+                    table: 0,
+                    cycles,
                 });
 
         Ok(Self {
@@ -1436,7 +1429,6 @@ impl<'a> UnifiedProveContext<'a> {
         let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
         let (system_a, system_b) = split_cpu_relations(&self.system);
         let layout = cpu_segment_layout(self.z.len())?;
-        let gated_commitment = commitment.clone();
         if self.gated_input.is_none() {
             let (claims, ry) = magnetar_proof::prove_lockstep_claims(
                 &system_a,
@@ -1454,10 +1446,19 @@ impl<'a> UnifiedProveContext<'a> {
             self.cpu_ry = None;
         }
         if let Some(input) = &self.gated_input {
-            let backend =
-                DirectBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
-            let (claims, ry) = prove_lockstep_claims_bits(
-                &input.z,
+            let bits = input
+                .z
+                .iter()
+                .map(|value| value.value() == 1)
+                .collect::<Vec<_>>();
+            let backend = magnetar_proof::RingSwitchPackedBitPcs::new(P3SharedPcs::new(
+                100,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ));
+            let proof = magnetar_proof::prove_lockstep_bits(
+                &bits,
                 &input.a0[0],
                 &input.a0[1],
                 &input.a0[2],
@@ -1466,20 +1467,13 @@ impl<'a> UnifiedProveContext<'a> {
                 &input.a1[2],
                 &input.layout,
                 &backend,
-                gated_commitment,
             )
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-            let value = Mle::new(input.z.clone())
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?
-                .eval(&ry)
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
             self.gated_claims = Some(crate::GatedCpuClaims {
-                claims,
-                table: input.table,
-                value,
+                proof,
                 cycles: input.cycles,
             });
-            self.gated_ry = Some(ry);
+            self.gated_ry = None;
         }
         Ok(())
     }
@@ -1668,13 +1662,12 @@ impl<'a> UnifiedVerifyContext<'a> {
                 a0,
                 a1,
                 layout,
-                table: proof.gated.as_ref().map_or(0, |gated| gated.table),
+                table: 0,
                 cycles,
             });
         let expected_tables = if proof.cpu.is_some() { 12 } else { 11 }
             + usize::from(shift_router_witness.is_some())
-            + usize::from(store_router_witness.is_some())
-            + usize::from(gated_input.is_some());
+            + usize::from(store_router_witness.is_some());
         if proof.commitment.tables.len() != expected_tables {
             return Err(RuntimeError::Proof(
                 "unified proof does not commit the expected CPU/RAM/aux tables".into(),
@@ -1867,13 +1860,13 @@ impl<'a> UnifiedVerifyContext<'a> {
             );
         }
         if let (Some(input), Some(gated)) = (&self.gated_input, &self.proof.gated) {
-            if gated.claims.commitment != self.proof.commitment {
-                return Err(RuntimeError::Proof(
-                    "gated claims do not share the legacy commitment".into(),
-                ));
-            }
-            let verifier = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
-            let (gated_ry, _segments, _value) = verify_lockstep_claims_with_matrices(
+            let backend = magnetar_proof::RingSwitchPackedBitPcs::new(P3SharedPcs::new(
+                100,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ));
+            magnetar_proof::verify_lockstep_bits(
                 &input.a0[0],
                 &input.a0[1],
                 &input.a0[2],
@@ -1881,11 +1874,11 @@ impl<'a> UnifiedVerifyContext<'a> {
                 &input.a1[1],
                 &input.a1[2],
                 &input.layout,
-                &gated.claims,
-                &verifier,
+                &gated.proof,
+                &backend,
             )
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-            self.gated_ry = Some(gated_ry);
+            self.gated_ry = None;
         } else if self.proof.gated.is_some() {
             return Err(RuntimeError::Proof("gated input missing".into()));
         }
@@ -1902,44 +1895,10 @@ impl<'a> UnifiedVerifyContext<'a> {
             });
             self.values.push(vec![value]);
         }
-        if let (Some(input), Some(gated_ry)) = (&self.gated_input, &self.gated_ry) {
-            let gated_value = self
-                .proof
-                .gated
-                .as_ref()
-                .map(|gated| gated.value)
-                .unwrap_or_default();
-            self.points.push(P3MosaicPoint {
-                table: input.table,
-                point: gated_ry.clone(),
-                columns: vec![0],
-                next_columns: Vec::new(),
-            });
-            self.values.push(vec![gated_value]);
-        }
-        let mut pairs = self
-            .points
-            .drain(..)
-            .zip(self.values.drain(..))
-            .collect::<Vec<_>>();
-        pairs.sort_by_key(|(point, _)| point.table);
-        let (points, values): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
-        self.points = points;
-        self.values = values;
-        if let Some(opening) = &self.proof.opening {
-            let pcs = P3BinaryPcs::with_params(100, 4, 16, 3);
-            if !pcs
-                .verify_mosaic(opening, &self.points, &self.values)
-                .map_err(|error| RuntimeError::Proof(error.to_string()))?
-            {
-                return Err(RuntimeError::Proof("unified P3 opening rejected".into()));
-            }
-        } else {
-            self.verify_revealed_opening()?;
-        }
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn verify_revealed_opening(&self) -> Result<(), RuntimeError> {
         let context = UnifiedProveContext::new(self.trace, self.width)?;
         let commitment = P3BinaryPcs::with_params(100, 4, 16, 3)

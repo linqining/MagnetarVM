@@ -49,9 +49,6 @@ fn main() {
         revealed.opening.is_some()
     );
     let p = &proof.unified;
-    if let Some(gated) = &p.gated {
-        eprintln!("gated table {} cycles {}", gated.table, gated.cycles);
-    }
     for (index, table) in p.commitment.tables.iter().enumerate() {
         println!(
             "table {index} columns {} vars {}",
