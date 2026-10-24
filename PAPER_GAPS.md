@@ -3283,3 +3283,15 @@ Benchmark: 138,064 -> 137,120 B; opening 67,809 -> 65,537 B. The size win is
 real. Debug test time rose to ~10-26 s, but the release benchmark binary runs the
 whole prove+verify in ~1.1 s; the extra cost is batching sumcheck plus an
 all-column opening point per selected table.
+
+
+### B3 first step: native F2 Merkle PCS
+
+Added `F2NativePcs` in `magnetar-pcs/src/f2.rs`. It commits bits in a SHA-256
+Merkle tree. At an **F2 point** the multilinear evaluation is exactly one
+coefficient bit (for `r_i=0` only index bit 0 contributes, for `r_i=1` only bit 1),
+so the opening is a Merkle path and the claimed value is the selected bit.
+
+This is a genuine native-F2 opening (not the F2^128 embedding) for F2
+challenges. Extension-field sumcheck challenges still need a lift/sumcheck layer;
+that is the next B3 step. The prototype is tested for round-trip and tamper.
