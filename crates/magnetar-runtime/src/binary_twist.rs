@@ -949,6 +949,14 @@ pub struct BinaryTwistRamProof {
     pub initial_read_eval: F2_128,
     pub initial_write_eval: F2_128,
     pub initial_update_eval: F2_128,
+    pub boolean_evals: Vec<F2_128>,
+    pub read_initial_addr: Vec<F2_128>,
+    pub read_history_values: Vec<F2_128>,
+    pub write_base_values: Vec<F2_128>,
+    pub write_history_values: Vec<F2_128>,
+    pub final_values_evals: Vec<F2_128>,
+    pub cycle_bits: usize,
+    pub address_bits: usize,
 }
 
 fn eq_at_index(point: &[F2_128], index: usize) -> F2_128 {
@@ -1207,6 +1215,7 @@ pub(crate) fn prove_binary_twist_claims(
     let bit_evals = (0..addr_columns)
         .map(|column| fold_all(&addr[column], r_j))
         .collect::<Vec<_>>();
+    let boolean_evals = bit_evals.clone();
     let boolean = AddressBooleanClaim { rounds };
     addr_points.push(P3MosaicPoint {
         table: table_index,
@@ -1269,6 +1278,11 @@ pub(crate) fn prove_binary_twist_claims(
         .map(|bit| fold_all(&addr[bit], r_j))
         .collect::<Vec<_>>();
     let ra_valid_eval = fold_all(&addr[ra_valid], r_j);
+    let read_initial_addr = {
+        let mut values = ra_bit_evals.clone();
+        values.push(ra_valid_eval);
+        values
+    };
     let initial_claim = ReadInitialClaim {
         claimed: {
             let mut total = F2_128::from(0u64);
@@ -1354,6 +1368,14 @@ pub(crate) fn prove_binary_twist_claims(
         .collect::<Vec<_>>();
     let wa_valid_eval = fold_all(&addr[wa_valid], r_previous);
     let inc_eval = fold_all(increments, &inc_point(r_previous));
+    let read_history_values = {
+        let mut values = ra_bit_evals.clone();
+        values.push(ra_valid_eval);
+        values.extend(wa_bit_evals.iter().copied());
+        values.push(wa_valid_eval);
+        values.push(inc_eval);
+        values
+    };
     let history_claim = ReadHistoryClaim {
         claimed: {
             let mut total = F2_128::from(0u64);
@@ -1466,6 +1488,12 @@ pub(crate) fn prove_binary_twist_claims(
         .collect::<Vec<_>>();
     let wa_valid_eval = fold_all(&addr[wa_valid], r_j);
     let inc_eval = fold_all(increments, &inc_point(r_j));
+    let write_base_values = {
+        let mut values = wa_bit_evals.clone();
+        values.push(wa_valid_eval);
+        values.push(inc_eval);
+        values
+    };
     let base_claim = WriteBaseClaim {
         claimed: {
             let mut total = F2_128::from(0u64);
@@ -1555,6 +1583,15 @@ pub(crate) fn prove_binary_twist_claims(
         .collect::<Vec<_>>();
     let successor_valid = fold_all(&addr[wa_valid], r_previous);
     let successor_inc = fold_all(increments, &inc_point(r_previous));
+    let write_history_values = {
+        let mut values = current_bits.clone();
+        values.push(current_valid);
+        values.push(current_inc);
+        values.extend(successor_bits.iter().copied());
+        values.push(successor_valid);
+        values.push(successor_inc);
+        values
+    };
     let history_claim = WriteHistoryClaim {
         claimed: {
             let mut total = F2_128::from(0u64);
@@ -1669,6 +1706,14 @@ pub(crate) fn prove_binary_twist_claims(
         .collect::<Vec<_>>();
     let wa_valid_eval = fold_all(&addr[wa_valid], r_jp);
     let inc_eval = fold_all(increments, &inc_point(r_jp));
+    let final_eval = fold_all(&tables.final_values, r_k);
+    let final_values_evals = {
+        let mut values = wa_bit_evals.clone();
+        values.push(wa_valid_eval);
+        values.push(inc_eval);
+        values.push(final_eval);
+        values
+    };
     let update = BinaryTwistUpdateClaim { rounds };
     let mut final_columns = (a..2 * a).collect::<Vec<_>>();
     final_columns.push(wa_valid);
@@ -1720,6 +1765,14 @@ pub(crate) fn prove_binary_twist_claims(
             initial_read_eval,
             initial_write_eval,
             initial_update_eval,
+            boolean_evals,
+            read_initial_addr,
+            read_history_values,
+            write_base_values,
+            write_history_values,
+            final_values_evals,
+            cycle_bits: tables.cycle_bits,
+            address_bits: tables.address_bits,
         },
         (addr_points, addr_expected),
     ))
@@ -1744,16 +1797,26 @@ pub fn prove_binary_twist_ram(
 }
 
 pub(crate) fn verify_binary_twist_claims(
-    witness: &BinaryTwistWitness,
+    _witness: &BinaryTwistWitness,
     proof: &BinaryTwistRamProof,
     commitment: &P3MosaicCommitment,
     table_index: usize,
 ) -> Result<Option<MosaicClaims>, ProofError> {
-    let cells = witness.initial.len();
-    let cycles = witness.cycles.next_power_of_two();
-    let address_bits = cells.trailing_zeros() as usize;
-    let cycle_bits = cycles.trailing_zeros() as usize;
+    verify_binary_twist_from_proof(proof, commitment, table_index)
+}
+
+pub(crate) fn verify_binary_twist_from_proof(
+    proof: &BinaryTwistRamProof,
+    commitment: &P3MosaicCommitment,
+    table_index: usize,
+) -> Result<Option<MosaicClaims>, ProofError> {
+    if commitment.tables.len() <= table_index + 4 {
+        return Ok(None);
+    }
+    let cycle_bits = proof.cycle_bits;
+    let address_bits = proof.address_bits;
     let addr_columns = 2 * address_bits + 2;
+    let cycles = 1usize << cycle_bits;
     if commitment.tables.len() <= table_index + 1
         || commitment.tables[table_index].num_variables != cycle_bits.max(1)
         || commitment.tables[table_index].num_columns != addr_columns
@@ -1780,12 +1843,7 @@ pub(crate) fn verify_binary_twist_claims(
     };
     let r_j = &boolean_challenges[..cycle_bits];
     let r_c = &boolean_challenges[cycle_bits..];
-    let tables = batch_tables(witness)?;
-    let addr = tables.address_columns();
-    let increments = tables.increments();
-    let bit_evals = (0..addr_columns)
-        .map(|column| fold_all(&addr[column], r_j))
-        .collect::<Vec<_>>();
+    let bit_evals = proof.boolean_evals.clone();
     let eq_c_eval = eq_points(&rho_c, r_c);
     let eq_j_eval = eq_points(&rho_j, r_j);
     let mut b_eval = F2_128::from(0u64);
@@ -1824,10 +1882,9 @@ pub(crate) fn verify_binary_twist_claims(
     let r_k = &initial_challenges[cycle_bits..];
     let initial_read_point = r_k.to_vec();
     let initial_read_eval = proof.initial_read_eval;
-    let ra_bit_evals = (0..address_bits)
-        .map(|bit| fold_all(&addr[bit], r_j))
-        .collect::<Vec<_>>();
-    let ra_valid_eval = fold_all(&addr[2 * address_bits], r_j);
+    let read_initial_addr = proof.read_initial_addr.clone();
+    let ra_bit_evals = read_initial_addr[..address_bits].to_vec();
+    let ra_valid_eval = read_initial_addr[address_bits];
     let eq_eval = eq_points(&rho_j, r_j);
     let m0_eval = proof.initial_read_eval;
     let ra_eval = address_value(&ra_bit_evals, ra_valid_eval, r_k);
@@ -1861,15 +1918,13 @@ pub(crate) fn verify_binary_twist_claims(
     }
     let r_previous = &history_challenges[..cycle_bits];
     let r_j = &history_challenges[cycle_bits..];
-    let ra_bit_evals = (0..address_bits)
-        .map(|bit| fold_all(&addr[bit], r_j))
-        .collect::<Vec<_>>();
-    let ra_valid_eval = fold_all(&addr[2 * address_bits], r_j);
-    let wa_bit_evals = (0..address_bits)
-        .map(|bit| fold_all(&addr[address_bits + bit], r_previous))
-        .collect::<Vec<_>>();
-    let wa_valid_eval = fold_all(&addr[2 * address_bits + 1], r_previous);
-    let inc_eval = fold_all(increments, &inc_point(r_previous));
+    let read_history_values = proof.read_history_values.clone();
+    let ra_bit_evals = read_history_values[..address_bits].to_vec();
+    let ra_valid_eval = read_history_values[address_bits];
+    let wa_start = address_bits + 1;
+    let wa_bit_evals = read_history_values[wa_start..wa_start + address_bits].to_vec();
+    let wa_valid_eval = read_history_values[wa_start + address_bits];
+    let inc_eval = read_history_values[wa_start + address_bits + 1];
     let eq_eval = eq_points(&rho_j, r_j);
     let lt_eval = lt_mle(r_previous, r_j, cycles);
     let mut equality = F2_128::from(1u64);
@@ -1929,11 +1984,10 @@ pub(crate) fn verify_binary_twist_claims(
     let r_k = &base_challenges[cycle_bits..];
     let initial_write_point = r_k.to_vec();
     let initial_write_eval = proof.initial_write_eval;
-    let wa_bit_evals = (0..address_bits)
-        .map(|bit| fold_all(&addr[address_bits + bit], r_j))
-        .collect::<Vec<_>>();
-    let wa_valid_eval = fold_all(&addr[2 * address_bits + 1], r_j);
-    let inc_eval = fold_all(increments, &inc_point(r_j));
+    let write_base_values = proof.write_base_values.clone();
+    let wa_bit_evals = write_base_values[..address_bits].to_vec();
+    let wa_valid_eval = write_base_values[address_bits];
+    let inc_eval = write_base_values[address_bits + 1];
     let eq_eval = eq_points(&rho_j, r_j);
     let m0_eval = proof.initial_write_eval;
     let wa_eval = address_value(&wa_bit_evals, wa_valid_eval, r_k);
@@ -1974,16 +2028,16 @@ pub(crate) fn verify_binary_twist_claims(
     }
     let r_previous = &history_challenges[..cycle_bits];
     let r_j = &history_challenges[cycle_bits..];
-    let current_bits = (0..address_bits)
-        .map(|bit| fold_all(&addr[address_bits + bit], r_j))
-        .collect::<Vec<_>>();
-    let current_valid = fold_all(&addr[2 * address_bits + 1], r_j);
-    let current_inc = fold_all(increments, &inc_point(r_j));
-    let successor_bits = (0..address_bits)
-        .map(|bit| fold_all(&addr[address_bits + bit], r_previous))
-        .collect::<Vec<_>>();
-    let successor_valid = fold_all(&addr[2 * address_bits + 1], r_previous);
-    let successor_inc = fold_all(increments, &inc_point(r_previous));
+    let write_history_values = proof.write_history_values.clone();
+    let current_start = 0;
+    let current_bits = write_history_values[current_start..current_start + address_bits].to_vec();
+    let current_valid = write_history_values[current_start + address_bits];
+    let current_inc = write_history_values[current_start + address_bits + 1];
+    let successor_start = current_start + address_bits + 2;
+    let successor_bits =
+        write_history_values[successor_start..successor_start + address_bits].to_vec();
+    let successor_valid = write_history_values[successor_start + address_bits];
+    let successor_inc = write_history_values[successor_start + address_bits + 1];
     let eq_eval = eq_points(&rho_j, r_j);
     let lt_eval = lt_mle(r_previous, r_j, cycles);
     let mut equality = F2_128::from(1u64);
@@ -2040,14 +2094,13 @@ pub(crate) fn verify_binary_twist_claims(
     let r_k = &update_challenges[cycle_bits..];
     let initial_update_point = r_k.to_vec();
     let initial_update_eval = proof.initial_update_eval;
-    let wa_bit_evals = (0..address_bits)
-        .map(|bit| fold_all(&addr[address_bits + bit], r_jp))
-        .collect::<Vec<_>>();
-    let wa_valid_eval = fold_all(&addr[2 * address_bits + 1], r_jp);
-    let inc_eval = fold_all(increments, &inc_point(r_jp));
+    let final_values_evals = proof.final_values_evals.clone();
+    let wa_bit_evals = final_values_evals[..address_bits].to_vec();
+    let wa_valid_eval = final_values_evals[address_bits];
+    let inc_eval = final_values_evals[address_bits + 1];
+    let final_eval = final_values_evals[address_bits + 2];
     let eq_eval = eq_points(&rho_k, r_k);
     let delta_eval = eq_at_index(r_jp, 0);
-    let final_eval = fold_all(&witness.final_value, r_k);
     let m0_eval = proof.initial_update_eval;
     let wa_eval = address_value(&wa_bit_evals, wa_valid_eval, r_k);
     let final_terminal = eq_eval * (delta_eval * (final_eval + m0_eval) + wa_eval * inc_eval);

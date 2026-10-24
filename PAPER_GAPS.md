@@ -2782,3 +2782,15 @@ the prerequisite for using proof-carried values.
 witness.read_value/write_value/initial; the shared point helper binds them to the
 opening. Benchmark: 159,363 B (+160 B). Address/increment/final tables and
 `read_value`/`write_value` addresses still come from the witness.
+
+
+### A2a milestone: witness-free BinaryTwist verification
+
+`BinaryTwistRamProof` now carries every table evaluation the verifier needs
+(boolean address bits, read-initial/history, write-base/history, final values,
+initial/read/write value evals, cycle/address bits).
+`verify_binary_twist_from_proof` derives its dimensions from the proof and does
+not use a witness at all; `verify_binary_twist_claims` is a compatibility wrapper.
+`access_claims_from_proof` verifies RAM and register claims from the proof, and
+`CoreStatement` no longer contains `AccessStatement`. Benchmark: 161,187 B
+(+1.8 KB). Aux Shout/Router statements are still linear.

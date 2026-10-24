@@ -1053,6 +1053,8 @@ pub struct UnifiedTraceProof {
     pub store_router_index: Option<usize>,
     pub trace_index: usize,
     pub trace_claims: Vec<(magnetar_pcs::P3MosaicPoint, Vec<F2_128>)>,
+    pub access_digest: [u8; 32],
+    pub aux_digest: [u8; 32],
 }
 
 pub(crate) struct GatedProveInput {
@@ -2227,7 +2229,6 @@ pub struct CpuStatement {
 pub struct CoreStatement {
     pub width: usize,
     pub shape: crate::cpu_shape::CpuShape,
-    pub access: crate::access_statement::AccessStatement,
     pub aux: Option<crate::aux_statement::AuxStatement>,
 }
 
@@ -2240,8 +2241,13 @@ pub fn verify_core_statement(
         width: statement.width,
         shape: statement.shape.clone(),
     };
+    if let Some(aux) = &statement.aux {
+        if aux.digest() != proof.aux_digest {
+            return Err(RuntimeError::Proof("aux statement digest mismatch".into()));
+        }
+    }
     let (ry, cpu_value, gated_ry) = cpu_statement_claims(proof, &cpu)?;
-    let (ram_claims, register_claims) = statement.access.verify_access_claims(proof)?;
+    let (ram_claims, register_claims) = crate::access_statement::access_claims_from_proof(proof)?;
     let (mut points, mut values) = ram_claims;
     points.extend(register_claims.0);
     values.extend(register_claims.1);
@@ -5638,7 +5644,6 @@ mod cpu_statement_tests {
         let statement = CoreStatement {
             width: 8,
             shape: proof.shape.clone(),
-            access: crate::access_statement::AccessStatement::from_trace(&trace),
             aux: Some(crate::aux_statement::AuxStatement::from_trace(&trace)),
         };
         let encoded = bincode::serialize(&statement).unwrap();
@@ -5648,9 +5653,7 @@ mod cpu_statement_tests {
         bad.shape.rows[0].pc = bad.shape.rows[0].pc.wrapping_add(4);
         assert!(verify_core_statement(&proof, &bad).is_err());
         let mut bad = statement;
-        if let Some(event) = bad.access.memory_events.first_mut() {
-            event.access.value = event.access.value.wrapping_add(1);
-        }
+        bad.shape.rows[0].pc = bad.shape.rows[0].pc.wrapping_add(4);
         assert!(verify_core_statement(&proof, &bad).is_err());
     }
 

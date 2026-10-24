@@ -24,6 +24,11 @@ pub struct AccessStatement {
 }
 
 impl AccessStatement {
+    pub fn digest(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(bincode::serialize(self).expect("access statement serializes")).into()
+    }
+
     pub fn from_trace(trace: &Trace) -> Self {
         Self {
             config: trace.config.clone(),
@@ -136,6 +141,33 @@ impl AccessStatement {
         crate::register_twist::register_twist_witness(&self.synthetic_trace())
             .map_err(|error| crate::RuntimeError::Proof(error.to_string()))
     }
+}
+
+/// Verify RAM and register access claims directly from the proof, with no witness.
+pub fn access_claims_from_proof(
+    proof: &crate::UnifiedTraceProof,
+) -> Result<
+    (
+        crate::binary_twist::MosaicClaims,
+        crate::binary_twist::MosaicClaims,
+    ),
+    crate::RuntimeError,
+> {
+    let ram = crate::binary_twist::verify_binary_twist_from_proof(
+        &proof.access.ram,
+        &proof.cpu.commitment,
+        1,
+    )
+    .map_err(|error| crate::RuntimeError::Proof(error.to_string()))?
+    .ok_or_else(|| crate::RuntimeError::Proof("RAM access claims rejected".into()))?;
+    let registers = crate::binary_twist::verify_binary_twist_from_proof(
+        &proof.access.registers,
+        &proof.cpu.commitment,
+        proof.register_index,
+    )
+    .map_err(|error| crate::RuntimeError::Proof(error.to_string()))?
+    .ok_or_else(|| crate::RuntimeError::Proof("register access claims rejected".into()))?;
+    Ok((ram, registers))
 }
 
 #[cfg(test)]
