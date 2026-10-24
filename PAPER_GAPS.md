@@ -3464,7 +3464,9 @@ Shift           -> Routing(Shifts)
 other           -> Cpu
 ```
 
-`cpu_segments_are_tagged_with_their_owner` covers the mapping. A direct
-`WitnessLayout` from these row segments is not possible yet: merged row system
-lengths are not powers of two (observed 511), so a future virtual layout needs
-padded/aligned subcubes and a mapping back to the merged witness.
+`cpu_segments_are_tagged_with_their_owner` covers the mapping. Merged row
+system lengths are not powers of two (observed 511), so `padded_virtual_layout`
+now pads each row segment to the next power of two, aligns it, and returns a
+mapping back to the merged witness; `pad_values` places the witness in the
+virtual layout. The metadata test builds this layout, splits claims, routes them
+to owners, and verifies the `VirtualClaimRouter`.

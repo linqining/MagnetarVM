@@ -1381,6 +1381,68 @@ pub struct CpuWitnessMetadata {
     pub segments: Vec<CpuWitnessSegment>,
 }
 
+#[derive(Clone, Debug)]
+pub struct VirtualSegmentMap {
+    pub original_offset: usize,
+    pub padded_offset: usize,
+    pub len: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct PaddedVirtualLayout {
+    pub layout: WitnessLayout,
+    pub mapping: Vec<VirtualSegmentMap>,
+}
+
+impl PaddedVirtualLayout {
+    pub fn pad_values(&self, values: &[F2_128]) -> Vec<F2_128> {
+        let mut padded = vec![F2_128::from(0u64); self.layout.total_bits];
+        for map in &self.mapping {
+            let end = map.original_offset + map.len;
+            if end <= values.len() {
+                padded[map.padded_offset..map.padded_offset + map.len]
+                    .copy_from_slice(&values[map.original_offset..end]);
+            }
+        }
+        padded
+    }
+}
+
+impl CpuWitnessMetadata {
+    /// Build a virtual segment layout with power-of-two, aligned segments.
+    ///
+    /// Row CPU systems have non-power-of-two sizes (for example 511), so each
+    /// row segment is padded to the next power of two and placed at an aligned
+    /// offset. `pad_values` transfers the merged witness into this layout.
+    pub fn padded_virtual_layout(&self) -> Result<PaddedVirtualLayout, RuntimeError> {
+        let mut segments = Vec::with_capacity(self.segments.len());
+        let mut mapping = Vec::with_capacity(self.segments.len());
+        let mut offset = 0usize;
+        for (index, segment) in self.segments.iter().enumerate() {
+            let size = segment.len.next_power_of_two();
+            let aligned = (offset + size - 1) & !(size - 1);
+            segments.push(Segment::new(
+                format!("virtual{index}_{:?}", segment.row_kind),
+                aligned,
+                size,
+                SegmentKind::Direct,
+                segment.owner,
+            ));
+            mapping.push(VirtualSegmentMap {
+                original_offset: segment.offset,
+                padded_offset: aligned,
+                len: segment.len,
+            });
+            offset = aligned + size;
+        }
+        Ok(PaddedVirtualLayout {
+            layout: WitnessLayout::new(segments)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?,
+            mapping,
+        })
+    }
+}
+
 impl CpuWitnessMetadata {
     pub fn total_len(&self) -> usize {
         self.segments

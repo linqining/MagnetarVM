@@ -2319,5 +2319,21 @@ mod metadata_tests {
             .segments
             .iter()
             .any(|segment| !segment.vars.is_empty()));
+        let padded = metadata.padded_virtual_layout().unwrap();
+        let values = padded.pad_values(witness.values());
+        assert_eq!(values.len(), padded.layout.total_bits);
+        let point = vec![
+            magnetar_constraint::F2_128::from(0u64);
+            padded.layout.total_bits.trailing_zeros() as usize
+        ];
+        let claims =
+            magnetar_proof::virtual_spartan::split_segment_claims(&padded.layout, &values, &point)
+                .unwrap();
+        let groups =
+            magnetar_proof::virtual_spartan::route_segment_claims_by_owner(&padded.layout, &claims)
+                .unwrap();
+        magnetar_proof::virtual_spartan::VirtualClaimRouter::new(&padded.layout)
+            .verify(&groups)
+            .unwrap();
     }
 }
