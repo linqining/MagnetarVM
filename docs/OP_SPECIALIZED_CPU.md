@@ -770,6 +770,14 @@ fallback      scalar bit loop
 on a 1,024-bit pattern; on this arm64 host the NEON path is the one actually
 executed. The AVX2 path is cfg-gated and not executable on this host.
 
+`simd_pack_bench` packs 4,194,304 bits with 3 repetitions:
+
+```text
+scalar    2.00-5.24 ms
+hardware  0.159-0.476 ms
+speedup   11.0-12.6x
+```
+
 The end-to-end native prove time did not show a stable win from packing alone
 (65 ms vs 44-127 ms across runs); packing is a small part of the proof. This is a
 real hardware-SIMD kernel, but not yet a broad SIMD port of the field/PCS hot

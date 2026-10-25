@@ -534,6 +534,17 @@ pub struct RingSwitchOpening<O> {
     pub pcs_opening: O,
 }
 
+/// Hidden benchmark hook: pack bits with the hardware kernel or the scalar
+/// reference. Used by the testkit to measure the SIMD packing path.
+#[doc(hidden)]
+pub fn pack_bits_bench<P: Pcs>(bits: &[bool], hardware: bool) -> Result<Vec<F2_128>, ProofError> {
+    if hardware {
+        RingSwitchPackedBitPcs::<P>::pack(bits)
+    } else {
+        Ok(RingSwitchPackedBitPcs::<P>::pack_scalar(bits))
+    }
+}
+
 /// Multi-field packed backend implementing the DP24/Binius ring-switch
 /// reduction. Witnesses are packed 128 bits per field element; the final
 /// evaluation is reduced to a product sum-check against the packed table.
