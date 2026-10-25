@@ -3232,10 +3232,12 @@ struct MixedAluBranchRow {
     mem: MemPcRow,
     shift: ShiftPcRow,
     mul: MulPcRow,
+    div: DivPcRow,
     branch_offset: usize,
     mem_offset: usize,
     shift_offset: usize,
     mul_offset: usize,
+    div_offset: usize,
     pc: Vec<magnetar_constraint::VarId>,
     next_pc: Vec<magnetar_constraint::VarId>,
     select_alu: magnetar_constraint::VarId,
@@ -3243,11 +3245,13 @@ struct MixedAluBranchRow {
     select_mem: magnetar_constraint::VarId,
     select_shift: magnetar_constraint::VarId,
     select_mul: magnetar_constraint::VarId,
+    select_div: magnetar_constraint::VarId,
     and_alu: Vec<magnetar_constraint::VarId>,
     and_branch: Vec<magnetar_constraint::VarId>,
     and_mem: Vec<magnetar_constraint::VarId>,
     and_shift: Vec<magnetar_constraint::VarId>,
     and_mul: Vec<magnetar_constraint::VarId>,
+    and_div: Vec<magnetar_constraint::VarId>,
     one: magnetar_constraint::VarId,
     relation: BitRelation,
 }
@@ -3279,6 +3283,10 @@ pub enum MixedAluBranchInput {
         left: u64,
         right: u64,
     },
+    Divide {
+        num: u64,
+        den: u64,
+    },
 }
 
 impl MixedAluBranchRow {
@@ -3289,20 +3297,24 @@ impl MixedAluBranchRow {
         let mem = MemPcRow::new(width);
         let shift = ShiftPcRow::new(width);
         let mul = MulPcRow::new(width);
+        let div = DivPcRow::new(width);
         let branch_offset = alu.relation.num_vars;
         let mem_offset = branch_offset + branch.relation.num_vars;
         let shift_offset = mem_offset + mem.relation.num_vars;
         let mul_offset = shift_offset + shift.relation.num_vars;
+        let div_offset = mul_offset + mul.relation.num_vars;
         let mut relation = alu.relation.clone();
         relation.num_vars += branch.relation.num_vars
             + mem.relation.num_vars
             + shift.relation.num_vars
-            + mul.relation.num_vars;
+            + mul.relation.num_vars
+            + div.relation.num_vars;
         for (source, offset) in [
             (&branch.relation, branch_offset),
             (&mem.relation, mem_offset),
             (&shift.relation, shift_offset),
             (&mul.relation, mul_offset),
+            (&div.relation, div_offset),
         ] {
             for row in &source.rows {
                 let shift =
@@ -3322,12 +3334,14 @@ impl MixedAluBranchRow {
         let select_mem = select_alu + 2;
         let select_shift = select_alu + 3;
         let select_mul = select_alu + 4;
-        relation.num_vars += 5;
+        let select_div = select_alu + 5;
+        relation.num_vars += 6;
         let and_alu = take(&mut relation, width);
         let and_branch = take(&mut relation, width);
         let and_mem = take(&mut relation, width);
         let and_shift = take(&mut relation, width);
         let and_mul = take(&mut relation, width);
+        let and_div = take(&mut relation, width);
         let one = alu.instr.one;
         for bit in 0..width {
             relation.add(BitRow::new(vec![pc[bit]], vec![pc[bit]], vec![pc[bit]]));
@@ -3358,6 +3372,11 @@ impl MixedAluBranchRow {
                 vec![pc[bit]],
             ));
             relation.add(BitRow::new(
+                vec![div.pc[bit] + div_offset],
+                vec![one],
+                vec![pc[bit]],
+            ));
+            relation.add(BitRow::new(
                 vec![select_alu],
                 vec![alu.next_pc[bit]],
                 vec![and_alu[bit]],
@@ -3383,6 +3402,11 @@ impl MixedAluBranchRow {
                 vec![and_mul[bit]],
             ));
             relation.add(BitRow::new(
+                vec![select_div],
+                vec![div.next_pc[bit] + div_offset],
+                vec![and_div[bit]],
+            ));
+            relation.add(BitRow::new(
                 vec![next_pc[bit]],
                 vec![one],
                 vec![
@@ -3391,6 +3415,7 @@ impl MixedAluBranchRow {
                     and_mem[bit],
                     and_shift[bit],
                     and_mul[bit],
+                    and_div[bit],
                 ],
             ));
         }
@@ -3400,6 +3425,7 @@ impl MixedAluBranchRow {
             select_mem,
             select_shift,
             select_mul,
+            select_div,
         ] {
             relation.add(BitRow::new(vec![selector], vec![selector], vec![selector]));
         }
@@ -3410,6 +3436,7 @@ impl MixedAluBranchRow {
                 select_mem,
                 select_shift,
                 select_mul,
+                select_div,
             ],
             vec![one],
             vec![one],
@@ -3421,10 +3448,12 @@ impl MixedAluBranchRow {
             mem,
             shift,
             mul,
+            div,
             branch_offset,
             mem_offset,
             shift_offset,
             mul_offset,
+            div_offset,
             pc,
             next_pc,
             select_alu,
@@ -3432,11 +3461,13 @@ impl MixedAluBranchRow {
             select_mem,
             select_shift,
             select_mul,
+            select_div,
             and_alu,
             and_branch,
             and_mem,
             and_shift,
             and_mul,
+            and_div,
             one,
             relation,
         }
@@ -3468,11 +3499,16 @@ impl MixedAluBranchRow {
             MixedAluBranchInput::Multiply { left, right } => (*left, *right),
             _ => (0x12, 0x34),
         };
+        let (num, den) = match input {
+            MixedAluBranchInput::Divide { num, den } => (*num, *den),
+            _ => (0x60, 3),
+        };
         let mut bits = self.alu.witness_at(pc, left, right, op);
         bits.extend(self.branch.witness_at(pc, imm, bl, br, kind));
         bits.extend(self.mem.witness_at(pc, rs1, mem_imm, value));
         bits.extend(self.shift.witness_at(pc, shift_left, shamt, shift_kind));
         bits.extend(self.mul.witness_at(pc, mul_left, mul_right));
+        bits.extend(self.div.witness_at(pc, num, den));
         bits.resize(self.relation.num_vars, false);
         let selected = match input {
             MixedAluBranchInput::Alu { .. } => 0usize,
@@ -3480,6 +3516,7 @@ impl MixedAluBranchRow {
             MixedAluBranchInput::Memory { .. } => 2,
             MixedAluBranchInput::Shift { .. } => 3,
             MixedAluBranchInput::Multiply { .. } => 4,
+            MixedAluBranchInput::Divide { .. } => 5,
         };
         let next = match selected {
             0 => self.alu.next_pc.clone(),
@@ -3501,11 +3538,17 @@ impl MixedAluBranchRow {
                 .iter()
                 .map(|v| *v + self.shift_offset)
                 .collect(),
-            _ => self
+            4 => self
                 .mul
                 .next_pc
                 .iter()
                 .map(|v| *v + self.mul_offset)
+                .collect(),
+            _ => self
+                .div
+                .next_pc
+                .iter()
+                .map(|v| *v + self.div_offset)
                 .collect(),
         };
         for bit in 0..self.width {
@@ -3517,6 +3560,7 @@ impl MixedAluBranchRow {
         bits[self.select_mem] = selected == 2;
         bits[self.select_shift] = selected == 3;
         bits[self.select_mul] = selected == 4;
+        bits[self.select_div] = selected == 5;
         for bit in 0..self.width {
             bits[self.and_alu[bit]] = bits[self.select_alu] && bits[self.alu.next_pc[bit]];
             bits[self.and_branch[bit]] =
@@ -3527,6 +3571,8 @@ impl MixedAluBranchRow {
                 bits[self.select_shift] && bits[self.shift.next_pc[bit] + self.shift_offset];
             bits[self.and_mul[bit]] =
                 bits[self.select_mul] && bits[self.mul.next_pc[bit] + self.mul_offset];
+            bits[self.and_div[bit]] =
+                bits[self.select_div] && bits[self.div.next_pc[bit] + self.div_offset];
         }
         bits
     }
@@ -3669,6 +3715,9 @@ pub fn mixed_alu_branch_rows_from_trace(
                 signed_b: false,
                 ..
             } => Ok((pc, MixedAluBranchInput::Multiply { left, right })),
+            GatedCpuRowInput::Div { num, den, .. } => {
+                Ok((pc, MixedAluBranchInput::Divide { num, den }))
+            }
             other => Err(RuntimeError::Proof(format!(
                 "mixed ALU+branch+memory row does not support {other:?}"
             ))),
@@ -4284,6 +4333,59 @@ mod tests {
             8, &rows, &proof, &layout, &direct, 0x1000, 0x100c,
         )
         .is_err());
+    }
+
+    #[test]
+    fn alu_branch_div_trace_binds_witness() {
+        use magnetar_executor::execute;
+        use magnetar_pcs::P3SharedPcs;
+        use magnetar_proof::RingSwitchPackedBitPcs;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+        let addi = |rd, imm| {
+            Instruction {
+                op: Op::Addi,
+                rd,
+                rs1: 0,
+                rs2: 0,
+                imm,
+                shamt: 0,
+            }
+            .encode()
+        };
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                addi(1, 96),
+                addi(2, 3),
+                Instruction {
+                    op: Op::Divu,
+                    rd: 3,
+                    rs1: 1,
+                    rs2: 2,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let backend =
+            RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
+        let (proof, layout) = prove_alu_branch_trace(&trace, 8, &backend).unwrap();
+        verify_alu_branch_trace(&trace, &proof, &layout, 8, &backend).unwrap();
     }
 
     #[test]

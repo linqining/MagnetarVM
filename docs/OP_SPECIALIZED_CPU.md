@@ -388,4 +388,10 @@ verifies with the commitment check.
 `MulPcRow` is a fifth component. Trace mapping accepts only the low unsigned
 `Mul` form; `mulh/mulhu/mulhsu` are rejected rather than mis-modelled.
 `alu_branch_mul_trace_binds_witness` executes Addi/Addi/Mul/Ecall, proves, and
-verifies with the commitment check. Div/rem traces still need their components.
+verifies with the commitment check.
+
+### Divide component (done)
+
+`DivPcRow` is a sixth component. Trace mapping accepts `Div`/`Divu` rows;
+signed div/rem still maps to `SDiv` and is rejected. `alu_branch_div_trace_binds_witness`
+executes Addi/Addi/Divu/Ecall and verifies the trace-bound proof.
