@@ -134,3 +134,25 @@ the unified CPU stage, which builds `z` from `reservation_cpu_rows` through
 `reservation_virtual_inputs` rather than from the bundle. The prototype was
 reverted to keep HEAD green (295/3); the next change should target that unified
 reservation/virtual input path.
+
+
+## Second step2 experiment
+
+With step2 wired into `GatedCpuRow`:
+
+```text
+compressed row relation_check                 passed
+compressed reservation batch round trip       passed
+compressed gated_bundle round trip            passed
+unified reservation_claim_inputs matrices     ClaimMismatch
+```
+
+The remaining failure is before the proof: the shared matrices built from the
+step2 relation disagree with the `z` produced from the same `ReservationCpuRow`
+witness, even though every row's `relation_check` passes. This points at a
+shared-matrix/link or virtual-layout variable not carrying the four new step2
+variables, rather than at the PC arithmetic itself.
+
+The prototype was reverted again to keep HEAD at 295/3. The next fix should add
+a matrix-vs-z constraint probe that reports the first failing shared-matrix row
+and maps its columns back to the step2 variables.
