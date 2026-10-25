@@ -675,10 +675,21 @@ tests::trace_proof_covers_compressed_memory_operations
 passes in the full suite at HEAD. The current full runtime suite is:
 
 ```text
-285 passed / 10 failed
+288 passed / 7 failed
 ```
 
-All 10 remaining failures are the pre-existing baseline failures listed above.
+After fixing the JALR mask relation, the AMO test tamper target and the gated
+chunk-count expectation, the remaining 7 failures are:
+
+```text
+binary_twist::ram_tests::ram_binary_twist_bundle_round_trips
+gated_aux::tests::gated_aux_proves_shout_and_shift
+packed_router::tests::all_router_groups_round_trip
+packed_router::tests::full_packed_router_round_trips
+tests::trace_proof_covers_compressed_branches
+tests::trace_proof_covers_compressed_instructions
+tests::trace_proof_covers_compressed_memory_operations
+```
 
 
 ## Dynamic CPU in compact chunked proofs (done)
