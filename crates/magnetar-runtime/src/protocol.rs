@@ -2866,4 +2866,23 @@ mod metadata_tests {
             .verify(&groups)
             .unwrap();
     }
+    #[test]
+    fn opening_pcs_scale_with_table_bits() {
+        let table = |bits: usize| magnetar_pcs::P3MosaicTable {
+            columns: vec![vec![
+                magnetar_constraint::F2_128::from(0u64);
+                1usize << bits
+            ]],
+        };
+        let small = super::opening_pcs(&[table(5)]);
+        assert_eq!(
+            (small.log_inv_rate, small.pow_bits, small.log_folding_factor),
+            (3, 24, 2)
+        );
+        let large = super::opening_pcs(&[table(6)]);
+        assert_eq!(
+            (large.log_inv_rate, large.pow_bits, large.log_folding_factor),
+            (3, 21, 2)
+        );
+    }
 }

@@ -4377,3 +4377,7 @@ Pow=25 saved another 0.7 KB but made the benchmark take ~48 s, so 24 is kept.
 3,567,043 -> 3,555,811 B (-11.2 KB), mainly memory -2.2 KB, memcopy -2.7 KB,
 mixedmem -1.6 KB, bitmix -1.4 KB, loop -1.3 KB; muldiv grows 0.3 KB. AMO latency
 stays ~7.3 s.
+
+
+`opening_pcs_scale_with_table_bits` pins the adaptive unified opening tiers:
+max table vars <=5 -> (3,24,2), otherwise (3,21,2).
