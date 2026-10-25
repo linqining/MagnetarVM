@@ -4434,3 +4434,7 @@ proof and verifies it with the trace dropped, covering the proof-only path.
 
 
 `preprocess_expanded_falls_back_without_shifts` covers the preprocess API fallback.
+
+
+`backward_branch_is_relocated` covers a loop whose conditional branch jumps back
+over the expanded shift sequence; direct and expanded register files match.

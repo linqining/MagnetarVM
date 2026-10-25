@@ -747,6 +747,72 @@ mod tests {
     }
 
     #[test]
+    fn backward_branch_is_relocated() {
+        let original = program(vec![
+            Instruction {
+                op: Op::Addi,
+                rd: 1,
+                rs1: 0,
+                rs2: 0,
+                imm: 3,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Addi,
+                rd: 2,
+                rs1: 0,
+                rs2: 0,
+                imm: 2,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Addi,
+                rd: 5,
+                rs1: 0,
+                rs2: 0,
+                imm: 1,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Sll,
+                rd: 5,
+                rs1: 5,
+                rs2: 2,
+                imm: 0,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Addi,
+                rd: 1,
+                rs1: 1,
+                rs2: 0,
+                imm: -1,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Bne,
+                rd: 0,
+                rs1: 1,
+                rs2: 0,
+                imm: -8,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction::new(Op::Ebreak).encode(),
+        ]);
+        let expanded = expand_register_shifts(&original).expect("expandable");
+        let direct = execute(&original, config()).unwrap().final_state;
+        let actual = execute(&expanded, config()).unwrap().final_state;
+        assert!(direct.reg(5) > 1);
+        assert_eq!(&actual.regs[..28], &direct.regs[..28]);
+    }
+
+    #[test]
     fn expansion_reuses_no_temporaries() {
         let program = program(vec![
             Instruction {
