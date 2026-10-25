@@ -1,7 +1,10 @@
 use std::time::Instant;
 
 use magnetar_executor::execute;
-use magnetar_runtime::{prove_chunked_trace, prove_chunked_trace_dynamic, verify_chunked_trace};
+use magnetar_runtime::{
+    prove_chunked_trace, prove_chunked_trace_dynamic, prove_chunked_trace_streaming,
+    prove_chunked_trace_streaming_dynamic, verify_chunked_trace,
+};
 use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 
 fn main() {
@@ -63,8 +66,20 @@ fn main() {
         let dynamic_bytes = bincode::serialize(&dynamic).unwrap().len();
         verify_chunked_trace(&trace, &dynamic, 8).unwrap();
 
+        let started = Instant::now();
+        let streaming = prove_chunked_trace_streaming(&trace, 8, chunk).unwrap();
+        let streaming_time = started.elapsed();
+        let streaming_bytes = bincode::serialize(&streaming).unwrap().len();
+        verify_chunked_trace(&trace, &streaming, 8).unwrap();
+
+        let started = Instant::now();
+        let stream_dynamic = prove_chunked_trace_streaming_dynamic(&trace, 8, chunk).unwrap();
+        let stream_dynamic_time = started.elapsed();
+        let stream_dynamic_bytes = bincode::serialize(&stream_dynamic).unwrap().len();
+        verify_chunked_trace(&trace, &stream_dynamic, 8).unwrap();
+
         println!(
-            "chunk={chunk} rows={} compact={compact_bytes}B/{compact_time:?} dynamic={dynamic_bytes}B/{dynamic_time:?}",
+            "chunk={chunk} rows={} compact={compact_bytes}B/{compact_time:?} dynamic={dynamic_bytes}B/{dynamic_time:?} stream={streaming_bytes}B/{streaming_time:?} stream_dynamic={stream_dynamic_bytes}B/{stream_dynamic_time:?}",
             trace.rows.len()
         );
     }

@@ -3402,6 +3402,8 @@ pub struct ChunkCpuProof {
     pub start: usize,
     pub end: usize,
     pub cpu: Option<CpuSpartanProof>,
+    #[serde(default)]
+    pub selected_cpu: Option<SelectedCpuProof>,
 }
 
 /// Per-chunk CPU proofs linked by register/PC state digests.
@@ -3822,6 +3824,15 @@ pub fn prove_chunked_trace_streaming_sequential(
     prove_chunked_trace_streaming_mode(trace, width, chunk_size, false)
 }
 
+fn chunk_trace(trace: &Trace, start: usize, end: usize) -> Trace {
+    let mut sub = trace.clone();
+    sub.rows = trace.rows[start..end].to_vec();
+    if end < trace.rows.len() {
+        sub.final_state.pc = trace.rows[end].pc;
+    }
+    sub
+}
+
 fn prove_chunked_trace_streaming_mode(
     trace: &Trace,
     width: usize,
@@ -3885,6 +3896,74 @@ fn prove_chunked_trace_streaming_mode(
             start,
             end,
             cpu: Some(cpu),
+            selected_cpu: None,
+        });
+    }
+    let chain = ChainedRecursion.aggregate(&chained)?;
+    Ok(ChunkedTraceProof {
+        access,
+        shared_access,
+        whole_cpu: None,
+        trace_commitment,
+        aux,
+        chunks,
+        chain,
+        selected_cpu: None,
+    })
+}
+
+/// Streaming-like chunked proof with one dynamic selected CPU proof per chunk.
+pub fn prove_chunked_trace_streaming_dynamic(
+    trace: &Trace,
+    width: usize,
+    chunk_size: usize,
+) -> Result<ChunkedTraceProof, RuntimeError> {
+    check_trace_linkage(trace)?;
+    if trace.rows.is_empty() || chunk_size == 0 {
+        return Err(RuntimeError::Proof(
+            "chunked proofs require rows and a nonzero chunk size".into(),
+        ));
+    }
+    let trace_commitment = trace_digest(trace);
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    while start < trace.rows.len() {
+        let end = (start + chunk_size).min(trace.rows.len());
+        ranges.push((start, end));
+        start = end;
+    }
+    let (access, aux_claims, opening) = prove_chunked_shared_access(trace)?;
+    let aux = aux_claims.map(|claims| AuxTraceProof {
+        shout: claims.shout,
+        shift_router: claims.shift_router,
+        store_router: claims.store_router,
+        opening: opening.clone(),
+    });
+    let shared_access = if aux.is_some() { None } else { Some(opening) };
+    let backend = crate::protocol::selected_backend();
+    let mut boundaries = vec![0usize];
+    for (_, end) in &ranges {
+        boundaries.push(*end);
+    }
+    let digests = chunk_state_digests(trace, &boundaries);
+    let mut chunks = Vec::new();
+    let mut chained = Vec::new();
+    for (start, end) in ranges {
+        let sub = chunk_trace(trace, start, end);
+        let selected = crate::simd_dual::prove_dynamic_cpu_claims(&sub, width, &backend)?;
+        let proof_digest = selected_chunk_proof_digest(&trace_commitment, start, end, &selected);
+        chained.push(ChainedChunk::new(
+            chained.len(),
+            (end - start) as u64,
+            digests[&start],
+            digests[&end],
+            proof_digest,
+        ));
+        chunks.push(ChunkCpuProof {
+            start,
+            end,
+            cpu: None,
+            selected_cpu: Some(selected),
         });
     }
     let chain = ChainedRecursion.aggregate(&chained)?;
@@ -3953,6 +4032,7 @@ pub fn prove_chunked_trace_dynamic(
             start,
             end,
             cpu: None,
+            selected_cpu: None,
         });
     }
     let chain = ChainedRecursion.aggregate(&chained)?;
@@ -4059,6 +4139,7 @@ fn prove_chunked_trace_mode(
             start,
             end,
             cpu: None,
+            selected_cpu: None,
         });
     }
     let chain = ChainedRecursion.aggregate(&chained)?;
@@ -4088,6 +4169,14 @@ fn verify_chunk_cpu(
     chunk: &ChunkCpuProof,
     width: usize,
 ) -> Result<(), RuntimeError> {
+    if let Some(selected) = &chunk.selected_cpu {
+        let sub = chunk_trace(trace, chunk.start, chunk.end);
+        return crate::simd_dual::verify_dynamic_cpu_claims(
+            &sub,
+            selected,
+            &crate::protocol::selected_backend(),
+        );
+    }
     let cpu = chunk.cpu.as_ref().ok_or_else(|| {
         RuntimeError::Proof(format!("chunk {} is missing its CPU proof", chunk.start))
     })?;
@@ -4264,10 +4353,14 @@ pub fn verify_chunked_trace(
                 "chunk {index} metadata mismatch"
             )));
         }
-        let cpu = chunk.cpu.as_ref().ok_or_else(|| {
-            RuntimeError::Proof(format!("chunk {index} is missing its CPU proof"))
-        })?;
-        let digest = chunk_proof_digest(&proof.trace_commitment, chunk.start, chunk.end, cpu);
+        let digest = if let Some(selected) = &chunk.selected_cpu {
+            selected_chunk_proof_digest(&proof.trace_commitment, chunk.start, chunk.end, selected)
+        } else {
+            let cpu = chunk.cpu.as_ref().ok_or_else(|| {
+                RuntimeError::Proof(format!("chunk {index} is missing its CPU proof"))
+            })?;
+            chunk_proof_digest(&proof.trace_commitment, chunk.start, chunk.end, cpu)
+        };
         if digest != chained.proof_digest {
             return Err(RuntimeError::Proof(format!(
                 "chunk {index} proof digest mismatch"
@@ -4709,6 +4802,32 @@ mod tests {
         let rows =
             crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, 8).unwrap();
         assert!(rows.len() >= trace.rows.len());
+    }
+
+    #[test]
+    fn dynamic_chunked_streaming_round_trips() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(&program, config()).unwrap();
+        let proof = prove_chunked_trace_streaming_dynamic(&trace, 8, 1).unwrap();
+        assert!(proof
+            .chunks
+            .iter()
+            .all(|chunk| chunk.selected_cpu.is_some()));
+        verify_chunked_trace(&trace, &proof, 8).unwrap();
     }
 
     #[test]

@@ -711,3 +711,25 @@ Proof size still grows roughly linearly with rows, confirming that native
 op-specialization improves the CPU stage but does not yet solve A2/E8
 trace-length succinctness. This is far short of the paper's 2^22-2^28-cycle
 target.
+
+
+## Dynamic CPU in streaming chunked proofs (done)
+
+`ChunkCpuProof` now carries an optional per-chunk `selected_cpu`.
+`prove_chunked_trace_streaming_dynamic` builds a dynamic selected CPU claim for
+each chunk (using a sub-trace with the next chunk's PC as final PC), hashes the
+selected proof into that chunk's chain entry, and leaves `cpu = None`.
+`verify_chunked_trace` dispatches per-chunk selected verification, checks the
+selected-proof digest and state chain, and skips the reference CPU verifier.
+
+The dynamic proof forces at least two cycles so a one-row chunk can be padded
+with a branch row; this fixed the one-row chunk sumcheck failure.
+
+4-row Addi/Slli/Addi/Ecall, width 8:
+
+```text
+chunk=1  compact 191,683 B/5.22 s  dynamic 174,087 B/0.37 s  stream 344,907 B/0.35 s  stream-dynamic 265,683 B/0.39 s
+chunk=2  compact 191,423 B/4.96 s  dynamic 173,827 B/0.33 s  stream 257,967 B/1.78 s  stream-dynamic 178,395 B/0.45 s
+```
+
+`dynamic_chunked_streaming_round_trips` verifies the per-chunk selected proof.

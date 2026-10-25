@@ -3855,7 +3855,7 @@ fn mixed_trace_bits(
         return Err(RuntimeError::Proof("empty mixed trace".into()));
     }
     let row = MixedAluBranchRow::new(width);
-    let cycles = rows.len().next_power_of_two();
+    let cycles = rows.len().next_power_of_two().max(2);
     let initial_pc = rows[0].0;
     let (base_cols, _, _) = gated_shared_matrices(&row, cycles, None)?;
     let mut bits = Vec::with_capacity(cycles * base_cols);
@@ -4176,7 +4176,7 @@ fn small_trace_bits(
     with_memory: bool,
 ) -> Result<(Vec<bool>, usize, u64), RuntimeError> {
     let row = SmallAluBranchRow::new(width, with_memory);
-    let cycles = rows.len().next_power_of_two();
+    let cycles = rows.len().next_power_of_two().max(2);
     let initial_pc = rows[0].0;
     let (base_cols, _, _) = gated_shared_matrices(&row, cycles, None)?;
     let mut bits = Vec::with_capacity(cycles * base_cols);
@@ -4476,7 +4476,7 @@ pub fn prove_dynamic_cpu_claims<B: magnetar_proof::BitPcs>(
     Ok(SelectedCpuClaims {
         op: SelectedOp::Dynamic,
         width,
-        cycles: trace.rows.len().next_power_of_two(),
+        cycles: trace.rows.len().next_power_of_two().max(2).max(2),
         initial_pc: trace.rows[0].pc,
         final_pc: trace.final_state.pc,
         layout,
@@ -4869,7 +4869,7 @@ fn dynamic_trace_bits(
     mask: u8,
 ) -> Result<(Vec<bool>, usize, u64), RuntimeError> {
     let row = DynamicMixedRow::build(mask, width)?;
-    let cycles = rows.len().next_power_of_two();
+    let cycles = rows.len().next_power_of_two().max(2);
     let initial_pc = rows[0].0;
     let (base_cols, _, _) = gated_shared_matrices(&row, cycles, None)?;
     let mut bits = Vec::with_capacity(cycles * base_cols);
@@ -4912,6 +4912,9 @@ pub fn prove_dynamic_selected_trace<B: magnetar_proof::BitPcs>(
     let rows = mixed_alu_branch_rows_from_trace(trace, width)?;
     let final_pc = trace.final_state.pc;
     let mut mask = mixed_rows_component_mask(&rows);
+    if rows.len() < rows.len().next_power_of_two().max(2) {
+        mask |= MIXED_BRANCH;
+    }
     if rows.last().map(|(pc, _)| *pc) == Some(final_pc) {
         mask |= MIXED_BRANCH;
     }
@@ -4938,6 +4941,9 @@ pub fn verify_dynamic_selected_trace<B: magnetar_proof::BitPcs>(
     let rows = mixed_alu_branch_rows_from_trace(trace, width)?;
     let final_pc = trace.final_state.pc;
     let mut mask = mixed_rows_component_mask(&rows);
+    if rows.len() < rows.len().next_power_of_two().max(2) {
+        mask |= MIXED_BRANCH;
+    }
     if rows.last().map(|(pc, _)| *pc) == Some(final_pc) {
         mask |= MIXED_BRANCH;
     }
@@ -5120,10 +5126,13 @@ pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
     let rows = mixed_alu_branch_rows_from_trace(trace, width)?;
     let final_pc = trace.final_state.pc;
     let mut mask = mixed_rows_component_mask(&rows);
+    if rows.len() < rows.len().next_power_of_two().max(2) {
+        mask |= MIXED_BRANCH;
+    }
     if rows.last().map(|(pc, _)| *pc) == Some(final_pc) {
         mask |= MIXED_BRANCH;
     }
-    let cycles = rows.len().next_power_of_two();
+    let cycles = rows.len().next_power_of_two().max(2);
     let initial_pc = rows[0].0;
     let original = DynamicMixedRow::build(mask, width)?;
     let (row, mapping, layout) = segmented_dynamic_row(mask, width, cycles)?;
@@ -5184,10 +5193,13 @@ pub fn verify_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
     let rows = mixed_alu_branch_rows_from_trace(trace, width)?;
     let final_pc = trace.final_state.pc;
     let mut mask = mixed_rows_component_mask(&rows);
+    if rows.len() < rows.len().next_power_of_two().max(2) {
+        mask |= MIXED_BRANCH;
+    }
     if rows.last().map(|(pc, _)| *pc) == Some(final_pc) {
         mask |= MIXED_BRANCH;
     }
-    let cycles = rows.len().next_power_of_two();
+    let cycles = rows.len().next_power_of_two().max(2);
     let initial_pc = rows[0].0;
     let original = DynamicMixedRow::build(mask, width)?;
     let (row, mapping, expected_layout) = segmented_dynamic_row(mask, width, cycles)?;
