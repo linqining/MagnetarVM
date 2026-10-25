@@ -432,6 +432,7 @@ impl ProofBundle {
             field_tables: self.field_tables,
             amo: self.amo,
             gated: self.gated,
+            selected_cpu: None,
             shape: self.shape,
             register_index: self.register_index,
             ram_index: self.ram_index,
@@ -1062,6 +1063,24 @@ mod phase_tests {
     }
 
     #[test]
+    fn unified_proof_verifies_attached_selected_cpu_claims() {
+        let trace = trace();
+        let mut proof = crate::prove_unified_trace(&trace, 8).expect("unified proof");
+        let initial = trace.rows[0].pc;
+        let claims = crate::simd_dual::prove_selected_cpu_claims(
+            crate::simd_dual::SelectedOp::Alu,
+            8,
+            16,
+            initial,
+            initial + 4 * 16,
+            &selected_backend(),
+        )
+        .expect("selected claims");
+        proof.selected_cpu = Some(claims);
+        crate::verify_unified_trace(&trace, &proof, 8).expect("verify with selected claims");
+    }
+
+    #[test]
     fn protocol_plan_and_orchestrator_preserve_proof_bytes() {
         let trace = trace();
         let plan = ProtocolPlan::unified();
@@ -1479,6 +1498,10 @@ fn e5_prepare(
 
 fn e5_backend() -> RingSwitchPackedBitPcs<P3BinaryPcs> {
     RingSwitchPackedBitPcs::new(P3BinaryPcs::new(100))
+}
+
+pub(crate) fn selected_backend() -> RingSwitchPackedBitPcs<P3BinaryPcs> {
+    e5_backend()
 }
 
 type E5Layout = (
@@ -2362,6 +2385,7 @@ impl<'a> UnifiedProveContext<'a> {
             trace_claims,
             table_batches: self.table_batches,
             width: self.width,
+            selected_cpu: None,
             e5_opening: self.e5_opening,
             field_opening: self.field_opening,
             field_pcs_commitment: self.field_pcs_commitment,

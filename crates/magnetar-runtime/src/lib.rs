@@ -1124,12 +1124,19 @@ pub struct E5Opening {
     pub ring: magnetar_proof::RingSwitchOpening<magnetar_pcs::P3Opening>,
 }
 
+pub type SelectedCpuProof = crate::simd_dual::SelectedCpuClaims<
+    <magnetar_proof::RingSwitchPackedBitPcs<P3BinaryPcs> as magnetar_proof::BitPcs>::Commitment,
+    <magnetar_proof::RingSwitchPackedBitPcs<P3BinaryPcs> as magnetar_proof::BitPcs>::Opening,
+>;
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct UnifiedTraceProof {
     pub access: TraceAccessProof,
     pub trace_commitment: [u8; 32],
     pub cpu: Option<LockstepClaims<P3MosaicCommitment>>,
     pub gated: Option<GatedCpuClaims>,
+    #[serde(default)]
+    pub selected_cpu: Option<SelectedCpuProof>,
     pub opening: Option<P3MosaicOpening>,
     pub e5_opening: Option<E5Opening>,
     pub field_opening: Option<P3MosaicOpening>,
@@ -2512,6 +2519,12 @@ pub(crate) fn verify_unified_with_plan(
             crate::protocol::ExecutionStage::Cpu => context.verify_cpu()?,
             crate::protocol::ExecutionStage::Opening => context.verify_opening()?,
         }
+    }
+    if let Some(selected) = &proof.selected_cpu {
+        crate::simd_dual::verify_selected_cpu_claims(
+            selected,
+            &crate::protocol::selected_backend(),
+        )?;
     }
     let has_amo = crate::amo_bundle::has_amo_events(trace);
     if has_amo != proof.amo.is_some() {
