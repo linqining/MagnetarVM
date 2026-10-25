@@ -313,7 +313,7 @@ impl Default for ConstraintProofBackend {
 
 impl ConstraintProofBackend {
     fn pcs_for(system: &ConstraintSystem) -> P3BinaryPcs {
-        if system.num_vars >= 1 << 10 {
+        if system.num_vars >= 1 << 9 {
             P3BinaryPcs::with_params(100, 3, 20, 2)
         } else {
             P3BinaryPcs::with_params(100, 3, 18, 1)
