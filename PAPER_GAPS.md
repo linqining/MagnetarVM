@@ -38,6 +38,8 @@ native unified Addi+Ecall, width 8
 
 native unified rows=256
   proof 487,042 B / prove 10.66 s / verify 1.97 s
+native unified rows=512
+  proof 767,242 B / prove 34.88 s / verify 4.77 s
 
 dynamic compact chunked (4 rows)
   chunk=1 191,679 B / 5.04 s -> 174,083 B / 0.33 s
