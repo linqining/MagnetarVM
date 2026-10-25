@@ -4400,7 +4400,12 @@ pub fn verify_selected_claim_binding<C: Clone + std::fmt::Debug, O: Clone + std:
     claims: &SelectedCpuClaims<C, O>,
     proof: &crate::trace_claims::ClaimProof,
 ) -> bool {
-    claims.claim_root == proof.root && claims.claim_openings == proof.openings
+    if claims.claim_root != proof.root {
+        return false;
+    }
+    let selected = crate::trace_claims::verify_claims(claims.claim_root, &claims.claim_openings);
+    let canonical = proof.verify();
+    selected.is_some() && selected == canonical
 }
 
 /// Verify the trace claim openings carried by a selected CPU claim bundle
