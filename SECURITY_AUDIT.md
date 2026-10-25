@@ -35,6 +35,8 @@ It is a correctness-first reference implementation.
   (`unified_proof_round_trips_without_trace`).
 - Statement/trace-commitment mismatch rejects in the trace-aware verifier.
 - Gated dual `q=2/4/8` runs with both Direct and RingSwitch backends.
+- Compact chunked proof rejects tampering of the whole-CPU witness and of a
+  chunk chain `state_after` digest.
 - D12 expansion tests compare expanded and original register files, including
   branch/jal/auipc/jalr fallback and x28-x31 preservation.
 - `cargo clippy --workspace --all-targets -- -D warnings` is clean.

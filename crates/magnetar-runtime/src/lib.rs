@@ -4260,6 +4260,9 @@ mod tests {
             bincode::serialize(&compact).unwrap().len()
                 < bincode::serialize(&normal).unwrap().len()
         );
+        let mut tampered_chain = compact.clone();
+        tampered_chain.chain.chunks[0].state_after[0] ^= 1;
+        assert!(verify_chunked_trace(&trace, &tampered_chain, 8).is_err());
         let mut tampered = compact;
         let cpu = tampered.whole_cpu.as_mut().unwrap();
         cpu.vw = cpu.vw + F2_128::from(1u64);
