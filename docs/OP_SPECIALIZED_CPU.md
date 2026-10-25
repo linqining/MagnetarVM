@@ -186,3 +186,40 @@ the matrices with the padded block stride (as `reservation_grouped_virtual_input
 does for the full gated row). `alu_pc_virtual_specs` is the segment description;
 it must not be wired into the current `segment_layout` proof without that
 remapping.
+
+
+## Segmented ALU proof (done)
+
+`prove_alu_pc_segmented_batch_bits` builds a padded layout with one segment per
+cycle for:
+
+```text
+instr     Cpu
+pc_add    Cpu
+pc        Pcs
+padding   Cpu (power-of-two chunks)
+```
+
+The witness is remapped into the padded block, the relation is rebuilt on those
+mapped variables, and the matrices use the padded block stride. The relation
+uses `num_vars = base_cols - 1` so that the shared-matrix block size stays at
+`base_cols` (the matrix builder adds one before rounding up).
+
+Test: `alu_pc_segmented_batch_round_trips` (prove + verify, >2 segments).
+
+Release, width 16:
+
+```text
+cycles=256  alu+pc-seg segs=1536 proof=110,328 B prove=2.31 s
+```
+
+Compared with the unsegmented ALU+PC row at 256 cycles:
+
+```text
+unsegmented 85,880 B 3.05 s
+segmented  110,328 B 2.31 s
+```
+
+The segmented layout costs ~28% proof size because the tiny pc/padding segments
+are rounded to powers of two, but it exposes per-op `SegmentClaim`s and is
+faster at this size.

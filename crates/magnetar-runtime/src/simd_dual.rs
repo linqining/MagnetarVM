@@ -2748,6 +2748,205 @@ pub fn branch_pc_virtual_specs(
     ))
 }
 
+struct SegmentedAluPcRow {
+    width: usize,
+    relation: BitRelation,
+    pc: Vec<magnetar_constraint::VarId>,
+    next_pc: Vec<magnetar_constraint::VarId>,
+    one: magnetar_constraint::VarId,
+}
+
+impl GatedRowLike for SegmentedAluPcRow {
+    fn relation(&self) -> &BitRelation {
+        &self.relation
+    }
+    fn packed_companion_system(&self) -> magnetar_constraint::ConstraintSystem {
+        self.relation.to_system()
+    }
+    fn width(&self) -> usize {
+        self.width
+    }
+    fn pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.pc
+    }
+    fn next_pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.next_pc
+    }
+    fn one(&self) -> magnetar_constraint::VarId {
+        self.one
+    }
+}
+
+fn segmented_alu_pc_row(
+    width: usize,
+    cycles: usize,
+) -> Result<
+    (
+        SegmentedAluPcRow,
+        Vec<usize>,
+        magnetar_constraint::WitnessLayout,
+        AluPcRow,
+    ),
+    RuntimeError,
+> {
+    use magnetar_constraint::{Segment, SegmentKind, SegmentOwner, WitnessLayout};
+
+    let original = AluPcRow::new(width);
+    let (base_cols, _, _) = gated_shared_matrices(&original, cycles, None)?;
+    let instr_len = original.instr.relation.num_vars;
+    let pc_start = original.pc[0];
+    let pc_len = 2 * width;
+    let instr_size = instr_len.next_power_of_two();
+    let add_len = pc_start - instr_len;
+    let add_size = if add_len == 0 {
+        0
+    } else {
+        add_len.next_power_of_two()
+    };
+    let pc_size = pc_len.next_power_of_two();
+    if instr_size + add_size + pc_size > base_cols {
+        return Err(RuntimeError::Proof(
+            "selected-op segments do not fit in the base block".into(),
+        ));
+    }
+    let mut mapping = vec![usize::MAX; original.relation.num_vars];
+    let mut blocks = Vec::new();
+    let mut cursor = 0usize;
+    for (index, target) in mapping.iter_mut().take(instr_len).enumerate() {
+        *target = index;
+    }
+    blocks.push(("instr".to_string(), cursor, instr_size, SegmentOwner::Cpu));
+    cursor += instr_size;
+    if add_size > 0 {
+        for index in 0..add_len {
+            mapping[instr_len + index] = cursor + index;
+        }
+        blocks.push(("pc_add".to_string(), cursor, add_size, SegmentOwner::Cpu));
+        cursor += add_size;
+    }
+    for index in 0..pc_len {
+        mapping[pc_start + index] = cursor + index;
+    }
+    blocks.push(("pc".to_string(), cursor, pc_size, SegmentOwner::Pcs));
+    cursor += pc_size;
+    let mut padding_index = 0usize;
+    while cursor < base_cols {
+        let remaining = base_cols - cursor;
+        let mut size = 1usize << (usize::BITS - 1 - remaining.leading_zeros());
+        while size > 1 && !cursor.is_multiple_of(size) {
+            size >>= 1;
+        }
+        blocks.push((
+            format!("padding{padding_index}"),
+            cursor,
+            size,
+            SegmentOwner::Cpu,
+        ));
+        padding_index += 1;
+        cursor += size;
+    }
+    let mut relation = BitRelation::new(base_cols - 1);
+    for row in &original.relation.rows {
+        let map = |vars: &[magnetar_constraint::VarId]| {
+            vars.iter().map(|var| mapping[*var]).collect::<Vec<_>>()
+        };
+        relation.add(BitRow::new(map(&row.a), map(&row.b), map(&row.c)));
+    }
+    let pc = original
+        .pc
+        .iter()
+        .map(|var| mapping[*var])
+        .collect::<Vec<_>>();
+    let next_pc = original
+        .next_pc
+        .iter()
+        .map(|var| mapping[*var])
+        .collect::<Vec<_>>();
+    let one = mapping[original.instr.one];
+    let row = SegmentedAluPcRow {
+        width,
+        relation,
+        pc,
+        next_pc,
+        one,
+    };
+    let mut segments = Vec::with_capacity(cycles * blocks.len());
+    for cycle in 0..cycles {
+        for (name, offset, size, owner) in &blocks {
+            segments.push(Segment::new(
+                format!("{name}{cycle}"),
+                cycle * base_cols + offset,
+                *size,
+                SegmentKind::Direct,
+                *owner,
+            ));
+        }
+    }
+    let layout =
+        WitnessLayout::new(segments).map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok((row, mapping, layout, original))
+}
+
+pub fn prove_alu_pc_segmented_batch_bits<B: magnetar_proof::BitPcs>(
+    width: usize,
+    cycles: usize,
+    initial_pc: u64,
+    final_pc: u64,
+    backend: &B,
+) -> Result<LockstepBatch<B>, RuntimeError> {
+    use magnetar_proof::prove_lockstep_bits;
+
+    let (row, mapping, layout, original) = segmented_alu_pc_row(width, cycles)?;
+    let (base_cols, s1, s2) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
+    if base_cols * cycles != layout.total_bits {
+        return Err(RuntimeError::Proof(format!(
+            "segmented ALU layout does not match the padded block size:              base={base_cols} cycles={cycles} total={}",
+            layout.total_bits
+        )));
+    }
+    let mut bits = Vec::with_capacity(cycles * base_cols);
+    for index in 0..cycles {
+        let pc = initial_pc + 4 * index as u64;
+        let witness = original.witness_at(pc, 0x12, 0x34, crate::simd_f2::GatedAluOp::Add);
+        let mut block = vec![false; base_cols];
+        for (source, target) in mapping.iter().enumerate() {
+            if witness[source] {
+                block[*target] = true;
+            }
+        }
+        bits.extend(block);
+    }
+    let proof = prove_lockstep_bits(
+        &bits, &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], &layout, backend,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok((proof, layout))
+}
+
+pub fn verify_alu_pc_segmented_batch_bits<B: magnetar_proof::BitPcs>(
+    width: usize,
+    cycles: usize,
+    initial_pc: u64,
+    final_pc: u64,
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    layout: &magnetar_constraint::WitnessLayout,
+    backend: &B,
+) -> Result<(), RuntimeError> {
+    use magnetar_proof::verify_lockstep_bits;
+
+    let (row, _, expected, _) = segmented_alu_pc_row(width, cycles)?;
+    if expected.total_bits != layout.total_bits || expected.segments.len() != layout.segments.len()
+    {
+        return Err(RuntimeError::Proof("segmented ALU layout mismatch".into()));
+    }
+    let (_, s1, s2) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
+    verify_lockstep_bits(
+        &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], layout, proof, backend,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok(())
+}
+
 pub fn prove_gated_dual_batch_bits<B: magnetar_proof::BitPcs>(
     width: usize,
     rows: &[(u64, GatedCpuRowInput)],
@@ -3222,6 +3421,22 @@ mod tests {
             cursor += len;
         }
         assert!(cursor > 0);
+    }
+
+    #[test]
+    fn alu_pc_segmented_batch_round_trips() {
+        use magnetar_pcs::P3SharedPcs;
+        use magnetar_proof::RingSwitchPackedBitPcs;
+
+        let backend =
+            RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
+        let initial = 0x1000;
+        let final_pc = initial + 4 * 16;
+        let (proof, layout) =
+            prove_alu_pc_segmented_batch_bits(8, 16, initial, final_pc, &backend).unwrap();
+        assert!(layout.segments.len() > 2);
+        verify_alu_pc_segmented_batch_bits(8, 16, initial, final_pc, &proof, &layout, &backend)
+            .unwrap();
     }
 
     #[test]
