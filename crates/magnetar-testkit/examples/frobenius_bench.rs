@@ -11,10 +11,42 @@ fn trace() -> magnetar_spec::Trace {
     let program = ProgramImage::new(
         0x1000,
         vec![
-            Instruction { op: Op::Addi, rd: 1, rs1: 0, rs2: 0, imm: 7, shamt: 0 }.encode(),
-            Instruction { op: Op::Lui, rd: 2, rs1: 0, rs2: 0, imm: 0x1000_0000, shamt: 0 }.encode(),
-            Instruction { op: Op::Sd, rd: 0, rs1: 2, rs2: 1, imm: 0, shamt: 0 }.encode(),
-            Instruction { op: Op::Ld, rd: 3, rs1: 2, rs2: 0, imm: 0, shamt: 0 }.encode(),
+            Instruction {
+                op: Op::Addi,
+                rd: 1,
+                rs1: 0,
+                rs2: 0,
+                imm: 7,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Lui,
+                rd: 2,
+                rs1: 0,
+                rs2: 0,
+                imm: 0x1000_0000,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Sd,
+                rd: 0,
+                rs1: 2,
+                rs2: 1,
+                imm: 0,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Ld,
+                rd: 3,
+                rs1: 2,
+                rs2: 0,
+                imm: 0,
+                shamt: 0,
+            }
+            .encode(),
             Instruction::new(Op::Ecall).encode(),
         ],
     );
