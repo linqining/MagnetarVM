@@ -680,6 +680,73 @@ mod tests {
     }
 
     #[test]
+    fn execute_expanded_falls_back_for_jalr() {
+        let program = program(vec![
+            Instruction {
+                op: Op::Auipc,
+                rd: 1,
+                rs1: 0,
+                rs2: 0,
+                imm: 0,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Addi,
+                rd: 1,
+                rs1: 1,
+                rs2: 0,
+                imm: 12,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Jalr,
+                rd: 0,
+                rs1: 1,
+                rs2: 0,
+                imm: 0,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Addi,
+                rd: 3,
+                rs1: 0,
+                rs2: 0,
+                imm: 7,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Addi,
+                rd: 2,
+                rs1: 0,
+                rs2: 0,
+                imm: 1,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Sll,
+                rd: 4,
+                rs1: 3,
+                rs2: 2,
+                imm: 0,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction::new(Op::Ebreak).encode(),
+        ]);
+        let direct = execute(&program, config()).unwrap().final_state;
+        let fallback = crate::execute_expanded(&program, config())
+            .unwrap()
+            .final_state;
+        assert_eq!(direct.regs, fallback.regs);
+        assert_eq!(fallback.reg(4), 14);
+    }
+
+    #[test]
     fn expansion_reuses_no_temporaries() {
         let program = program(vec![
             Instruction {
