@@ -88,4 +88,58 @@ fn main() {
             gated_prove.as_secs_f64() / small_prove.as_secs_f64()
         );
     }
+
+    let mem_program = ProgramImage::new(
+        0x1000,
+        vec![
+            Instruction {
+                op: Op::Lui,
+                rd: 20,
+                rs1: 0,
+                rs2: 0,
+                imm: 0x1000_0000,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Lw,
+                rd: 6,
+                rs1: 20,
+                rs2: 0,
+                imm: 2,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction::new(Op::Ecall).encode(),
+        ],
+    );
+    let mem_trace = execute(
+        &mem_program,
+        MachineConfig {
+            entry: 0x1000,
+            rom_base: 0x1000,
+            ram_base: 0x1000_0000,
+            ram_size: 0x40,
+            stack_top: 0x1000_0040,
+            max_cycles: 100,
+        },
+    )
+    .unwrap();
+    let mem_rows = gated_rows_from_trace(&mem_trace, width).unwrap();
+    let (gated_mem, gated_mem_layout) =
+        prove_gated_dual_batch_bits(width, &mem_rows, &backend).unwrap();
+    let gated_mem_bytes = bincode::serialize(&gated_mem).unwrap().len();
+    let (small_mem, small_mem_layout) =
+        prove_small_alu_branch_trace(&mem_trace, width, &backend).unwrap();
+    let small_mem_bytes = bincode::serialize(&small_mem).unwrap().len();
+    verify_gated_dual_batch_bits(width, &mem_rows, &gated_mem, &gated_mem_layout, &backend)
+        .unwrap();
+    verify_small_alu_branch_trace(&mem_trace, &small_mem, &small_mem_layout, width, &backend)
+        .unwrap();
+    println!(
+        "memory trace rows={} gated={}B small={}B",
+        mem_trace.rows.len(),
+        gated_mem_bytes,
+        small_mem_bytes
+    );
 }

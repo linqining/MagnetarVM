@@ -485,3 +485,18 @@ prove. This is the first dynamic component selection result.
 the trace mask. `small_alu_branch_mem_trace_binds_witness` proves Lui + Lw +
 Ecall; `small_alu_branch_rejects_shift_trace` confirms unsupported row kinds are
 still rejected instead of producing an unbound proof.
+
+
+### Memory subset size
+
+`mixed_trace_bench` also measures a Lui + Lw + Ecall trace (3 rows, width 8):
+
+```text
+full gated  47,056 B
+small      23,384 B
+```
+
+The memory component is only added when the trace mask needs it; proof bytes
+drop by ~50% on this trace. A shift-component extension was attempted this round
+but reverted before commit because the hand-written relation/witness expansion
+became error-prone.
