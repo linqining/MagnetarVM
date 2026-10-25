@@ -313,3 +313,29 @@ That mixed row needs:
 The current `SelectedCpuClaims` plumbing verifies a single-op proof but does not
 yet bind it to a trace witness. This is the concrete next blocker for replacing
 the full gated CPU proof.
+
+
+## Mixed ALU + branch row (prototype)
+
+`MixedAluBranchRow` combines an `AluPcRow` and a `BranchPcRow` with:
+
+```text
+global pc / next_pc
+select_alu / select_branch (one-hot)
+and_alu / and_branch products
+next_pc = and_alu XOR and_branch
+```
+
+The component PC witnesses are both tied to the global PC, and the selected
+component's next-PC drives the global transition. `alu_branch_pc_batch_round_trips`
+alternates Fetch (branch, not taken) and ALU rows and passes initial/final PC
+verification.
+
+Release, width 16, 256 cycles:
+
+```text
+alu+branch mixed proof=112,368 B prove=10.49 s
+```
+
+This is the first mixed-op selected row and the prerequisite for binding a real
+trace (which contains Fetch rows). It is not yet segmented/claim-routed.

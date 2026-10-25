@@ -3,12 +3,13 @@ use std::time::Instant;
 use magnetar_pcs::P3SharedPcs;
 use magnetar_proof::RingSwitchPackedBitPcs;
 use magnetar_runtime::simd_dual::{
-    prove_alu_only_batch_bits, prove_alu_pc_batch_bits, prove_alu_pc_segmented_batch_bits,
-    prove_branch_pc_batch_bits, prove_div_pc_batch_bits, prove_gated_dual_batch_bits,
-    prove_mem_pc_batch_bits, prove_mul_pc_batch_bits, prove_shift_pc_batch_bits,
-    verify_alu_only_batch_bits, verify_alu_pc_batch_bits, verify_alu_pc_segmented_batch_bits,
-    verify_branch_pc_batch_bits, verify_div_pc_batch_bits, verify_mem_pc_batch_bits,
-    verify_mul_pc_batch_bits, verify_shift_pc_batch_bits,
+    prove_alu_branch_pc_batch_bits, prove_alu_only_batch_bits, prove_alu_pc_batch_bits,
+    prove_alu_pc_segmented_batch_bits, prove_branch_pc_batch_bits, prove_div_pc_batch_bits,
+    prove_gated_dual_batch_bits, prove_mem_pc_batch_bits, prove_mul_pc_batch_bits,
+    prove_shift_pc_batch_bits, verify_alu_branch_pc_batch_bits, verify_alu_only_batch_bits,
+    verify_alu_pc_batch_bits, verify_alu_pc_segmented_batch_bits, verify_branch_pc_batch_bits,
+    verify_div_pc_batch_bits, verify_mem_pc_batch_bits, verify_mul_pc_batch_bits,
+    verify_shift_pc_batch_bits,
 };
 use magnetar_runtime::simd_f2::{GatedAluOp, GatedCpuRowInput};
 use magnetar_runtime::simd_f2::{GatedAluRow, GatedCpuRow};
@@ -101,6 +102,29 @@ fn main() {
         println!(
             "  alu+pc-seg cycles={cycles} segs={} proof={bytes} prove={prove_time:?} verify={:?}",
             layout.segments.len(),
+            started.elapsed()
+        );
+
+        let started = Instant::now();
+        let mixed_final = initial_pc + 4 * cycles as u64;
+        let (proof, layout) =
+            prove_alu_branch_pc_batch_bits(width, cycles, initial_pc, mixed_final, &backend)
+                .unwrap();
+        let prove_time = started.elapsed();
+        let bytes = bincode::serialize(&proof).unwrap().len();
+        let started = Instant::now();
+        verify_alu_branch_pc_batch_bits(
+            width,
+            cycles,
+            initial_pc,
+            mixed_final,
+            &proof,
+            &layout,
+            &backend,
+        )
+        .unwrap();
+        println!(
+            "  alu+branch cycles={cycles} proof={bytes} prove={prove_time:?} verify={:?}",
             started.elapsed()
         );
 
