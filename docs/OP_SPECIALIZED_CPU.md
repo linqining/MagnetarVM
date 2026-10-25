@@ -402,3 +402,18 @@ the trace-bound proof.
 `alu_branch_sdiv_trace_binds_witness` executes Addi/Addi/Div/Ecall and verifies
 the trace-bound proof. The mixed row now covers every row kind emitted by
 `gated_rows_from_trace` except the high/signed multiply variants.
+
+
+## Trace-bound mixed vs full gated CPU
+
+`mixed_trace_bench` on Addi + Ecall (width 8, 2 rows):
+
+```text
+full gated CPU   proof 47,248 B  prove 2.50 s  verify 0.088 s
+mixed trace      proof 47,256 B  prove 0.37 s  verify 0.237 s
+mixed batch      proof 54,400 B  prove 0.66 s  verify 0.361 s
+```
+
+The trace-bound mixed proof is ~6.7x faster to prove at this size with the same
+proof bytes; verification is slower because it rebuilds the trace witness and
+commitment. This is the first size/time comparison against the full gated row.
