@@ -4246,3 +4246,7 @@ trace commitment changes the digest.
 
 `op_probe` adds unaligned-within-word stores (`Sw` at 2, `Sh` at 4, `Sb` at 7),
 bringing the probe to 71 verified cases.
+
+
+`chunked_proof_digest` mirrors `unified_proof_digest` for the chunked proof and
+has a fast chain/digest test.

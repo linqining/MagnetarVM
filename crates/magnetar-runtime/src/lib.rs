@@ -3017,6 +3017,13 @@ impl ChunkedProofSizes {
     }
 }
 
+/// Canonical digest of a serialized chunked proof, for chain/recursion hooks.
+pub fn chunked_proof_digest(proof: &ChunkedTraceProof) -> Result<[u8; 32], RuntimeError> {
+    let bytes =
+        bincode::serialize(proof).map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok(magnetar_transcript::sha256(&bytes))
+}
+
 pub fn chunked_proof_sizes(proof: &ChunkedTraceProof) -> Result<ChunkedProofSizes, RuntimeError> {
     let size = |bytes: Result<Vec<u8>, bincode::Error>| {
         bytes
@@ -3896,6 +3903,41 @@ mod tests {
         let rows =
             crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, 8).unwrap();
         assert!(rows.len() >= trace.rows.len());
+    }
+
+    #[test]
+    fn chunked_proof_digest_binds_the_proof() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Slli,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 3,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(&program, config()).unwrap();
+        let proof = prove_chunked_trace(&trace, 8, 2).unwrap();
+        let digest = chunked_proof_digest(&proof).unwrap();
+        let mut tampered = proof.clone();
+        tampered.trace_commitment[0] ^= 1;
+        assert_ne!(digest, chunked_proof_digest(&tampered).unwrap());
+        verify_chunked_trace(&trace, &proof, 8).unwrap();
     }
 
     #[test]
