@@ -3405,7 +3405,7 @@ fn prove_chunked_shared_access(
     let (aux_tables, _, _, _) = aux_witnesses.tables();
     let aux_base = mosaic.len();
     mosaic.extend(aux_tables);
-    let pcs = P3BinaryPcs::with_params(100, 3, 21, 2);
+    let pcs = P3BinaryPcs::with_params(100, 3, 22, 2);
     let commitment = pcs
         .commit_mosaic(&mosaic)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
@@ -3479,7 +3479,7 @@ fn verify_chunked_combined_opening(
     let mut pairs = crate::merge_point_claims(pairs, &std::collections::HashSet::new());
     pairs.sort_by_key(|(point, _)| crate::point_sort_key(point));
     let (points, values): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
-    let pcs = P3BinaryPcs::with_params(100, 3, 21, 2);
+    let pcs = P3BinaryPcs::with_params(100, 3, 22, 2);
     let verified = pcs
         .verify_mosaic(opening, &points, &values)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;

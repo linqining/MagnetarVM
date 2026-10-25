@@ -4265,10 +4265,10 @@ verifier already has the trace and reconstructs the shape from the row range.
 `chunked_sizes` (16-row straight-line trace, width 8) measures the chunked path:
 
 ```text
-chunk 2:    655,536 B (access 12,875, cpu 544,112, aux 97,493, chain 1,056)
-chunk 4:    437,968 B (cpu 326,992)
-chunk 8:    300,896 B (cpu 190,144)
-chunk 16:   221,584 B (cpu 110,944)
+chunk 2:    654,224 B (access 12,875, cpu 544,112, aux 96,181, chain 1,056)
+chunk 4:    436,656 B (cpu 326,992)
+chunk 8:    299,584 B (cpu 190,144)
+chunk 16:   220,272 B (cpu 110,944)
 ```
 
 The standalone CPU proof backend picks `(100,3,20,3)` for systems with
@@ -4276,8 +4276,9 @@ The standalone CPU proof backend picks `(100,3,20,3)` for systems with
 otherwise: chunk 2 cpu drops to 544,626 B
 (total 709,202 B), chunk 16 cpu to 112,410 B (total 276,202 B). The chunked access and aux claims now share **one** P3 commitment/opening; the
 combined opening is carried in `AuxTraceProof.opening` and the access proof has no
-standalone opening (access 93,251 -> 12,875 B, aux 68,685 -> 97,493 B, total
--51.6 KB). The chunked access also merges points that address the same table row
+standalone opening (access 93,251 -> 12,875 B, aux 68,685 -> 96,181 B, total
+-53 KB). The combined opening uses `(3,22,2)`; pow=24 saved another 1.6 KB but
+pushed some chunked tests to 9-16 s, so pow=22 is kept. The chunked access also merges points that address the same table row
 point. The chunked access now uses the shared BinaryTwist claim path: RAM/register
 tables are committed once with `(100,3,21,2)` and the claims are opened together
 (access 227,034 -> 94,835 B). The aux commitment uses
