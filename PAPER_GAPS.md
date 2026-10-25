@@ -4482,3 +4482,7 @@ A unified-proof-backed compact trace variant was measured: 228,851 B on the
 16-row probe, larger than the 217,170 B compact chunked proof (the unified
 opening/CPU proof is larger than the chunked access/aux+whole-CPU split for
 this shape). It was not adopted.
+
+
+`single_chunk_default_uses_streaming_shape` pins the single-chunk delegation:
+`whole_cpu` is absent and the chunk carries a per-chunk CPU proof.

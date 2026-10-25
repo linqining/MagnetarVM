@@ -4267,6 +4267,30 @@ mod tests {
     }
 
     #[test]
+    fn single_chunk_default_uses_streaming_shape() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(&program, config()).unwrap();
+        let proof = prove_chunked_trace(&trace, 8, trace.rows.len()).unwrap();
+        assert!(proof.whole_cpu.is_none());
+        assert!(proof.chunks.iter().all(|chunk| chunk.cpu.is_some()));
+        verify_chunked_trace(&trace, &proof, 8).unwrap();
+    }
+
+    #[test]
     fn chunked_single_chunk_covers_the_trace() {
         let program = ProgramImage::new(
             0x1000,
