@@ -643,3 +643,14 @@ rows=64  proof 220,906 B  prove 3.66 s   verify 0.520 s
 `unified_auto_selects_native_dynamic` verifies the auto-selected proof. The B6
 tests (`address_multiplicity_and_collision_round_trip`,
 `booleanity_round_trip_and_tamper`) and E5 tests still pass.
+
+
+`unified_auto_falls_back_for_unsupported_rows` proves a Mulh trace through the
+auto-selected reference prover (`selected_cpu == None`, `gated == Some`), so
+unsupported dynamic rows do not break unified proving.
+
+A full `cargo test -p magnetar-runtime --lib` run currently reports 281 passed
+and 11 failed; the failing set includes unrelated gated-aux/binary-twist tests
+and some tests that pass when rerun individually (e.g. the protocol plan test),
+suggesting parallel-test resource/state sensitivity. Targeted E5 and B6 tests
+pass.

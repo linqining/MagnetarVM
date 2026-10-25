@@ -1063,6 +1063,55 @@ mod phase_tests {
     }
 
     #[test]
+    fn unified_auto_falls_back_for_unsupported_rows() {
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+        let addi = |rd, imm| {
+            Instruction {
+                op: Op::Addi,
+                rd,
+                rs1: 0,
+                rs2: 0,
+                imm,
+                shamt: 0,
+            }
+            .encode()
+        };
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                addi(1, 5),
+                addi(2, 3),
+                Instruction {
+                    op: Op::Mulh,
+                    rd: 3,
+                    rs1: 1,
+                    rs2: 2,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let proof = crate::prove_unified_trace_auto(&trace, 8).expect("fallback proof");
+        assert!(proof.selected_cpu.is_none());
+        assert!(proof.gated.is_some());
+        crate::verify_unified_trace(&trace, &proof, 8).expect("verify fallback");
+    }
+
+    #[test]
     fn unified_auto_selects_native_dynamic() {
         let trace = trace();
         let proof = crate::prove_unified_trace_auto(&trace, 8).expect("auto proof");
