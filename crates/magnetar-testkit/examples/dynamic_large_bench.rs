@@ -35,7 +35,8 @@ fn main() {
         },
     )
     .unwrap();
-    for chunk in [64usize] {
+    {
+        let chunk = 64usize;
         let started = Instant::now();
         let compact = prove_chunked_trace_dynamic(&trace, 8, chunk).unwrap();
         let compact_time = started.elapsed();
