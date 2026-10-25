@@ -4603,6 +4603,12 @@ pub fn prove_dynamic_cpu_claims<B: magnetar_proof::BitPcs>(
     let claim_openings = (0..trace.rows.len())
         .filter_map(|index| claim_tree.open(index))
         .collect();
+    // The layout is reconstructed by the verifier from the trace, so do not
+    // serialize the per-cycle layout in the dynamic proof.
+    let layout = magnetar_constraint::WitnessLayout {
+        total_bits: 0,
+        segments: Vec::new(),
+    };
     Ok(SelectedCpuClaims {
         op: SelectedOp::Dynamic,
         width,
@@ -4639,11 +4645,13 @@ pub fn verify_dynamic_cpu_claims<B: magnetar_proof::BitPcs>(
             ));
         }
     }
-    let expected = selected_segment_claims(&claims.layout, &claims.proof)?;
-    if !claims.segments.is_empty() && expected != claims.segments {
-        return Err(RuntimeError::Proof(
-            "dynamic selected claim segments do not match the proof".into(),
-        ));
+    if !claims.layout.segments.is_empty() && !claims.segments.is_empty() {
+        let expected = selected_segment_claims(&claims.layout, &claims.proof)?;
+        if expected != claims.segments {
+            return Err(RuntimeError::Proof(
+                "dynamic selected claim segments do not match the proof".into(),
+            ));
+        }
     }
     verify_dynamic_segmented_trace(trace, &claims.proof, &claims.layout, claims.width, backend)
 }
@@ -5347,11 +5355,6 @@ pub fn verify_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
     let initial_pc = rows[0].0;
     let original = DynamicMixedRow::build(mask, width)?;
     let (row, mapping, expected_layout) = segmented_dynamic_row(mask, width, cycles)?;
-    if expected_layout.total_bits != layout.total_bits {
-        return Err(RuntimeError::Proof(
-            "dynamic segmented layout mismatch".into(),
-        ));
-    }
     let (base_cols, s1, s2) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
     let mut bits = Vec::with_capacity(cycles * base_cols);
     for index in 0..cycles {
@@ -5394,7 +5397,15 @@ pub fn verify_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
         ));
     }
     verify_lockstep_bits(
-        &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], layout, proof, backend,
+        &s1[0],
+        &s1[1],
+        &s1[2],
+        &s2[0],
+        &s2[1],
+        &s2[2],
+        &expected_layout,
+        proof,
+        backend,
     )
     .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     Ok(())
