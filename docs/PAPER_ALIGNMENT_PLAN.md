@@ -12,8 +12,8 @@ This is a roadmap, not a claim that the implementation is aligned yet.
 |---:|---:|---:|---:|---:|
 | 16 | 92,528 | 0.347 s | 0.162 s | 46.2 |
 | 64 | 136,472 | 1.957 s | 0.502 s | 32.7 |
-| 512 | 348,368 | 10.71 s | 4.76 s | 47.8 |
-| 1024 | 516,792 | 44.70 s | 10.44 s | 22.9 |
+| 512 | 348,368 | 8.76 s | 5.98 s | 58.5 |
+| 1024 | 516,792 | 45.16 s | 12.87 s | 22.7 |
 
 512-row split:
 
@@ -148,13 +148,17 @@ a constant-factor improvement.
 Selected CPU internals (512 rows, profile mode):
 
 ```text
-matvec               110 ms
-MLE                   30 ms
-product6              709 ms (1.24 s before parallelization)
-row combinations      758 ms (4.66 s before parallelization)
-product2              647 ms
-segment claims         20 ms
-SelectedCpu stage    5.10 s
+commit                 40 ms
+eq vector              31 ms (1.32 s before tensor construction)
+matvec                106 ms
+MLE                    22 ms
+product6              685 ms (1.24 s before parallelization)
+row combinations      822 ms (4.66 s before parallelization)
+product2              407 ms
+segment claims         21 ms
+claims               2.50 s
+open                 1.57 s
+SelectedCpu stage    4.16 s
 ```
 ```
 
@@ -163,6 +167,8 @@ SelectedCpu stage    5.10 s
 1. [x] Parallelize Shout/Twist degree-point evaluations with bounded memory.
    [x] Parallelize the six lockstep row combinations (4.66 s -> 0.76 s at 512).
    [x] Parallelize product6 degree-point evaluations (1.24 s -> 0.71 s).
+   [x] Build the Spartan `eq(τ, x)` table by tensor doubling; 1.32 s -> 0.03 s
+   at 512 rows.
 2. Replace the quadratic packed-Shout factor materialization with a linear/sparse
    sum-check (still the largest single algorithm cost).
 2. Pack field-valued witnesses; remove per-row witness padding.

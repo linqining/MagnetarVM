@@ -215,6 +215,20 @@ pub(crate) fn bits(mut index: usize, count: usize) -> Vec<F2_128> {
         .collect()
 }
 
+fn eq_vector_tensor(point: &[F2_128]) -> Vec<F2_128> {
+    let mut values = vec![F2_128::from(1u64)];
+    for &challenge in point.iter().rev() {
+        let mut next = Vec::with_capacity(values.len() * 2);
+        let one_plus = F2_128::from(1u64) + challenge;
+        for value in &values {
+            next.push(*value * one_plus);
+            next.push(*value * challenge);
+        }
+        values = next;
+    }
+    values
+}
+
 fn field_bytes(value: F2_128) -> [u8; 16] {
     value.value().to_le_bytes()
 }
@@ -1098,9 +1112,14 @@ pub fn prove_lockstep_claims_bits<B: BitPcs>(
             .map(|_| challenge_field(&mut transcript, "tau"))
             .collect::<Vec<_>>()
     };
-    let eq_values = (0..a0.rows())
-        .map(|index| eq(&tau, &bits(index, row_bits)))
-        .collect::<Vec<_>>();
+    let started_eq = std::time::Instant::now();
+    let eq_values = eq_vector_tensor(&tau);
+    if eq_values.len() != a0.rows() {
+        return Err(SpartanError::Dimensions);
+    }
+    if profile {
+        eprintln!("selected eq-vector: {:?}", started_eq.elapsed());
+    }
     let alpha = {
         let mut transcript = transcript.borrow_mut();
         challenge_field(&mut transcript, "relation-batch")
@@ -1384,10 +1403,23 @@ pub fn prove_lockstep_bits_with_point<B: BitPcs>(
         .iter()
         .map(|bit| F2_128::from(u64::from(*bit)))
         .collect::<Vec<_>>();
+    let profile = std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some();
+    let started = std::time::Instant::now();
     let commitment = backend.commit(bits)?;
+    if profile {
+        eprintln!("selected commit: {:?}", started.elapsed());
+    }
+    let started = std::time::Instant::now();
     let (claims, ry) =
         prove_lockstep_claims_bits(&z, a0, b0, c0, a1, b1, c1, layout, backend, commitment)?;
+    if profile {
+        eprintln!("selected claims: {:?}", started.elapsed());
+    }
+    let started = std::time::Instant::now();
     let (_, opening) = backend.open(bits, &ry)?;
+    if profile {
+        eprintln!("selected open: {:?}", started.elapsed());
+    }
     Ok((
         LockstepProof {
             commitment: claims.commitment,
