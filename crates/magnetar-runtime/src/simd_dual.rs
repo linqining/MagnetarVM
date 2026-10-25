@@ -2489,6 +2489,10 @@ mod tests {
         let final_pc = initial + 4 * 16;
         let (proof, layout) = prove_mem_pc_batch_bits(8, 16, initial, final_pc, &backend).unwrap();
         verify_mem_pc_batch_bits(8, 16, initial, final_pc, &proof, &layout, &backend).unwrap();
+        assert!(
+            verify_mem_pc_batch_bits(8, 16, initial, final_pc + 4, &proof, &layout, &backend)
+                .is_err()
+        );
     }
 
     #[test]
@@ -2502,6 +2506,10 @@ mod tests {
         let final_pc = initial + 4 * 16;
         let (proof, layout) = prove_mul_pc_batch_bits(8, 16, initial, final_pc, &backend).unwrap();
         verify_mul_pc_batch_bits(8, 16, initial, final_pc, &proof, &layout, &backend).unwrap();
+        assert!(
+            verify_mul_pc_batch_bits(8, 16, initial, final_pc + 4, &proof, &layout, &backend)
+                .is_err()
+        );
     }
 
     #[test]
@@ -2516,6 +2524,16 @@ mod tests {
         let (proof, layout) =
             prove_shift_pc_batch_bits(8, 16, initial, final_pc, &backend).unwrap();
         verify_shift_pc_batch_bits(8, 16, initial, final_pc, &proof, &layout, &backend).unwrap();
+        assert!(verify_shift_pc_batch_bits(
+            8,
+            16,
+            initial,
+            final_pc + 4,
+            &proof,
+            &layout,
+            &backend
+        )
+        .is_err());
     }
 
     #[test]
