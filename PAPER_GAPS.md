@@ -140,7 +140,7 @@ verification、B6 sum-check 优化、E5 aligned-subcube packing / 更低 proof s
 | # | 论文要求（§） | 当前实现 | 状态 | 剩余工作 |
 |---|---|---|---|---|
 | A1 | 协议只发送一个 commitment，所有 claims 由一个 PCS evaluation 证明（§5.5） | unified shared 路径把 CPU/gated、RAM Twist、register Twist、Shout、Router 的 claims 放入同一个 P3 commitment/opening；`verify_trace_access_shared` 拒绝 standalone RAM/register opening；chunked/per-row 仍各自 P3 | 🟡 | unified 路径满足 A1；chunked/standalone 未统一 |
-| A2 | 证明大小不随 trace 行数线性增长；verifier 不重建 trace（§2、§5.5） | unified proof 携带 shape/claims、不携带 rows；`verify_unified_proof(proof)`（= `verify_core_proof`）完全 proof-only，验证 CPU/gated、access、aux、packed Shout 和 shared opening；benchmark 137,120 B；chunked/standalone 仍接收 trace | 🟡 | unified shared 路径完成 A2；chunked/standalone 仍需 shape/commitment 改造 |
+| A2 | 证明大小不随 trace 行数线性增长；verifier 不重建 trace（§2、§5.5） | unified proof 携带 shape/claims、不携带 rows；`verify_unified_proof(proof)`（= `verify_core_proof`）完全 proof-only，验证 CPU/gated、access、aux、packed Shout 和 shared opening；benchmark 130,287 B（15 个 workload 全部 proof-only verify）；chunked/standalone 仍接收 trace | 🟡 | unified shared 路径完成 A2；chunked/standalone 仍需 shape/commitment 改造 |
 | A3 | verifier 只做 hash 和 binary-field 运算（§2.1） | P3/hash-based PCS，无 trusted setup；但 verifier 还重建约束系统/trace | 🟡 | 去掉 verifier 的 trace/系统重建；预计算 public layout |
 | A4 | 透明、无 trusted setup、标准 hash、post-quantum（§1） | P3 binary-field PCS + SHA-256 transcript；默认路径无 trusted setup | ✅ | 保持；KZG 后端只是可选 |
 | A5 | 一个 commitment 在 challenge 前发送（§5.5） | unified 路径先 commit 再产生所有 claims；standalone Shout/Router/Chunked 仍各自 commit | 🟡 | unified 满足；其他 proof 变体未统一 |
@@ -149,11 +149,11 @@ verification、B6 sum-check 优化、E5 aligned-subcube packing / 更低 proof s
 
 | # | 论文要求（§） | 当前实现 | 状态 | 剩余工作 |
 |---|---|---|---|---|
-| B1 | 两个 SIMD R1CS 关系共享一个 bit-valued witness：一个 over `F2`，一个 over `F2_128`（§5.1） | `constraint::simd` 现有 `SimdR1cs`/`DualSimdR1cs`，并支持 `combined_system` + `combined_witness`（q 个 instance 的 block-diagonal 编码）；CPU 仍是单一 `ConstraintSystem`，尚未转成统一 SIMD 矩阵 | 🟡 | 设计两套矩阵 `A1/B1/C1`、`A2/B2/C2`；共享 witness；cross-step constraints；CPU 转换 |
+| B1 | 两个 SIMD R1CS 关系共享一个 bit-valued witness：一个 over `F2`，一个 over `F2_128`（§5.1） | gated CPU 的 grouped 路径现在同时构造 s1（bit-level `BitRelation`）与 s2（packed `F2_128` companion）；`grouped_gated_system` 返回两套系统，intra-instance PC links 加到 s2，`reservation_grouped_lockstep` 用 s2 构造 `a1/b1/c1`；OR 也已加入 packed companion。grouped=2 默认，group=4 opt-in | ✅ | 采用论文允许的 gated/grouped specialization；其他 legacy bundle 仍可保持单关系 |
 | B2 | BinarySpartan：SIMD Spartan + binary witness packing（128 bits per field element）+ ring switching（§4.3） | `magnetar-proof` 的参考 Spartan；`constraint::simd::pack_binary`/`unpack_binary` 已实现 128-bit packing；`prove_simd_spartan`/`verify_simd_spartan` 提供 block-diagonal SIMD proof 路径；共享矩阵优化、binary-witness evaluation claim、ring switching 未实现 | 🟡 | 实现共享矩阵 SIMD reduction、binary-witness evaluation claim、ring switching |
 | B3 | Virtual Spartan：联合两个 SIMD 关系，lockstep outer sum-check，共享 inner sum-check，per-segment claims（§5.3） | unified CPU 使用 `LockstepProof`，segment claims 重建 claim；`BitRelation`/F2 product（extension challenges）；新增 `magnetar-pcs::f2::F2Pcs`：把 F2 bits 嵌入 P3 `F2_128` 做 succinct opening；尚未接 CPU、不是原生 F2 Ligerito | 🟡 | 把 F2 relation 接进 CPU；原生 F2 PCS |
 | B4 | 两个 outer sum-check 共享 instance challenge，inner 只跑一次（§5.3） | `prove_lockstep_claims_bits` 用一个 outer product6 合并两个关系，用一个 inner product2 合并 `a+r b+r²c`，共享同一 commitment/opening | ✅ | 已实现；native F2 backend 也可走同一 lockstep |
-| B5 | 直接段 claims 进 PCS；虚拟段 claims 分发给 Twist/Shout/Router（§5.3） | `split_segment_claims` 生成 per-segment claims；`route_segment_claims` 标注 `SegmentOwner`；`route_segment_claims_by_owner` 分组；`VirtualClaimRouter` 按 layout 校验 owner/count；`LockstepClaims::routed_segments(layout)` 输出可消费分组；测试 `segment_claims_are_routed_to_owners`、`virtual_claim_router_consumes_all_owner_groups`、`lockstep_claims_defer_the_opening` 通过 | 🟡 | routing/consumption 校验已就绪；Twist/Shout/Router 尚未真正消费对应 claims |
+| B5 | 直接段 claims 进 PCS；虚拟段 claims 分发给 Twist/Shout/Router（§5.3） | gated 路径的 virtual segment claims 按 `SegmentOwner` 路由，component/shift/active/branch claims 进入同一个 Mosaic opening；`reservation_grouped_virtual_inputs`/`grouped_virtual_layout` 提供 padded/gathered 布局；shift code 与 Shout 列通过 D9 的 linear point 绑定 | ✅ | gated 路径完成；legacy per-row/chunked bundle 仍保留独立路径 |
 | B6 | sum-check 优化：univariate skip、Frobenius one-hot check、degree reduction 等（§4.2–4.4） | 参考实现，逐轮朴素 sum-check | ❌ | 性能优化项；不影响语义 |
 | B7 | 稀疏矩阵/结构矩阵 verifier 直接求值（§4.2 Remark） | 参考实现直接构造/使用矩阵 | 🟡 | 预计算 public matrices；避免 verifier 重建 |
 | B8 | recursive-friendly verifier（§1、§6） | 只有 hash-chain/state-continuity 聚合器 | ❌ | 见 F 节 |
@@ -163,13 +163,13 @@ verification、B6 sum-check 优化、E5 aligned-subcube packing / 更低 proof s
 | # | 论文要求（§） | 当前实现 | 状态 | 剩余工作 |
 |---|---|---|---|---|
 | C1 | fetch-decode-execute，一个 micro-PC 对应 bytecode 表一行（§2、§5.5） | `TraceRow` 带 `micro_pc`/`micro_op`；`expand_bytecode` 提供 Fetch/Execute 调度；opt-in `expand_trace_fetch_micro_ops` 插入 Fetch row；gated bundle 与 unified core 对展开 trace 证明/验证；Shout 按 `micro_pc` 读取 | ✅ | 单 micro-op 与 Fetch+Execute 两种 encoding；register-shift 固定 virtual expansion 仍归 D9/D12  specialization |
-| C2 | 每个 SIMD instance 覆盖若干连续 cycle，cross-step constraints 在 instance 内/间链接（§5.1） | 每行 relation 或 merged system；无 SIMD instance 概念 | ❌ | 与 B1/B3 一起实现 |
+| C2 | 每个 SIMD instance 覆盖若干连续 cycle，cross-step constraints 在 instance 内/间链接（§5.1） | `grouped_gated_system` 把 group 个连续 cycle 的 row relation block-diagonal 合并；instance 内 `next_pc(i)=pc(i+1)` 约束；`reservation_grouped_lockstep` 在相邻 instance 边界补 `next_pc(last)=pc(first)`；`choose_group` 默认 group=2（>=4 rows even），group=4 opt-in | ✅ | 已实现；更大 group 自适应策略可作为性能扩展 |
 | C3 | PC linkage 在 proof 内检查（§5.5） | gated CPU row 约束 `next_pc=pc+4`/jump/branch target，shared matrix 链接 `next_pc(i)->pc(i+1)`；`gated_bundle_rejects_tampered_pc` 验证 verifier 绑定 rows 到 commitment | 🟡 | gated/shared 路径已在 proof 内；chunked/trace 路径仍做 trace linkage |
 | C4 | reservation chain 在 proof 内检查（§5.1/§5.5） | `ReservationCpuRow` 把 reservation transition 并入 shared CPU relation；shared-CPU 路径的 witness 绑定已修复 | 🟡 | shared-CPU 路径在 proof 内；standalone reservation bundle 仍可独立验证 |
 | C5 | 初始/最终 public state 绑定在 proof 内（§5.1） | `Statement` + trace digest 绑定；R1CS 不直接约束 initial/final | 🟡 | 在 R1CS 中绑定 initial/final rows |
 | C6 | RV64I 核心（论文范围） | RV64I/M/A/C 已覆盖；F/D 只有 decoder | ✅/🟡 | F/D 是仓库扩展，不是论文 RV64I 核心；若要完整 RV64G 需补执行/proof |
-| C7 | 任意 aligned sub-word load/store；跨 word 的 unaligned 访问 | executor 拒绝 unaligned；proof 支持 word 内所有对齐宽度 | 🟡 | 论文只要求 sub-word store 在 word 内；跨 word 是扩展 |
-| C8 | 丰富 syscall/IO | `exit`/`hint`/`write`/`read`；基础 guest ABI | 🟡 | 更完整 runtime/syscall 是工程扩展 |
+| C7 | 任意 aligned sub-word load/store；跨 word 的 unaligned 访问 | executor 与 gated row 支持 8-byte word 内的非对齐 sub-word load/store；跨 word 的非对齐访问仍拒绝；op_probe 覆盖 Lw offset2/4、Sw2、Sh4、Sb7 以及符号扩展 load | ✅/🟡 | 论文要求 word 内已满足；跨 word 是非论文扩展 |
+| C8 | 丰富 syscall/IO | `SYS_EXIT`/`SYS_HINT`/`SYS_READ`/`SYS_WRITE`/`SYS_CLOCK` 均由 executor 实现；clock 返回当前 cycle；op_probe/工作负载覆盖 Ecall/Ebreak | ✅/🟡 | 更完整的 guest ABI 是工程扩展 |
 
 ### D. Memory / bytecode / routing
 
@@ -183,7 +183,7 @@ verification、B6 sum-check 优化、E5 aligned-subcube packing / 更低 proof s
 | D6 | `Inc` 紧凑表、`Val`/`Next` 虚拟 | 已实现 | ✅ | 保持 |
 | D7 | BinaryShout for bytecode：公开表 `Val` 有 `c` 列，读地址 bits + 所有 value columns 一个 sum-check；bytecode 表含 micro-PC/decoded fields（§4.4、§5.5） | `binary_shout.rs`：16/32-bit ROM 读取，`c=12` columns（word、length、opcode、rd、rs1、rs2、imm、shift kind/shamt、store width、micro-PC、is_halt）；metadata 直接来自 public `preprocess` bytecode table；仍是一 instruction = 一 micro-op，无 expansion | 🟡 | instruction expansion/micro-PC 细化；把 selector columns 接到 Router 的 `Q` |
 | D8 | Shout 的地址虚拟化/one-hot 检查 | bit-sliced fetch 地址 + booleanity；valid 列；`d=a` 特化 | ✅ | 同 D3，合法特化 |
-| D9 | BinaryRouter for shifts：`Y(o,j)=Σ X·Q·R`，`Q` 来自 bytecode 并由 Shout 认证；register-specified shift 展开为固定 virtual instructions（§5.4） | 64 列 one-hot `Q` + 64 列 `hQ`；booleanity + `Σ Q = is_shift` + `Σ hQ = shamt`；**Q/hQ claims/P3 points 只在 shift table 非空时生成**（store-only 跳过，proof 回到 269,075 B）；Shout 认证与 register-shift 展开仍未做 | 🟡 | 接 Shout selector；register shift 展开；table 列也可条件化 |
+| D9 | BinaryRouter for shifts：`Y(o,j)=Σ X·Q·R`，`Q` 来自 bytecode 并由 Shout 认证；register-specified shift 展开为固定 virtual instructions（§5.4） | 64 列 one-hot `Q` + 64 列 `hQ`；booleanity + `Σ Q = is_shift` + `Σ hQ = shamt`；Router 表包含 shamt/kind 位，`shift_linear_ok` 在随机点检查 `hQ_h=h·Q_h`、选中 index=shamt、`shift_code=shamt+64·kind`，并与 Shout 认证的 `shift_code` 列链接；tamper 测试通过 | ✅/🟡 | Shout/Q 绑定完成；register-specified shift 的固定 virtual instruction 展开仍归 D12 |
 | D10 | BinaryRouter for stores：输出是 `Inc`（old XOR new），`R_st` 带 3 个 offset bits，`Q_st` 4 个 width selector（§5.4） | 路由 `Inc`；offset/width/is_shift/is_store bits 已提交并链接到 public route；routing coefficients 现在从 committed bits 重建（`route_coefficients_from_selectors`）；未接 bytecode selector | 🟡 | 让 routing 直接使用 offset/width 的 MLE；接 bytecode width selector `Q_st` |
 | D11 | 两个 BinaryRouter 实例（shift、store） | `RouterMode`/`RouterRoute::None` 支持 standalone 实例；unified 与 chunked `AuxTraceProof` 都使用独立的 `shift_router`/`store_router` tables 与 claims | ✅ | 已实现 |
 | D12 | bytecode 预处理：instruction expansion、public ROM/bytecode table（§2、§5.5） | public `preprocess` bytecode table 已存在并被 Shout 使用（含 selectors/micro-PC）；仍是一 instruction = 一 micro-op，没有 instruction expansion | 🟡 | 实现 expansion（尤其 register-shift 的固定 virtual instruction sequence）与多 micro-op 表 |
