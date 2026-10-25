@@ -4262,17 +4262,17 @@ access proof, so C8 is closed for the reference ABI.
 `chunked_sizes` (16-row straight-line trace, width 8) measures the chunked path:
 
 ```text
-chunk 2:  1,155,449 B (access 227,034, cpu 858,674, aux 68,685, chain 1,056)
-chunk 4:    823,833 B (cpu 527,506)
-chunk 8:    620,569 B (cpu 324,466)
-chunk 16:   493,473 B (cpu 197,482)
+chunk 2:  1,023,250 B (access 94,835, cpu 858,674, aux 68,685, chain 1,056)
+chunk 4:    691,634 B (cpu 527,506)
+chunk 8:    488,370 B (cpu 324,466)
+chunk 16:   361,274 B (cpu 197,482)
 ```
 
-The aux commitment now uses `P3BinaryPcs::with_params(100,3,22,2)` (aux 107,877
--> 68,685 B); pow=24 saved another 1.8 KB but made the chunked test 13x slower, so
-pow=22 is kept. The fixed access proof (~227 KB) and per-chunk CPU proof dominate;
-larger chunks reduce the CPU sum but do not remove the trace-linear access proof.
-For the same
+The chunked access now uses the shared BinaryTwist claim path: RAM/register
+tables are committed once with `(100,3,21,2)` and the claims are opened together
+(access 227,034 -> 94,835 B). The aux commitment uses
+`P3BinaryPcs::with_params(100,3,22,2)` (aux 107,877 -> 68,685 B). The per-chunk CPU
+proof now dominates; larger chunks reduce it. For the same
 16-row trace the unified proof is 226,927 B with access 12,874 B: chunked still
 uses the standalone `prove_trace_access` (227,034 B) instead of the shared-access
 reduction, which is the concrete remaining A2/chunked gap.

@@ -3031,7 +3031,8 @@ pub fn chunked_proof_sizes(proof: &ChunkedTraceProof) -> Result<ChunkedProofSize
             .map_err(|error| RuntimeError::Proof(error.to_string()))
     };
     Ok(ChunkedProofSizes {
-        access: size(bincode::serialize(&proof.access))?,
+        access: size(bincode::serialize(&proof.access))?
+            + size(bincode::serialize(&proof.shared_access))?,
         cpu: size(bincode::serialize(&proof.chunks))?,
         aux: size(bincode::serialize(&proof.aux))?,
         chain: size(bincode::serialize(&proof.chain))?,
@@ -3124,6 +3125,8 @@ pub struct ChunkCpuProof {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ChunkedTraceProof {
     pub access: TraceAccessProof,
+    /// Shared P3 opening for the RAM/register Twist claims, when present.
+    pub shared_access: Option<P3MosaicOpening>,
     pub trace_commitment: [u8; 32],
     pub aux: Option<AuxTraceProof>,
     pub chunks: Vec<ChunkCpuProof>,
@@ -3362,6 +3365,100 @@ fn verify_aux_trace(trace: &Trace, aux: Option<&AuxTraceProof>) -> Result<(), Ru
     Ok(())
 }
 
+fn prove_chunked_shared_access(
+    trace: &Trace,
+) -> Result<(TraceAccessProof, P3MosaicOpening), RuntimeError> {
+    use crate::binary_twist::batch_tables;
+    let witness = BinaryTwistWitness::from_trace(trace)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    witness
+        .validate()
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let tables = batch_tables(&witness).map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let register_witness = crate::register_twist::register_twist_witness(trace)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let register_tables =
+        batch_tables(&register_witness).map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let mosaic = vec![
+        tables.addr.clone(),
+        tables.inc.clone(),
+        tables.initial.clone(),
+        tables.read_value.clone(),
+        tables.write_value.clone(),
+        register_tables.addr.clone(),
+        register_tables.inc.clone(),
+        register_tables.initial.clone(),
+        register_tables.read_value.clone(),
+        register_tables.write_value.clone(),
+    ];
+    let pcs = P3BinaryPcs::with_params(100, 3, 21, 2);
+    let commitment = pcs
+        .commit_mosaic(&mosaic)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let (access, ram_claims, register_claims) = prove_trace_access_shared(
+        trace,
+        &witness,
+        &tables,
+        &commitment,
+        &register_witness,
+        &register_tables,
+        0,
+        5,
+    )?;
+    let (points, _values) = ram_claims;
+    let (register_points, register_values) = register_claims;
+    let mut pairs = points
+        .into_iter()
+        .zip(_values)
+        .chain(register_points.into_iter().zip(register_values))
+        .collect::<Vec<_>>();
+    pairs.sort_by_key(|(point, _)| crate::point_sort_key(point));
+    let (points, _values): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+    let opening = pcs
+        .open_mosaic(&mosaic, &points)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok((access, opening))
+}
+
+fn verify_chunked_shared_access(
+    trace: &Trace,
+    access: &TraceAccessProof,
+    opening: &P3MosaicOpening,
+) -> Result<(), RuntimeError> {
+    let witness = BinaryTwistWitness::from_trace(trace)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let register_witness = crate::register_twist::register_twist_witness(trace)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let (ram_claims, register_claims) = verify_trace_access_shared(
+        trace,
+        access,
+        &witness,
+        &opening.commitment,
+        &register_witness,
+        0,
+        5,
+    )?;
+    let (points, values) = ram_claims;
+    let (register_points, register_values) = register_claims;
+    let mut pairs = points
+        .into_iter()
+        .zip(values)
+        .chain(register_points.into_iter().zip(register_values))
+        .collect::<Vec<_>>();
+    pairs.sort_by_key(|(point, _)| crate::point_sort_key(point));
+    let (points, values): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+    let pcs = P3BinaryPcs::with_params(100, 3, 21, 2);
+    let verified = pcs
+        .verify_mosaic(opening, &points, &values)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if !verified {
+        return Err(RuntimeError::Proof(
+            "chunked shared access opening rejected".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub fn prove_chunked_trace(
     trace: &Trace,
     width: usize,
@@ -3373,7 +3470,7 @@ pub fn prove_chunked_trace(
             "chunked proofs require rows and a nonzero chunk size".into(),
         ));
     }
-    let access = prove_trace_access(trace)?;
+    let (access, shared_access) = prove_chunked_shared_access(trace)?;
     let trace_commitment = trace_digest(trace);
     let backend = ConstraintProofBackend::default();
     let mut chunks = Vec::new();
@@ -3403,6 +3500,7 @@ pub fn prove_chunked_trace(
     let aux = prove_aux_trace(trace)?;
     Ok(ChunkedTraceProof {
         access,
+        shared_access: Some(shared_access),
         trace_commitment,
         aux,
         chunks,
@@ -3421,7 +3519,11 @@ pub fn verify_chunked_trace(
             "chunked proof does not match the supplied trace".into(),
         ));
     }
-    verify_trace_access(trace, &proof.access)?;
+    if let Some(opening) = &proof.shared_access {
+        verify_chunked_shared_access(trace, &proof.access, opening)?;
+    } else {
+        verify_trace_access(trace, &proof.access)?;
+    }
     verify_aux_trace(trace, proof.aux.as_ref())?;
     if proof.chunks.len() != proof.chain.chunks.len() || proof.chunks.is_empty() {
         return Err(RuntimeError::Proof("chunked proof shape mismatch".into()));
