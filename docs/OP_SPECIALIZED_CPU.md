@@ -392,6 +392,13 @@ verifies with the commitment check.
 
 ### Divide component (done)
 
-`DivPcRow` is a sixth component. Trace mapping accepts `Div`/`Divu` rows;
-signed div/rem still maps to `SDiv` and is rejected. `alu_branch_div_trace_binds_witness`
-executes Addi/Addi/Divu/Ecall and verifies the trace-bound proof.
+`DivPcRow` is a sixth component. Trace mapping accepts `Div`/`Divu` rows.
+`alu_branch_div_trace_binds_witness` executes Addi/Addi/Divu/Ecall and verifies
+the trace-bound proof.
+
+### Signed divide component (done)
+
+`SDivPcRow` is the seventh component; trace mapping accepts `SDiv` rows.
+`alu_branch_sdiv_trace_binds_witness` executes Addi/Addi/Div/Ecall and verifies
+the trace-bound proof. The mixed row now covers every row kind emitted by
+`gated_rows_from_trace` except the high/signed multiply variants.
