@@ -311,6 +311,16 @@ impl Default for ConstraintProofBackend {
     }
 }
 
+impl ConstraintProofBackend {
+    fn pcs_for(system: &ConstraintSystem) -> P3BinaryPcs {
+        if system.num_vars >= 1 << 10 {
+            P3BinaryPcs::with_params(100, 3, 20, 2)
+        } else {
+            P3BinaryPcs::with_params(100, 3, 18, 1)
+        }
+    }
+}
+
 impl Prover for ConstraintProofBackend {
     type Statement = ConstraintSystem;
     type Witness = Witness;
@@ -322,7 +332,11 @@ impl Prover for ConstraintProofBackend {
         statement: &ConstraintSystem,
         witness: &Witness,
     ) -> Result<Self::Proof, Self::Error> {
-        Ok(prove_spartan(statement, witness, &self.pcs)?)
+        Ok(prove_spartan(
+            statement,
+            witness,
+            &Self::pcs_for(statement),
+        )?)
     }
 }
 
@@ -336,7 +350,7 @@ impl Verifier for ConstraintProofBackend {
         statement: &ConstraintSystem,
         proof: &Self::Proof,
     ) -> Result<bool, Self::Error> {
-        verify_spartan(statement, proof, &self.pcs)?;
+        verify_spartan(statement, proof, &Self::pcs_for(statement))?;
         Ok(true)
     }
 }
