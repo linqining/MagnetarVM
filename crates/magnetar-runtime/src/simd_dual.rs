@@ -4345,7 +4345,22 @@ pub struct SelectedCpuClaims<C: Clone + std::fmt::Debug, O: Clone + std::fmt::De
     pub final_pc: u64,
     pub layout: magnetar_constraint::WitnessLayout,
     pub segments: Vec<SelectedSegmentClaim>,
+    #[serde(skip)]
+    pub claim_root: [u8; 32],
+    #[serde(skip)]
+    pub claim_openings: Vec<crate::trace_claims::TraceClaimOpening>,
     pub proof: LockstepProof<C, O>,
+}
+
+/// Verify the trace claim openings carried by a selected CPU claim bundle
+/// without reading `trace.rows`.
+pub fn verify_selected_claim_openings<C: Clone + std::fmt::Debug, O: Clone + std::fmt::Debug>(
+    claims: &SelectedCpuClaims<C, O>,
+) -> Option<Vec<crate::trace_claims::TraceClaim>> {
+    if claims.claim_openings.is_empty() {
+        return None;
+    }
+    crate::trace_claims::verify_claims(claims.claim_root, &claims.claim_openings)
 }
 
 pub fn prove_selected_cpu_claims<B: magnetar_proof::BitPcs>(
@@ -4390,6 +4405,8 @@ pub fn prove_selected_cpu_claims<B: magnetar_proof::BitPcs>(
         final_pc,
         layout,
         segments,
+        claim_root: [0u8; 32],
+        claim_openings: Vec::new(),
         proof,
     })
 }
@@ -4473,6 +4490,10 @@ pub fn prove_dynamic_cpu_claims<B: magnetar_proof::BitPcs>(
 ) -> Result<SelectedCpuClaims<B::Commitment, B::Opening>, RuntimeError> {
     let (proof, layout) = prove_dynamic_segmented_trace(trace, width, backend)?;
     let segments = selected_segment_claims(&layout, &proof)?;
+    let claim_tree = crate::trace_claims::TraceClaimTree::build(trace);
+    let claim_openings = (0..trace.rows.len())
+        .filter_map(|index| claim_tree.open(index))
+        .collect();
     Ok(SelectedCpuClaims {
         op: SelectedOp::Dynamic,
         width,
@@ -4481,6 +4502,8 @@ pub fn prove_dynamic_cpu_claims<B: magnetar_proof::BitPcs>(
         final_pc: trace.final_state.pc,
         layout,
         segments,
+        claim_root: claim_tree.root(),
+        claim_openings,
         proof,
     })
 }
@@ -4493,6 +4516,15 @@ pub fn verify_dynamic_cpu_claims<B: magnetar_proof::BitPcs>(
     if claims.op != SelectedOp::Dynamic {
         return Err(RuntimeError::Proof(
             "not a dynamic selected claim bundle".into(),
+        ));
+    }
+    let claim_tree = crate::trace_claims::TraceClaimTree::build(trace);
+    if claims.claim_root != claim_tree.root()
+        || claims.claim_openings.len() != trace.rows.len()
+        || crate::trace_claims::verify_claims(claims.claim_root, &claims.claim_openings).is_none()
+    {
+        return Err(RuntimeError::Proof(
+            "dynamic selected claim openings do not match the trace".into(),
         ));
     }
     let expected = selected_segment_claims(&claims.layout, &claims.proof)?;
@@ -5603,6 +5635,50 @@ mod tests {
             let (proof, layout) = prove_dynamic_selected_trace(&trace, 8, &backend).unwrap();
             verify_dynamic_selected_trace(&trace, &proof, &layout, 8, &backend).unwrap();
         }
+    }
+
+    #[test]
+    fn selected_claim_openings_recover_without_trace() {
+        use magnetar_executor::execute;
+        use magnetar_pcs::P3SharedPcs;
+        use magnetar_proof::RingSwitchPackedBitPcs;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+        let backend =
+            RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 10,
+            },
+        )
+        .unwrap();
+        let claims = prove_dynamic_cpu_claims(&trace, 8, &backend).unwrap();
+        let recovered = verify_selected_claim_openings(&claims).unwrap();
+        assert_eq!(recovered.len(), trace.rows.len());
+        assert_eq!(recovered[0].pc, 0x1000);
+        let mut tampered = claims.clone();
+        tampered.claim_openings[0].claim.instruction_len = 2;
+        assert!(verify_selected_claim_openings(&tampered).is_none());
     }
 
     #[test]

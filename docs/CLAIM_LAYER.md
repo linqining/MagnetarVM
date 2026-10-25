@@ -173,3 +173,16 @@ memory addr/value/width
 openings)` verifies a contiguous opening list and returns the recovered claims.
 Tests cover tampered instruction length, register value and memory records. This
 is the payload the proof-only verifier will consume.
+
+
+## Selected CPU claim openings
+
+`SelectedCpuClaims` now carries `claim_root` and `claim_openings` for the dynamic
+selected CPU path. `proof_dynamic_cpu_claims` fills them from
+`TraceClaimTree`; `verify_dynamic_cpu_claims` checks the root and verifies all
+openings against the trace. `verify_selected_claim_openings` recovers the claim
+payloads without reading `trace.rows`.
+
+The fields are `serde(skip)` for now because serializing them changed the
+protocol proof-byte round-trip; proof-only serialization will be added as a
+separate claim proof rather than inside the existing selected claim struct.
