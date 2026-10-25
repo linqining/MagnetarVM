@@ -2368,7 +2368,9 @@ impl<'a> UnifiedProveContext<'a> {
                     kept_values.push(values);
                 }
             }
-            for index in selected {
+            let mut selected_indices = selected.iter().copied().collect::<Vec<_>>();
+            selected_indices.sort_unstable();
+            for index in selected_indices {
                 let table = &self.mosaic_tables[index];
                 let mosaic = magnetar_pcs::mosaic::PackedMosaic::new(&table.columns)
                     .map_err(|error| RuntimeError::Proof(error.to_string()))?;
