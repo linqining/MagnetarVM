@@ -13,6 +13,7 @@ This is a roadmap, not a claim that the implementation is aligned yet.
 | 16 | 92,528 | 0.347 s | 0.162 s | 46.2 |
 | 64 | 136,472 | 1.957 s | 0.502 s | 32.7 |
 | 512 | 348,368 | 30.67 s | 4.80 s | 16.7 |
+| 1024 | 516,792 | 141.60 s | 13.13 s | 7.2 |
 
 512-row split:
 
@@ -24,7 +25,8 @@ access        16,018 B
 shape         13,320 B
 ```
 
-Selected CPU is about 58% of the proof. The claim proof dropped from
+Selected CPU is about 58% of the proof at 512 rows and 58% at 1024 rows.
+At 1024 rows: selected 298,541 B, claim 110,666 B, packed_shout 62,594 B. The claim proof dropped from
 202,825 B to 55,370 B by proving a complete claim set against the Merkle root
 instead of carrying one sibling path per row, and the duplicated selected
 segment list is no longer serialized.
@@ -80,7 +82,8 @@ Interim gates:
 
 ```text
 512 rows: proof < 500 KiB, selected < 300 KiB, claim < 100 KiB
-(current: 340.2 KiB / 198.8 KiB / 54.1 KiB)
+(current: 340.2 KiB / 198.8 KiB / 54.1 KiB at 512 rows;
+            504.7 KiB / 291.5 KiB / 108.1 KiB at 1024 rows)
 
 At 64 rows, the selected proof splits as:
 
@@ -94,6 +97,10 @@ PCS opening   133,376 B
 
 At 512 rows the selected proof is now 203,605 B: opening 126,936 B, segment
 claims 73,736 B, sums 2,736 B, commitment 48 B. The Phase 1 gate is met.
+
+At 1024 rows, proving time grows 4.6x and verification 2.7x for 2x rows, while
+the proof grows only 1.48x. The prover, not proof size, is now the scaling
+bottleneck.
 ```
 
 ## Phase 2: CPU engine / BinarySpartan
