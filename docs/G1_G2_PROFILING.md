@@ -143,3 +143,18 @@ CPU proofs as well as parallelizing the chunks themselves.
 Proof size and verification time are unchanged. The compact default still uses
 one whole-trace CPU proof; this optimization applies to the optional streaming
 mode and to memory-bounded chunked proving.
+
+
+### Compact-mode overlap
+
+The compact whole-trace CPU proof is now also overlapped with the shared
+access/aux proof (`prove_chunked_trace` parallel; sequential reference in
+`prove_chunked_trace_compact_sequential`). 16-row ALU trace:
+
+```text
+compact chunk=2 sequential 204,634 B 3.58 s  parallel 3.17 s (1.13x)
+compact chunk=4 sequential 204,118 B 3.58 s  parallel 3.16 s (1.13x)
+```
+
+Smaller relative gain because the whole CPU proof dominates, but it is free in
+proof size and keeps byte-identical output.

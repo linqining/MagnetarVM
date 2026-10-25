@@ -2,7 +2,8 @@ use std::time::Instant;
 
 use magnetar_executor::execute;
 use magnetar_runtime::{
-    prove_chunked_trace_streaming, prove_chunked_trace_streaming_sequential, verify_chunked_trace,
+    prove_chunked_trace, prove_chunked_trace_compact_sequential, prove_chunked_trace_streaming,
+    prove_chunked_trace_streaming_sequential, verify_chunked_trace,
 };
 use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 
@@ -48,7 +49,26 @@ fn main() {
             verify_chunked_trace(&trace, &proof, 8).unwrap();
             let bytes = bincode::serialize(&proof).unwrap().len();
             println!(
-                "chunk={chunk_size} {name}: proof={bytes} prove={prove_time:?} verify={:?}",
+                "stream chunk={chunk_size} {name}: proof={bytes} prove={prove_time:?} verify={:?}",
+                started.elapsed()
+            );
+        }
+    }
+
+    for chunk_size in [2usize, 4] {
+        for (name, parallel) in [("sequential", false), ("parallel", true)] {
+            let started = Instant::now();
+            let proof = if parallel {
+                prove_chunked_trace(&trace, 8, chunk_size).unwrap()
+            } else {
+                prove_chunked_trace_compact_sequential(&trace, 8, chunk_size).unwrap()
+            };
+            let prove_time = started.elapsed();
+            let started = Instant::now();
+            verify_chunked_trace(&trace, &proof, 8).unwrap();
+            let bytes = bincode::serialize(&proof).unwrap().len();
+            println!(
+                "compact chunk={chunk_size} {name}: proof={bytes} prove={prove_time:?} verify={:?}",
                 started.elapsed()
             );
         }

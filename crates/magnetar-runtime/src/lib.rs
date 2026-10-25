@@ -3745,6 +3745,23 @@ pub fn prove_chunked_trace(
     width: usize,
     chunk_size: usize,
 ) -> Result<ChunkedTraceProof, RuntimeError> {
+    prove_chunked_trace_mode(trace, width, chunk_size, true)
+}
+
+pub fn prove_chunked_trace_compact_sequential(
+    trace: &Trace,
+    width: usize,
+    chunk_size: usize,
+) -> Result<ChunkedTraceProof, RuntimeError> {
+    prove_chunked_trace_mode(trace, width, chunk_size, false)
+}
+
+fn prove_chunked_trace_mode(
+    trace: &Trace,
+    width: usize,
+    chunk_size: usize,
+    parallel: bool,
+) -> Result<ChunkedTraceProof, RuntimeError> {
     check_trace_linkage(trace)?;
     if trace.rows.is_empty() || chunk_size == 0 {
         return Err(RuntimeError::Proof(
@@ -3754,7 +3771,31 @@ pub fn prove_chunked_trace(
     if chunk_size >= trace.rows.len() {
         return prove_chunked_trace_streaming(trace, width, chunk_size);
     }
-    let (access, aux_claims, opening) = prove_chunked_shared_access(trace)?;
+    let trace_commitment = trace_digest(trace);
+    let backend = ConstraintProofBackend;
+    let (access, whole_cpu) = if parallel {
+        std::thread::scope(|scope| {
+            let access = scope.spawn(|| prove_chunked_shared_access(trace));
+            let cpu = scope.spawn(|| -> Result<CpuSpartanProof, RuntimeError> {
+                let (system, witness) = merged_cpu_system_for_rows(&trace.rows, width)?;
+                backend.prove(&system, &witness)
+            });
+            let access = access
+                .join()
+                .map_err(|_| RuntimeError::Proof("access prover thread panicked".into()))??;
+            let cpu = cpu
+                .join()
+                .map_err(|_| RuntimeError::Proof("whole CPU prover thread panicked".into()))??;
+            Ok::<_, RuntimeError>((access, cpu))
+        })?
+    } else {
+        let (system, witness) = merged_cpu_system_for_rows(&trace.rows, width)?;
+        (
+            prove_chunked_shared_access(trace)?,
+            backend.prove(&system, &witness)?,
+        )
+    };
+    let (access, aux_claims, opening) = access;
     let aux = aux_claims.map(|claims| AuxTraceProof {
         shout: claims.shout,
         shift_router: claims.shift_router,
@@ -3762,10 +3803,6 @@ pub fn prove_chunked_trace(
         opening: opening.clone(),
     });
     let shared_access = if aux.is_some() { None } else { Some(opening) };
-    let trace_commitment = trace_digest(trace);
-    let (system, witness) = merged_cpu_system_for_rows(&trace.rows, width)?;
-    let backend = ConstraintProofBackend;
-    let whole_cpu = backend.prove(&system, &witness)?;
     let mut chunks = Vec::new();
     let mut chained = Vec::new();
     let mut start = 0;
@@ -6555,6 +6592,52 @@ mod tests {
         tampered.access.ram.read.initial.rounds[0][0] =
             tampered.access.ram.read.initial.rounds[0][0] + F2_128::from(1u64);
         assert!(verify_chunked_trace(&trace, &tampered, 8).is_err());
+    }
+
+    #[test]
+    fn parallel_compact_chunked_matches_sequential() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 1,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Xor,
+                    rd: 3,
+                    rs1: 1,
+                    rs2: 2,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(&program, config()).unwrap();
+        let sequential = prove_chunked_trace_compact_sequential(&trace, 8, 2).unwrap();
+        let parallel = prove_chunked_trace(&trace, 8, 2).unwrap();
+        verify_chunked_trace(&trace, &sequential, 8).unwrap();
+        verify_chunked_trace(&trace, &parallel, 8).unwrap();
+        assert_eq!(
+            bincode::serialize(&sequential).unwrap(),
+            bincode::serialize(&parallel).unwrap()
+        );
     }
 
     #[test]
