@@ -1911,20 +1911,49 @@ impl GatedCpuRow {
             vec![alu.one],
             vec![alu.one],
         ));
+        let step2 = relation.num_vars;
+        let add2 = step2 + 1;
+        let add4 = step2 + 2;
+        let xor4 = step2 + 3;
+        relation.num_vars += 4;
+        relation.add(BitRow::new(vec![step2], vec![step2], vec![step2]));
+        relation.add(BitRow::new(
+            vec![step2],
+            vec![alu.is_jal, alu.is_jalr, branch_offset + branch.is_branch],
+            Vec::new(),
+        ));
+        relation.add(BitRow::new(vec![sequential], vec![step2], vec![add2]));
+        relation.add(BitRow::new(
+            vec![add4],
+            vec![alu.one],
+            vec![sequential, add2],
+        ));
         for bit in 0..width {
-            if bit < 2 {
+            if bit == 0 {
                 relation.add(BitRow::new(
                     vec![next_pc[bit], pc[bit]],
                     vec![sequential],
                     Vec::new(),
                 ));
-            } else if bit == 2 {
+            } else if bit == 1 {
                 relation.add(BitRow::new(
                     vec![next_pc[bit], pc[bit]],
                     vec![sequential],
-                    vec![sequential],
+                    vec![add2],
                 ));
-                relation.add(BitRow::new(vec![pc[bit]], vec![alu.one], vec![carry[bit]]));
+                relation.add(BitRow::new(vec![pc[bit]], vec![add2], vec![carry[bit]]));
+            } else if bit == 2 {
+                relation.add(BitRow::new(
+                    vec![xor4],
+                    vec![alu.one],
+                    vec![add4, carry[bit - 1]],
+                ));
+                relation.add(BitRow::new(
+                    vec![next_pc[bit], pc[bit]],
+                    vec![sequential],
+                    vec![xor4],
+                ));
+                relation.add(BitRow::new(vec![pc[bit]], vec![xor4], vec![carry[bit]]));
             } else {
                 relation.add(BitRow::new(
                     vec![next_pc[bit], pc[bit], carry[bit - 1]],
@@ -2263,20 +2292,61 @@ impl GatedCpuRow {
         bits
     }
 
-    fn finish(&self, mut bits: Vec<bool>, pc: u64, next_pc: u64, sequential: bool) -> Vec<bool> {
+    fn finish(&self, bits: Vec<bool>, pc: u64, next_pc: u64, sequential: bool) -> Vec<bool> {
+        self.finish_step(bits, pc, next_pc, sequential, false)
+    }
+
+    fn finish_step(
+        &self,
+        mut bits: Vec<bool>,
+        pc: u64,
+        next_pc: u64,
+        sequential: bool,
+        step2: bool,
+    ) -> Vec<bool> {
         bits.resize(self.relation.num_vars, false);
+        self.apply_pc_step(&mut bits, pc, next_pc, sequential, step2);
+        bits
+    }
+
+    pub(crate) fn apply_pc_step(
+        &self,
+        bits: &mut [bool],
+        pc: u64,
+        next_pc: u64,
+        sequential: bool,
+        step2: bool,
+    ) {
         for bit in 0..self.width {
             bits[self.pc[bit]] = (pc >> bit) & 1 == 1;
             bits[self.next_pc[bit]] = (next_pc >> bit) & 1 == 1;
         }
         bits[self.sequential] = sequential;
         let carry_start = self.pc[0] + 2 * self.width;
+        let sequential_var = carry_start + self.width;
+        let step2_var = sequential_var + 1;
+        let add2_var = step2_var + 1;
+        let add4_var = add2_var + 1;
+        let xor4_var = add4_var + 1;
         let pc_bit = |bit: usize| (pc >> bit) & 1 == 1;
-        bits[carry_start + 2] = pc_bit(2);
+        let add2 = sequential && step2;
+        let add4 = sequential ^ add2;
+        let carry1 = self.width > 1 && pc_bit(1) && add2;
+        let xor4 = add4 ^ carry1;
+        let carry2 = self.width > 2 && pc_bit(2) && xor4;
+        bits[step2_var] = step2;
+        bits[add2_var] = add2;
+        bits[add4_var] = add4;
+        bits[xor4_var] = xor4;
+        if self.width > 1 {
+            bits[carry_start + 1] = carry1;
+        }
+        if self.width > 2 {
+            bits[carry_start + 2] = carry2;
+        }
         for bit in 3..self.width {
             bits[carry_start + bit] = pc_bit(bit) && bits[carry_start + bit - 1];
         }
-        bits
     }
 
     pub fn alu_witness(&self, left: u64, right: u64, op: GatedAluOp) -> Vec<bool> {

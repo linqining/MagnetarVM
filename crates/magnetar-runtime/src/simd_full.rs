@@ -246,6 +246,22 @@ fn gated_rows_from_trace_impl(
             }
             _ => None,
         };
+        if matches!(
+            row.instruction.op,
+            magnetar_spec::Op::Ecall | magnetar_spec::Op::Ebreak
+        ) && row.next_pc == row.pc
+        {
+            rows.push((
+                row.pc,
+                GatedCpuRowInput::Branch {
+                    left: 0,
+                    right: 0,
+                    imm: 0,
+                    kind: crate::branch_row::BranchKind::Beq,
+                },
+            ));
+            continue;
+        }
         if row.instruction.op == magnetar_spec::Op::Auipc {
             rows.push((
                 row.pc,
@@ -478,11 +494,15 @@ pub fn gated_rows_from_trace_padded(
 ) -> Result<Vec<(u64, crate::simd_f2::GatedCpuRowInput)>, RuntimeError> {
     let mut rows = gated_rows_from_trace_impl(trace, width, false)?;
     let target = trace.rows.len().next_power_of_two().max(2);
-    let last_pc = rows.last().map(|(pc, _)| *pc).unwrap_or(0);
+    let first_padding_pc = trace
+        .rows
+        .last()
+        .map(|row| row.next_pc)
+        .unwrap_or_else(|| rows.last().map(|(pc, _)| pc.wrapping_add(4)).unwrap_or(0));
     while rows.len() < target {
-        let offset = (rows.len() - trace.rows.len() + 1) as u64 * 4;
+        let offset = (rows.len() - trace.rows.len()) as u64 * 4;
         rows.push((
-            last_pc.wrapping_add(offset),
+            first_padding_pc.wrapping_add(offset),
             crate::simd_f2::GatedCpuRowInput::Alu {
                 left: 0,
                 right: 0,
@@ -621,7 +641,7 @@ mod gated_trace_tests {
         assert_eq!(rows.len(), 4);
         assert!(matches!(
             rows.last().unwrap().1,
-            crate::simd_f2::GatedCpuRowInput::Alu {
+            crate::simd_f2::GatedCpuRowInput::Branch {
                 left: 0,
                 right: 0,
                 ..

@@ -955,6 +955,8 @@ pub(crate) fn reservation_grouped_virtual_view(
                 next_pre_addr: 0,
                 value: 0,
                 has_value: false,
+                next_pc: 4,
+                step2: false,
             },
         );
         cycles
@@ -6235,7 +6237,7 @@ mod tests {
         let alu_trace = execute(&alu_program, config.clone()).unwrap();
         assert_eq!(
             mixed_trace_component_mask(&alu_trace, 8).unwrap(),
-            MIXED_ALU
+            MIXED_ALU | MIXED_BRANCH
         );
 
         let mem_program = ProgramImage::new(

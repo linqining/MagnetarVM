@@ -19,6 +19,8 @@ pub struct ReservationCpuInput {
     pub next_pre_addr: u64,
     pub value: u64,
     pub has_value: bool,
+    pub next_pc: u64,
+    pub step2: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -125,6 +127,16 @@ impl ReservationCpuRow {
             self.cpu.relation.num_vars,
             &[(pc, input.cpu)],
         );
+        let sequential = !matches!(input.cpu, crate::simd_f2::GatedCpuRowInput::Branch { .. })
+            && !matches!(
+                input.cpu,
+                crate::simd_f2::GatedCpuRowInput::Alu {
+                    op: crate::simd_f2::GatedAluOp::Jal | crate::simd_f2::GatedAluOp::Jalr,
+                    ..
+                }
+            );
+        self.cpu
+            .apply_pc_step(&mut bits, pc, input.next_pc, sequential, input.step2);
         let reservation = self.reservation.witness(
             input.addr,
             input.res_addr,
@@ -239,6 +251,8 @@ fn reservation_cpu_rows(
                     next_pre_addr: 0,
                     value: 0,
                     has_value: false,
+                    next_pc: pc.wrapping_add(4),
+                    step2: false,
                 },
             ));
             continue;
@@ -258,6 +272,8 @@ fn reservation_cpu_rows(
                     next_pre_addr: 0,
                     value: 0,
                     has_value: false,
+                    next_pc: row.next_pc,
+                    step2: false,
                 },
             ));
             continue;
@@ -310,6 +326,21 @@ fn reservation_cpu_rows(
                         | magnetar_spec::Op::ScW
                         | magnetar_spec::Op::ScD
                 ),
+                next_pc: row.next_pc,
+                step2: row.instruction_len == 2
+                    && !matches!(
+                        row.instruction.op,
+                        magnetar_spec::Op::Jal
+                            | magnetar_spec::Op::Jalr
+                            | magnetar_spec::Op::Beq
+                            | magnetar_spec::Op::Bne
+                            | magnetar_spec::Op::Blt
+                            | magnetar_spec::Op::Bge
+                            | magnetar_spec::Op::Bltu
+                            | magnetar_spec::Op::Bgeu
+                            | magnetar_spec::Op::Ecall
+                            | magnetar_spec::Op::Ebreak
+                    ),
             },
         ));
     }
@@ -446,6 +477,8 @@ mod tests {
             next_pre_addr: 5,
             value: 5,
             has_value: true,
+            next_pc: 0x1004,
+            step2: false,
         };
         let bits = row.witness(0x1000, input);
         assert!(row.relation_check(&bits));
@@ -467,11 +500,19 @@ mod tests {
         };
         let bits = row.witness(0x1000, bad);
         assert!(row.relation_check(&bits));
+        let mut first = input;
+        first.next_pc = 0x1004;
+        let mut second = bad;
+        second.next_pc = 0x1008;
+        let mut third = input;
+        third.next_pc = 0x100c;
+        let mut fourth = bad;
+        fourth.next_pc = 0x1010;
         let rows = [
-            (0x1000u64, input),
-            (0x1004, bad),
-            (0x1008, input),
-            (0x100c, bad),
+            (0x1000u64, first),
+            (0x1004, second),
+            (0x1008, third),
+            (0x100c, fourth),
         ];
         let proof = prove_reservation_cpu_batch(8, &rows).unwrap();
         verify_reservation_cpu_batch(8, &rows, &proof).unwrap();
