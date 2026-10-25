@@ -5916,6 +5916,28 @@ mod tests {
     }
 
     #[test]
+    fn run_expanded_falls_back_without_shifts() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 5,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ebreak).encode(),
+            ],
+        );
+        let outcome = ReferencePipeline::run_expanded(&program, config(), 2).unwrap();
+        assert_eq!(outcome.trace.final_state.reg(1), 5);
+        assert_eq!(outcome.statement.trace_len, 2);
+    }
+
+    #[test]
     fn cpu_backend_pcs_scale_with_system_size() {
         for (vars, rate, pow, fold) in [
             (8usize, 3usize, 18usize, 1usize),

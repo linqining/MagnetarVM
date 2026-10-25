@@ -4336,3 +4336,7 @@ scheduler.
 `ReferencePipeline::run_expanded` runs preprocessing/execution/statement
 construction over the expanded image, so the D12 expansion is available through
 the full reference pipeline as well as the executor API.
+
+
+`run_expanded_falls_back_without_shifts` checks that the pipeline path leaves
+non-shift programs unchanged and builds the expected statement.
