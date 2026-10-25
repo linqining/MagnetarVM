@@ -4400,3 +4400,6 @@ after the auipc; if the correction does not fit a 12-bit immediate, expansion
 falls back. For `jal rd≠0`, the expansion emits `auipc rd,hi(delta)` +
 `addi rd,rd,lo(delta)` + `jal x0,target`, preserving the original link value.
 Only `jalr` and x28-x31 users still fall back.
+
+
+`jalr_programs_fall_back` pins the explicit fallback for jalr programs.

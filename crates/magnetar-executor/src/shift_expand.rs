@@ -627,6 +627,59 @@ mod tests {
     }
 
     #[test]
+    fn jalr_programs_fall_back() {
+        let program = program(vec![
+            Instruction {
+                op: Op::Auipc,
+                rd: 1,
+                rs1: 0,
+                rs2: 0,
+                imm: 0,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Addi,
+                rd: 1,
+                rs1: 1,
+                rs2: 0,
+                imm: 16,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Jalr,
+                rd: 0,
+                rs1: 1,
+                rs2: 0,
+                imm: 0,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Addi,
+                rd: 3,
+                rs1: 0,
+                rs2: 0,
+                imm: 7,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Sll,
+                rd: 4,
+                rs1: 3,
+                rs2: 0,
+                imm: 0,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction::new(Op::Ebreak).encode(),
+        ]);
+        assert!(expand_register_shifts(&program).is_none());
+    }
+
+    #[test]
     fn expansion_reuses_no_temporaries() {
         let program = program(vec![
             Instruction {
