@@ -115,11 +115,27 @@ SelectedCpu      11.50 s
 So the next performance targets are packed Shout (largest), BinaryTwist access,
 then the selected CPU opening. This changes the Phase 2 order: Shout/access
 prover work comes before a full BinarySpartan rewrite.
+
+Packed-Shout internal profile (512 rows):
+
+```text
+TableCommit    26.2 ms
+PackedCommit    0.7 ms
+ShoutClaims    15.65 s
+PackedOpen    107.1 ms
+```
+
+The Shout claim prover materializes `cells × cycles` factors and folds them for
+every degree point of every round. With `cells = next_pow2(2 * ROM words)` and
+`cycles = next_pow2(rows)`, this is quadratic in trace length. The next concrete
+optimization is a linear/sparse Shout sum-check rather than another serialization
+change.
 ```
 
 ## Phase 2: CPU engine / BinarySpartan
 
-1. Profile and reduce packed-Shout and BinaryTwist access cost (largest stages).
+1. Replace the quadratic packed-Shout factor materialization with a linear/sparse
+   sum-check (largest stage: 15.65 s at 512 rows).
 2. Pack field-valued witnesses; remove per-row witness padding.
 3. Implement BinarySpartan-style packed claims instead of committing the full
    selected witness.

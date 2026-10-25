@@ -79,24 +79,45 @@ fn column_challenge(
 }
 
 pub fn prove_packed_shout(witness: &BinaryShoutWitness) -> Result<PackedShoutProof, RuntimeError> {
+    Ok(prove_packed_shout_profile(witness)?.0)
+}
+
+/// Packed-Shout prover with per-stage wall-clock timings.
+pub fn prove_packed_shout_profile(
+    witness: &BinaryShoutWitness,
+) -> Result<(PackedShoutProof, Vec<crate::StageTiming>), RuntimeError> {
+    let mut timings = Vec::new();
+    let mut mark = |stage: &str, started: std::time::Instant| {
+        timings.push(crate::StageTiming {
+            stage: stage.to_string(),
+            duration: started.elapsed(),
+        });
+    };
     witness
         .validate()
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let table = witness.table();
+    let started = std::time::Instant::now();
     let bit_commitment = P3BinaryPcs::new(100)
         .commit_mosaic(core::slice::from_ref(&table))
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    mark("TableCommit", started);
+    let started = std::time::Instant::now();
     let (packed_bits, col_bits, cycle_bits) = table_bits(witness);
     let backend =
         RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
     let packed_commitment = backend
         .commit(&packed_bits)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    mark("PackedCommit", started);
+    let started = std::time::Instant::now();
     let mut binding = bincode::serialize(&bit_commitment).unwrap_or_default();
     binding.extend_from_slice(&bincode::serialize(&packed_commitment).unwrap_or_default());
     let binding = magnetar_transcript::sha256(&binding);
     let (claims, points, values) = prove_binary_shout_claims(witness, &bit_commitment, 0, &binding)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    mark("ShoutClaims", started);
+    let started = std::time::Instant::now();
     let leaves = values[1].clone();
     let r_col = column_challenge(&bit_commitment, &packed_commitment, &leaves, col_bits);
     let point = [r_col.clone(), points[1].point.clone()].concat();
@@ -121,16 +142,20 @@ pub fn prove_packed_shout(witness: &BinaryShoutWitness) -> Result<PackedShoutPro
             padded_point.len()
         )));
     }
+    mark("PackedOpen", started);
     let _ = cycle_bits;
-    Ok(PackedShoutProof {
-        claims,
-        table_commitment: bit_commitment,
-        leaves,
-        packed_commitment,
-        packed_point: padded_point,
-        packed_value,
-        packed_opening,
-    })
+    Ok((
+        PackedShoutProof {
+            claims,
+            table_commitment: bit_commitment,
+            leaves,
+            packed_commitment,
+            packed_point: padded_point,
+            packed_value,
+            packed_opening,
+        },
+        timings,
+    ))
 }
 
 pub fn verify_packed_shout(proof: &PackedShoutProof) -> Result<(), RuntimeError> {
