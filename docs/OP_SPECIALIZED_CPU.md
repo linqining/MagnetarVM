@@ -675,3 +675,24 @@ tests::trace_proof_covers_compressed_memory_operations
 rerun individually at HEAD; its full-suite failure is parallel-test/state
 sensitivity. So 10 of 11 are pre-existing at `d5eb67e`; the protocol test is not
 a deterministic regression.
+
+
+## Dynamic CPU in compact chunked proofs (done)
+
+`ChunkedTraceProof` now carries an optional `selected_cpu`. The compact dynamic
+prover (`prove_chunked_trace_dynamic`) skips the whole-trace `CpuSpartanProof`,
+uses the dynamic selected CPU claims, and hashes the selected proof into every
+chunk-chain entry. `verify_chunked_trace` verifies the selected claims, checks
+the chunk metadata/state chain and the per-chunk selected-proof digest, then
+skips whole-CPU verification.
+
+Addi/Slli/Addi/Ecall (4 rows, width 8):
+
+```text
+chunk=1  compact 191,679 B / 5.04 s  dynamic 174,083 B / 0.33 s
+chunk=2  compact 191,421 B / 5.07 s  dynamic 173,825 B / 0.32 s
+```
+
+`dynamic_chunked_compact_round_trips` proves and verifies the dynamic compact
+proof. Streaming per-chunk CPU proofs still use the reference CPU prover; only
+the compact chunked path is dynamic so far.
