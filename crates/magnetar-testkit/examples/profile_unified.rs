@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use magnetar_executor::execute;
-use magnetar_runtime::prove_unified_trace_profile;
+use magnetar_runtime::{prove_unified_trace_profile, verify_unified_trace};
 use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 
 fn instruction(op: Op, rd: u8, rs1: u8, rs2: u8, imm: i64) -> u32 {
@@ -50,6 +50,7 @@ fn main() {
         let started = Instant::now();
         let (proof, timings) = prove_unified_trace_profile(&trace, 16).unwrap();
         let total = started.elapsed();
+        verify_unified_trace(&trace, &proof, 16).unwrap();
         let bytes = bincode::serialize(&proof).unwrap().len();
         println!(
             "iterations={iterations} rows={} bytes={bytes} total={total:?}",
