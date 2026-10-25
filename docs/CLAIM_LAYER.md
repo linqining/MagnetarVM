@@ -254,3 +254,15 @@ if selected_cpu:
 It rejects tampered claim payloads and a tampered selected claim root. It is a
 proof-only *claim layer* verifier, not yet a full CPU verifier: the CPU relation
 and register/access proofs are still not tied to these claims.
+
+
+## Claim-to-access-statement routing
+
+`AccessStatement::from_claims` reconstructs register operations and memory
+events from authenticated claims. `Statement` now carries
+`access_statement_digest`, and `verify_native_claim_layer` recomputes that
+statement from the claim rows and rejects a mismatch.
+
+The claim carries register presence flags (`rd_present`/`rs1_present`/
+`rs2_present`), so x0/None distinctions survive. Tests mutate `rd_value` and
+show the claim-derived access statement digest changes.

@@ -88,6 +88,7 @@ pub struct Statement {
     pub rom: Vec<u32>,
     pub trace_commitment: [u8; 32],
     pub trace_claim_root: [u8; 32],
+    pub access_statement_digest: [u8; 32],
     pub config: MachineConfig,
     pub initial_state: MachineState,
     pub initial_ram: Vec<u8>,
@@ -150,6 +151,8 @@ impl ReferencePipeline {
             rom: trace.rom.clone(),
             trace_commitment: trace_digest(&trace),
             trace_claim_root: crate::trace_claims::TraceClaimTree::build(&trace).root(),
+            access_statement_digest: crate::access_statement::AccessStatement::from_trace(&trace)
+                .digest(),
             config: trace.config.clone(),
             initial_state: trace.initial_state.clone(),
             initial_ram: trace.initial_ram.clone(),
@@ -187,6 +190,8 @@ impl ReferencePipeline {
             rom: trace.rom.clone(),
             trace_commitment: trace_digest(&trace),
             trace_claim_root: crate::trace_claims::TraceClaimTree::build(&trace).root(),
+            access_statement_digest: crate::access_statement::AccessStatement::from_trace(&trace)
+                .digest(),
             config: trace.config.clone(),
             initial_state: trace.initial_state.clone(),
             initial_ram: trace.initial_ram.clone(),
@@ -3174,9 +3179,21 @@ pub fn verify_unified_claim_proof(
 /// dynamic selected CPU proof is present, bind it to the same claim proof and
 /// check the PC statement.
 pub fn verify_native_claim_layer(
+    statement: &Statement,
     proof: &UnifiedTraceProof,
 ) -> Result<Vec<crate::trace_claims::CpuOutputClaim>, RuntimeError> {
     let claims = verify_unified_claim_proof(proof)?;
+    let access = crate::access_statement::AccessStatement::from_claims(
+        statement.config.clone(),
+        statement.initial_ram.clone(),
+        statement.initial_state.clone(),
+        &claims,
+    );
+    if access.digest() != statement.access_statement_digest {
+        return Err(RuntimeError::Proof(
+            "claim access statement mismatch".into(),
+        ));
+    }
     if let Some(selected) = &proof.selected_cpu {
         let claim_proof = proof
             .claim_proof
@@ -5657,18 +5674,28 @@ mod tests {
         )
         .unwrap();
         let proof = prove_unified_trace_dynamic_native(&outcome.trace, 8).unwrap();
-        let outputs = verify_native_claim_layer(&proof).unwrap();
+        let statement = outcome.statement.clone();
+        let outputs = verify_native_claim_layer(&statement, &proof).unwrap();
         assert_eq!(outputs.len(), outcome.trace.rows.len());
         assert_eq!(outputs[0].pc, 0x1000);
         assert_eq!(outputs[0].instruction_len, 4);
+        let mut claim_rows = verify_unified_claim_proof(&proof).unwrap();
+        claim_rows[0].rd_value ^= 1;
+        let access = crate::access_statement::AccessStatement::from_claims(
+            statement.config.clone(),
+            statement.initial_ram.clone(),
+            statement.initial_state.clone(),
+            &claim_rows,
+        );
+        assert_ne!(access.digest(), statement.access_statement_digest);
         let mut bad = proof.clone();
         bad.claim_proof.as_mut().unwrap().openings[0]
             .claim
             .instruction_len = 2;
-        assert!(verify_native_claim_layer(&bad).is_err());
+        assert!(verify_native_claim_layer(&statement, &bad).is_err());
         let mut bad = proof;
         bad.selected_cpu.as_mut().unwrap().claim_root[0] ^= 1;
-        assert!(verify_native_claim_layer(&bad).is_err());
+        assert!(verify_native_claim_layer(&statement, &bad).is_err());
     }
 
     #[test]
@@ -6368,6 +6395,8 @@ mod tests {
             rom: trace.rom.clone(),
             trace_commitment: trace_digest(&trace),
             trace_claim_root: crate::trace_claims::TraceClaimTree::build(&trace).root(),
+            access_statement_digest: crate::access_statement::AccessStatement::from_trace(&trace)
+                .digest(),
             config: config(),
             initial_state: trace.initial_state.clone(),
             initial_ram: trace.initial_ram.clone(),
@@ -7413,6 +7442,8 @@ mod tests {
             rom: trace.rom.clone(),
             trace_commitment: trace_digest(&trace),
             trace_claim_root: crate::trace_claims::TraceClaimTree::build(&trace).root(),
+            access_statement_digest: crate::access_statement::AccessStatement::from_trace(&trace)
+                .digest(),
             config: config(),
             initial_state: trace.initial_state.clone(),
             initial_ram: trace.initial_ram.clone(),

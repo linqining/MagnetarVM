@@ -11,9 +11,11 @@ const NODE_DOMAIN: &[u8] = b"magnetar-trace-claim-node";
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TraceMemClaim {
+    pub cycle: u64,
     pub addr: u64,
     pub value: u64,
     pub width: u8,
+    pub is_write: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -25,6 +27,9 @@ pub struct TraceClaim {
     pub rd: u8,
     pub rs1: u8,
     pub rs2: u8,
+    pub rd_present: bool,
+    pub rs1_present: bool,
+    pub rs2_present: bool,
     pub rd_value: u64,
     pub rs1_value: u64,
     pub rs2_value: u64,
@@ -41,6 +46,9 @@ impl TraceClaim {
             rd: row.rd.unwrap_or(0) as u8,
             rs1: row.rs1.unwrap_or(0) as u8,
             rs2: row.rs2.unwrap_or(0) as u8,
+            rd_present: row.rd.is_some(),
+            rs1_present: row.rs1.is_some(),
+            rs2_present: row.rs2.is_some(),
             rd_value: row.rd_val,
             rs1_value: row.rs1_val,
             rs2_value: row.rs2_val,
@@ -49,9 +57,11 @@ impl TraceClaim {
                 .iter()
                 .chain(row.extra_mem.iter())
                 .map(|access| TraceMemClaim {
+                    cycle: row.cycle,
                     addr: access.addr,
                     value: access.value,
                     width: access.width,
+                    is_write: access.is_write,
                 })
                 .collect(),
         }
@@ -66,13 +76,18 @@ impl TraceClaim {
         bytes.push(self.rd);
         bytes.push(self.rs1);
         bytes.push(self.rs2);
+        bytes.push(u8::from(self.rd_present));
+        bytes.push(u8::from(self.rs1_present));
+        bytes.push(u8::from(self.rs2_present));
         bytes.extend_from_slice(&self.rd_value.to_le_bytes());
         bytes.extend_from_slice(&self.rs1_value.to_le_bytes());
         bytes.extend_from_slice(&self.rs2_value.to_le_bytes());
         for access in &self.memory {
+            bytes.extend_from_slice(&access.cycle.to_le_bytes());
             bytes.extend_from_slice(&access.addr.to_le_bytes());
             bytes.extend_from_slice(&access.value.to_le_bytes());
             bytes.push(access.width);
+            bytes.push(u8::from(access.is_write));
         }
         bytes
     }
@@ -196,9 +211,9 @@ impl CpuOutputClaim {
             pc: claim.pc,
             next_pc: claim.next_pc,
             instruction_len: claim.instruction_len,
-            rd: (claim.rd != 0).then_some((claim.rd, claim.rd_value)),
-            rs1: (claim.rs1 != 0).then_some((claim.rs1, claim.rs1_value)),
-            rs2: (claim.rs2 != 0).then_some((claim.rs2, claim.rs2_value)),
+            rd: claim.rd_present.then_some((claim.rd, claim.rd_value)),
+            rs1: claim.rs1_present.then_some((claim.rs1, claim.rs1_value)),
+            rs2: claim.rs2_present.then_some((claim.rs2, claim.rs2_value)),
             memory: claim.memory.clone(),
         }
     }
@@ -345,9 +360,11 @@ mod tests {
             |claim: &mut TraceClaim| claim.rd_value ^= 1,
             |claim: &mut TraceClaim| {
                 claim.memory.push(TraceMemClaim {
+                    cycle: 0,
                     addr: 1,
                     value: 2,
                     width: 8,
+                    is_write: true,
                 })
             },
         ] {

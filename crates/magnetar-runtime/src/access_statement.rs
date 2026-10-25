@@ -1,8 +1,11 @@
 //! Compact statement for trace-free access verification.
 
 use magnetar_spec::{
-    Instruction, MachineConfig, MachineState, MemoryEvent, Op, RegIdx, Trace, TraceRow,
+    Instruction, MachineConfig, MachineState, MemoryAccess, MemoryEvent, Op, RegIdx, Trace,
+    TraceRow,
 };
+
+use crate::trace_claims::TraceClaim;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RegisterOp {
@@ -27,6 +30,43 @@ impl AccessStatement {
     pub fn digest(&self) -> [u8; 32] {
         use sha2::{Digest, Sha256};
         Sha256::digest(bincode::serialize(self).expect("access statement serializes")).into()
+    }
+
+    pub fn from_claims(
+        config: MachineConfig,
+        initial_ram: Vec<u8>,
+        initial_state: MachineState,
+        claims: &[TraceClaim],
+    ) -> Self {
+        Self {
+            config,
+            initial_ram,
+            initial_state,
+            memory_events: claims
+                .iter()
+                .flat_map(|claim| claim.memory.iter())
+                .map(|event| MemoryEvent {
+                    cycle: event.cycle,
+                    access: MemoryAccess {
+                        addr: event.addr,
+                        value: event.value,
+                        width: event.width,
+                        is_write: event.is_write,
+                    },
+                })
+                .collect(),
+            register_ops: claims
+                .iter()
+                .map(|claim| RegisterOp {
+                    rs1: claim.rs1_present.then_some(claim.rs1 as RegIdx),
+                    rs2: claim.rs2_present.then_some(claim.rs2 as RegIdx),
+                    rd: claim.rd_present.then_some(claim.rd as RegIdx),
+                    rs1_val: claim.rs1_value,
+                    rs2_val: claim.rs2_value,
+                    rd_val: claim.rd_value,
+                })
+                .collect(),
+        }
     }
 
     pub fn from_trace(trace: &Trace) -> Self {
