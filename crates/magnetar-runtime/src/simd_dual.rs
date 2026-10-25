@@ -3718,6 +3718,37 @@ pub fn verify_alu_branch_pc_batch_bits<B: magnetar_proof::BitPcs>(
     Ok(())
 }
 
+pub const MIXED_ALU: u8 = 1 << 0;
+pub const MIXED_BRANCH: u8 = 1 << 1;
+pub const MIXED_MEMORY: u8 = 1 << 2;
+pub const MIXED_SHIFT: u8 = 1 << 3;
+pub const MIXED_MULTIPLY: u8 = 1 << 4;
+pub const MIXED_DIVIDE: u8 = 1 << 5;
+pub const MIXED_SDIV: u8 = 1 << 6;
+
+pub fn mixed_rows_component_mask(rows: &[(u64, MixedAluBranchInput)]) -> u8 {
+    rows.iter().fold(0u8, |mask, (_, input)| {
+        mask | match input {
+            MixedAluBranchInput::Alu { .. } => MIXED_ALU,
+            MixedAluBranchInput::Fetch { .. } => MIXED_BRANCH,
+            MixedAluBranchInput::Memory { .. } => MIXED_MEMORY,
+            MixedAluBranchInput::Shift { .. } => MIXED_SHIFT,
+            MixedAluBranchInput::Multiply { .. } => MIXED_MULTIPLY,
+            MixedAluBranchInput::Divide { .. } => MIXED_DIVIDE,
+            MixedAluBranchInput::SignedDivide { .. } => MIXED_SDIV,
+        }
+    })
+}
+
+pub fn mixed_trace_component_mask(
+    trace: &magnetar_spec::Trace,
+    width: usize,
+) -> Result<u8, RuntimeError> {
+    Ok(mixed_rows_component_mask(
+        &mixed_alu_branch_rows_from_trace(trace, width)?,
+    ))
+}
+
 pub fn mixed_alu_branch_rows_from_trace(
     trace: &magnetar_spec::Trace,
     width: usize,
@@ -4639,6 +4670,71 @@ mod tests {
             RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
         let (proof, layout) = prove_alu_branch_trace(&trace, 8, &backend).unwrap();
         verify_alu_branch_trace(&trace, &proof, &layout, 8, &backend).unwrap();
+    }
+
+    #[test]
+    fn mixed_trace_component_mask_tracks_used_ops() {
+        use magnetar_executor::execute;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+        let config = MachineConfig {
+            entry: 0x1000,
+            rom_base: 0x1000,
+            ram_base: 0x1000_0000,
+            ram_size: 0x40,
+            stack_top: 0x1000_0040,
+            max_cycles: 100,
+        };
+        let alu_program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let alu_trace = execute(&alu_program, config.clone()).unwrap();
+        assert_eq!(
+            mixed_trace_component_mask(&alu_trace, 8).unwrap(),
+            MIXED_ALU
+        );
+
+        let mem_program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Lui,
+                    rd: 20,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x1000_0000,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Lw,
+                    rd: 6,
+                    rs1: 20,
+                    rs2: 0,
+                    imm: 2,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let mem_trace = execute(&mem_program, config).unwrap();
+        assert_eq!(
+            mixed_trace_component_mask(&mem_trace, 8).unwrap(),
+            MIXED_ALU | MIXED_MEMORY
+        );
     }
 
     #[test]

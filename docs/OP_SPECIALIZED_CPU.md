@@ -435,3 +435,24 @@ at 16 rows the mixed row is slower, because the current mixed relation contains
 all seven components (ALU, branch, memory, shift, mul, div, sdiv) even when the
 trace only uses ALU/branch. The next optimization must select components per
 trace instead of always committing all of them.
+
+
+## Component mask (done)
+
+`mixed_rows_component_mask` and `mixed_trace_component_mask` classify the rows
+that a trace actually needs:
+
+```text
+MIXED_ALU, MIXED_BRANCH, MIXED_MEMORY, MIXED_SHIFT,
+MIXED_MULTIPLY, MIXED_DIVIDE, MIXED_SDIV
+```
+
+`mixed_trace_component_mask_tracks_used_ops` checks:
+
+```text
+Addi + Ecall        -> MIXED_ALU
+Lui + Lw + Ecall    -> MIXED_ALU | MIXED_MEMORY
+```
+
+The fixed mixed row still commits all seven components; this mask is the input
+for the next step, building only the selected component relations.
