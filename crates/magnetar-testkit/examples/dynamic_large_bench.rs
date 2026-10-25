@@ -7,7 +7,7 @@ use magnetar_runtime::{
 use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 
 fn main() {
-    let adds = 255usize;
+    let adds = 1023usize;
     let mut rom = Vec::new();
     for index in 0..adds {
         rom.push(
@@ -36,7 +36,7 @@ fn main() {
     )
     .unwrap();
     {
-        let chunk = 64usize;
+        let chunk = 256usize;
         let started = Instant::now();
         let compact = prove_chunked_trace_dynamic(&trace, 8, chunk).unwrap();
         let compact_time = started.elapsed();

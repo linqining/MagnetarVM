@@ -809,12 +809,12 @@ not hardware SIMD.
 
 ```text
 rows=256  chunk=64
-  compact dynamic    564,890 B / 11.06 s
-  streaming dynamic  725,930 B /  6.19 s
+  compact dynamic    564,890 B / 7.78 s
+  streaming dynamic  725,930 B / 6.24 s
 
 rows=1024 chunk=256
-  compact dynamic  1,384,210 B / 97.06 s
-  streaming dynamic 1,543,938 B / 79.83 s
+  compact dynamic  1,384,210 B / 85.84 s
+  streaming dynamic 1,543,938 B / 82.06 s
 ```
 
 Streaming dynamic is faster than whole-trace compact here because the selected
@@ -846,3 +846,8 @@ once data is cache-hot; the packing kernel remains the clear SIMD win (11-12.6x)
 claims in scoped threads while the access proof runs concurrently. Proof bytes
 are unchanged; 256-row streaming dropped from 7.62 s to 6.19 s, and 1024-row
 from 86.31 s to 79.83 s on this machine.
+
+
+Compact dynamic proofs now overlap the shared-access proof with the whole-trace
+selected CPU proof in scoped threads. The 256-row compact case dropped from
+11.06 s to 7.78 s and the 1024-row case from 97.06 s to 85.84 s.

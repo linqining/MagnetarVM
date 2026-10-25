@@ -4015,7 +4015,24 @@ pub fn prove_chunked_trace_dynamic(
         ));
     }
     let trace_commitment = trace_digest(trace);
-    let (access, aux_claims, opening) = prove_chunked_shared_access(trace)?;
+    let (access, selected) = std::thread::scope(|scope| {
+        let access = scope.spawn(|| prove_chunked_shared_access(trace));
+        let selected = scope.spawn(|| {
+            crate::simd_dual::prove_dynamic_cpu_claims(
+                trace,
+                width,
+                &crate::protocol::selected_backend(),
+            )
+        });
+        let access = access
+            .join()
+            .map_err(|_| RuntimeError::Proof("dynamic access prover thread panicked".into()))??;
+        let selected = selected
+            .join()
+            .map_err(|_| RuntimeError::Proof("dynamic CPU prover thread panicked".into()))??;
+        Ok::<_, RuntimeError>((access, selected))
+    })?;
+    let (access, aux_claims, opening) = access;
     let aux = aux_claims.map(|claims| AuxTraceProof {
         shout: claims.shout,
         shift_router: claims.shift_router,
@@ -4023,11 +4040,6 @@ pub fn prove_chunked_trace_dynamic(
         opening: opening.clone(),
     });
     let shared_access = if aux.is_some() { None } else { Some(opening) };
-    let selected = crate::simd_dual::prove_dynamic_cpu_claims(
-        trace,
-        width,
-        &crate::protocol::selected_backend(),
-    )?;
     let mut ranges = Vec::new();
     let mut start = 0;
     while start < trace.rows.len() {
