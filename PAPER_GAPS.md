@@ -187,7 +187,7 @@ verification、B6 sum-check 优化、E5 aligned-subcube packing / 更低 proof s
 | D9 | BinaryRouter for shifts：`Y(o,j)=Σ X·Q·R`，`Q` 来自 bytecode 并由 Shout 认证；register-specified shift 展开为固定 virtual instructions（§5.4） | 64 列 one-hot `Q` + 64 列 `hQ`；booleanity + `Σ Q = is_shift` + `Σ hQ = shamt`；Router 表包含 shamt/kind 位，`shift_linear_ok` 在随机点检查 `hQ_h=h·Q_h`、选中 index=shamt、`shift_code=shamt+64·kind`，并与 Shout 认证的 `shift_code` 列链接；tamper 测试通过 | ✅/🟡 | Shout/Q 绑定完成；register-specified shift 的固定 virtual instruction 展开仍归 D12 |
 | D10 | BinaryRouter for stores：输出是 `Inc`（old XOR new），`R_st` 带 3 个 offset bits，`Q_st` 4 个 width selector（§5.4） | 路由 `Inc`；offset/width/is_shift/is_store bits 已提交并链接到 public route；routing coefficients 现在从 committed bits 重建（`route_coefficients_from_selectors`）；未接 bytecode selector | 🟡 | 让 routing 直接使用 offset/width 的 MLE；接 bytecode width selector `Q_st` |
 | D11 | 两个 BinaryRouter 实例（shift、store） | `RouterMode`/`RouterRoute::None` 支持 standalone 实例；unified 与 chunked `AuxTraceProof` 都使用独立的 `shift_router`/`store_router` tables 与 claims | ✅ | 已实现 |
-| D12 | bytecode 预处理：instruction expansion、public ROM/bytecode table（§2、§5.5） | public `preprocess` bytecode table 已存在并被 Shout 使用（含 selectors/micro-PC）；仍是一 instruction = 一 micro-op，没有 instruction expansion | 🟡 | 实现 expansion（尤其 register-shift 的固定 virtual instruction sequence）与多 micro-op 表 |
+| D12 | bytecode 预处理：instruction expansion、public ROM/bytecode table（§2、§5.5） | public `preprocess` bytecode table 已存在并被 Shout 使用；新增 `shift_expand::expand_register_shifts`，把 Sll/Srl/Sra 展开成固定 branchless 序列（x28-x31 临时寄存器，57 条指令），`expansion_matches_original_shifts` 对 54 组输入验证与原程序一致；尚未接入 executor/preprocess 的 micro-op 流 | 🟡 | 把 expansion 接入 executor 的 virtual micro-op 表/PC 调度，并扩展到 word shift |
 | D13 | ROM/bytecode 是 public input，不由 proof 携带 | `Statement` 现在携带 `rom`；`TraceProof`/`UnifiedTraceProof`/`ChunkedTraceProof` 已移除 `rom` 字段；verifier 从 statement 使用 ROM | ✅ | bytecode table/micro-PC 仍需按 D7/D12 完成 |
 
 ### E. PCS / MosaicPCS
@@ -4318,3 +4318,9 @@ that proof from 352,930 to 359,202 B. The chosen thresholds are 512 and 4096.
 `chunked_shared_access_rejects_tampering` now also asserts that the RAM/register
 standalone openings are absent and the shared opening is present, pinning the
 shared-access layout in CI.
+
+
+`shift_expand` implements a fixed branchless register-shift expansion as a
+reference for D12: it rejects PC-relative programs and programs using x28-x31,
+and verifies Sll/Srl/Sra equivalence over shifts 0..70. Integration into the
+trace/micro-op stream remains open.

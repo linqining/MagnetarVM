@@ -68,6 +68,8 @@ impl ExecutionIo {
 }
 
 /// Execute a program and return its reference trace.
+pub mod shift_expand;
+
 pub fn execute(program: &ProgramImage, config: MachineConfig) -> Result<Trace, ExecError> {
     execute_with_io(program, config, &mut ExecutionIo::default())
 }
