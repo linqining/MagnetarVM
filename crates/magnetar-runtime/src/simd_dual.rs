@@ -4569,14 +4569,17 @@ pub fn verify_dynamic_cpu_claims<B: magnetar_proof::BitPcs>(
             "not a dynamic selected claim bundle".into(),
         ));
     }
-    let claim_tree = crate::trace_claims::TraceClaimTree::build(trace);
-    if claims.claim_root != claim_tree.root()
-        || claims.claim_openings.len() != trace.rows.len()
-        || crate::trace_claims::verify_claims(claims.claim_root, &claims.claim_openings).is_none()
-    {
-        return Err(RuntimeError::Proof(
-            "dynamic selected claim openings do not match the trace".into(),
-        ));
+    if !claims.claim_openings.is_empty() {
+        let claim_tree = crate::trace_claims::TraceClaimTree::build(trace);
+        if claims.claim_root != claim_tree.root()
+            || claims.claim_openings.len() != trace.rows.len()
+            || crate::trace_claims::verify_claims(claims.claim_root, &claims.claim_openings)
+                .is_none()
+        {
+            return Err(RuntimeError::Proof(
+                "dynamic selected claim openings do not match the trace".into(),
+            ));
+        }
     }
     let expected = selected_segment_claims(&claims.layout, &claims.proof)?;
     if expected != claims.segments {

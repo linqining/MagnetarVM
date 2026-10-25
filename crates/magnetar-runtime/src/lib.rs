@@ -3201,19 +3201,16 @@ pub fn verify_native_claim_layer(
         ));
     }
     if let Some(selected) = &proof.selected_cpu {
-        let claim_proof = proof
-            .claim_proof
-            .as_ref()
-            .ok_or_else(|| RuntimeError::Proof("missing claim proof".into()))?;
-        let recovered = crate::simd_dual::verify_selected_claim_proof(selected, claim_proof)
-            .ok_or_else(|| RuntimeError::Proof("selected claim binding mismatch".into()))?;
-        crate::simd_dual::verify_selected_claim_consistency(selected, &recovered)?;
-        let backend = crate::protocol::selected_backend();
+        crate::simd_dual::verify_selected_claim_consistency(selected, &claims)?;
         if selected.op == crate::simd_dual::SelectedOp::Dynamic {
-            let synthetic = crate::trace_claims::claims_to_trace(statement, &recovered)?;
+            let synthetic = crate::trace_claims::claims_to_trace(statement, &claims)?;
+            let backend = crate::protocol::selected_backend();
             crate::simd_dual::verify_dynamic_cpu_claims(&synthetic, selected, &backend)?;
         } else {
-            crate::simd_dual::verify_selected_cpu_claims(selected, &backend)?;
+            crate::simd_dual::verify_selected_cpu_claims(
+                selected,
+                &crate::protocol::selected_backend(),
+            )?;
         }
     }
     Ok(crate::trace_claims::cpu_output_claims(&claims))
@@ -3295,6 +3292,13 @@ pub struct UnifiedProofSizes {
     pub store_router: usize,
     pub trace_claims: usize,
     pub table_batches: usize,
+    pub claim_proof: usize,
+    pub selected_cpu: usize,
+    pub e5_opening: usize,
+    pub field_opening: usize,
+    pub field_pcs_commitment: usize,
+    pub field_tables: usize,
+    pub amo: usize,
 }
 
 impl UnifiedProofSizes {
@@ -3311,6 +3315,13 @@ impl UnifiedProofSizes {
             + self.store_router
             + self.trace_claims
             + self.table_batches
+            + self.claim_proof
+            + self.selected_cpu
+            + self.e5_opening
+            + self.field_opening
+            + self.field_pcs_commitment
+            + self.field_tables
+            + self.amo
     }
 }
 
@@ -3333,6 +3344,13 @@ pub fn unified_proof_sizes(proof: &UnifiedTraceProof) -> Result<UnifiedProofSize
         store_router: size(bincode::serialize(&proof.store_router))?,
         trace_claims: size(bincode::serialize(&proof.trace_claims))?,
         table_batches: size(bincode::serialize(&proof.table_batches))?,
+        claim_proof: size(bincode::serialize(&proof.claim_proof))?,
+        selected_cpu: size(bincode::serialize(&proof.selected_cpu))?,
+        e5_opening: size(bincode::serialize(&proof.e5_opening))?,
+        field_opening: size(bincode::serialize(&proof.field_opening))?,
+        field_pcs_commitment: size(bincode::serialize(&proof.field_pcs_commitment))?,
+        field_tables: size(bincode::serialize(&proof.field_tables))?,
+        amo: size(bincode::serialize(&proof.amo))?,
     })
 }
 
@@ -5714,6 +5732,9 @@ mod tests {
         let outputs = verify_native_claim_layer(&statement, &proof).unwrap();
         assert_eq!(outputs.len(), outcome.trace.rows.len());
         verify_native_unified(&statement, &proof, 8).unwrap();
+        let decoded: UnifiedTraceProof =
+            bincode::deserialize(&bincode::serialize(&proof).unwrap()).unwrap();
+        verify_native_unified(&statement, &decoded, 8).unwrap();
         assert_eq!(outputs[0].pc, 0x1000);
         assert_eq!(outputs[0].instruction_len, 4);
         let mut claim_rows = verify_unified_claim_proof(&proof).unwrap();
