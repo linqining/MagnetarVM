@@ -3891,6 +3891,20 @@ mod tests {
     }
 
     #[test]
+    fn fence_and_ebreak_round_trip_unified() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction::new(Op::Fence).encode(),
+                Instruction::new(Op::Ebreak).encode(),
+            ],
+        );
+        let trace = execute(&program, config()).unwrap();
+        let proof = prove_unified_trace(&trace, 8).unwrap();
+        verify_unified_proof(&proof).unwrap();
+    }
+
+    #[test]
     fn immediate_logical_ops_round_trip_unified() {
         let mut program = vec![Instruction {
             op: Op::Addi,

@@ -4209,3 +4209,12 @@ addition to the 9-variable pow=24 branch. This drops the 11-workload sum
 2,703,720 -> 2,693,240 B (memory -2.9 KB, loop -2.4 KB, muldiv -3.5 KB, mixedmem
 -1.0 KB) with AMO ~6.6 s. Applying the same branch to 13-variable tables was
 rejected: fibonacci grew 4.2 KB and bitops 3.1 KB.
+
+
+### PCS parameter search notes
+
+`bits=12` uses `(3,20,2)`; `bits=13` tries `(3,20,2)/(3,20,3)/(4,20,2)` all
+regressed fibonacci or bitops; `bits=14` tries `(3,20,2)/(3,20,3)/(4,22,3)/
+(4,20,2)` and the default `(4,20,3)` remains best for size+latency. For the
+9-variable branch, fold=1, fold=3 and rate=4 all regressed or ran much slower.
+`fence_and_ebreak_round_trip_unified` adds a CI proof of Fence/Ebreak.
