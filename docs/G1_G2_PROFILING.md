@@ -121,3 +121,22 @@ the same 16 ALU rows, before any PC/memory/Shifter claims are added.
 This confirms the witness-width bottleneck: unused mul/div/sdiv/memory/shift
 subrelations currently dominate the CPU proof, not the ALU relation actually
 executed. The next step is an op-specialized unified layout with claim routing.
+
+
+## Parallel streaming chunks
+
+`prove_chunked_trace_streaming` now proves per-chunk CPU proofs in parallel
+with scoped threads; `prove_chunked_trace_streaming_sequential` retains the old
+path, and a test asserts both produce byte-identical proofs.
+
+16-row ALU trace, release:
+
+```text
+chunk=2 sequential 635,490 B 7.36 s   parallel 4.56 s  (1.61x)
+chunk=4 sequential 414,846 B 16.93 s  parallel 10.49 s (1.61x)
+chunk=8 sequential 282,572 B 10.74 s  parallel 6.77 s  (1.59x)
+```
+
+Proof size and verification time are unchanged. The compact default still uses
+one whole-trace CPU proof; this optimization applies to the optional streaming
+mode and to memory-bounded chunked proving.

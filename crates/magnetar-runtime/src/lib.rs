@@ -3611,10 +3611,67 @@ fn verify_chunked_combined_opening(
     Ok(())
 }
 
+fn chunk_cpu_proofs(
+    trace: &Trace,
+    width: usize,
+    ranges: &[(usize, usize)],
+    parallel: bool,
+) -> Result<Vec<CpuSpartanProof>, RuntimeError> {
+    let backend = ConstraintProofBackend;
+    if parallel {
+        std::thread::scope(|scope| {
+            let handles = ranges
+                .iter()
+                .map(|(start, end)| {
+                    let rows = &trace.rows[*start..*end];
+                    scope.spawn(move || -> Result<CpuSpartanProof, RuntimeError> {
+                        let (system, witness) = merged_cpu_system_for_rows(rows, width)?;
+                        backend.prove(&system, &witness)
+                    })
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle
+                        .join()
+                        .map_err(|_| RuntimeError::Proof("chunk prover thread panicked".into()))?
+                })
+                .collect::<Result<Vec<_>, RuntimeError>>()
+        })
+    } else {
+        ranges
+            .iter()
+            .map(|(start, end)| {
+                let (system, witness) =
+                    merged_cpu_system_for_rows(&trace.rows[*start..*end], width)?;
+                backend.prove(&system, &witness)
+            })
+            .collect()
+    }
+}
+
 pub fn prove_chunked_trace_streaming(
     trace: &Trace,
     width: usize,
     chunk_size: usize,
+) -> Result<ChunkedTraceProof, RuntimeError> {
+    prove_chunked_trace_streaming_mode(trace, width, chunk_size, true)
+}
+
+pub fn prove_chunked_trace_streaming_sequential(
+    trace: &Trace,
+    width: usize,
+    chunk_size: usize,
+) -> Result<ChunkedTraceProof, RuntimeError> {
+    prove_chunked_trace_streaming_mode(trace, width, chunk_size, false)
+}
+
+fn prove_chunked_trace_streaming_mode(
+    trace: &Trace,
+    width: usize,
+    chunk_size: usize,
+    parallel: bool,
 ) -> Result<ChunkedTraceProof, RuntimeError> {
     check_trace_linkage(trace)?;
     if trace.rows.is_empty() || chunk_size == 0 {
@@ -3631,14 +3688,17 @@ pub fn prove_chunked_trace_streaming(
     });
     let shared_access = if aux.is_some() { None } else { Some(opening) };
     let trace_commitment = trace_digest(trace);
-    let backend = ConstraintProofBackend;
-    let mut chunks = Vec::new();
-    let mut chained = Vec::new();
+    let mut ranges = Vec::new();
     let mut start = 0;
     while start < trace.rows.len() {
         let end = (start + chunk_size).min(trace.rows.len());
-        let (system, witness) = merged_cpu_system_for_rows(&trace.rows[start..end], width)?;
-        let cpu = backend.prove(&system, &witness)?;
+        ranges.push((start, end));
+        start = end;
+    }
+    let cpus = chunk_cpu_proofs(trace, width, &ranges, parallel)?;
+    let mut chunks = Vec::new();
+    let mut chained = Vec::new();
+    for ((start, end), cpu) in ranges.into_iter().zip(cpus) {
         let proof_digest = chunk_proof_digest(&trace_commitment, start, end, &cpu);
         chained.push(ChainedChunk::new(
             chained.len(),
@@ -3652,7 +3712,6 @@ pub fn prove_chunked_trace_streaming(
             end,
             cpu: Some(cpu),
         });
-        start = end;
     }
     let chain = ChainedRecursion.aggregate(&chained)?;
     Ok(ChunkedTraceProof {
@@ -6482,6 +6541,52 @@ mod tests {
         tampered.access.ram.read.initial.rounds[0][0] =
             tampered.access.ram.read.initial.rounds[0][0] + F2_128::from(1u64);
         assert!(verify_chunked_trace(&trace, &tampered, 8).is_err());
+    }
+
+    #[test]
+    fn parallel_chunked_streaming_matches_sequential() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 1,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Xor,
+                    rd: 3,
+                    rs1: 1,
+                    rs2: 2,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(&program, config()).unwrap();
+        let sequential = prove_chunked_trace_streaming_sequential(&trace, 8, 2).unwrap();
+        let parallel = prove_chunked_trace_streaming(&trace, 8, 2).unwrap();
+        verify_chunked_trace(&trace, &sequential, 8).unwrap();
+        verify_chunked_trace(&trace, &parallel, 8).unwrap();
+        assert_eq!(
+            bincode::serialize(&sequential).unwrap(),
+            bincode::serialize(&parallel).unwrap()
+        );
     }
 
     #[test]
