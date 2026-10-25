@@ -2576,6 +2576,47 @@ pub(crate) fn verify_unified_inner(
 
 /// Verify a unified proof against the public statement before rebuilding the
 /// row systems. Program identity is bound through the ROM carried by the trace.
+pub fn prove_unified_trace_dynamic_native(
+    trace: &Trace,
+    width: usize,
+) -> Result<UnifiedTraceProof, RuntimeError> {
+    let plan = crate::protocol::ProtocolPlan::unified();
+    let mut context = crate::protocol::UnifiedProveContext::new_with_group(trace, width, None)?;
+    for stage in plan.execution() {
+        match stage {
+            crate::protocol::ExecutionStage::Commit => context.commit()?,
+            crate::protocol::ExecutionStage::Access => context.prove_access()?,
+            crate::protocol::ExecutionStage::Shout => context.prove_shout()?,
+            crate::protocol::ExecutionStage::ShiftRouter => context.prove_shift_router()?,
+            crate::protocol::ExecutionStage::StoreRouter => context.prove_store_router()?,
+            crate::protocol::ExecutionStage::RegisterAndTrace => {
+                context.prove_register_and_trace()?
+            }
+            crate::protocol::ExecutionStage::Cpu | crate::protocol::ExecutionStage::Opening => {}
+        }
+    }
+    let mut proof = context.finish()?;
+    proof.gated = None;
+    proof.cpu = None;
+    proof.e5_opening = None;
+    proof.opening = None;
+    proof.shout = None;
+    proof.shift_router = None;
+    proof.store_router = None;
+    proof.shout_index = None;
+    proof.shift_router_index = None;
+    proof.store_router_index = None;
+    if let Ok(witness) = crate::binary_shout::BinaryShoutWitness::from_trace(trace) {
+        proof.packed_shout = Some(crate::packed_shout::prove_packed_shout(&witness)?);
+    }
+    proof.selected_cpu = Some(crate::simd_dual::prove_dynamic_cpu_claims(
+        trace,
+        width,
+        &crate::protocol::selected_backend(),
+    )?);
+    Ok(proof)
+}
+
 /// Prove a unified trace whose CPU stage is the dynamic selected CPU proof.
 /// This first builds the reference proof and strips the gated/E5 CPU opening;
 /// the resulting proof verifies through the selected-CPU dispatch.

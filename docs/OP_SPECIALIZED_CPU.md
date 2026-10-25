@@ -604,18 +604,20 @@ because this prototype still builds the full gated/E5 proof before stripping it;
 the next step is to skip that construction in the prover.
 
 
-### Skipping gated construction in the prover (attempt)
+### Native dynamic prover (done)
 
-A native dynamic prover that runs the access/register/router stages but skips
-`ProveCpu` and `ProveOpening` was attempted. The resulting proof fails
-verification at:
+`prove_unified_trace_dynamic_native` runs the unified stages but skips
+`ProveCpu` and `ProveOpening`, then attaches the dynamic selected CPU claims and
+re-generates the packed Shout proof. The verifier accepts the resulting proof;
+the missing packed-Shout presence was the blocker in the earlier attempt.
+
+Addi + Ecall, width 8:
 
 ```text
-Proof("BinaryShout proof presence does not match the trace")
+full     107,874 B  prove 16.69 s  verify 0.077 s
+dynamic   92,994 B  prove 16.79 s  verify 0.054 s
+native    55,754 B  prove  0.127 s verify 0.042 s
 ```
 
-So the stage context cannot simply skip the CPU/opening stages; the proof
-objects produced by the preceding stages (presence/claims/opening shape) are
-coupled to the unified plan. Skipping gated construction needs a prover-context
-refactor, not just a stage filter. The stripping variant
-(`prove_unified_trace_dynamic`) remains the working proof shape.
+The native path is ~130x faster to prove and about half the proof bytes, because
+it never constructs the full gated CPU/E5 opening.

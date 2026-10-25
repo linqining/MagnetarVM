@@ -1063,6 +1063,30 @@ mod phase_tests {
     }
 
     #[test]
+    fn unified_dynamic_native_round_trips() {
+        let trace = trace();
+        let full = crate::prove_unified_trace(&trace, 8).expect("full");
+        eprintln!(
+            "full shout={} packed={} shift={} store={}",
+            full.shout.is_some(),
+            full.packed_shout.is_some(),
+            full.shift_router.is_some(),
+            full.store_router.is_some()
+        );
+        let proof =
+            crate::prove_unified_trace_dynamic_native(&trace, 8).expect("native dynamic proof");
+        eprintln!(
+            "native shout={} packed={} shift={} store={}",
+            proof.shout.is_some(),
+            proof.packed_shout.is_some(),
+            proof.shift_router.is_some(),
+            proof.store_router.is_some()
+        );
+        let result = crate::verify_unified_trace(&trace, &proof, 8);
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
     fn unified_dynamic_variant_round_trips() {
         let trace = trace();
         let proof = crate::prove_unified_trace_dynamic(&trace, 8).expect("dynamic proof");

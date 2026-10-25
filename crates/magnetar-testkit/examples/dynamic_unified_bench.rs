@@ -1,7 +1,10 @@
 use std::time::Instant;
 
 use magnetar_executor::execute;
-use magnetar_runtime::{prove_unified_trace, prove_unified_trace_dynamic, verify_unified_trace};
+use magnetar_runtime::{
+    prove_unified_trace, prove_unified_trace_dynamic, prove_unified_trace_dynamic_native,
+    verify_unified_trace,
+};
 use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 
 fn main() {
@@ -51,4 +54,13 @@ fn main() {
 
     println!("full={full_bytes}B prove={full_time:?} verify={full_verify:?}");
     println!("dynamic={dynamic_bytes}B prove={dynamic_time:?} verify={dynamic_verify:?}");
+
+    let started = Instant::now();
+    let native = prove_unified_trace_dynamic_native(&trace, 8).unwrap();
+    let native_time = started.elapsed();
+    let native_bytes = bincode::serialize(&native).unwrap().len();
+    let started = Instant::now();
+    verify_unified_trace(&trace, &native, 8).unwrap();
+    let native_verify = started.elapsed();
+    println!("native={native_bytes}B prove={native_time:?} verify={native_verify:?}");
 }
