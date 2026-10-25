@@ -703,8 +703,9 @@ the compact chunked path is dynamic so far.
 `native_unified_bench` now runs through 256 rows (Addi-only, width 8):
 
 ```text
-rows=128  proof 316,578 B  prove 3.80 s  verify 1.04 s
-rows=256  proof 487,042 B  prove 10.66 s verify 1.97 s
+rows=128  proof 316,578 B  prove 3.80 s   verify 1.04 s
+rows=256  proof 487,042 B  prove 10.66 s  verify 1.97 s
+rows=512  proof 767,242 B  prove 34.88 s  verify 4.77 s
 ```
 
 Proof size still grows roughly linearly with rows, confirming that native
