@@ -90,3 +90,21 @@ implemented and tested in `TraceClaimTree`, but are not yet serialized in the
 unified proof: adding every row's opening changed proof-byte equality in the
 protocol round-trip test, so serialization will be added per-claim once the
 proof-only verifier needs specific fields.
+
+
+## Compressed-path diagnosis
+
+The failing compressed proofs go through
+`gated_bundle::prove_gated_bundle_from_trace`, which:
+
+```text
+gated_rows_from_trace(trace)
+final_pc = last_pc + 4
+prove_gated_dual_batch_bits_with_pc(...)
+```
+
+This path bypasses `ReservationCpuInput.step2` entirely. A step2 relation that
+passes `ReservationCpuRow::relation_check` can therefore still fail in the
+gated bundle's shared-matrix sumcheck. The next implementation step is to feed
+the gated bundle from the reservation rows (or an equivalent step2-carrying
+row view) instead of `gated_rows_from_trace`.
