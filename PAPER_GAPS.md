@@ -4403,3 +4403,8 @@ Only `jalr` and x28-x31 users still fall back.
 
 
 `jalr_programs_fall_back` pins the explicit fallback for jalr programs.
+
+
+Batching 5-variable tables (count<=8) was tried: no size gain (fibonacci
+230,529 -> 232,433 B), while mem-loop proving rose from ~28 s to ~37 s and
+verification from ~8 s to ~10 s. The `rowbits=4 && count<=8` rule remains.
