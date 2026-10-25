@@ -53,10 +53,17 @@ ALU-only          8,192 bits  40,424 B  0.25 s
 The ALU+PC proof is ~7x faster and ~2.1x smaller than the full gated row while
 enforcing sequential `pc + 4`.
 
+## PC statement (done)
+
+`prove_alu_pc_batch_bits` / `verify_alu_pc_batch_bits` now take
+`(initial_pc, final_pc)` and pass them to `gated_shared_matrices`, so the
+batch's first PC and final next-PC are public inputs. The test also checks that
+a wrong final PC is rejected.
+
 ## Next concrete step
 
-Extend `AluPcRow` to the selected-op relation and add PC statement claims
-(initial/final PC), then virtual segment/claim routing for unified.
+Extend `AluPcRow` to the selected-op relation (branch/memory/shift/mul/div as
+they appear) and then virtual segment/claim routing for unified.
 
 ## Non-goals for the first step
 

@@ -67,11 +67,17 @@ fn main() {
         );
 
         let started = Instant::now();
-        let (proof, layout) = prove_alu_pc_batch_bits(width, cycles, &backend).unwrap();
+        let initial_pc = 0x1000;
+        let final_pc = initial_pc + 4 * cycles as u64;
+        let (proof, layout) =
+            prove_alu_pc_batch_bits(width, cycles, initial_pc, final_pc, &backend).unwrap();
         let prove_time = started.elapsed();
         let bytes = bincode::serialize(&proof).unwrap().len();
         let started = Instant::now();
-        verify_alu_pc_batch_bits(width, cycles, &proof, &layout, &backend).unwrap();
+        verify_alu_pc_batch_bits(
+            width, cycles, initial_pc, final_pc, &proof, &layout, &backend,
+        )
+        .unwrap();
         println!(
             "  alu+pc cycles={cycles} proof={bytes} prove={prove_time:?} verify={:?}",
             started.elapsed()

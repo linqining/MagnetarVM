@@ -1592,6 +1592,8 @@ impl GatedRowLike for AluPcRow {
 pub fn prove_alu_pc_batch_bits<B: magnetar_proof::BitPcs>(
     width: usize,
     cycles: usize,
+    initial_pc: u64,
+    final_pc: u64,
     backend: &B,
 ) -> Result<LockstepBatch<B>, RuntimeError> {
     use magnetar_proof::prove_lockstep_bits;
@@ -1612,10 +1614,10 @@ pub fn prove_alu_pc_batch_bits<B: magnetar_proof::BitPcs>(
     system
         .check(&witness)
         .map_err(|error| RuntimeError::Proof(format!("ALU+PC row witness: {error}")))?;
-    let (base_cols, s1, s2) = gated_shared_matrices(&row, cycles, None)?;
+    let (base_cols, s1, s2) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
     let mut bits = Vec::with_capacity(cycles * base_cols);
     for index in 0..cycles {
-        let pc = 0x1000 + 4 * index as u64;
+        let pc = initial_pc + 4 * index as u64;
         let mut witness = row.witness_at(
             pc,
             0x12 + index as u64,
@@ -1640,6 +1642,8 @@ pub fn prove_alu_pc_batch_bits<B: magnetar_proof::BitPcs>(
 pub fn verify_alu_pc_batch_bits<B: magnetar_proof::BitPcs>(
     width: usize,
     cycles: usize,
+    initial_pc: u64,
+    final_pc: u64,
     proof: &LockstepProof<B::Commitment, B::Opening>,
     layout: &WitnessLayout,
     backend: &B,
@@ -1647,7 +1651,7 @@ pub fn verify_alu_pc_batch_bits<B: magnetar_proof::BitPcs>(
     use magnetar_proof::verify_lockstep_bits;
 
     let row = AluPcRow::new(width);
-    let (_, s1, s2) = gated_shared_matrices(&row, cycles, None)?;
+    let (_, s1, s2) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
     verify_lockstep_bits(
         &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], layout, proof, backend,
     )
@@ -1996,8 +2000,14 @@ mod tests {
 
         let backend =
             RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
-        let (proof, layout) = prove_alu_pc_batch_bits(8, 16, &backend).unwrap();
-        verify_alu_pc_batch_bits(8, 16, &proof, &layout, &backend).unwrap();
+        let initial = 0x1000;
+        let final_pc = initial + 4 * 16;
+        let (proof, layout) = prove_alu_pc_batch_bits(8, 16, initial, final_pc, &backend).unwrap();
+        verify_alu_pc_batch_bits(8, 16, initial, final_pc, &proof, &layout, &backend).unwrap();
+        assert!(
+            verify_alu_pc_batch_bits(8, 16, initial, final_pc + 4, &proof, &layout, &backend)
+                .is_err()
+        );
     }
 
     #[test]
