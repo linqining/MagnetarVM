@@ -793,3 +793,16 @@ version for 128 random field elements. One native unified run dropped from
 65 ms to ~35 ms, but the measurement is variable and needs a dedicated
 microbenchmark before claiming a stable speedup. This is a scalar optimization,
 not hardware SIMD.
+
+
+### Large chunked dynamic benchmark
+
+`dynamic_large_bench` (256 Addi rows, width 8, chunk 64):
+
+```text
+compact dynamic    564,890 B / 10.05 s
+streaming dynamic  725,930 B /  7.62 s
+```
+
+Streaming dynamic is faster than whole-trace compact here because the selected
+CPU proof is split across chunks, at the cost of extra per-chunk proof bytes.
