@@ -320,6 +320,8 @@ pub const CLAIM_CONSUMERS: &[(ClaimKind, ClaimSink)] = &[
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ProofBundle {
     pub trace_commitment: [u8; 32],
+    pub trace_claim_root: [u8; 32],
+    pub trace_openings: Vec<crate::trace_claims::TraceClaimOpening>,
     pub opening: Option<magnetar_pcs::P3MosaicOpening>,
     pub e5_opening: Option<crate::E5Opening>,
     pub field_opening: Option<magnetar_pcs::P3MosaicOpening>,
@@ -371,6 +373,8 @@ impl ProofBundle {
         }
         Self {
             trace_commitment: proof.trace_commitment,
+            trace_claim_root: proof.trace_claim_root,
+            trace_openings: proof.trace_openings.clone(),
             opening: proof.opening.clone(),
             e5_opening: proof.e5_opening.clone(),
             field_opening: proof.field_opening.clone(),
@@ -425,6 +429,8 @@ impl ProofBundle {
                 ram: ram.ok_or(ProtocolError::MissingStage(StageId::Ram))?,
             },
             trace_commitment: self.trace_commitment,
+            trace_claim_root: self.trace_claim_root,
+            trace_openings: self.trace_openings,
             opening: self.opening,
             e5_opening: self.e5_opening,
             field_opening: self.field_opening,
@@ -2492,8 +2498,14 @@ impl<'a> UnifiedProveContext<'a> {
             crate::trace_commitment::trace_claim_points(&self.trace_witness, self.trace_index)?;
         let trace_claims = trace_points.into_iter().zip(trace_values).collect();
         let packed_shout = self.packed_shout;
+        let claim_tree = crate::trace_claims::TraceClaimTree::build(self.trace);
+        let trace_openings = (0..self.trace.rows.len())
+            .filter_map(|index| claim_tree.open(index))
+            .collect();
         Ok(UnifiedTraceProof {
             shape: crate::cpu_shape::CpuShape::from_trace(self.trace).zeroed(),
+            trace_claim_root: claim_tree.root(),
+            trace_openings,
             register_index: self.register_index,
             ram_index: self.ram_index,
             rom_index: self.rom_index,

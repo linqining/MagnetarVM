@@ -87,6 +87,7 @@ pub struct Statement {
     pub program_hash: [u8; 32],
     pub rom: Vec<u32>,
     pub trace_commitment: [u8; 32],
+    pub trace_claim_root: [u8; 32],
     pub config: MachineConfig,
     pub initial_state: MachineState,
     pub initial_ram: Vec<u8>,
@@ -148,6 +149,7 @@ impl ReferencePipeline {
             program_hash: program_hash(&expanded),
             rom: trace.rom.clone(),
             trace_commitment: trace_digest(&trace),
+            trace_claim_root: crate::trace_claims::TraceClaimTree::build(&trace).root(),
             config: trace.config.clone(),
             initial_state: trace.initial_state.clone(),
             initial_ram: trace.initial_ram.clone(),
@@ -184,6 +186,7 @@ impl ReferencePipeline {
             program_hash: program_hash(image),
             rom: trace.rom.clone(),
             trace_commitment: trace_digest(&trace),
+            trace_claim_root: crate::trace_claims::TraceClaimTree::build(&trace).root(),
             config: trace.config.clone(),
             initial_state: trace.initial_state.clone(),
             initial_ram: trace.initial_ram.clone(),
@@ -1134,6 +1137,10 @@ pub type SelectedCpuProof = crate::simd_dual::SelectedCpuClaims<
 pub struct UnifiedTraceProof {
     pub access: TraceAccessProof,
     pub trace_commitment: [u8; 32],
+    #[serde(default)]
+    pub trace_claim_root: [u8; 32],
+    #[serde(default)]
+    pub trace_openings: Vec<crate::trace_claims::TraceClaimOpening>,
     pub cpu: Option<LockstepClaims<P3MosaicCommitment>>,
     pub gated: Option<GatedCpuClaims>,
     #[serde(default)]
@@ -3134,6 +3141,23 @@ pub fn verify_unified_trace(
     proof: &UnifiedTraceProof,
     width: usize,
 ) -> Result<(), RuntimeError> {
+    if proof.trace_claim_root != crate::trace_claims::TraceClaimTree::build(trace).root() {
+        return Err(RuntimeError::Proof("trace claim root mismatch".into()));
+    }
+    if !proof.trace_openings.is_empty() {
+        if proof.trace_openings.len() != trace.rows.len()
+            || !proof
+                .trace_openings
+                .iter()
+                .enumerate()
+                .all(|(index, opening)| {
+                    index == opening.index
+                        && crate::trace_claims::verify_opening(proof.trace_claim_root, opening)
+                })
+        {
+            return Err(RuntimeError::Proof("trace claim opening mismatch".into()));
+        }
+    }
     crate::protocol::Orchestrator::default().verify(trace, proof, width)
 }
 
@@ -3148,6 +3172,7 @@ pub fn verify_unified_trace_statement(
         || statement.initial_ram != trace.initial_ram
         || statement.final_state != trace.final_state
         || statement.trace_commitment != proof.trace_commitment
+        || statement.trace_claim_root != proof.trace_claim_root
         || statement.rom != trace.rom
         || statement.program_hash != rom_hash(&statement.rom)
         || statement.output != trace.io_output
@@ -6255,6 +6280,7 @@ mod tests {
             program_hash: program_hash(&program),
             rom: trace.rom.clone(),
             trace_commitment: trace_digest(&trace),
+            trace_claim_root: crate::trace_claims::TraceClaimTree::build(&trace).root(),
             config: config(),
             initial_state: trace.initial_state.clone(),
             initial_ram: trace.initial_ram.clone(),
@@ -7299,6 +7325,7 @@ mod tests {
             program_hash: program_hash(&program),
             rom: trace.rom.clone(),
             trace_commitment: trace_digest(&trace),
+            trace_claim_root: crate::trace_claims::TraceClaimTree::build(&trace).root(),
             config: config(),
             initial_state: trace.initial_state.clone(),
             initial_ram: trace.initial_ram.clone(),
