@@ -268,3 +268,13 @@ statement from the claim rows and rejects a mismatch.
 The claim carries register presence flags (`rd_present`/`rs1_present`/
 `rs2_present`), so x0/None distinctions survive. Tests mutate `rd_value` and
 show the claim-derived access statement digest changes.
+
+
+## Claim trace consistency
+
+`verify_claims_against_trace` compares every recovered claim field (PC,
+instruction length/word, present registers/values, memory records) with the
+supplied rows. `verify_unified_trace` now applies this check in the trace-aware
+reference path, so the Merkle claim layer cannot silently diverge from the
+executed trace. The proof-only path still relies on the access statement/proofs
+and selected PC statement.

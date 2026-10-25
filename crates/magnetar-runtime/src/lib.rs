@@ -3150,10 +3150,16 @@ pub fn verify_unified_trace(
         return Err(RuntimeError::Proof("trace claim root mismatch".into()));
     }
     if let Some(claims) = &proof.claim_proof {
-        if claims.root != proof.trace_claim_root
-            || claims.verify().map(|values| values.len()) != Some(trace.rows.len())
-        {
+        if claims.root != proof.trace_claim_root {
             return Err(RuntimeError::Proof("claim proof mismatch".into()));
+        }
+        let Some(rows) = claims.verify() else {
+            return Err(RuntimeError::Proof("claim proof opening mismatch".into()));
+        };
+        if !crate::trace_claims::verify_claims_against_trace(trace, &rows) {
+            return Err(RuntimeError::Proof(
+                "claim proof does not match the trace".into(),
+            ));
         }
     }
     crate::protocol::Orchestrator::default().verify(trace, proof, width)

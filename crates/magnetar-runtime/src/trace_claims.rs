@@ -194,6 +194,17 @@ pub fn verify_opening(root: [u8; 32], opening: &TraceClaimOpening) -> bool {
     node == root
 }
 
+/// Trace-aware reference check: recovered claims must match the supplied rows.
+pub fn verify_claims_against_trace(trace: &Trace, claims: &[TraceClaim]) -> bool {
+    if claims.len() != trace.rows.len() {
+        return false;
+    }
+    claims.iter().zip(&trace.rows).all(|(claim, row)| {
+        let expected = TraceClaim::from_row(row);
+        claim == &expected
+    })
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CpuOutputClaim {
     pub pc: u64,
@@ -327,6 +338,17 @@ mod tests {
         let mut bad = openings;
         bad[0].claim.instruction_len = 2;
         assert!(verify_claims(tree.root(), &bad).is_none());
+    }
+
+    #[test]
+    fn recovered_claims_match_trace() {
+        let trace = trace();
+        let proof = ClaimProof::from_trace(&trace);
+        let claims = proof.verify().unwrap();
+        assert!(verify_claims_against_trace(&trace, &claims));
+        let mut bad = claims;
+        bad[0].rd_value ^= 1;
+        assert!(!verify_claims_against_trace(&trace, &bad));
     }
 
     #[test]
