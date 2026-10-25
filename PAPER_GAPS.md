@@ -4,6 +4,82 @@
 代码基线：`00818e8`（`feat/BinaryTwist`）  
 状态说明：✅ 已实现；🟡 部分实现或采用了不同的等价/近似 instantiation；❌ 未实现。
 
+## 当前 op-specialized / native 审计补充（最新）
+
+> 本节补充本会话新增的 op-specialized unified CPU 工作；下面旧章节中把
+> E1–E4、D2、D5、B6 等列为缺失的 P0 条目已过时，以本节和“最新实现快照”为准。
+
+### 已完成
+
+```text
+E1–E5 MosaicPCS            aligned packing / lift / batch / ring switch / one P3 evaluation
+B1 / B4                    dual SIMD grouped s1+s2；shared outer/inner sumcheck
+B6                         Frobenius collision、degree fold、skip、bound-row、zerocheck（reference scope）
+D1 / D2                    RAM 与 register BinaryTwist
+D5                         linear-time LT
+D6 / D8                    Inc / Val / Next、bit-sliced Shout
+D11 / D12 / D13            dual Router、bytecode expansion、public ROM
+C1–C4 gated/shared          PC/reservation linkage 在 proof 内
+op-specialized CPU         ALU/branch/memory/shift/mul(high/signed)/div/sdiv dynamic component
+trace-bound selected CPU   witness 重建 + commitment 比较 + initial/final PC
+native unified prover      selected CPU，无 gated/E5/opening
+auto selection             dynamic 可表达则 native，否则 reference
+chunked compact            whole-trace dynamic selected CPU
+streaming chunks           per-chunk dynamic selected CPU
+hardware SIMD              AVX2/NEON 128-bit witness packing（仅 packing）
+```
+
+### 关键测量
+
+```text
+native unified Addi+Ecall, width 8
+  full     107,874 B / 16.69 s / 0.077 s
+  native    55,754 B /  0.127 s / 0.042 s
+
+native unified rows=256
+  proof 487,042 B / prove 10.66 s / verify 1.97 s
+
+dynamic compact chunked (4 rows)
+  chunk=1 191,679 B / 5.04 s -> 174,083 B / 0.33 s
+
+dynamic streaming chunks (4 rows)
+  chunk=2 257,967 B / 1.78 s -> 178,395 B / 0.45 s
+```
+
+### 仍开放的高优先级缺口
+
+| 项 | 状态 | 缺口 |
+|---|---|---|
+| A2 / E8 | 🟡 | native selected verifier 仍需 trace 重建 witness；proof size 随 rows 近线性（256 rows 487 KB），未达到 paper 的 trace-length succinctness |
+| A1/A5 | 🟡 | native proof 含 selected CPU opening + access/field openings，尚未收敛为单一 commitment/opening |
+| B2/B3 | 🟡 | 完整 BinarySpartan/native F2 PCS 仍未闭环；当前是 shared-matrix lockstep + packed P3 |
+| F3/F4 | ❌ | 没有 verifier-in-the-VM、递归 proof、低 rate 最终 proof |
+| G1/G2 | ❌ | 未达到 2^22–2^28 cycles、100 GiB、8–12 M cycles/s |
+| G3/G4/G5/G6 | 🟡/❌ | 缺 SHA-256/Keccak/ERC-20 guest、同机对比、优化版和硬件并行 |
+| D4 | 🟡 | packed cell-column claim 未接 unified，collision 未 shared |
+| D7/D9/D10 | 🟡 | bytecode 驱动的 selector/offset/width 路由仍未完全接 |
+| C5 | 🟡 | initial/final public state 仍未直接在 R1CS 内绑定 |
+| E6 | 🟡 | Ligerito 未接入 unified/chunked |
+| 硬件 SIMD | 🟡 | 只有 128-bit packing 的 AVX2/NEON kernel；域运算/sumcheck/PCS 未 SIMD 化 |
+| F6/F7 | ❌ | 无外部安全审计、常数时间/侧信道处理 |
+
+### 测试基线
+
+```text
+11 个 full-suite failing tests:
+  10 个在 d5eb67e 基线已失败（pre-existing）
+  1 个 protocol plan test 在基线/单独重跑通过，
+    属于 full-suite 并行状态敏感，不是稳定回归
+```
+
+### 当前建议顺序
+
+1. native selected proof 的 trace-free verifier（A2）
+2. 递归聚合（F3/F4）
+3. 大规模性能/内存（G1/G2）
+4. 论文 workload/对比/优化版（G3–G6）
+5. 剩余 selector / packed claim / Ligerito / 审计
+
 ## 最新实现快照（会话验证）
 
 ```text
