@@ -4,11 +4,8 @@ Detailed paper gap audit: [PAPER_GAPS.md](PAPER_GAPS.md).
 
 ## BinaryTwist
 
-- [ ] Replace the reference `LT` reductions with the paper's linear-time
-      treatment. The current implementation materializes a `T × T` `LT` table
-      and builds full `(cell, cycle, previous-cycle)` factor vectors, so its
-      prover cost is quadratic in the cycle count. This is correctness-first
-      reference code, not the final performance path.
+- [x] Use a linear-time `LT` MLE recurrence; `lt_mle_matches_quadratic` compares
+      it with the materialized quadratic reference.
 - [x] Virtualize `Val`/`Next` through the `LT` identity and keep only `ra`,
       `wa`, and compact `Inc` committed.
 - [x] Address virtualization: commit bit-sliced address components and prove
@@ -21,8 +18,8 @@ Detailed paper gap audit: [PAPER_GAPS.md](PAPER_GAPS.md).
       routing, and wire its claim into `UnifiedTraceProof`.
 - [x] Wire `BinaryShout` and `BinaryRouter` claims into `UnifiedTraceProof`
       without adding a second P3 opening.
-- [ ] Optimize the P3 shared opening path (currently the runtime pre-commit and
-      Spartan's internal commit/open repeat the same batch commitment).
+- [x] Share P3 openings across claims: unified CPU/gated+RAM/Shout/Router, and
+      chunked access+aux now use one commitment/opening each.
 
 ## Proof engine / PCS
 
@@ -40,7 +37,19 @@ Detailed paper gap audit: [PAPER_GAPS.md](PAPER_GAPS.md).
 
 ## VM / ISA
 
-- [ ] PC-linkage and reservation-chain constraints inside the proof.
+- [x] PC-linkage and reservation-chain constraints inside the gated/shared proof
+      (`next_pc=pc+4`/branch/jump targets; instance boundaries).
 - [ ] RV64F/D execution and proofs.
-- [ ] Unaligned memory accesses.
-- [ ] Broader syscall runtime beyond `exit`/`hint`/`write`/`read`.
+- [x] Unaligned accesses inside one 8-byte word (cross-word remains rejected).
+- [x] Reference syscall ABI `exit`/`hint`/`write`/`read`/`clock`, including
+      `SYS_READ` write-back trace records.
+
+## D12 shift expansion
+
+- [x] Fixed branchless expansion for Sll/Srl/Sra/Sllw/Srlw/Sraw.
+- [x] Relocate conditional branches, `jal x0`, `jal rd≠0` (link preserved), and
+      `auipc` (PC correction).
+- [x] Integrate into `execute_expanded`, `ReferencePipeline::run_expanded` and
+      `preprocess_expanded`.
+- [ ] Trace-level virtual micro-op scheduling remains open.
+- [ ] `jalr` and programs using x28-x31 fall back to the original bytecode.
