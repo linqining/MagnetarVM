@@ -4340,3 +4340,8 @@ the full reference pipeline as well as the executor API.
 
 `run_expanded_falls_back_without_shifts` checks that the pipeline path leaves
 non-shift programs unchanged and builds the expected statement.
+
+
+`shift_expanded_proof` proves the expanded program end to end: 53 expanded rows,
+proof size 333,496 B, verify OK. This is the current D12 end-to-end evidence; the
+expansion is intentionally fixed and large compared with a hardware shift.
