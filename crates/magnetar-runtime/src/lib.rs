@@ -2449,6 +2449,49 @@ pub fn prove_unified_trace_group(
     crate::protocol::Orchestrator::default().prove_group(trace, width, group)
 }
 
+/// One measured prover stage.
+#[derive(Clone, Debug)]
+pub struct StageTiming {
+    pub stage: String,
+    pub duration: std::time::Duration,
+}
+
+/// Prove the default unified plan and return per-stage wall-clock timings.
+pub fn prove_unified_trace_profile(
+    trace: &Trace,
+    width: usize,
+) -> Result<(UnifiedTraceProof, Vec<StageTiming>), RuntimeError> {
+    let plan = crate::protocol::ProtocolPlan::unified();
+    let mut context = crate::protocol::UnifiedProveContext::new(trace, width)?;
+    let mut timings = Vec::new();
+    for stage in plan.execution() {
+        let started = std::time::Instant::now();
+        match stage {
+            crate::protocol::ExecutionStage::Commit => context.commit()?,
+            crate::protocol::ExecutionStage::Access => context.prove_access()?,
+            crate::protocol::ExecutionStage::Shout => context.prove_shout()?,
+            crate::protocol::ExecutionStage::ShiftRouter => context.prove_shift_router()?,
+            crate::protocol::ExecutionStage::StoreRouter => context.prove_store_router()?,
+            crate::protocol::ExecutionStage::RegisterAndTrace => {
+                context.prove_register_and_trace()?
+            }
+            crate::protocol::ExecutionStage::Cpu => context.prove_cpu()?,
+            crate::protocol::ExecutionStage::Opening => context.prove_opening()?,
+        }
+        timings.push(StageTiming {
+            stage: format!("{stage:?}"),
+            duration: started.elapsed(),
+        });
+    }
+    let started = std::time::Instant::now();
+    let proof = context.finish()?;
+    timings.push(StageTiming {
+        stage: "Finish".into(),
+        duration: started.elapsed(),
+    });
+    Ok((proof, timings))
+}
+
 pub(crate) fn verify_unified_with_plan(
     trace: &Trace,
     proof: &UnifiedTraceProof,
