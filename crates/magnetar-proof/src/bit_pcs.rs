@@ -685,9 +685,7 @@ impl<P: Pcs> RingSwitchPackedBitPcs<P> {
     }
 
     fn scale_vertical(values: &[F2_128], scalar: F2_128) -> Vec<F2_128> {
-        let mut scaled = values.to_vec();
-        F2_128::mul_slice_assign(&mut scaled, scalar);
-        scaled
+        values.iter().map(|value| *value * scalar).collect()
     }
 
     fn scale_horizontal(values: &[F2_128], scalar: F2_128) -> Vec<F2_128> {
