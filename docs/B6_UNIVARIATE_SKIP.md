@@ -147,3 +147,12 @@ log_size=8   skip-bound proof 71,688 B  prove 31.8 ms  verify 22.2 ms
 
 The chain proves `Q(r) = Σ_i w_i(r) f_i`; it still does not prove that the rows
 are the constraint composition `C(f)`, which is the remaining zerocheck layer.
+
+
+### Toy zero-row argument
+
+`prove_zero_rows` / `verify_zero_rows` compose the skip message with bound rows
+and require the skip evaluation to be zero. Tests accept an all-zero committed
+row vector and reject a nonzero one. This validates the B2 residual chain, but
+the committed rows are still an arbitrary vector; tying them to a constraint
+composition `C(f)` is the remaining zerocheck layer.

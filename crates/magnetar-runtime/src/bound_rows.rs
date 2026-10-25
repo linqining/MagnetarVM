@@ -148,6 +148,48 @@ pub fn verify_skip_bound(
     )
 }
 
+/// Toy zero-row argument: a skip challenge plus a bound-row proof that the
+/// committed rows evaluate to zero on the Boolean domain.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ZeroRowsProof {
+    pub skip: SkipRoundProof,
+    pub bound: BoundRowProof,
+}
+
+pub fn prove_zero_rows(
+    round: &SkipRound,
+    values: &[F2_128],
+    pcs: &P3BinaryPcs,
+    transcript: &mut Sha256Transcript,
+) -> Result<ZeroRowsProof, ProofError> {
+    let skip = round
+        .prove(values, transcript)
+        .map_err(|error| ProofError::Pcs(format!("univariate skip failed: {error:?}")))?;
+    let weights = round
+        .row_weights(skip.point)
+        .map_err(|error| ProofError::Pcs(format!("skip weights failed: {error:?}")))?;
+    let bound = prove_bound_rows(&weights, values, pcs, transcript)?;
+    Ok(ZeroRowsProof { skip, bound })
+}
+
+pub fn verify_zero_rows(
+    round: &SkipRound,
+    proof: &ZeroRowsProof,
+    pcs: &P3BinaryPcs,
+    transcript: &mut Sha256Transcript,
+) -> Result<bool, ProofError> {
+    if proof.skip.evaluation != F2_128::from(0u64) {
+        return Ok(false);
+    }
+    if round.verify(&proof.skip, transcript).is_err() {
+        return Ok(false);
+    }
+    let weights = round
+        .row_weights(proof.skip.point)
+        .map_err(|error| ProofError::Pcs(format!("skip weights failed: {error:?}")))?;
+    verify_bound_rows(&weights, F2_128::from(0u64), &proof.bound, pcs, transcript)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,5 +256,21 @@ mod tests {
         tampered.bound.value = tampered.bound.value + F2_128::from(1u64);
         let mut verifier = Sha256Transcript::new("skip-bound-test");
         assert!(!verify_skip_bound(&round, &tampered, &pcs, &mut verifier).unwrap());
+    }
+    #[test]
+    fn zero_rows_proof_accepts_zero_and_rejects_nonzero() {
+        let round = SkipRound::new(2).unwrap();
+        let pcs = P3BinaryPcs::new(100);
+        let zero = vec![F2_128::from(0u64); 4];
+        let mut prover = Sha256Transcript::new("zero-rows-test");
+        let proof = prove_zero_rows(&round, &zero, &pcs, &mut prover).unwrap();
+        let mut verifier = Sha256Transcript::new("zero-rows-test");
+        assert!(verify_zero_rows(&round, &proof, &pcs, &mut verifier).unwrap());
+
+        let nonzero = values(19, 4);
+        let mut prover = Sha256Transcript::new("zero-rows-test");
+        let proof = prove_zero_rows(&round, &nonzero, &pcs, &mut prover).unwrap();
+        let mut verifier = Sha256Transcript::new("zero-rows-test");
+        assert!(!verify_zero_rows(&round, &proof, &pcs, &mut verifier).unwrap());
     }
 }
