@@ -376,11 +376,11 @@ fn sumcheck_terms(
                 .unwrap_or(1)
         });
     let memory_budget = 8usize << 30;
-    let threads = requested.max(1).min(if per_point_bytes == 0 {
-        1
-    } else {
-        (memory_budget / per_point_bytes).max(1)
-    });
+    let memory_threads = memory_budget
+        .checked_div(per_point_bytes)
+        .unwrap_or(1)
+        .max(1);
+    let threads = requested.max(1).min(memory_threads);
     for degree in degrees {
         let points = (0..=*degree)
             .map(|point| F2_128::from(point as u64))
