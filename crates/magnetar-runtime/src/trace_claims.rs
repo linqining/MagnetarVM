@@ -10,14 +10,89 @@ const LEAF_DOMAIN: &[u8] = b"magnetar-trace-claim-leaf";
 const NODE_DOMAIN: &[u8] = b"magnetar-trace-claim-node";
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TraceMemClaim {
+    pub addr: u64,
+    pub value: u64,
+    pub width: u8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TraceClaim {
+    pub pc: u64,
+    pub next_pc: u64,
+    pub instruction_word: u32,
+    pub instruction_len: u8,
+    pub rd: u8,
+    pub rs1: u8,
+    pub rs2: u8,
+    pub rd_value: u64,
+    pub rs1_value: u64,
+    pub rs2_value: u64,
+    pub memory: Vec<TraceMemClaim>,
+}
+
+impl TraceClaim {
+    pub fn from_row(row: &TraceRow) -> Self {
+        Self {
+            pc: row.pc,
+            next_pc: row.next_pc,
+            instruction_word: row.instruction_word,
+            instruction_len: row.instruction_len,
+            rd: row.rd.unwrap_or(0) as u8,
+            rs1: row.rs1.unwrap_or(0) as u8,
+            rs2: row.rs2.unwrap_or(0) as u8,
+            rd_value: row.rd_val,
+            rs1_value: row.rs1_val,
+            rs2_value: row.rs2_val,
+            memory: row
+                .mem
+                .iter()
+                .chain(row.extra_mem.iter())
+                .map(|access| TraceMemClaim {
+                    addr: access.addr,
+                    value: access.value,
+                    width: access.width,
+                })
+                .collect(),
+        }
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&self.pc.to_le_bytes());
+        bytes.extend_from_slice(&self.next_pc.to_le_bytes());
+        bytes.extend_from_slice(&self.instruction_word.to_le_bytes());
+        bytes.push(self.instruction_len);
+        bytes.push(self.rd);
+        bytes.push(self.rs1);
+        bytes.push(self.rs2);
+        bytes.extend_from_slice(&self.rd_value.to_le_bytes());
+        bytes.extend_from_slice(&self.rs1_value.to_le_bytes());
+        bytes.extend_from_slice(&self.rs2_value.to_le_bytes());
+        for access in &self.memory {
+            bytes.extend_from_slice(&access.addr.to_le_bytes());
+            bytes.extend_from_slice(&access.value.to_le_bytes());
+            bytes.push(access.width);
+        }
+        bytes
+    }
+
+    pub fn leaf(&self) -> [u8; 32] {
+        hash(&[LEAF_DOMAIN, &self.encode()])
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TraceClaimOpening {
     pub index: usize,
+    pub claim: TraceClaim,
     pub leaf: [u8; 32],
     pub siblings: Vec<[u8; 32]>,
 }
 
 #[derive(Clone, Debug)]
 pub struct TraceClaimTree {
+    claims: Vec<TraceClaim>,
     layers: Vec<Vec<[u8; 32]>>,
 }
 
@@ -30,28 +105,17 @@ fn hash(parts: &[&[u8]]) -> [u8; 32] {
 }
 
 pub fn claim_leaf(row: &TraceRow) -> [u8; 32] {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&row.pc.to_le_bytes());
-    bytes.extend_from_slice(&row.next_pc.to_le_bytes());
-    bytes.extend_from_slice(&row.instruction_word.to_le_bytes());
-    bytes.push(row.instruction_len);
-    bytes.push(row.rd.unwrap_or(0) as u8);
-    bytes.push(row.rs1.unwrap_or(0) as u8);
-    bytes.push(row.rs2.unwrap_or(0) as u8);
-    bytes.extend_from_slice(&row.rd_val.to_le_bytes());
-    bytes.extend_from_slice(&row.rs1_val.to_le_bytes());
-    bytes.extend_from_slice(&row.rs2_val.to_le_bytes());
-    for access in row.mem.iter().chain(row.extra_mem.iter()) {
-        bytes.extend_from_slice(&access.addr.to_le_bytes());
-        bytes.extend_from_slice(&access.value.to_le_bytes());
-        bytes.push(access.width);
-    }
-    hash(&[LEAF_DOMAIN, &bytes])
+    TraceClaim::from_row(row).leaf()
 }
 
 impl TraceClaimTree {
     pub fn build(trace: &Trace) -> Self {
-        let mut leaves = trace.rows.iter().map(claim_leaf).collect::<Vec<_>>();
+        let claims = trace
+            .rows
+            .iter()
+            .map(TraceClaim::from_row)
+            .collect::<Vec<_>>();
+        let mut leaves = claims.iter().map(TraceClaim::leaf).collect::<Vec<_>>();
         let width = leaves.len().max(1).next_power_of_two();
         leaves.resize(width, [0u8; 32]);
         let mut layers = vec![leaves];
@@ -63,7 +127,7 @@ impl TraceClaimTree {
                 .collect::<Vec<_>>();
             layers.push(next);
         }
-        Self { layers }
+        Self { claims, layers }
     }
 
     pub fn root(&self) -> [u8; 32] {
@@ -91,6 +155,7 @@ impl TraceClaimTree {
         }
         Some(TraceClaimOpening {
             index,
+            claim: self.claims.get(index)?.clone(),
             leaf,
             siblings,
         })
@@ -98,6 +163,9 @@ impl TraceClaimTree {
 }
 
 pub fn verify_opening(root: [u8; 32], opening: &TraceClaimOpening) -> bool {
+    if opening.claim.leaf() != opening.leaf {
+        return false;
+    }
     let mut node = opening.leaf;
     let mut position = opening.index;
     for sibling in &opening.siblings {
@@ -109,6 +177,18 @@ pub fn verify_opening(root: [u8; 32], opening: &TraceClaimOpening) -> bool {
         position /= 2;
     }
     node == root
+}
+
+/// Verify a contiguous list of claim openings and return their payloads.
+pub fn verify_claims(root: [u8; 32], openings: &[TraceClaimOpening]) -> Option<Vec<TraceClaim>> {
+    let mut claims = Vec::with_capacity(openings.len());
+    for (index, opening) in openings.iter().enumerate() {
+        if opening.index != index || !verify_opening(root, opening) {
+            return None;
+        }
+        claims.push(opening.claim.clone());
+    }
+    Some(claims)
 }
 
 #[cfg(test)]
@@ -165,6 +245,43 @@ mod tests {
         let mut opening = tree.open(0).unwrap();
         opening.leaf[0] ^= 1;
         assert!(!verify_opening(tree.root(), &opening));
+    }
+
+    #[test]
+    fn verified_claims_recover_row_fields() {
+        let trace = trace();
+        let tree = TraceClaimTree::build(&trace);
+        let openings = (0..trace.rows.len())
+            .map(|index| tree.open(index).unwrap())
+            .collect::<Vec<_>>();
+        let claims = verify_claims(tree.root(), &openings).unwrap();
+        assert_eq!(claims.len(), trace.rows.len());
+        assert_eq!(claims[0].pc, 0x1000);
+        assert_eq!(claims[0].instruction_len, 4);
+        let mut bad = openings;
+        bad[0].claim.instruction_len = 2;
+        assert!(verify_claims(tree.root(), &bad).is_none());
+    }
+
+    #[test]
+    fn tampered_claim_fields_are_rejected() {
+        let trace = trace();
+        let tree = TraceClaimTree::build(&trace);
+        for mutate in [
+            |claim: &mut TraceClaim| claim.instruction_len ^= 4,
+            |claim: &mut TraceClaim| claim.rd_value ^= 1,
+            |claim: &mut TraceClaim| {
+                claim.memory.push(TraceMemClaim {
+                    addr: 1,
+                    value: 2,
+                    width: 8,
+                })
+            },
+        ] {
+            let mut opening = tree.open(0).unwrap();
+            mutate(&mut opening.claim);
+            assert!(!verify_opening(tree.root(), &opening));
+        }
     }
 
     #[test]

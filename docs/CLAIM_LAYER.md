@@ -156,3 +156,20 @@ variables, rather than at the PC arithmetic itself.
 The prototype was reverted again to keep HEAD at 295/3. The next fix should add
 a matrix-vs-z constraint probe that reports the first failing shared-matrix row
 and maps its columns back to the step2 variables.
+
+
+## Claim payloads and proof-only recovery
+
+`TraceClaim` now carries the actual row fields, not just a hash:
+
+```text
+pc/next_pc/instruction_word/instruction_len
+rd/rs1/rs2 values
+memory addr/value/width
+```
+
+`TraceClaimOpening` carries the claim plus its Merkle path, and
+`verify_opening` recomputes the leaf hash from the claim. `verify_claims(root,
+openings)` verifies a contiguous opening list and returns the recovered claims.
+Tests cover tampered instruction length, register value and memory records. This
+is the payload the proof-only verifier will consume.
