@@ -4475,3 +4475,9 @@ chain then verifies the whole CPU proof once. At chunk 2 this is 217,170 B versu
 
 `compact_chunked_proof_is_smaller` also tampers `whole_cpu.vw` and checks the
 compact verifier rejects it.
+
+
+A unified-proof-backed compact trace variant was measured: 228,851 B on the
+16-row probe, larger than the 217,170 B compact chunked proof (the unified
+opening/CPU proof is larger than the chunked access/aux+whole-CPU split for
+this shape). It was not adopted.
