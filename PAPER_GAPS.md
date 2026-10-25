@@ -70,10 +70,10 @@ dynamic streaming chunks (4 rows)
 ### 测试基线
 
 ```text
-11 个 full-suite failing tests:
-  10 个在 d5eb67e 基线已失败（pre-existing）
-  1 个 protocol plan test 在基线/单独重跑通过，
-    属于 full-suite 并行状态敏感，不是稳定回归
+full-suite failing tests: 10
+  全部在 d5eb67e 基线已失败（pre-existing）
+  protocol plan test 已在 full suite 通过
+  当前 full suite: 285 passed / 10 failed
 ```
 
 ### 当前建议顺序
