@@ -3144,8 +3144,8 @@ pub fn verify_unified_trace(
     if proof.trace_claim_root != crate::trace_claims::TraceClaimTree::build(trace).root() {
         return Err(RuntimeError::Proof("trace claim root mismatch".into()));
     }
-    if !proof.trace_openings.is_empty() {
-        if proof.trace_openings.len() != trace.rows.len()
+    if !proof.trace_openings.is_empty()
+        && (proof.trace_openings.len() != trace.rows.len()
             || !proof
                 .trace_openings
                 .iter()
@@ -3153,10 +3153,9 @@ pub fn verify_unified_trace(
                 .all(|(index, opening)| {
                     index == opening.index
                         && crate::trace_claims::verify_opening(proof.trace_claim_root, opening)
-                })
-        {
-            return Err(RuntimeError::Proof("trace claim opening mismatch".into()));
-        }
+                }))
+    {
+        return Err(RuntimeError::Proof("trace claim opening mismatch".into()));
     }
     crate::protocol::Orchestrator::default().verify(trace, proof, width)
 }
