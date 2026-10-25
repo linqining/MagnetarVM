@@ -582,3 +582,23 @@ The E5 opening batches the CPU/gated claims; without the gated claim set the
 batched opening no longer matches. Replacing the gated CPU path therefore needs
 the selected CPU claims to participate in the opening/claim batching, not just
 in the CPU relation verification. The strict presence checks were restored.
+
+
+## Dynamic unified proof variant (done)
+
+`prove_unified_trace_dynamic` builds the reference unified proof, removes
+`gated`, `cpu`, `e5_opening` and `opening`, and attaches dynamic selected claims.
+The verifier accepts this shape: the CPU presence checks tolerate a dynamic
+selection, the CPU stage is skipped, and the selected claims rebuild/verify the
+trace witness.
+
+`dynamic_unified_bench` on Addi + Ecall, width 8:
+
+```text
+full     107,874 B  prove 16.23 s  verify 0.163 s
+dynamic   92,994 B  prove 16.18 s  verify 0.031 s
+```
+
+Proof bytes drop ~14% and verification is ~5x faster. Prove time is unchanged
+because this prototype still builds the full gated/E5 proof before stripping it;
+the next step is to skip that construction in the prover.

@@ -1063,6 +1063,32 @@ mod phase_tests {
     }
 
     #[test]
+    fn unified_dynamic_variant_round_trips() {
+        let trace = trace();
+        let proof = crate::prove_unified_trace_dynamic(&trace, 8).expect("dynamic proof");
+        crate::verify_unified_trace(&trace, &proof, 8).expect("verify dynamic proof");
+        assert!(proof.gated.is_none());
+        assert!(proof.cpu.is_none());
+        assert!(proof.e5_opening.is_none());
+        assert!(proof.selected_cpu.is_some());
+    }
+
+    #[test]
+    fn unified_dynamic_selected_without_e5_opening() {
+        let trace = trace();
+        let mut proof = crate::prove_unified_trace(&trace, 8).expect("unified proof");
+        proof.gated = None;
+        proof.cpu = None;
+        proof.e5_opening = None;
+        proof.opening = None;
+        let claims = crate::simd_dual::prove_dynamic_cpu_claims(&trace, 8, &selected_backend())
+            .expect("dynamic selected claims");
+        proof.selected_cpu = Some(claims);
+        let result = crate::verify_unified_trace(&trace, &proof, 8);
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
     fn unified_proof_verifies_dynamic_selected_cpu_claims() {
         let trace = trace();
         let mut proof = crate::prove_unified_trace(&trace, 8).expect("unified proof");
@@ -2497,7 +2523,12 @@ impl<'a> UnifiedVerifyContext<'a> {
             crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(trace, width)
                 .ok()
                 .filter(|rows| width <= 128 && !rows.is_empty() && rows.len().is_power_of_two());
+        let dynamic_selected = proof
+            .selected_cpu
+            .as_ref()
+            .is_some_and(|selected| selected.op == crate::simd_dual::SelectedOp::Dynamic);
         match (gated_rows.is_some(), proof.gated.is_some()) {
+            (true, false) if dynamic_selected => {}
             (true, false) | (false, true) => {
                 return Err(RuntimeError::Proof(
                     "gated CPU claims presence does not match the trace".into(),
@@ -2699,6 +2730,16 @@ impl<'a> UnifiedVerifyContext<'a> {
     }
 
     pub(crate) fn verify_cpu(&mut self) -> Result<(), RuntimeError> {
+        if self.proof.gated.is_none()
+            && self
+                .proof
+                .selected_cpu
+                .as_ref()
+                .is_some_and(|selected| selected.op == crate::simd_dual::SelectedOp::Dynamic)
+        {
+            return Ok(());
+        }
+
         let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
         if let Some(cpu) = &self.proof.cpu {
             let (system, witness_len) = if self

@@ -2576,6 +2576,26 @@ pub(crate) fn verify_unified_inner(
 
 /// Verify a unified proof against the public statement before rebuilding the
 /// row systems. Program identity is bound through the ROM carried by the trace.
+/// Prove a unified trace whose CPU stage is the dynamic selected CPU proof.
+/// This first builds the reference proof and strips the gated/E5 CPU opening;
+/// the resulting proof verifies through the selected-CPU dispatch.
+pub fn prove_unified_trace_dynamic(
+    trace: &Trace,
+    width: usize,
+) -> Result<UnifiedTraceProof, RuntimeError> {
+    let mut proof = prove_unified_trace(trace, width)?;
+    proof.gated = None;
+    proof.cpu = None;
+    proof.e5_opening = None;
+    proof.opening = None;
+    proof.selected_cpu = Some(crate::simd_dual::prove_dynamic_cpu_claims(
+        trace,
+        width,
+        &crate::protocol::selected_backend(),
+    )?);
+    Ok(proof)
+}
+
 pub fn prove_unified_revealed(
     trace: &Trace,
     width: usize,
