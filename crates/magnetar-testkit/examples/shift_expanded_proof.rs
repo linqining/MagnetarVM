@@ -1,7 +1,8 @@
 //! Proof over a program transformed by the fixed register-shift expansion.
 
-use magnetar_executor::execute_expanded;
-use magnetar_runtime::{prove_unified_trace, unified_proof_sizes, verify_unified_proof};
+use magnetar_runtime::{
+    prove_unified_trace, unified_proof_sizes, verify_unified_trace_statement, ReferencePipeline,
+};
 use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 
 fn main() {
@@ -46,10 +47,11 @@ fn main() {
         stack_top: 0x1000_1000,
         max_cycles: 1000,
     };
-    let trace = execute_expanded(&program, config).unwrap();
+    let outcome = ReferencePipeline::run_expanded(&program, config, 8).unwrap();
+    let trace = outcome.trace;
     assert_eq!(trace.final_state.reg(3), 0x234u64 << 9);
     let proof = prove_unified_trace(&trace, 8).unwrap();
-    verify_unified_proof(&proof).unwrap();
+    verify_unified_trace_statement(&outcome.statement, &trace, &proof, 8).unwrap();
     println!(
         "expanded rows {} size {} B",
         trace.rows.len(),
