@@ -231,7 +231,8 @@ witness 上同时证明 bit-level relation 与 packed `F2^128` companion。
 | benchmark | bytes |
 |---|---:|
 | unified no-shift benchmark | 128,815 |
-| chunked 16-row trace, chunk 2 | 646,928 |
+| chunked 16-row trace, chunk 2 | 646,938 |
+| chunked compact (chunk 2) | 217,170 |
 | chunked 16-row trace, chunk 4 | 429,296 |
 | chunked 16-row trace, chunk 8 | 296,480 |
 | chunked 16-row trace, chunk 16 | 217,120 |

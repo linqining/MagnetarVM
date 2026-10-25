@@ -3099,7 +3099,7 @@ pub fn chunked_proof_sizes(proof: &ChunkedTraceProof) -> Result<ChunkedProofSize
     Ok(ChunkedProofSizes {
         access: size(bincode::serialize(&proof.access))?
             + size(bincode::serialize(&proof.shared_access))?,
-        cpu: size(bincode::serialize(&proof.chunks))?,
+        cpu: size(bincode::serialize(&proof.chunks))? + size(bincode::serialize(&proof.whole_cpu))?,
         aux: size(bincode::serialize(&proof.aux))?,
         chain: size(bincode::serialize(&proof.chain))?,
     })
@@ -3241,7 +3241,7 @@ impl ChunkedAuxWitnesses {
 pub struct ChunkCpuProof {
     pub start: usize,
     pub end: usize,
-    pub cpu: CpuSpartanProof,
+    pub cpu: Option<CpuSpartanProof>,
 }
 
 /// Per-chunk CPU proofs linked by register/PC state digests.
@@ -3250,6 +3250,8 @@ pub struct ChunkedTraceProof {
     pub access: TraceAccessProof,
     /// Shared P3 opening for the RAM/register Twist claims, when present.
     pub shared_access: Option<P3MosaicOpening>,
+    /// One CPU proof over the whole trace (compact mode).
+    pub whole_cpu: Option<CpuSpartanProof>,
     pub trace_commitment: [u8; 32],
     pub aux: Option<AuxTraceProof>,
     pub chunks: Vec<ChunkCpuProof>,
@@ -3587,18 +3589,119 @@ pub fn prove_chunked_trace(
             chunk_state_digest(trace, end),
             proof_digest,
         ));
-        chunks.push(ChunkCpuProof { start, end, cpu });
+        chunks.push(ChunkCpuProof {
+            start,
+            end,
+            cpu: Some(cpu),
+        });
         start = end;
     }
     let chain = ChainedRecursion.aggregate(&chained)?;
     Ok(ChunkedTraceProof {
         access,
         shared_access,
+        whole_cpu: None,
         trace_commitment,
         aux,
         chunks,
         chain,
     })
+}
+
+/// Chunked proof with one CPU proof over the whole trace (compact mode).
+pub fn prove_chunked_trace_compact(
+    trace: &Trace,
+    width: usize,
+    chunk_size: usize,
+) -> Result<ChunkedTraceProof, RuntimeError> {
+    check_trace_linkage(trace)?;
+    if trace.rows.is_empty() || chunk_size == 0 {
+        return Err(RuntimeError::Proof(
+            "chunked proofs require rows and a nonzero chunk size".into(),
+        ));
+    }
+    let (access, aux_claims, opening) = prove_chunked_shared_access(trace)?;
+    let aux = aux_claims.map(|claims| AuxTraceProof {
+        shout: claims.shout,
+        shift_router: claims.shift_router,
+        store_router: claims.store_router,
+        opening: opening.clone(),
+    });
+    let shared_access = if aux.is_some() { None } else { Some(opening) };
+    let trace_commitment = trace_digest(trace);
+    let (system, witness) = merged_cpu_system_for_rows(&trace.rows, width)?;
+    let backend = ConstraintProofBackend;
+    let whole_cpu = backend.prove(&system, &witness)?;
+    let mut chunks = Vec::new();
+    let mut chained = Vec::new();
+    let mut start = 0;
+    while start < trace.rows.len() {
+        let end = (start + chunk_size).min(trace.rows.len());
+        let proof_digest = chunk_proof_digest(&trace_commitment, start, end, &whole_cpu);
+        chained.push(ChainedChunk::new(
+            chained.len(),
+            (end - start) as u64,
+            chunk_state_digest(trace, start),
+            chunk_state_digest(trace, end),
+            proof_digest,
+        ));
+        chunks.push(ChunkCpuProof {
+            start,
+            end,
+            cpu: None,
+        });
+        start = end;
+    }
+    let chain = ChainedRecursion.aggregate(&chained)?;
+    Ok(ChunkedTraceProof {
+        access,
+        shared_access,
+        whole_cpu: Some(whole_cpu),
+        trace_commitment,
+        aux,
+        chunks,
+        chain,
+    })
+}
+
+fn verify_compact_chunks(
+    trace: &Trace,
+    proof: &ChunkedTraceProof,
+    width: usize,
+    whole_cpu: &CpuSpartanProof,
+) -> Result<(), RuntimeError> {
+    if proof.chunks.len() != proof.chain.chunks.len() || proof.chunks.is_empty() {
+        return Err(RuntimeError::Proof("chunked proof shape mismatch".into()));
+    }
+    if !ChainedRecursion.verify(&proof.chain)? {
+        return Err(RuntimeError::Proof("chunk state chain mismatch".into()));
+    }
+    let mut expected_start = 0;
+    for (index, (chunk, chained)) in proof.chunks.iter().zip(&proof.chain.chunks).enumerate() {
+        if chunk.start != expected_start
+            || chunk.end <= chunk.start
+            || (chained.trace_len as usize) != chunk.end - chunk.start
+            || chained.index != index
+            || chained.state_before != chunk_state_digest(trace, chunk.start)
+            || chained.state_after != chunk_state_digest(trace, chunk.end)
+            || chunk.cpu.is_some()
+        {
+            return Err(RuntimeError::Proof(format!(
+                "chunk {index} metadata mismatch"
+            )));
+        }
+        let digest = chunk_proof_digest(&proof.trace_commitment, chunk.start, chunk.end, whole_cpu);
+        if digest != chained.proof_digest {
+            return Err(RuntimeError::Proof(format!(
+                "chunk {index} proof digest mismatch"
+            )));
+        }
+        expected_start = chunk.end;
+    }
+    let (system, _witness) = merged_cpu_system_for_rows(&trace.rows, width)?;
+    let backend = ConstraintProofBackend;
+    backend.verify(&system, whole_cpu)?;
+    Ok(())
 }
 
 pub fn verify_chunked_trace(
@@ -3619,6 +3722,9 @@ pub fn verify_chunked_trace(
         .or(proof.shared_access.as_ref())
         .ok_or_else(|| RuntimeError::Proof("chunked proof is missing its opening".into()))?;
     verify_chunked_combined_opening(trace, &proof.access, proof.aux.as_ref(), opening)?;
+    if let Some(whole_cpu) = &proof.whole_cpu {
+        return verify_compact_chunks(trace, proof, width, whole_cpu);
+    }
     if proof.chunks.len() != proof.chain.chunks.len() || proof.chunks.is_empty() {
         return Err(RuntimeError::Proof("chunked proof shape mismatch".into()));
     }
@@ -3644,8 +3750,10 @@ pub fn verify_chunked_trace(
                 "chunk {index} metadata mismatch"
             )));
         }
-        let digest =
-            chunk_proof_digest(&proof.trace_commitment, chunk.start, chunk.end, &chunk.cpu);
+        let cpu = chunk.cpu.as_ref().ok_or_else(|| {
+            RuntimeError::Proof(format!("chunk {index} is missing its CPU proof"))
+        })?;
+        let digest = chunk_proof_digest(&proof.trace_commitment, chunk.start, chunk.end, cpu);
         if digest != chained.proof_digest {
             return Err(RuntimeError::Proof(format!(
                 "chunk {index} proof digest mismatch"
@@ -3661,13 +3769,13 @@ pub fn verify_chunked_trace(
             .commit(&values)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         if bincode::serialize(&expected).unwrap_or_default()
-            != bincode::serialize(&chunk.cpu.commitment).unwrap_or_default()
+            != bincode::serialize(&cpu.commitment).unwrap_or_default()
         {
             return Err(RuntimeError::Proof(format!(
                 "chunk {index} witness does not match the proof commitment"
             )));
         }
-        backend.verify(&shape_system, &chunk.cpu)?;
+        backend.verify(&shape_system, cpu)?;
         expected_start = chunk.end;
     }
     if expected_start != trace.rows.len() {
@@ -4091,6 +4199,55 @@ mod tests {
         let rows =
             crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, 8).unwrap();
         assert!(rows.len() >= trace.rows.len());
+    }
+
+    #[test]
+    fn compact_chunked_proof_is_smaller() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Slli,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 3,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 3,
+                    rs1: 2,
+                    rs2: 0,
+                    imm: 1,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(&program, config()).unwrap();
+        let normal = prove_chunked_trace(&trace, 8, 2).unwrap();
+        let compact = prove_chunked_trace_compact(&trace, 8, 2).unwrap();
+        verify_chunked_trace(&trace, &normal, 8).unwrap();
+        verify_chunked_trace(&trace, &compact, 8).unwrap();
+        assert!(compact.whole_cpu.is_some());
+        assert!(compact.chunks.iter().all(|chunk| chunk.cpu.is_none()));
+        assert!(compact.chunks.len() > 1);
+        assert!(
+            bincode::serialize(&compact).unwrap().len()
+                < bincode::serialize(&normal).unwrap().len()
+        );
     }
 
     #[test]
@@ -6226,7 +6383,8 @@ mod tests {
         assert!(decode_chunked_proof(&bytes[..bytes.len() / 2]).is_err());
 
         let mut tampered = proof.clone();
-        tampered.chunks[1].cpu.vw = tampered.chunks[1].cpu.vw + F2_128::from(1u64);
+        let cpu = tampered.chunks[1].cpu.as_mut().unwrap();
+        cpu.vw = cpu.vw + F2_128::from(1u64);
         assert!(verify_chunked_trace(&trace, &tampered, 8).is_err());
 
         let mut tampered = proof;
