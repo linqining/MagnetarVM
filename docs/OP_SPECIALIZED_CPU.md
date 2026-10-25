@@ -696,3 +696,18 @@ chunk=2  compact 191,421 B / 5.07 s  dynamic 173,825 B / 0.32 s
 `dynamic_chunked_compact_round_trips` proves and verifies the dynamic compact
 proof. Streaming per-chunk CPU proofs still use the reference CPU prover; only
 the compact chunked path is dynamic so far.
+
+
+### Longer native unified benchmark
+
+`native_unified_bench` now runs through 256 rows (Addi-only, width 8):
+
+```text
+rows=128  proof 316,578 B  prove 3.80 s  verify 1.04 s
+rows=256  proof 487,042 B  prove 10.66 s verify 1.97 s
+```
+
+Proof size still grows roughly linearly with rows, confirming that native
+op-specialization improves the CPU stage but does not yet solve A2/E8
+trace-length succinctness. This is far short of the paper's 2^22-2^28-cycle
+target.
