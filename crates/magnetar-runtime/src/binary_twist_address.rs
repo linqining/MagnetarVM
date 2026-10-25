@@ -445,12 +445,14 @@ pub(crate) fn sumcheck_boolean_multiplicity(
     let mut polynomials = Vec::with_capacity(rounds);
     let mut challenges = Vec::with_capacity(rounds);
     for _ in 0..rounds {
+        let a_folds = folds_for_degree(&a, 4);
+        let eq_folds = folds_for_degree(&eq, 4);
+        let target_folds = folds_for_degree(&target, 4);
         let mut polynomial = [F2_128::from(0u64); 4];
         for (t, coefficient) in polynomial.iter_mut().enumerate() {
-            let t = F2_128::from(t as u64);
-            let a_t = fold(&a, t);
-            let eq_t = fold(&eq, t);
-            let target_t = fold(&target, t);
+            let a_t = &a_folds[t];
+            let eq_t = &eq_folds[t];
+            let target_t = &target_folds[t];
             *coefficient = (0..a_t.len()).fold(F2_128::from(0u64), |sum, index| {
                 sum + a_t[index] * (a_t[index] + F2_128::from(1u64))
                     + lambda * (a_t[index] * eq_t[index] + target_t[index])
@@ -487,12 +489,14 @@ pub(crate) fn sumcheck_collision(
     let mut polynomials = Vec::with_capacity(rounds);
     let mut challenges = Vec::with_capacity(rounds);
     for _ in 0..rounds {
+        let r_folds = folds_for_degree(&a_r, 5);
+        let rp_folds = folds_for_degree(&a_rp, 5);
+        let eq_folds = folds_for_degree(&eq, 5);
         let mut polynomial = [F2_128::from(0u64); 5];
         for (t, coefficient) in polynomial.iter_mut().enumerate() {
-            let t = F2_128::from(t as u64);
-            let r_t = fold(&a_r, t);
-            let rp_t = fold(&a_rp, t);
-            let eq_t = fold(&eq, t);
+            let r_t = &r_folds[t];
+            let rp_t = &rp_folds[t];
+            let eq_t = &eq_folds[t];
             *coefficient = (0..r_t.len()).fold(F2_128::from(0u64), |sum, index| {
                 sum + eq_t[index] * (r_t[index] * r_t[index] * r_t[index] + c * rp_t[index])
             });
@@ -596,6 +600,20 @@ pub(crate) fn fold(values: &[F2_128], r: F2_128) -> Vec<F2_128> {
     values
         .chunks_exact(2)
         .map(|pair| pair[0] + r * (pair[0] + pair[1]))
+        .collect()
+}
+
+fn folds_for_degree(values: &[F2_128], points: usize) -> Vec<Vec<F2_128>> {
+    let even = fold(values, F2_128::from(0u64));
+    let odd = fold(values, F2_128::from(1u64));
+    (0..points)
+        .map(|point| {
+            let t = F2_128::from(point as u64);
+            even.iter()
+                .zip(&odd)
+                .map(|(a, b)| *a + t * (*a + *b))
+                .collect()
+        })
         .collect()
 }
 
@@ -718,6 +736,17 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    #[test]
+    fn degree_fold_derivation_matches_direct_folds() {
+        let values = (0..64u64)
+            .map(|value| F2_128::from(value * 17 + 3))
+            .collect::<Vec<_>>();
+        let derived = folds_for_degree(&values, 5);
+        for (point, derived_values) in derived.iter().enumerate() {
+            assert_eq!(*derived_values, fold(&values, F2_128::from(point as u64)));
+        }
     }
 
     #[test]
