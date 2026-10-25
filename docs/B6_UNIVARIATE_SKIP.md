@@ -131,3 +131,19 @@ sum_i lambda_i f(i) = v
 `bound_rows_bench` measures it for k=4/8/10. This is the layer a skip
 challenge can target; the skip message relation itself must still be tied to
 this weighted claim before it can be used in `binary_twist`/CPU.
+
+
+### Skip-bound chain measurements
+
+`prove_skip_bound` / `verify_skip_bound` compose a `SkipRoundProof` with a
+`BoundRowProof` over the same committed rows. `row_weights` is O(|D|^2), so the
+k=8 skip-bound chain dropped from 4.1 s to ~32 ms (prove) / ~22 ms (verify) in
+this release probe:
+
+```text
+log_size=4   skip-bound proof 7,336 B   prove 0.26 ms  verify 0.20 ms
+log_size=8   skip-bound proof 71,688 B  prove 31.8 ms  verify 22.2 ms
+```
+
+The chain proves `Q(r) = Σ_i w_i(r) f_i`; it still does not prove that the rows
+are the constraint composition `C(f)`, which is the remaining zerocheck layer.

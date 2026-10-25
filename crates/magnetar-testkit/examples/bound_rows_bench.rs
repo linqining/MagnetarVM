@@ -2,7 +2,10 @@ use std::time::Instant;
 
 use magnetar_constraint::F2_128;
 use magnetar_pcs::P3BinaryPcs;
-use magnetar_runtime::bound_rows::{prove_bound_rows, verify_bound_rows};
+use magnetar_runtime::bound_rows::{
+    prove_bound_rows, prove_skip_bound, verify_bound_rows, verify_skip_bound,
+};
+use magnetar_runtime::univariate_skip::SkipRound;
 use magnetar_transcript::Sha256Transcript;
 
 fn values(seed: u64, len: usize) -> Vec<F2_128> {
@@ -35,5 +38,21 @@ fn main() {
             "log_size={log_size} rows={len} proof={bytes} prove={prove_time:?} verify={:?}",
             started.elapsed()
         );
+
+        if log_size <= 8 {
+            let round = SkipRound::new(log_size).unwrap();
+            let mut prover = Sha256Transcript::new("skip-bound-bench");
+            let started = Instant::now();
+            let proof = prove_skip_bound(&round, &values, &pcs, &mut prover).unwrap();
+            let prove_time = started.elapsed();
+            let bytes = bincode::serialize(&proof).unwrap().len();
+            let mut verifier = Sha256Transcript::new("skip-bound-bench");
+            let started = Instant::now();
+            assert!(verify_skip_bound(&round, &proof, &pcs, &mut verifier).unwrap());
+            println!(
+                "  skip-bound log_size={log_size} proof={bytes} prove={prove_time:?} verify={:?}",
+                started.elapsed()
+            );
+        }
     }
 }

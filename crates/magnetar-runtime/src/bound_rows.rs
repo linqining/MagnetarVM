@@ -10,6 +10,8 @@ use magnetar_pcs::{P3BinaryPcs, P3Commitment, P3Opening};
 use magnetar_proof::{prove_product2, verify_rounds, Mle, Pcs, ProofError, SumcheckProof};
 use magnetar_transcript::Sha256Transcript;
 
+use crate::univariate_skip::{SkipRound, SkipRoundProof};
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct BoundRowProof {
     pub commitment: P3Commitment,
@@ -101,6 +103,51 @@ pub fn verify_bound_rows(
     pcs.verify(&proof.commitment, &point, proof.value, &proof.opening)
 }
 
+/// A skip challenge plus the bound-row proof that it is a weighted claim on
+/// the committed rows.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SkipBoundProof {
+    pub skip: SkipRoundProof,
+    pub bound: BoundRowProof,
+}
+
+pub fn prove_skip_bound(
+    round: &SkipRound,
+    values: &[F2_128],
+    pcs: &P3BinaryPcs,
+    transcript: &mut Sha256Transcript,
+) -> Result<SkipBoundProof, ProofError> {
+    let skip = round
+        .prove(values, transcript)
+        .map_err(|error| ProofError::Pcs(format!("univariate skip failed: {error:?}")))?;
+    let weights = round
+        .row_weights(skip.point)
+        .map_err(|error| ProofError::Pcs(format!("skip weights failed: {error:?}")))?;
+    let bound = prove_bound_rows(&weights, values, pcs, transcript)?;
+    Ok(SkipBoundProof { skip, bound })
+}
+
+pub fn verify_skip_bound(
+    round: &SkipRound,
+    proof: &SkipBoundProof,
+    pcs: &P3BinaryPcs,
+    transcript: &mut Sha256Transcript,
+) -> Result<bool, ProofError> {
+    if round.verify(&proof.skip, transcript).is_err() {
+        return Ok(false);
+    }
+    let weights = round
+        .row_weights(proof.skip.point)
+        .map_err(|error| ProofError::Pcs(format!("skip weights failed: {error:?}")))?;
+    verify_bound_rows(
+        &weights,
+        proof.skip.evaluation,
+        &proof.bound,
+        pcs,
+        transcript,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,5 +193,26 @@ mod tests {
         tampered.opening.commitment.num_variables += 1;
         let mut verifier = Sha256Transcript::new("bound-test");
         assert!(!verify_bound_rows(&weights, expected, &tampered, &pcs, &mut verifier).unwrap());
+    }
+
+    #[test]
+    fn skip_bound_chain_round_trip_and_tamper() {
+        let round = SkipRound::new(2).unwrap();
+        let values = values(13, 4);
+        let pcs = P3BinaryPcs::new(100);
+        let mut prover = Sha256Transcript::new("skip-bound-test");
+        let proof = prove_skip_bound(&round, &values, &pcs, &mut prover).unwrap();
+        let mut verifier = Sha256Transcript::new("skip-bound-test");
+        assert!(verify_skip_bound(&round, &proof, &pcs, &mut verifier).unwrap());
+
+        let mut tampered = proof.clone();
+        tampered.skip.evaluation = tampered.skip.evaluation + F2_128::from(1u64);
+        let mut verifier = Sha256Transcript::new("skip-bound-test");
+        assert!(!verify_skip_bound(&round, &tampered, &pcs, &mut verifier).unwrap());
+
+        let mut tampered = proof;
+        tampered.bound.value = tampered.bound.value + F2_128::from(1u64);
+        let mut verifier = Sha256Transcript::new("skip-bound-test");
+        assert!(!verify_skip_bound(&round, &tampered, &pcs, &mut verifier).unwrap());
     }
 }

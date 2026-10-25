@@ -374,14 +374,52 @@ impl SkipRound {
     }
 
     /// Linear weights such that `evaluate(message(values), at) = Σ weights[i] values[i]`.
+    ///
+    /// Computed in O(|D|^2) by composing the domain-to-coset interpolation
+    /// matrix with the coset Lagrange weights at `at`.
     pub fn row_weights(&self, at: F2_128) -> Result<Vec<F2_128>, UnivariateSkipError> {
         let len = self.domain.points().len();
-        let mut weights = Vec::with_capacity(len);
-        for index in 0..len {
-            let mut values = vec![F2_128::from(0u64); len];
-            values[index] = F2_128::from(1u64);
-            let message = self.message(&values)?;
-            weights.push(self.evaluate(&message, at)?);
+
+        // B[j] = L_{n+j}(at) over domain ∪ coset, for the coset points only.
+        let mut coset_weights = Vec::with_capacity(len);
+        for (coset_index, coset_point) in self.coset.iter().enumerate() {
+            let mut numerator = F2_128::from(1u64);
+            let mut denominator = F2_128::from(1u64);
+            for (other_index, other) in self.combined.iter().enumerate() {
+                if other_index == len + coset_index {
+                    continue;
+                }
+                numerator = numerator * (at + *other);
+                denominator = denominator * (*coset_point + *other);
+            }
+            let inverse = denominator.inv().ok_or(UnivariateSkipError::Singular)?;
+            coset_weights.push(numerator * inverse);
+        }
+
+        // A[i][j] = L_i(coset_j) over the domain.
+        let mut composition = vec![F2_128::from(0u64); len * len];
+        for (coset_index, coset_point) in self.coset.iter().enumerate() {
+            let numerator = self
+                .domain
+                .points()
+                .iter()
+                .fold(F2_128::from(1u64), |product, point| {
+                    product * (*coset_point + *point)
+                });
+            for (index, point) in self.domain.points().iter().enumerate() {
+                let inverse = (*coset_point + *point)
+                    .inv()
+                    .ok_or(UnivariateSkipError::Singular)?;
+                composition[index * len + coset_index] =
+                    numerator * self.barycentric[index] * inverse;
+            }
+        }
+
+        let mut weights = vec![F2_128::from(0u64); len];
+        for (index, weight) in weights.iter_mut().enumerate() {
+            for (coset_index, coset_weight) in coset_weights.iter().enumerate() {
+                *weight = *weight + *coset_weight * composition[index * len + coset_index];
+            }
         }
         Ok(weights)
     }
