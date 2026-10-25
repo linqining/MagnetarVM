@@ -4289,3 +4289,8 @@ commitment check uses the same selector, removing the stale fixed-`pcs` field.
 
 `chunked_shared_access_rejects_tampering` tampers the RAM Twist sum-check rounds
 and verifies that the shared-access opening rejects the chunked proof.
+
+
+`cpu_backend_pcs_scale_with_system_size` pins the three adaptive CPU PCS tiers
+(3/18/1, 3/20/2, 3/20/3) to their `num_vars` thresholds so future parameter
+changes cannot silently desynchronize prover and verifier.

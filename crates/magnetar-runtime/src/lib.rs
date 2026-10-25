@@ -5849,6 +5849,22 @@ mod tests {
     }
 
     #[test]
+    fn cpu_backend_pcs_scale_with_system_size() {
+        for (vars, rate, pow, fold) in [
+            (8usize, 3usize, 18usize, 1usize),
+            (512, 3, 20, 2),
+            (4096, 3, 20, 3),
+        ] {
+            let system = magnetar_constraint::ConstraintSystem::new(vars);
+            let pcs = ConstraintProofBackend::pcs_for(&system);
+            assert_eq!(
+                (pcs.log_inv_rate, pcs.pow_bits, pcs.log_folding_factor),
+                (rate, pow, fold)
+            );
+        }
+    }
+
+    #[test]
     fn chunked_shared_access_rejects_tampering() {
         let program = ProgramImage::new(
             0x1000,
