@@ -88,3 +88,26 @@ If univariate skip becomes a hard requirement, the next concrete step is to
 prototype a zerocheck backend for one reduction (for example BinaryTwist
 address collision) with an explicit subspace domain and final reduction, before
 touching the CPU path.
+
+
+## Residual-layer finding
+
+The current `SkipRound` proves only that the reconstructed polynomial vanishes on
+the domain and matches the coset message. It does not yet prove the zerocheck
+residual. The residual is subtle: the skip challenge is not the plain
+multilinear evaluation `f(r)`; it is a linear combination of `f` on the Boolean
+domain with Lagrange weights. Reducing that to a plain PCS opening needs a
+second sum-check over the same `k` coordinates.
+
+This was checked against the vendored p3 implementation: its skip round
+explicitly documents the final claim as an inner product and states that the
+caller still owes that reduction. Porting only the round would therefore change
+the statement.
+
+A full prototype must therefore include both:
+
+1. `SkipRound` message (done here);
+2. weighted inner-product sum-check ending in `f(r)` (not done here).
+
+Until (2) exists, the skip round must not be wired into `binary_twist` or the
+CPU proof.
