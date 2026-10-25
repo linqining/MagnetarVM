@@ -119,3 +119,14 @@ claim routing.
 
 The first milestone is a sound, PC-linked ALU-only CPU batch proof; mixed-op
 specialization follows only after that.
+
+
+## Div prototype (negative)
+
+A `DivPcRow` using `GatedDivRow` and the same PC-adder template was attempted.
+Even with a real one-bit variable taken from the internal add subrelation, the
+row witness failed at constraint 1755 (`lhs=1 rhs=0`), while the existing
+ALU/shift/mul/mem PC rows pass. The div relation's internal constant/one layout
+therefore needs a dedicated audit before it can be used in a selected-op row;
+the prototype was reverted. This does not affect the four working selected-op
+rows.
