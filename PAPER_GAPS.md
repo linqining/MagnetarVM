@@ -4438,3 +4438,24 @@ proof and verifies it with the trace dropped, covering the proof-only path.
 
 `backward_branch_is_relocated` covers a loop whose conditional branch jumps back
 over the expanded shift sequence; direct and expanded register files match.
+
+
+## Reference implementation scope (audit)
+
+The reference path now covers the paper's end-to-end protocol: gated dual
+bit/packed relations, SIMD grouping, virtual segments, BinaryTwist/Shout/Router,
+syscalls, unified proof-only verification, chunked access/aux sharing, and D12
+fixed shift expansion with branch/jal/auipc relocation.
+
+Deliberately not adopted after measurement:
+
+- Full PackedMosaic/aligned-subcube packing for the unified opening: earlier
+  packed prototypes were larger than the current P3 mosaic on the measured
+  workloads; the packed primitives remain available.
+- Higher grinding on every PCS: size gains are small while prover time grows
+  sharply; adaptive tiers keep the measured balance.
+- Per-chunk CPU sharing: a compact single-chunk form exists
+  (`chunk_size = trace.rows.len()`); multi-chunk streaming still pays one CPU
+  proof per chunk.
+- B6 sum-check/Frobenius optimizations: the reference sum-check is retained for
+  clarity; they remain performance work rather than correctness gaps.
