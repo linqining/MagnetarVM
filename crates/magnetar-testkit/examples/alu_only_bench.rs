@@ -2,7 +2,10 @@ use std::time::Instant;
 
 use magnetar_pcs::P3SharedPcs;
 use magnetar_proof::RingSwitchPackedBitPcs;
-use magnetar_runtime::simd_dual::{prove_alu_only_batch_bits, verify_alu_only_batch_bits};
+use magnetar_runtime::simd_dual::{
+    prove_alu_only_batch_bits, prove_gated_dual_batch_bits, verify_alu_only_batch_bits,
+};
+use magnetar_runtime::simd_f2::{GatedAluOp, GatedCpuRowInput};
 use magnetar_runtime::simd_f2::{GatedAluRow, GatedCpuRow};
 
 fn main() {
@@ -22,6 +25,33 @@ fn main() {
 
     let backend =
         RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
+    let full_rows = (0..16usize)
+        .map(|index| {
+            (
+                0x1000 + 4 * index as u64,
+                GatedCpuRowInput::Alu {
+                    left: 0x12 + index as u64,
+                    right: 0x34 + index as u64,
+                    op: if index % 2 == 0 {
+                        GatedAluOp::Add
+                    } else {
+                        GatedAluOp::Xor
+                    },
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    let started = Instant::now();
+    let (full_proof, _) = prove_gated_dual_batch_bits(16, &full_rows, &backend).unwrap();
+    let full_time = started.elapsed();
+    let full_bytes = bincode::serialize(&full_proof).unwrap().len();
+    println!(
+        "full gated batch cycles=16 bits={} proof={} prove={:?}",
+        full_cols * 16,
+        full_bytes,
+        full_time
+    );
+
     for cycles in [16usize, 64, 256] {
         let started = Instant::now();
         let (proof, layout) = prove_alu_only_batch_bits(width, cycles, &backend).unwrap();

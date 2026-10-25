@@ -109,6 +109,15 @@ cycles=64   bits  32,768  proof 54,224 B  prove 1.16 s  verify 3.9 ms
 cycles=256  bits 131,072  proof 75,560 B  prove 0.76 s  verify 4.8 ms
 ```
 
+Same ALU rows through the **full combined gated row**:
+
+```text
+cycles=16 bits=524,288 proof=98,144 B prove=5.30 s
+```
+
+So the op-specialized relation is about **21x faster** and **2.4x smaller** at
+the same 16 ALU rows, before any PC/memory/Shifter claims are added.
+
 This confirms the witness-width bottleneck: unused mul/div/sdiv/memory/shift
 subrelations currently dominate the CPU proof, not the ALU relation actually
 executed. The next step is an op-specialized unified layout with claim routing.
