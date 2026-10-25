@@ -566,3 +566,19 @@ selected.op == Dynamic
 attaches the dynamic claim bundle and verifies the unified proof successfully.
 The full gated CPU proof is still generated, so this is integration/verification
 plumbing, not yet a prover-time win.
+
+
+### Gated-CPU replacement blocker
+
+Removing `gated`/`cpu` from a unified proof and relying on a dynamic selected
+claim passes the CPU-presence check once it tolerates dynamic claims, but then
+fails in the opening stage:
+
+```text
+Proof("batched sumcheck failed")
+```
+
+The E5 opening batches the CPU/gated claims; without the gated claim set the
+batched opening no longer matches. Replacing the gated CPU path therefore needs
+the selected CPU claims to participate in the opening/claim batching, not just
+in the CPU relation verification. The strict presence checks were restored.
