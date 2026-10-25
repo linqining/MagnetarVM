@@ -242,23 +242,22 @@ checking the succinct CPU PCS proof, so it is not yet a fully succinct
 verifier.
 
 
-### Scaling probe
+### Size snapshots
 
-`cargo run --release -p magnetar-testkit --example proof_scaling` prints the
-following reference measurements on unified and chunked proofs (chunk size 4):
+Current reference measurements (release build):
 
-| rows | unified bytes | chunked bytes | prove ms | verify ms |
-|---:|---:|---:|---:|---:|
-| 2 | 140,222 | 201,455 | 13.9 | 6.1 |
-| 4 | 175,254 | 279,911 | 31.0 | 17.2 |
-| 8 | 212,086 | 444,623 | 60.4 | 21.5 |
-| 16 | 249,046 | 749,319 | 146.4 | 49.4 |
-| 32 | 293,686 | 1,326,655 | 424.2 | 97.1 |
+| benchmark | bytes |
+|---|---:|
+| unified no-shift benchmark | 128,815 |
+| chunked 16-row trace, chunk 2 | 646,928 |
+| chunked 16-row trace, chunk 4 | 429,296 |
+| chunked 16-row trace, chunk 8 | 296,480 |
+| chunked 16-row trace, chunk 16 | 217,120 |
 
-The unified proof no longer carries `rows`; the remaining growth comes from the
-per-row CPU relation and PCS work. Chunked proofs additionally duplicate CPU
-proofs per chunk, so they grow much faster. Removing that dependence is the
-remaining A2/Virtual Spartan work.
+The 15-workload suite spans 183,989 B (clock) to 368,518 B (mem-loop) and the
+71-case operation probe verifies every supported ALU/memory/branch form. The
+unified proof no longer carries `rows`; chunked proofs still duplicate CPU
+proofs per chunk, so removing that dependence remains the A2 work.
 
 ## Coverage
 
