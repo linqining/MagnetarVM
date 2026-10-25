@@ -1086,7 +1086,11 @@ fn sumcheck_terms(
                 .map(|count| count.get())
                 .unwrap_or(1)
         });
-    let memory_budget = 8usize << 30;
+    let memory_gb = std::env::var("MAGNETAR_SUMCHECK_MEMORY_GB")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(8);
+    let memory_budget = memory_gb.saturating_mul(1usize << 30);
     let memory_threads = memory_budget
         .checked_div(per_point_bytes)
         .unwrap_or(1)

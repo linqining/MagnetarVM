@@ -130,7 +130,10 @@ every degree point of every round. With `cells = next_pow2(2 * ROM words)` and
 `cycles = next_pow2(rows)`, this is quadratic in trace length.
 
 The degree-point evaluations are now parallelized with a bounded memory budget
-(8 GiB per worker set; `MAGNETAR_SUMCHECK_THREADS` overrides). ShoutClaims at
+(8 GiB by default; `MAGNETAR_SUMCHECK_THREADS` and
+`MAGNETAR_SUMCHECK_MEMORY_GB` override it). Raising the budget to 16 GiB at
+1024 rows only improved 55.11 s to 52.69 s, and 8 workers at 32 GiB was slower
+(63.22 s), so the default stays conservative. ShoutClaims at
 512 rows drops from 15.65 s to 1.85 s with 4 workers, and BinaryTwist access
 drops from 8.08 s to 3.68 s. Full prover:
 
