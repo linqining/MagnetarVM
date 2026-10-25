@@ -248,17 +248,19 @@ Current reference measurements (release build):
 
 | benchmark | bytes |
 |---|---:|
-| unified no-shift benchmark | 128,815 |
-| chunked compact (default, chunk 2) | 217,170 |
-| chunked streaming, chunk 2 | 646,938 |
-| chunked streaming, chunk 4 | 429,302 |
-| chunked streaming, chunk 8 | 296,484 |
-| chunked streaming, chunk 16 | 217,123 |
+| unified no-shift benchmark | 114,498 |
+| chunked compact (default, chunk 2) | 219,634 |
+| chunked streaming, chunk 2 | 649,402 |
+| chunked streaming, chunk 4 | 431,766 |
+| chunked streaming, chunk 8 | 298,948 |
+| chunked streaming, chunk 16 | 219,587 |
 
-The 15-workload suite spans 183,989 B (clock) to 368,518 B (mem-loop) and the
-69-case operation probe verifies every supported ALU/memory/branch form. The
-unified proof no longer carries `rows`; chunked proofs still duplicate CPU
-proofs per chunk, so removing that dependence remains the A2 work.
+The 15-workload suite spans 103,469 B (clock) to 210,766 B (mem-loop), sum
+2,086,115 B, and the 69-case operation probe verifies every supported
+ALU/memory/branch form. E5 MosaicPCS is now the default unified bit-table
+opening; field-valued tables use one shared P3 field opening. Chunked proofs
+still duplicate CPU proofs per chunk, so removing that dependence remains the
+A2 work.
 
 ## Coverage
 

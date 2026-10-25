@@ -23,8 +23,12 @@ Detailed paper gap audit: [PAPER_GAPS.md](PAPER_GAPS.md).
 
 ## Proof engine / PCS
 
-- [ ] Full MosaicPCS: aligned-subcube packing, ring switching, and a single
-      commitment that also covers the CPU witness in every proof variant.
+- [x] MosaicPCS for the unified bit-valued tables: aligned-subcube packing,
+      claim lift, batching, ring switching, and a single P3 evaluation.
+      Field-valued tables (trace/RAM values) still use one shared P3 field
+      opening; packing them is the remaining MosaicPCS extension.
+- [ ] B6 univariate-skip/degree-reduction sum-check optimization. Frobenius
+      collision and weighted product2 batch sumcheck are implemented.
 - [x] Add one shared BinaryShout/BinaryRouter P3 opening to `ChunkedTraceProof`.
 - [ ] Per-row `TraceProof` keeps minimal per-row P3 proofs; adding global aux
       claims per row is intentionally deferred.

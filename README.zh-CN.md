@@ -230,16 +230,18 @@ witness 上同时证明 bit-level relation 与 packed `F2^128` companion。
 
 | benchmark | bytes |
 |---|---:|
-| unified no-shift benchmark | 128,815 |
-| chunked compact（默认, chunk 2） | 217,170 |
-| chunked streaming, chunk 2 | 646,938 |
-| chunked streaming, chunk 4 | 429,302 |
-| chunked streaming, chunk 8 | 296,484 |
-| chunked streaming, chunk 16 | 217,123 |
+| unified no-shift benchmark | 114,498 |
+| chunked compact（默认, chunk 2） | 219,634 |
+| chunked streaming, chunk 2 | 649,402 |
+| chunked streaming, chunk 4 | 431,766 |
+| chunked streaming, chunk 8 | 298,948 |
+| chunked streaming, chunk 16 | 219,587 |
 
-15-workload suite 的范围是 183,989 B（clock）到 368,518 B（mem-loop），
-69-case operation probe 覆盖全部支持的 ALU/内存/分支形式。unified proof 不再
-携带 `rows`；chunked proof 仍按 chunk 复制 CPU 证明，消除该依赖仍是 A2 工作。
+15-workload suite 的范围是 103,469 B（clock）到 210,766 B（mem-loop），
+总和 2,086,115 B；69-case operation probe 覆盖全部支持的 ALU/内存/分支形式。
+E5 MosaicPCS 现在是 unified bit-table 的默认 opening；field-valued tables 使用
+一个共享 P3 field opening。unified proof 不再携带 `rows`；chunked proof 仍按
+chunk 复制 CPU 证明，消除该依赖仍是 A2 工作。
 
 ## 覆盖率
 

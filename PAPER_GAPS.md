@@ -20,16 +20,18 @@ Virtual Spartan lockstep    prove_lockstep_claims_bits + native BitPcs
 gated bundle soundness      rows 生成 witness 并与 proof.commitment 比较
 C3/C4                       gated row 约束 next_pc；reservation row 在 shared CPU
 proof digest                unified_proof_digest(proof) 绑定完整 proof
-benchmark                   128,815 B (gated 59,556, opening 54,481,
+benchmark                   114,498 B (gated 59,780; MosaicPCS ring
+                            opening + separate field P3 opening;
                             packed_shout 5,226, access 7,466)
 workloads                   15 个 workload 全部 prove/verify
 op probe                    69 条指令/寻址组合
-chunked default (compact)   217,170 B (chunk 2)
-chunked streaming           646,938 / 429,302 / 296,484 / 217,123 B
+chunked default (compact)   219,634 B (chunk 2)
+chunked streaming           649,402 / ... / 219,587 B
 ```
 
-仍开放：chunked A2 trace-free verification、B6 sum-check 优化、E5
-aligned-subcube packing / 更低 proof size。D12 的 shift expansion 已在
+E5 MosaicPCS 已接入 unified：bit-valued tables 走 aligned subcubes + lift +
+batching + ring switching，field-valued tables 保留一个共享 P3 field opening。
+仍开放：chunked A2 trace-free verification、B6 univariate skip。D12 的 shift expansion 已在
 pipeline/preprocess/executor 路径落地并完成 statement 级验证；静态 `jalr` 已支持；仅动态 `jalr` 显式回退。x28-x31 通过未引用寄存器分配展开。
 
 ## 一、结论摘要
@@ -157,7 +159,7 @@ pipeline/preprocess/executor 路径落地并完成 statement 级验证；静态 
 | B3 | Virtual Spartan：联合两个 SIMD 关系，lockstep outer sum-check，共享 inner sum-check，per-segment claims（§5.3） | unified CPU 使用 `LockstepProof`，segment claims 重建 claim；`BitRelation`/F2 product（extension challenges）；新增 `magnetar-pcs::f2::F2Pcs`：把 F2 bits 嵌入 P3 `F2_128` 做 succinct opening；尚未接 CPU、不是原生 F2 Ligerito | 🟡 | 把 F2 relation 接进 CPU；原生 F2 PCS |
 | B4 | 两个 outer sum-check 共享 instance challenge，inner 只跑一次（§5.3） | `prove_lockstep_claims_bits` 用一个 outer product6 合并两个关系，用一个 inner product2 合并 `a+r b+r²c`，共享同一 commitment/opening | ✅ | 已实现；native F2 backend 也可走同一 lockstep |
 | B5 | 直接段 claims 进 PCS；虚拟段 claims 分发给 Twist/Shout/Router（§5.3） | gated 路径的 virtual segment claims 按 `SegmentOwner` 路由，component/shift/active/branch claims 进入同一个 Mosaic opening；`reservation_grouped_virtual_inputs`/`grouped_virtual_layout` 提供 padded/gathered 布局；shift code 与 Shout 列通过 D9 的 linear point 绑定 | ✅ | gated 路径完成；legacy per-row/chunked bundle 仍保留独立路径 |
-| B6 | sum-check 优化：univariate skip、Frobenius one-hot check、degree reduction 等（§4.2–4.4） | 参考实现，逐轮朴素 sum-check | ❌ | 性能优化项；不影响语义 |
+| B6 | sum-check 优化：univariate skip、Frobenius one-hot check、degree reduction 等（§4.2–4.4） | Frobenius collision check 已在 `binary_twist_address` 实现（r'=r³/(1+r+r²)，c=∏(1+r+r²)）；`batch_claims` 改为 weighted product2 + eq table，大 G 上 152 s → 0.7 s；univariate skip/degree reduction 仍未做 | 🟡 | univariate skip / degree reduction |
 | B7 | 稀疏矩阵/结构矩阵 verifier 直接求值（§4.2 Remark） | 参考实现直接构造/使用矩阵 | 🟡 | 预计算 public matrices；避免 verifier 重建 |
 | B8 | recursive-friendly verifier（§1、§6） | 只有 hash-chain/state-continuity 聚合器 | ❌ | 见 F 节 |
 
@@ -197,11 +199,11 @@ pipeline/preprocess/executor 路径落地并完成 statement 级验证；静态 
 
 | # | 论文要求（§） | 当前实现 | 状态 | 剩余工作 |
 |---|---|---|---|---|
-| E1 | 把所有 component 放到一个 packed polynomial `G` 的 aligned subcubes 上（§5.2） | `magnetar-pcs::mosaic` 已实现 aligned-subcube packing + `PackedMosaic`（参考原型）；统一 proof 仍用 P3 多表，不是单个 packed `G` | 🟡 | 把 `PackedMosaic` 接入 unified/chunked proof |
-| E2 | claim lift：`G(r ‖ s_i) = p_i(r)`，verifier 追加 Boolean suffix（§5.2） | `PackedMosaic::lift` 已实现 suffix layout + lift，并用 `eval_component == eval_packed(lift)` 测试；尚未接入 proof claims | 🟡 | 把 lift 接到 P3 claim batching |
-| E3 | 多 claim batching 成一个 claim（§5.2） | `mosaic.rs` 已实现 `batch_claims`/`verify_batching`：随机 α 合并多个 `G(r_i)=v_i`，sum-check 归约到单点 `G(r)=v`；测试通过；尚未接入 P3 proof | 🟡 | 把 batching 接入 P3 claim 流程 |
-| E4 | ring switching 到 packed representation `P_G`（§5.2） | 无 | ❌ | 实现 ring switching；当前 reference 是 1 field element/bit，尚未采用 128-bit packed representation |
-| E5 | 单个 PCS evaluation argument（§5.5） | `mosaic.rs` 现有 `PackedSharedPcs` adapter + `flatten_table_claims` + `from_mosaic`（P3 多列 points/values → 单列 packed components）；测试通过；unified proof 仍用多表 P3，尚未迁移 | 🟡 | 把 unified/chunked 的 P3 路径切到 `PackedSharedPcs` |
+| E1 | 把所有 component 放到一个 packed polynomial `G` 的 aligned subcubes 上（§5.2） | unified opening 默认把所有 bit-valued table columns 放进一个 `PackedMosaic`；field-valued tables（trace/RAM values 等）单独一个 P3 field mosaic | ✅ | 可继续把 field-valued tables packed |
+| E2 | claim lift：`G(r ‖ s_i) = p_i(r)`，verifier 追加 Boolean suffix（§5.2） | unified prover/verifier 对所有 bit-table claim 做 `PackedMosaic::lift`，verifier 从 table shapes 重建 suffix | ✅ | 已接入 |
+| E3 | 多 claim batching 成一个 claim（§5.2） | unified prover 用 `batch_claims` 把所有 lifted claims 合并成单点；prover 改为 weighted product2 + eq table，避免 O(4^n) 朴素求值 | ✅ | 已接入 |
+| E4 | ring switching 到 packed representation `P_G`（§5.2） | `RingSwitchPackedBitPcs` 用于 unified bit-table opening；packed G 经 DP24/Binius ring switch 到 P3 多项式 | ✅ | 已接入 reference path |
+| E5 | 单个 PCS evaluation argument（§5.5） | unified bit-table path = aligned packing + lift + batch + ring switch + one P3 evaluation；field-valued tables use one separate P3 field opening | ✅ | 已接入；field table single-PCS 仍可优化 |
 | E6 | Ligerito/hash PCS 集成到 runtime（§6） | `ligerito` vendored backend 存在；runtime 默认用 P3 binary PCS | 🟡 | 把 Ligerito 接进 unified/chunked 路径并对比 |
 | E7 | 多表/多点 opening API | P3 mosaic 支持 multi-table/multi-point、`next_columns` | ✅ | 可作为 MosaicPCS 的实现基础 |
 | E8 | 证明大小随 trace 对数增长（§6.5） | `rows`/`steps` 线性；18 行 proof 270,713 B | ❌ | 与 A2 一起解决 |
@@ -296,9 +298,10 @@ These are architectural or research-level items; the current tree is a verified 
 ## Verification snapshot
 
 - Workspace: `feat/BinaryTwist`, clean; `cargo clippy --workspace --all-targets` clean. Targeted tests were run instead of a full workspace suite.
-- Unified no-shift benchmark: 128,815 B (gated 59,556; opening 54,481; access 7,466; packed_shout 5,226).
-- 15-workload suite: 183,989–368,518 B, sum 3,555,811 B; each workload prove/verify passes.
-- Chunked default compact: 217,170 B at chunk 2; streaming chunk 16: 217,123 B.
+- Unified no-shift benchmark: 114,498 B (gated 59,780; E5 ring + field P3 opening; access 7,466; packed_shout 5,226).
+- 15-workload suite: 103,469–210,766 B, sum 2,086,115 B; each workload prove/verify passes.
+- Chunked default compact: 219,634 B at chunk 2; streaming chunk 16: 219,587 B.
+- Expanded shift proof: 57 rows, 180,152 B.
 - 69-case operation probe passes; proof-only unified roundtrip and chunked tamper tests pass.
 - The historical 261 KB/241 KB CPU numbers below are from earlier, pre-optimization checkpoints, not current measurements.
 
@@ -4006,9 +4009,10 @@ through both verifier entry points. A 32-cycle width-8 comparison
 A diagnostic built `PackedSharedPcs::from_mosaic` over the actual unified tables,
 points and values (one component per claimed column) and measured the packed
 opening. It produced 162,416-236,304 B depending on the workload, versus the
-current unified opening around 66 KB. The naive single-column packing is not a
-size win; E5 needs aligned-subcube packing of whole tables/columns before it can
-replace the P3 multi-table opening.
+then-current unified opening around 66 KB. The missing piece was **ring
+switching of the packed G**, not another packing layout: once the packed G is
+committed with `RingSwitchPackedBitPcs`, the unified opening drops to about
+4 KB (batch + ring) for the benchmark, and the full proof is 114,498 B.
 
 
 ### C8: deterministic clock syscall
