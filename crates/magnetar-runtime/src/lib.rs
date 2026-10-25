@@ -304,7 +304,7 @@ pub struct ConstraintProofBackend;
 impl ConstraintProofBackend {
     fn pcs_for(system: &ConstraintSystem) -> P3BinaryPcs {
         if system.num_vars >= 1 << 12 {
-            P3BinaryPcs::with_params(100, 3, 20, 3)
+            P3BinaryPcs::with_params(100, 4, 20, 3)
         } else if system.num_vars >= 1 << 9 {
             P3BinaryPcs::with_params(100, 3, 20, 2)
         } else {
@@ -5872,7 +5872,7 @@ mod tests {
         for (vars, rate, pow, fold) in [
             (8usize, 3usize, 18usize, 1usize),
             (512, 3, 20, 2),
-            (4096, 3, 20, 3),
+            (4096, 4, 20, 3),
         ] {
             let system = magnetar_constraint::ConstraintSystem::new(vars);
             let pcs = ConstraintProofBackend::pcs_for(&system);

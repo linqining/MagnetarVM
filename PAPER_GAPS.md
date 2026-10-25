@@ -4268,10 +4268,10 @@ verifier already has the trace and reconstructs the shape from the row range.
 chunk 2:    654,224 B (access 12,875, cpu 544,112, aux 96,181, chain 1,056)
 chunk 4:    436,656 B (cpu 326,992)
 chunk 8:    299,584 B (cpu 190,144)
-chunk 16:   220,272 B (cpu 110,944)
+chunk 16:   217,120 B (cpu 107,792)
 ```
 
-The standalone CPU proof backend picks `(100,3,20,3)` for systems with
+The standalone CPU proof backend picks `(100,4,20,3)` for systems with
 `num_vars >= 4096`, `(100,3,20,2)` for `num_vars >= 512`, and `(100,3,18,1)`
 otherwise: chunk 2 cpu drops to 544,626 B
 (total 709,202 B), chunk 16 cpu to 112,410 B (total 276,202 B). The chunked access and aux claims now share **one** P3 commitment/opening; the
@@ -4299,7 +4299,7 @@ and verifies that the shared-access opening rejects the chunked proof.
 
 
 `cpu_backend_pcs_scale_with_system_size` pins the three adaptive CPU PCS tiers
-(3/18/1, 3/20/2, 3/20/3) to their `num_vars` thresholds so future parameter
+(3/18/1, 3/20/2, 4/20/3) to their `num_vars` thresholds so future parameter
 changes cannot silently desynchronize prover and verifier.
 
 
