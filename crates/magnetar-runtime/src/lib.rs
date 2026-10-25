@@ -4172,6 +4172,31 @@ mod tests {
     }
 
     #[test]
+    fn unified_proof_round_trips_without_trace() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(&program, config()).unwrap();
+        let proof = prove_unified_trace(&trace, 8).unwrap();
+        let bytes = bincode::serialize(&proof).unwrap();
+        drop(trace);
+        let decoded: UnifiedTraceProof = bincode::deserialize(&bytes).unwrap();
+        verify_unified_proof(&decoded).unwrap();
+    }
+
+    #[test]
     fn unified_proof_digest_binds_the_proof() {
         let program = ProgramImage::new(
             0x1000,

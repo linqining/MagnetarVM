@@ -4427,3 +4427,7 @@ The largest CPU tier `(4,20,2)` was also tried; chunk 16 grew from 217,120 to
 `shift_expanded_proof` now runs `ReferencePipeline::run_expanded` and verifies
 the resulting statement (not just the raw trace), covering the expanded bytecode
 through statement construction, proof and verification.
+
+
+`unified_proof_round_trips_without_trace` serializes/deserializes the unified
+proof and verifies it with the trace dropped, covering the proof-only path.
