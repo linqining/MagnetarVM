@@ -4464,9 +4464,10 @@ Deliberately not adopted after measurement:
 
 ### Compact chunked CPU proof
 
-`prove_chunked_trace` now defaults to compact mode: it keeps the chunk
-chain/access/aux sharing but replaces per-chunk CPU proofs with one CPU proof
-over the whole trace (`ChunkCpuProof.cpu = None`,
+`prove_chunked_trace` defaults to compact mode for multi-chunk proofs (a single
+chunk delegates to streaming, which is 47 B smaller because it needs no
+`whole_cpu` field): it keeps the chunk chain/access/aux sharing but replaces
+per-chunk CPU proofs with one CPU proof over the whole trace (`ChunkCpuProof.cpu = None`,
 `ChunkedTraceProof.whole_cpu = Some`). The verifier checks chunk metadata/state
 chain then verifies the whole CPU proof once. At chunk 2 this is 217,170 B versus
 646,938 B for streaming. `prove_chunked_trace_streaming` (and the

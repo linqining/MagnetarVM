@@ -3620,6 +3620,9 @@ pub fn prove_chunked_trace(
             "chunked proofs require rows and a nonzero chunk size".into(),
         ));
     }
+    if chunk_size >= trace.rows.len() {
+        return prove_chunked_trace_streaming(trace, width, chunk_size);
+    }
     let (access, aux_claims, opening) = prove_chunked_shared_access(trace)?;
     let aux = aux_claims.map(|claims| AuxTraceProof {
         shout: claims.shout,
