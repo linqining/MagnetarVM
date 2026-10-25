@@ -3225,6 +3225,56 @@ pub fn verify_branch_pc_segmented_batch_bits<B: magnetar_proof::BitPcs>(
     )
 }
 
+#[derive(Clone, Debug)]
+pub struct SelectedSegmentClaim {
+    pub name: String,
+    pub owner: SegmentOwner,
+    pub value: magnetar_constraint::F2_128,
+}
+
+pub fn selected_segment_claims<C, O>(
+    layout: &magnetar_constraint::WitnessLayout,
+    proof: &LockstepProof<C, O>,
+) -> Result<Vec<SelectedSegmentClaim>, RuntimeError>
+where
+    C: Clone + std::fmt::Debug,
+    O: Clone + std::fmt::Debug,
+{
+    if layout.segments.len() != proof.segments.len() {
+        return Err(RuntimeError::Proof(format!(
+            "selected segment claim count mismatch: layout={} proof={}",
+            layout.segments.len(),
+            proof.segments.len()
+        )));
+    }
+    Ok(layout
+        .segments
+        .iter()
+        .zip(&proof.segments)
+        .map(|(segment, claim)| SelectedSegmentClaim {
+            name: segment.name.clone(),
+            owner: segment.owner,
+            value: claim.value,
+        })
+        .collect())
+}
+
+pub fn selected_claim_values_by_owner<C, O>(
+    layout: &magnetar_constraint::WitnessLayout,
+    proof: &LockstepProof<C, O>,
+    owner: SegmentOwner,
+) -> Result<Vec<magnetar_constraint::F2_128>, RuntimeError>
+where
+    C: Clone + std::fmt::Debug,
+    O: Clone + std::fmt::Debug,
+{
+    Ok(selected_segment_claims(layout, proof)?
+        .into_iter()
+        .filter(|claim| claim.owner == owner)
+        .map(|claim| claim.value)
+        .collect())
+}
+
 pub fn prove_gated_dual_batch_bits<B: magnetar_proof::BitPcs>(
     width: usize,
     rows: &[(u64, GatedCpuRowInput)],
@@ -3736,6 +3786,32 @@ mod tests {
             &backend,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn segmented_claims_route_by_owner() {
+        use magnetar_pcs::P3SharedPcs;
+        use magnetar_proof::RingSwitchPackedBitPcs;
+
+        let backend =
+            RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
+        let initial = 0x1000;
+        let final_pc = initial + 4 * 16;
+        let (proof, layout) =
+            prove_alu_pc_segmented_batch_bits(8, 16, initial, final_pc, &backend).unwrap();
+        let claims = selected_segment_claims(&layout, &proof).unwrap();
+        assert_eq!(claims.len(), layout.segments.len());
+        assert!(claims.iter().any(|claim| claim.owner == SegmentOwner::Pcs));
+        assert!(claims.iter().any(|claim| claim.owner == SegmentOwner::Cpu));
+        let pc_claims = selected_claim_values_by_owner(&layout, &proof, SegmentOwner::Pcs).unwrap();
+        assert_eq!(
+            pc_claims.len(),
+            layout
+                .segments
+                .iter()
+                .filter(|segment| segment.owner == SegmentOwner::Pcs)
+                .count()
+        );
     }
 
     #[test]

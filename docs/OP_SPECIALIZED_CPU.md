@@ -236,3 +236,19 @@ mapped variables.
 branch segmented batches (ALU is covered by its own test). If the per-op
 segments need more than the original block, the builder grows the block to the
 next power of two instead of failing.
+
+
+## Segment claim routing (done)
+
+`selected_segment_claims` turns a segmented proof plus its layout into named
+claims carrying `owner`:
+
+```text
+SelectedSegmentClaim { name, owner, value }
+```
+
+`selected_claim_values_by_owner` filters them by `SegmentOwner` (Cpu, Pcs,
+Memory, Shifting, ...). `segmented_claims_route_by_owner` proves an ALU
+segmented batch, checks the claim count matches the layout, and partitions the
+claims into Cpu/Pcs groups. This is the claim-side routing table; it is not yet
+consumed by the unified verifier.
