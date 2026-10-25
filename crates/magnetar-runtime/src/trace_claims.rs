@@ -211,7 +211,7 @@ pub fn claims_to_trace(
     statement: &crate::Statement,
     claims: &[TraceClaim],
 ) -> Result<Trace, crate::RuntimeError> {
-    use magnetar_spec::{Instruction, MemoryAccess, MicroOpKind, TraceRow};
+    use magnetar_spec::{MemoryAccess, MicroOpKind, TraceRow};
 
     let mut rows = Vec::with_capacity(claims.len());
     for (index, claim) in claims.iter().enumerate() {
