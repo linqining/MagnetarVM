@@ -252,3 +252,24 @@ Memory, Shifting, ...). `segmented_claims_route_by_owner` proves an ALU
 segmented batch, checks the claim count matches the layout, and partitions the
 claims into Cpu/Pcs groups. This is the claim-side routing table; it is not yet
 consumed by the unified verifier.
+
+
+## Selected claims bundle (done)
+
+`SelectedCpuClaims` packages:
+
+```text
+op, width, cycles, initial_pc, final_pc
+layout
+per-segment claims
+segmented LockstepProof
+```
+
+`prove_selected_cpu_claims` dispatches to the selected-op segmented provers and
+extracts the owner-tagged claims. `verify_selected_cpu_claims` re-extracts the
+claims, checks they match the stored bundle, and dispatches to the corresponding
+segmented verifier.
+
+`selected_cpu_claims_round_trip` proves, verifies, serializes/deserializes and
+verifies again. This is the claim object intended to be embedded in the unified
+proof; the unified prover/verifier integration is still pending.

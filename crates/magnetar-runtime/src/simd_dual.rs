@@ -3225,7 +3225,7 @@ pub fn verify_branch_pc_segmented_batch_bits<B: magnetar_proof::BitPcs>(
     )
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SelectedSegmentClaim {
     pub name: String,
     pub owner: SegmentOwner,
@@ -3273,6 +3273,141 @@ where
         .filter(|claim| claim.owner == owner)
         .map(|claim| claim.value)
         .collect())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SelectedOp {
+    Alu,
+    Shift,
+    Memory,
+    Multiply,
+    Divide,
+    Branch,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(
+    bound = "C: serde::Serialize + serde::de::DeserializeOwned, O: serde::Serialize + serde::de::DeserializeOwned"
+)]
+pub struct SelectedCpuClaims<C: Clone + std::fmt::Debug, O: Clone + std::fmt::Debug> {
+    pub op: SelectedOp,
+    pub width: usize,
+    pub cycles: usize,
+    pub initial_pc: u64,
+    pub final_pc: u64,
+    pub layout: magnetar_constraint::WitnessLayout,
+    pub segments: Vec<SelectedSegmentClaim>,
+    pub proof: LockstepProof<C, O>,
+}
+
+pub fn prove_selected_cpu_claims<B: magnetar_proof::BitPcs>(
+    op: SelectedOp,
+    width: usize,
+    cycles: usize,
+    initial_pc: u64,
+    final_pc: u64,
+    backend: &B,
+) -> Result<SelectedCpuClaims<B::Commitment, B::Opening>, RuntimeError> {
+    let (proof, layout) = match op {
+        SelectedOp::Alu => {
+            prove_alu_pc_segmented_batch_bits(width, cycles, initial_pc, final_pc, backend)?
+        }
+        SelectedOp::Shift => {
+            prove_shift_pc_segmented_batch_bits(width, cycles, initial_pc, final_pc, backend)?
+        }
+        SelectedOp::Memory => {
+            prove_mem_pc_segmented_batch_bits(width, cycles, initial_pc, final_pc, backend)?
+        }
+        SelectedOp::Multiply => {
+            prove_mul_pc_segmented_batch_bits(width, cycles, initial_pc, final_pc, backend)?
+        }
+        SelectedOp::Divide => {
+            prove_div_pc_segmented_batch_bits(width, cycles, initial_pc, final_pc, backend)?
+        }
+        SelectedOp::Branch => {
+            prove_branch_pc_segmented_batch_bits(width, cycles, initial_pc, final_pc, backend)?
+        }
+    };
+    let segments = selected_segment_claims(&layout, &proof)?;
+    Ok(SelectedCpuClaims {
+        op,
+        width,
+        cycles,
+        initial_pc,
+        final_pc,
+        layout,
+        segments,
+        proof,
+    })
+}
+
+pub fn verify_selected_cpu_claims<B: magnetar_proof::BitPcs>(
+    claims: &SelectedCpuClaims<B::Commitment, B::Opening>,
+    backend: &B,
+) -> Result<(), RuntimeError> {
+    let expected = selected_segment_claims(&claims.layout, &claims.proof)?;
+    if expected != claims.segments {
+        return Err(RuntimeError::Proof(
+            "selected CPU claim segments do not match the proof".into(),
+        ));
+    }
+    let (width, cycles) = (claims.width, claims.cycles);
+    match claims.op {
+        SelectedOp::Alu => verify_alu_pc_segmented_batch_bits(
+            width,
+            cycles,
+            claims.initial_pc,
+            claims.final_pc,
+            &claims.proof,
+            &claims.layout,
+            backend,
+        ),
+        SelectedOp::Shift => verify_shift_pc_segmented_batch_bits(
+            width,
+            cycles,
+            claims.initial_pc,
+            claims.final_pc,
+            &claims.proof,
+            &claims.layout,
+            backend,
+        ),
+        SelectedOp::Memory => verify_mem_pc_segmented_batch_bits(
+            width,
+            cycles,
+            claims.initial_pc,
+            claims.final_pc,
+            &claims.proof,
+            &claims.layout,
+            backend,
+        ),
+        SelectedOp::Multiply => verify_mul_pc_segmented_batch_bits(
+            width,
+            cycles,
+            claims.initial_pc,
+            claims.final_pc,
+            &claims.proof,
+            &claims.layout,
+            backend,
+        ),
+        SelectedOp::Divide => verify_div_pc_segmented_batch_bits(
+            width,
+            cycles,
+            claims.initial_pc,
+            claims.final_pc,
+            &claims.proof,
+            &claims.layout,
+            backend,
+        ),
+        SelectedOp::Branch => verify_branch_pc_segmented_batch_bits(
+            width,
+            cycles,
+            claims.initial_pc,
+            claims.final_pc,
+            &claims.proof,
+            &claims.layout,
+            backend,
+        ),
+    }
 }
 
 pub fn prove_gated_dual_batch_bits<B: magnetar_proof::BitPcs>(
@@ -3786,6 +3921,24 @@ mod tests {
             &backend,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn selected_cpu_claims_round_trip() {
+        use magnetar_pcs::P3SharedPcs;
+        use magnetar_proof::RingSwitchPackedBitPcs;
+
+        let backend =
+            RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
+        let initial = 0x1000;
+        let final_pc = initial + 4 * 16;
+        let claims =
+            prove_selected_cpu_claims(SelectedOp::Alu, 8, 16, initial, final_pc, &backend).unwrap();
+        assert_eq!(claims.segments.len(), claims.layout.segments.len());
+        verify_selected_cpu_claims(&claims, &backend).unwrap();
+        let bytes = bincode::serialize(&claims).unwrap();
+        let decoded: SelectedCpuClaims<_, _> = bincode::deserialize(&bytes).unwrap();
+        verify_selected_cpu_claims(&decoded, &backend).unwrap();
     }
 
     #[test]
