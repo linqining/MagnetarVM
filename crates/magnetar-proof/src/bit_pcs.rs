@@ -700,9 +700,8 @@ impl<P: Pcs> RingSwitchPackedBitPcs<P> {
         for (vertical, horizontal) in z_vals.iter().zip(query) {
             let vertical_scaled = Self::scale_vertical(&eval, *vertical);
             let horizontal_scaled = Self::scale_horizontal(&eval, *horizontal);
-            for index in 0..128 {
-                eval[index] = eval[index] + vertical_scaled[index] + horizontal_scaled[index];
-            }
+            F2_128::add_assign_slice(&mut eval, &vertical_scaled);
+            F2_128::add_assign_slice(&mut eval, &horizontal_scaled);
         }
         let transposed = Self::transpose128(&eval);
         transposed

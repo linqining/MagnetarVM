@@ -115,6 +115,7 @@ impl Field for F2 {
 /// integer's binary representation as polynomial coefficients, so `2` is the
 /// basis element `x`, not `1 + 1` (which is zero in characteristic two).
 #[derive(Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[repr(transparent)]
 pub struct F2_128(u128);
 
 impl F2_128 {
@@ -124,6 +125,73 @@ impl F2_128 {
 
     pub fn value(self) -> u128 {
         self.0
+    }
+
+    /// XOR `src` into `dst` (field addition) with a hardware kernel when
+    /// available. The slice layouts are identical because `F2_128` is
+    /// `repr(transparent)` over `u128`.
+    pub fn add_assign_slice(dst: &mut [Self], src: &[Self]) {
+        assert_eq!(dst.len(), src.len(), "field slice length mismatch");
+        #[cfg(target_arch = "x86_64")]
+        {
+            if std::is_x86_feature_detected!("avx2") {
+                // SAFETY: `repr(transparent)` gives the same 16-byte layout as
+                // `u128`; the length check above keeps both ranges in bounds.
+                unsafe { Self::add_assign_slice_avx2(dst, src) };
+                return;
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            // SAFETY: NEON is baseline on aarch64 and both slices have equal
+            // length; `repr(transparent)` preserves the u128 layout.
+            unsafe { Self::add_assign_slice_neon(dst, src) };
+            return;
+        }
+        #[allow(unreachable_code)]
+        for (left, right) in dst.iter_mut().zip(src) {
+            *left = Self::from(left.0 ^ right.0);
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    unsafe fn add_assign_slice_avx2(dst: &mut [Self], src: &[Self]) {
+        use std::arch::x86_64::{
+            __m256i, _mm256_loadu_si256, _mm256_storeu_si256, _mm256_xor_si256,
+        };
+        let mut index = 0usize;
+        while index + 2 <= dst.len() {
+            let left = unsafe { _mm256_loadu_si256(dst.as_ptr().add(index) as *const __m256i) };
+            let right = unsafe { _mm256_loadu_si256(src.as_ptr().add(index) as *const __m256i) };
+            let value = _mm256_xor_si256(left, right);
+            unsafe {
+                _mm256_storeu_si256(dst.as_mut_ptr().add(index) as *mut __m256i, value);
+            }
+            index += 2;
+        }
+        while index < dst.len() {
+            dst[index] = Self::from(dst[index].0 ^ src[index].0);
+            index += 1;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[target_feature(enable = "neon")]
+    unsafe fn add_assign_slice_neon(dst: &mut [Self], src: &[Self]) {
+        use std::arch::aarch64::{veorq_u8, vld1q_u8, vst1q_u8};
+        let mut index = 0usize;
+        while index < dst.len() {
+            let left = unsafe { vld1q_u8(dst.as_ptr().add(index) as *const u8) };
+            let right = unsafe { vld1q_u8(src.as_ptr().add(index) as *const u8) };
+            unsafe {
+                vst1q_u8(
+                    dst.as_mut_ptr().add(index) as *mut u8,
+                    veorq_u8(left, right),
+                );
+            }
+            index += 1;
+        }
     }
 
     pub fn from_bits(value: u128) -> Self {
@@ -534,6 +602,18 @@ impl Field for F61 {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn simd_slice_addition_matches_scalar() {
+        let mut left = (0..100u128).map(F2_128::from).collect::<Vec<_>>();
+        let right = (100..200u128).map(F2_128::from).collect::<Vec<_>>();
+        let mut expected = left.clone();
+        for (value, other) in expected.iter_mut().zip(&right) {
+            *value = F2_128::from(value.value() ^ other.value());
+        }
+        F2_128::add_assign_slice(&mut left, &right);
+        assert_eq!(left, expected);
+    }
 
     #[test]
     fn binary_field_has_characteristic_two() {

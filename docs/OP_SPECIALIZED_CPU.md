@@ -819,3 +819,22 @@ rows=1024 chunk=256
 
 Streaming dynamic is faster than whole-trace compact here because the selected
 CPU proof is split across chunks, at the cost of extra per-chunk proof bytes.
+
+
+### SIMD field addition
+
+`F2_128` is now `repr(transparent)` over `u128` and exposes
+`F2_128::add_assign_slice`, with AVX2 (2 elements/instruction), NEON
+(1 element/instruction) and scalar fallback kernels. The packed-bit PCS
+`eval_rs_eq` uses it for the two vector accumulations.
+
+`simd_slice_addition_matches_scalar` checks the kernel against the scalar loop.
+`simd_field_bench` on 1,000,000 elements:
+
+```text
+cold run   scalar 1.62 ms  simd 0.82 ms  ~1.99x
+warm runs  ~0.42-0.46 ms for both, memory-bandwidth bound
+```
+
+So field XOR is correct and available, but its large-slab speedup disappears
+once data is cache-hot; the packing kernel remains the clear SIMD win (11-12.6x).
