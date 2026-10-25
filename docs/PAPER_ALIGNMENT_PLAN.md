@@ -10,21 +10,21 @@ This is a roadmap, not a claim that the implementation is aligned yet.
 
 | rows | bytes | prove | verify | cycles/s |
 |---:|---:|---:|---:|---:|
-| 16 | 114,816 | 0.287 s | 0.172 s | 55.7 |
-| 64 | 182,944 | 1.925 s | 0.544 s | 33.2 |
-| 512 | 455,784 | 30.43 s | 5.45 s | 16.8 |
+| 16 | 92,528 | 0.347 s | 0.162 s | 46.2 |
+| 64 | 136,472 | 1.957 s | 0.502 s | 32.7 |
+| 512 | 348,368 | 30.67 s | 4.80 s | 16.7 |
 
 512-row split:
 
 ```text
-selected_cpu 311,021 B
+selected_cpu 203,605 B
 claim_proof   55,370 B
 packed_shout  58,866 B
 access        16,018 B
 shape         13,320 B
 ```
 
-Selected CPU is about 68% of the proof. The claim proof dropped from
+Selected CPU is about 58% of the proof. The claim proof dropped from
 202,825 B to 55,370 B by proving a complete claim set against the Merkle root
 instead of carrying one sibling path per row, and the duplicated selected
 segment list is no longer serialized.
@@ -67,6 +67,8 @@ openings.
    names.
    [x] Omit the dynamic selected layout from the proof; the verifier rebuilds it
    from the trace and uses it for the lockstep opening.
+   [x] Tune the selected PCS to `(security=100, log_inv_rate=4, pow_bits=16,
+   folding=3)`; selected opening drops from 234,352 B to 126,936 B at 512 rows.
 2. Reduce the dynamic selected witness width: a trace containing only ALU +
    halt currently pays for every component (memory/shift/mul/div/sdiv).
    Introduce an ALU+branch composite row or select the exact component set.
@@ -78,7 +80,7 @@ Interim gates:
 
 ```text
 512 rows: proof < 500 KiB, selected < 300 KiB, claim < 100 KiB
-(current: 445.1 KiB / 303.7 KiB / 54.1 KiB)
+(current: 340.2 KiB / 198.8 KiB / 54.1 KiB)
 
 At 64 rows, the selected proof splits as:
 
@@ -90,9 +92,8 @@ segment claims 9,224 B
 PCS opening   133,376 B
 ```
 
-The selected proof is dominated by the PCS opening, so the remaining 3.7 KiB
-cannot be removed by metadata trimming. Reaching selected < 300 KiB requires a
-PCS/claim proof change (Phase 2).
+At 512 rows the selected proof is now 203,605 B: opening 126,936 B, segment
+claims 73,736 B, sums 2,736 B, commitment 48 B. The Phase 1 gate is met.
 ```
 
 ## Phase 2: CPU engine / BinarySpartan

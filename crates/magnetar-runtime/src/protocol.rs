@@ -1626,7 +1626,9 @@ fn e5_backend() -> RingSwitchPackedBitPcs<P3BinaryPcs> {
 }
 
 pub(crate) fn selected_backend() -> RingSwitchPackedBitPcs<P3BinaryPcs> {
-    e5_backend()
+    // Rate-1/16 code with 16 grinding bits and 8-way folding gives the
+    // smallest selected-witness opening in the P3 parameter sweep.
+    RingSwitchPackedBitPcs::new(P3BinaryPcs::with_params(100, 4, 16, 3))
 }
 
 type E5Layout = (
