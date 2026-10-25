@@ -3188,7 +3188,7 @@ fn prove_aux_trace(trace: &Trace) -> Result<Option<AuxTraceProof>, RuntimeError>
     if shout_witness.is_none() && shift_router_witness.is_none() && store_router_witness.is_none() {
         return Ok(None);
     }
-    let pcs = P3BinaryPcs::new(100);
+    let pcs = P3BinaryPcs::with_params(100, 3, 20, 2);
     let mut tables = Vec::new();
     let mut shout_index = None;
     let mut shift_router_index = None;
@@ -3353,7 +3353,7 @@ fn verify_aux_trace(trace: &Trace, aux: Option<&AuxTraceProof>) -> Result<(), Ru
         points.extend(claim_points);
         values.extend(claim_values);
     }
-    let verified = P3BinaryPcs::new(100)
+    let verified = P3BinaryPcs::with_params(100, 3, 20, 2)
         .verify_mosaic(&aux.opening, &points, &values)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     if !verified {
