@@ -2,8 +2,9 @@
 //!
 //! The expansion is branchless. It selects four registers that are unused by
 //! the program (preferring x28-x31) and zeroes them after each expanded
-//! sequence, so programs that use x28-x31 are still expandable. Only `jalr`
-//! remains unrelocatable.
+//! sequence, so programs that use x28-x31 are still expandable. Static `jalr`
+//! targets are resolved by constant propagation; dynamic `jalr` still falls
+//! back.
 
 use magnetar_spec::{Instruction, Op, ProgramImage};
 
@@ -27,10 +28,6 @@ fn choose_temps(decoded: &[Instruction]) -> Option<[u8; 4]> {
         }
     }
     None
-}
-
-fn is_unrelocatable(op: Op) -> bool {
-    matches!(op, Op::Jalr)
 }
 
 fn is_branch(op: Op) -> bool {
@@ -87,6 +84,39 @@ fn shift_body(kind: Op, rd: u8, rs1: u8, rs2: u8, temps: [u8; 4]) -> Vec<u32> {
     body
 }
 
+fn static_jalr_target(
+    decoded: &[Instruction],
+    index: usize,
+    rs1: u8,
+    imm: i64,
+    entry: u64,
+) -> Option<usize> {
+    let mut values = [None; 32];
+    values[0] = Some(0u64);
+    for instruction in decoded.iter().take(index) {
+        if is_branch(instruction.op) || matches!(instruction.op, Op::Jal | Op::Jalr) {
+            return None;
+        }
+        let value = match instruction.op {
+            Op::Addi => values[instruction.rs1 as usize]
+                .map(|value| value.wrapping_add(instruction.imm as u64)),
+            Op::Lui => Some(instruction.imm as u64),
+            Op::Auipc => Some(entry.wrapping_add(instruction.imm as u64)),
+            _ => None,
+        };
+        if instruction.rd != 0 {
+            values[instruction.rd as usize] = value;
+        }
+    }
+    let target = values[rs1 as usize]?.wrapping_add(imm as u64);
+    let offset = target.checked_sub(entry)?;
+    if !offset.is_multiple_of(4) {
+        return None;
+    }
+    let target = usize::try_from(offset / 4).ok()?;
+    (target < decoded.len()).then_some(target)
+}
+
 fn expand_one(instruction: &Instruction, temps: [u8; 4]) -> Option<Vec<u32>> {
     let [t0, _, _, t3] = temps;
     let rd = instruction.rd;
@@ -136,17 +166,29 @@ pub fn expand_register_shifts(program: &ProgramImage) -> Option<ProgramImage> {
         .iter()
         .map(|word| magnetar_spec::decode(*word).ok())
         .collect::<Option<Vec<_>>>()?;
-    if decoded
-        .iter()
-        .any(|instruction| is_unrelocatable(instruction.op))
-    {
-        return None;
+    let mut jalr_targets = vec![None; decoded.len()];
+    for (index, instruction) in decoded.iter().enumerate() {
+        if instruction.op == Op::Jalr {
+            jalr_targets[index] = Some(static_jalr_target(
+                &decoded,
+                index,
+                instruction.rs1,
+                instruction.imm,
+                program.entry,
+            )?);
+        }
     }
     let temps = choose_temps(&decoded)?;
     let mut bodies = Vec::with_capacity(decoded.len());
     let mut changed = false;
     for instruction in &decoded {
-        let body = if instruction.op == Op::Auipc {
+        let body = if instruction.op == Op::Jalr {
+            if instruction.rd == 0 {
+                Some(vec![0])
+            } else {
+                Some(vec![0, 0, 0])
+            }
+        } else if instruction.op == Op::Auipc {
             Some(vec![instruction.encode(), 0])
         } else if instruction.op == Op::Jal && instruction.rd != 0 {
             Some(vec![0, 0, 0])
@@ -172,6 +214,57 @@ pub fn expand_register_shifts(program: &ProgramImage) -> Option<ProgramImage> {
     for (index, instruction) in decoded.iter().enumerate() {
         if bodies[index].is_none() {
             rom[mapping[index]] = instruction.encode();
+        }
+        if instruction.op == Op::Jalr {
+            let target = jalr_targets[index]?;
+            let target_new = mapping[target] as i64;
+            let new_index = mapping[index] as i64;
+            if instruction.rd == 0 {
+                let offset = (target_new - new_index) * 4;
+                rom[mapping[index]] = Instruction {
+                    op: Op::Jal,
+                    rd: 0,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: offset,
+                    shamt: 0,
+                }
+                .encode();
+            } else {
+                let old_link = (index as i64 + 1) * 4;
+                let new_pc = new_index * 4;
+                let delta = old_link - new_pc;
+                let hi = (delta + 0x800) >> 12;
+                let lo = delta - (hi << 12);
+                rom[mapping[index]] = Instruction {
+                    op: Op::Auipc,
+                    rd: instruction.rd,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: hi << 12,
+                    shamt: 0,
+                }
+                .encode();
+                rom[mapping[index] + 1] = Instruction {
+                    op: Op::Addi,
+                    rd: instruction.rd,
+                    rs1: instruction.rd,
+                    rs2: 0,
+                    imm: lo,
+                    shamt: 0,
+                }
+                .encode();
+                let offset = (target_new - (new_index + 2)) * 4;
+                rom[mapping[index] + 2] = Instruction {
+                    op: Op::Jal,
+                    rd: 0,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: offset,
+                    shamt: 0,
+                }
+                .encode();
+            }
         }
         if instruction.op == Op::Jal && instruction.rd != 0 {
             let target = (index as i64) + instruction.imm / 4;
@@ -645,7 +738,7 @@ mod tests {
     }
 
     #[test]
-    fn jalr_programs_fall_back() {
+    fn static_jalr_is_relocated() {
         let program = program(vec![
             Instruction {
                 op: Op::Auipc,
@@ -684,10 +777,66 @@ mod tests {
             }
             .encode(),
             Instruction {
-                op: Op::Sll,
+                op: Op::Addi,
                 rd: 4,
-                rs1: 3,
+                rs1: 0,
                 rs2: 0,
+                imm: 1,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Sll,
+                rd: 5,
+                rs1: 3,
+                rs2: 4,
+                imm: 0,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction::new(Op::Ebreak).encode(),
+        ]);
+        let expanded = expand_register_shifts(&program).expect("expandable");
+        let direct = execute(&program, config()).unwrap().final_state;
+        let actual = execute(&expanded, config()).unwrap().final_state;
+        assert_eq!(actual.regs, direct.regs);
+    }
+
+    #[test]
+    fn dynamic_jalr_falls_back() {
+        let program = program(vec![
+            Instruction {
+                op: Op::Lui,
+                rd: 20,
+                rs1: 0,
+                rs2: 0,
+                imm: 0x1000_0000,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Ld,
+                rd: 1,
+                rs1: 20,
+                rs2: 0,
+                imm: 0,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Jalr,
+                rd: 0,
+                rs1: 1,
+                rs2: 0,
+                imm: 0,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Sll,
+                rd: 3,
+                rs1: 1,
+                rs2: 2,
                 imm: 0,
                 shamt: 0,
             }
@@ -698,7 +847,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_expanded_falls_back_for_jalr() {
+    fn execute_expanded_handles_static_jalr() {
         let program = program(vec![
             Instruction {
                 op: Op::Auipc,

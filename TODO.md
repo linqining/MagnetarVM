@@ -54,7 +54,8 @@ Detailed paper gap audit: [PAPER_GAPS.md](PAPER_GAPS.md).
 - [ ] Trace-level virtual micro-op scheduling remains open.
 - [x] Programs using x28-x31 are expandable via dynamically chosen unused
       temporary registers.
-- [ ] `jalr` falls back to the original bytecode.
+- [x] Static `jalr` targets are resolved and rewritten to `jal`; only dynamic
+      `jalr` falls back.
 
 ## Chunked compact mode
 
