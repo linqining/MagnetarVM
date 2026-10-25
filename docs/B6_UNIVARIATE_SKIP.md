@@ -44,6 +44,19 @@ interface. Adding univariate skip would require one of:
 Both change the proof format and soundness argument. Copying the vendored
 round without the follow-up reduction would prove a different statement.
 
+## Prototype status
+
+`magnetar-runtime::univariate_skip` now provides:
+
+- an additive subspace of `F2_128` of size `2^k`;
+- Lagrange weights and interpolation at an off-domain challenge;
+- domain-sum verification;
+
+with tests for distinctness, interpolation at the domain points, and matching a
+low-degree polynomial at a random point. This is the domain/interpolation layer
+only; the zerocheck round and the inner-product-to-evaluation reduction are
+still pending.
+
 ## Recommendation
 
 For this reference, treat B6 as:

@@ -4,6 +4,8 @@
 //! prover: `UnimplementedBackend` makes the missing cryptographic backend
 //! explicit rather than returning a misleading "proof".
 
+pub mod univariate_skip;
+
 pub mod access_statement;
 pub mod amo_add_row;
 pub mod amo_bundle;
