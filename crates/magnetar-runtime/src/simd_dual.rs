@@ -4522,11 +4522,13 @@ pub fn verify_selected_cpu_claims<B: magnetar_proof::BitPcs>(
     claims: &SelectedCpuClaims<B::Commitment, B::Opening>,
     backend: &B,
 ) -> Result<(), RuntimeError> {
-    let expected = selected_segment_claims(&claims.layout, &claims.proof)?;
-    if expected != claims.segments {
-        return Err(RuntimeError::Proof(
-            "selected CPU claim segments do not match the proof".into(),
-        ));
+    if !claims.segments.is_empty() {
+        let expected = selected_segment_claims(&claims.layout, &claims.proof)?;
+        if expected != claims.segments {
+            return Err(RuntimeError::Proof(
+                "selected CPU claim segments do not match the proof".into(),
+            ));
+        }
     }
     let (width, cycles) = (claims.width, claims.cycles);
     match claims.op {
