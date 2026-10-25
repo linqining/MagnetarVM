@@ -123,6 +123,159 @@ fn workloads() -> Vec<(&'static str, ProgramImage)> {
         }
         .encode(),
     ]);
+    let bitmix = program(vec![
+        addi(1, 0, 0x55),
+        addi(2, 0, 0x0f),
+        Instruction {
+            op: Op::Or,
+            rd: 3,
+            rs1: 1,
+            rs2: 2,
+            imm: 0,
+            shamt: 0,
+        }
+        .encode(),
+        Instruction {
+            op: Op::Xori,
+            rd: 4,
+            rs1: 1,
+            rs2: 0,
+            imm: 0x3c,
+            shamt: 0,
+        }
+        .encode(),
+        Instruction {
+            op: Op::Andi,
+            rd: 5,
+            rs1: 4,
+            rs2: 0,
+            imm: 0x0f,
+            shamt: 0,
+        }
+        .encode(),
+        Instruction {
+            op: Op::Slti,
+            rd: 6,
+            rs1: 3,
+            rs2: 0,
+            imm: 0x10,
+            shamt: 0,
+        }
+        .encode(),
+    ]);
+    let memcopy = program(vec![
+        Instruction {
+            op: Op::Lui,
+            rd: 20,
+            rs1: 0,
+            rs2: 0,
+            imm: 0x1000_0000,
+            shamt: 0,
+        }
+        .encode(),
+        addi(1, 0, 0x1111),
+        addi(2, 0, 0x2222),
+        Instruction {
+            op: Op::Sd,
+            rd: 0,
+            rs1: 20,
+            rs2: 1,
+            imm: 0,
+            shamt: 0,
+        }
+        .encode(),
+        Instruction {
+            op: Op::Sd,
+            rd: 0,
+            rs1: 20,
+            rs2: 2,
+            imm: 8,
+            shamt: 0,
+        }
+        .encode(),
+        Instruction {
+            op: Op::Ld,
+            rd: 3,
+            rs1: 20,
+            rs2: 0,
+            imm: 0,
+            shamt: 0,
+        }
+        .encode(),
+        Instruction {
+            op: Op::Ld,
+            rd: 4,
+            rs1: 20,
+            rs2: 0,
+            imm: 8,
+            shamt: 0,
+        }
+        .encode(),
+    ]);
+    let branchmix = program(vec![
+        addi(1, 0, 3),
+        addi(2, 0, 5),
+        Instruction {
+            op: Op::Blt,
+            rd: 0,
+            rs1: 1,
+            rs2: 2,
+            imm: 8,
+            shamt: 0,
+        }
+        .encode(),
+        addi(3, 0, 1),
+        Instruction {
+            op: Op::Beq,
+            rd: 0,
+            rs1: 3,
+            rs2: 3,
+            imm: 8,
+            shamt: 0,
+        }
+        .encode(),
+        addi(4, 0, 2),
+    ]);
+    let amo = program(vec![
+        Instruction {
+            op: Op::Lui,
+            rd: 20,
+            rs1: 0,
+            rs2: 0,
+            imm: 0x1000_0000,
+            shamt: 0,
+        }
+        .encode(),
+        addi(1, 0, 7),
+        Instruction {
+            op: Op::Sd,
+            rd: 0,
+            rs1: 20,
+            rs2: 1,
+            imm: 0,
+            shamt: 0,
+        }
+        .encode(),
+        addi(2, 0, 3),
+        Instruction {
+            op: Op::AmoswapD,
+            rd: 3,
+            rs1: 20,
+            rs2: 2,
+            imm: 0,
+            shamt: 0,
+        }
+        .encode(),
+        Instruction {
+            op: Op::AmoaddD,
+            rd: 4,
+            rs1: 20,
+            rs2: 2,
+            imm: 0,
+            shamt: 0,
+        }
+        .encode(),
+    ]);
     let bitops = program(vec![
         addi(1, 0, 0x5a5),
         addi(2, 0, 0x3c3),
@@ -367,6 +520,10 @@ fn workloads() -> Vec<(&'static str, ProgramImage)> {
         ("bitops", bitops),
         ("muldiv", muldiv),
         ("mixedmem", mixedmem),
+        ("bitmix", bitmix),
+        ("memcopy", memcopy),
+        ("branchmix", branchmix),
+        ("amo", amo),
         ("alu", alu),
     ]
 }

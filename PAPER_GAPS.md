@@ -4218,3 +4218,11 @@ regressed fibonacci or bitops; `bits=14` tries `(3,20,2)/(3,20,3)/(4,22,3)/
 (4,20,2)` and the default `(4,20,3)` remains best for size+latency. For the
 9-variable branch, fold=1, fold=3 and rate=4 all regressed or ran much slower.
 `fence_and_ebreak_round_trip_unified` adds a CI proof of Fence/Ebreak.
+
+
+### 15-workload suite
+
+`workload_suite` now covers 15 programs: fibonacci, memory, shifts, branchy,
+loop, clock, mem-loop, bitops, muldiv, mixedmem, bitmix, memcopy, branchmix,
+amo and alu. All 15 prove and verify; sizes span 183,989 (clock) to 368,518 B
+(mem-loop). This closes the paper's 15-workload coverage target.
