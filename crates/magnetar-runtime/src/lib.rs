@@ -3119,6 +3119,64 @@ pub struct AuxTraceProof {
     pub opening: P3MosaicOpening,
 }
 
+type AuxClaimBatch = (
+    AuxClaims,
+    Vec<magnetar_pcs::P3MosaicPoint>,
+    Vec<Vec<F2_128>>,
+);
+
+struct AuxClaims {
+    shout: Option<crate::binary_shout::BinaryShoutProof>,
+    shift_router: Option<crate::binary_router::BinaryRouterProof>,
+    store_router: Option<crate::binary_router::BinaryRouterProof>,
+}
+
+struct ChunkedAuxWitnesses {
+    shout: Option<crate::binary_shout::BinaryShoutWitness>,
+    shift_router: Option<crate::binary_router::BinaryRouterWitness>,
+    store_router: Option<crate::binary_router::BinaryRouterWitness>,
+}
+
+impl ChunkedAuxWitnesses {
+    fn from_trace(trace: &Trace) -> Self {
+        Self {
+            shout: BinaryShoutWitness::from_trace(trace).ok(),
+            shift_router: BinaryRouterWitness::from_trace_mode(trace, RouterMode::Shifts).ok(),
+            store_router: BinaryRouterWitness::from_trace_mode(trace, RouterMode::Stores).ok(),
+        }
+    }
+
+    fn any(&self) -> bool {
+        self.shout.is_some() || self.shift_router.is_some() || self.store_router.is_some()
+    }
+
+    fn tables(
+        &self,
+    ) -> (
+        Vec<magnetar_pcs::P3MosaicTable>,
+        Option<usize>,
+        Option<usize>,
+        Option<usize>,
+    ) {
+        let mut tables = Vec::new();
+        let mut indices = [None, None, None];
+        for (slot, table) in [
+            self.shout.as_ref().map(BinaryShoutWitness::table),
+            self.shift_router.as_ref().map(BinaryRouterWitness::table),
+            self.store_router.as_ref().map(BinaryRouterWitness::table),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if let Some(table) = table {
+                indices[slot] = Some(tables.len());
+                tables.push(table);
+            }
+        }
+        (tables, indices[0], indices[1], indices[2])
+    }
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ChunkCpuProof {
     pub start: usize,
@@ -3189,38 +3247,20 @@ fn chunk_proof_digest(
     sha256(&bytes)
 }
 
-fn prove_aux_trace(trace: &Trace) -> Result<Option<AuxTraceProof>, RuntimeError> {
-    let shout_witness = BinaryShoutWitness::from_trace(trace).ok();
-    let shift_router_witness = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Shifts).ok();
-    let store_router_witness = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Stores).ok();
-    if shout_witness.is_none() && shift_router_witness.is_none() && store_router_witness.is_none() {
+fn prove_chunked_aux_claims(
+    witnesses: &ChunkedAuxWitnesses,
+    commitment: &magnetar_pcs::P3MosaicCommitment,
+    base: usize,
+) -> Result<Option<AuxClaimBatch>, RuntimeError> {
+    if !witnesses.any() {
         return Ok(None);
     }
-    let pcs = P3BinaryPcs::with_params(100, 3, 22, 2);
-    let mut tables = Vec::new();
-    let mut shout_index = None;
-    let mut shift_router_index = None;
-    let mut store_router_index = None;
-    if let Some(witness) = &shout_witness {
-        shout_index = Some(tables.len());
-        tables.push(witness.table());
-    }
-    if let Some(witness) = &shift_router_witness {
-        shift_router_index = Some(tables.len());
-        tables.push(witness.table());
-    }
-    if let Some(witness) = &store_router_witness {
-        store_router_index = Some(tables.len());
-        tables.push(witness.table());
-    }
-    let commitment = pcs
-        .commit_mosaic(&tables)
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let (_, shout_index, shift_index, store_index) = witnesses.tables();
     let mut points = Vec::new();
     let mut values = Vec::new();
-    let shout = if let (Some(witness), Some(index)) = (&shout_witness, shout_index) {
+    let shout = if let (Some(witness), Some(index)) = (&witnesses.shout, shout_index) {
         let (claim, claim_points, claim_values) =
-            prove_binary_shout_claims(witness, &commitment, index, b"")
+            prove_binary_shout_claims(witness, commitment, base + index, b"")
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         points.extend(claim_points);
         values.extend(claim_values);
@@ -3228,59 +3268,46 @@ fn prove_aux_trace(trace: &Trace) -> Result<Option<AuxTraceProof>, RuntimeError>
     } else {
         None
     };
-    let shift_router =
-        if let (Some(witness), Some(index)) = (&shift_router_witness, shift_router_index) {
-            let (claim, claim_points, claim_values) =
-                prove_binary_router_claims(witness, &commitment, index, b"")
-                    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-            points.extend(claim_points);
-            values.extend(claim_values);
-            Some(claim)
-        } else {
-            None
-        };
-    let store_router =
-        if let (Some(witness), Some(index)) = (&store_router_witness, store_router_index) {
-            let (claim, claim_points, claim_values) =
-                prove_binary_router_claims(witness, &commitment, index, b"")
-                    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-            points.extend(claim_points);
-            values.extend(claim_values);
-            Some(claim)
-        } else {
-            None
-        };
-    let opening = pcs
-        .open_mosaic(&tables, &points)
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    Ok(Some(AuxTraceProof {
-        shout,
-        shift_router,
-        store_router,
-        opening,
-    }))
+    let shift_router = if let (Some(witness), Some(index)) = (&witnesses.shift_router, shift_index)
+    {
+        let (claim, claim_points, claim_values) =
+            prove_binary_router_claims(witness, commitment, base + index, b"")
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        points.extend(claim_points);
+        values.extend(claim_values);
+        Some(claim)
+    } else {
+        None
+    };
+    let store_router = if let (Some(witness), Some(index)) = (&witnesses.store_router, store_index)
+    {
+        let (claim, claim_points, claim_values) =
+            prove_binary_router_claims(witness, commitment, base + index, b"")
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        points.extend(claim_points);
+        values.extend(claim_values);
+        Some(claim)
+    } else {
+        None
+    };
+    Ok(Some((
+        AuxClaims {
+            shout,
+            shift_router,
+            store_router,
+        },
+        points,
+        values,
+    )))
 }
 
-fn verify_aux_trace(trace: &Trace, aux: Option<&AuxTraceProof>) -> Result<(), RuntimeError> {
-    let shout_witness = BinaryShoutWitness::from_trace(trace).ok();
-    let shift_router_witness = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Shifts).ok();
-    let store_router_witness = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Stores).ok();
-    let expected =
-        shout_witness.is_some() || shift_router_witness.is_some() || store_router_witness.is_some();
-    if !expected {
-        if aux.is_some() {
-            return Err(RuntimeError::Proof(
-                "chunked aux proof present for a trace without routed rows".into(),
-            ));
-        }
-        return Ok(());
-    }
-    let Some(aux) = aux else {
-        return Err(RuntimeError::Proof(
-            "chunked proof is missing its aux claims".into(),
-        ));
-    };
-    match (&shout_witness, &aux.shout) {
+fn verify_chunked_aux_claims(
+    witnesses: &ChunkedAuxWitnesses,
+    aux: &AuxTraceProof,
+    commitment: &magnetar_pcs::P3MosaicCommitment,
+    base: usize,
+) -> Result<(Vec<magnetar_pcs::P3MosaicPoint>, Vec<Vec<F2_128>>), RuntimeError> {
+    match (&witnesses.shout, &aux.shout) {
         (Some(_), None) | (None, Some(_)) => {
             return Err(RuntimeError::Proof(
                 "BinaryShout presence does not match the trace".into(),
@@ -3288,7 +3315,7 @@ fn verify_aux_trace(trace: &Trace, aux: Option<&AuxTraceProof>) -> Result<(), Ru
         }
         _ => {}
     }
-    match (&shift_router_witness, &aux.shift_router) {
+    match (&witnesses.shift_router, &aux.shift_router) {
         (Some(_), None) | (None, Some(_)) => {
             return Err(RuntimeError::Proof(
                 "shift BinaryRouter presence does not match the trace".into(),
@@ -3296,7 +3323,7 @@ fn verify_aux_trace(trace: &Trace, aux: Option<&AuxTraceProof>) -> Result<(), Ru
         }
         _ => {}
     }
-    match (&store_router_witness, &aux.store_router) {
+    match (&witnesses.store_router, &aux.store_router) {
         (Some(_), None) | (None, Some(_)) => {
             return Err(RuntimeError::Proof(
                 "store BinaryRouter presence does not match the trace".into(),
@@ -3304,28 +3331,12 @@ fn verify_aux_trace(trace: &Trace, aux: Option<&AuxTraceProof>) -> Result<(), Ru
         }
         _ => {}
     }
-    let commitment = &aux.opening.commitment;
-    let mut next_table = 0usize;
-    let shout_index = shout_witness.as_ref().map(|_| {
-        let index = next_table;
-        next_table += 1;
-        index
-    });
-    let shift_router_index = shift_router_witness.as_ref().map(|_| {
-        let index = next_table;
-        next_table += 1;
-        index
-    });
-    let store_router_index = store_router_witness.as_ref().map(|_| {
-        let index = next_table;
-        next_table += 1;
-        index
-    });
+    let (_, shout_index, shift_index, store_index) = witnesses.tables();
     let mut points = Vec::new();
     let mut values = Vec::new();
-    if let (Some(witness), Some(claim), Some(index)) = (&shout_witness, &aux.shout, shout_index) {
+    if let (Some(witness), Some(claim), Some(index)) = (&witnesses.shout, &aux.shout, shout_index) {
         let Some((claim_points, claim_values)) =
-            verify_binary_shout_claims(witness, claim, commitment, index, b"")
+            verify_binary_shout_claims(witness, claim, commitment, base + index, b"")
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?
         else {
             return Err(RuntimeError::Proof("BinaryShout proof rejected".into()));
@@ -3334,10 +3345,10 @@ fn verify_aux_trace(trace: &Trace, aux: Option<&AuxTraceProof>) -> Result<(), Ru
         values.extend(claim_values);
     }
     if let (Some(witness), Some(claim), Some(index)) =
-        (&shift_router_witness, &aux.shift_router, shift_router_index)
+        (&witnesses.shift_router, &aux.shift_router, shift_index)
     {
         let Some((claim_points, claim_values)) =
-            verify_binary_router_claims(witness, claim, commitment, index, b"")
+            verify_binary_router_claims(witness, claim, commitment, base + index, b"")
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?
         else {
             return Err(RuntimeError::Proof(
@@ -3348,10 +3359,10 @@ fn verify_aux_trace(trace: &Trace, aux: Option<&AuxTraceProof>) -> Result<(), Ru
         values.extend(claim_values);
     }
     if let (Some(witness), Some(claim), Some(index)) =
-        (&store_router_witness, &aux.store_router, store_router_index)
+        (&witnesses.store_router, &aux.store_router, store_index)
     {
         let Some((claim_points, claim_values)) =
-            verify_binary_router_claims(witness, claim, commitment, index, b"")
+            verify_binary_router_claims(witness, claim, commitment, base + index, b"")
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?
         else {
             return Err(RuntimeError::Proof(
@@ -3361,18 +3372,12 @@ fn verify_aux_trace(trace: &Trace, aux: Option<&AuxTraceProof>) -> Result<(), Ru
         points.extend(claim_points);
         values.extend(claim_values);
     }
-    let verified = P3BinaryPcs::with_params(100, 3, 22, 2)
-        .verify_mosaic(&aux.opening, &points, &values)
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    if !verified {
-        return Err(RuntimeError::Proof("chunked aux opening rejected".into()));
-    }
-    Ok(())
+    Ok((points, values))
 }
 
 fn prove_chunked_shared_access(
     trace: &Trace,
-) -> Result<(TraceAccessProof, P3MosaicOpening), RuntimeError> {
+) -> Result<(TraceAccessProof, Option<AuxClaims>, P3MosaicOpening), RuntimeError> {
     use crate::binary_twist::batch_tables;
     let witness = BinaryTwistWitness::from_trace(trace)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
@@ -3384,7 +3389,7 @@ fn prove_chunked_shared_access(
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let register_tables =
         batch_tables(&register_witness).map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    let mosaic = vec![
+    let mut mosaic = vec![
         tables.addr.clone(),
         tables.inc.clone(),
         tables.initial.clone(),
@@ -3396,6 +3401,10 @@ fn prove_chunked_shared_access(
         register_tables.read_value.clone(),
         register_tables.write_value.clone(),
     ];
+    let aux_witnesses = ChunkedAuxWitnesses::from_trace(trace);
+    let (aux_tables, _, _, _) = aux_witnesses.tables();
+    let aux_base = mosaic.len();
+    mosaic.extend(aux_tables);
     let pcs = P3BinaryPcs::with_params(100, 3, 21, 2);
     let commitment = pcs
         .commit_mosaic(&mosaic)
@@ -3410,25 +3419,30 @@ fn prove_chunked_shared_access(
         0,
         5,
     )?;
-    let (points, _values) = ram_claims;
+    let (points, values) = ram_claims;
     let (register_points, register_values) = register_claims;
-    let pairs = points
+    let mut pairs = points
         .into_iter()
-        .zip(_values)
+        .zip(values)
         .chain(register_points.into_iter().zip(register_values))
         .collect::<Vec<_>>();
+    let aux = prove_chunked_aux_claims(&aux_witnesses, &commitment, aux_base)?;
+    if let Some((_, aux_points, aux_values)) = &aux {
+        pairs.extend(aux_points.iter().cloned().zip(aux_values.iter().cloned()));
+    }
     let mut pairs = crate::merge_point_claims(pairs, &std::collections::HashSet::new());
     pairs.sort_by_key(|(point, _)| crate::point_sort_key(point));
     let (points, _values): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
     let opening = pcs
         .open_mosaic(&mosaic, &points)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    Ok((access, opening))
+    Ok((access, aux.map(|(claims, _, _)| claims), opening))
 }
 
-fn verify_chunked_shared_access(
+fn verify_chunked_combined_opening(
     trace: &Trace,
     access: &TraceAccessProof,
+    aux: Option<&AuxTraceProof>,
     opening: &P3MosaicOpening,
 ) -> Result<(), RuntimeError> {
     let witness = BinaryTwistWitness::from_trace(trace)
@@ -3446,11 +3460,22 @@ fn verify_chunked_shared_access(
     )?;
     let (points, values) = ram_claims;
     let (register_points, register_values) = register_claims;
-    let pairs = points
+    let mut pairs = points
         .into_iter()
         .zip(values)
         .chain(register_points.into_iter().zip(register_values))
         .collect::<Vec<_>>();
+    let aux_witnesses = ChunkedAuxWitnesses::from_trace(trace);
+    if aux_witnesses.any() != aux.is_some() {
+        return Err(RuntimeError::Proof(
+            "chunked aux proof presence does not match the trace".into(),
+        ));
+    }
+    if let Some(aux) = aux {
+        let (aux_points, aux_values) =
+            verify_chunked_aux_claims(&aux_witnesses, aux, &opening.commitment, 10)?;
+        pairs.extend(aux_points.into_iter().zip(aux_values));
+    }
     let mut pairs = crate::merge_point_claims(pairs, &std::collections::HashSet::new());
     pairs.sort_by_key(|(point, _)| crate::point_sort_key(point));
     let (points, values): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
@@ -3460,7 +3485,7 @@ fn verify_chunked_shared_access(
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     if !verified {
         return Err(RuntimeError::Proof(
-            "chunked shared access opening rejected".into(),
+            "chunked combined opening rejected".into(),
         ));
     }
     Ok(())
@@ -3477,7 +3502,14 @@ pub fn prove_chunked_trace(
             "chunked proofs require rows and a nonzero chunk size".into(),
         ));
     }
-    let (access, shared_access) = prove_chunked_shared_access(trace)?;
+    let (access, aux_claims, opening) = prove_chunked_shared_access(trace)?;
+    let aux = aux_claims.map(|claims| AuxTraceProof {
+        shout: claims.shout,
+        shift_router: claims.shift_router,
+        store_router: claims.store_router,
+        opening: opening.clone(),
+    });
+    let shared_access = if aux.is_some() { None } else { Some(opening) };
     let trace_commitment = trace_digest(trace);
     let backend = ConstraintProofBackend;
     let mut chunks = Vec::new();
@@ -3499,10 +3531,9 @@ pub fn prove_chunked_trace(
         start = end;
     }
     let chain = ChainedRecursion.aggregate(&chained)?;
-    let aux = prove_aux_trace(trace)?;
     Ok(ChunkedTraceProof {
         access,
-        shared_access: Some(shared_access),
+        shared_access,
         trace_commitment,
         aux,
         chunks,
@@ -3521,12 +3552,13 @@ pub fn verify_chunked_trace(
             "chunked proof does not match the supplied trace".into(),
         ));
     }
-    if let Some(opening) = &proof.shared_access {
-        verify_chunked_shared_access(trace, &proof.access, opening)?;
-    } else {
-        verify_trace_access(trace, &proof.access)?;
-    }
-    verify_aux_trace(trace, proof.aux.as_ref())?;
+    let opening = proof
+        .aux
+        .as_ref()
+        .map(|aux| &aux.opening)
+        .or(proof.shared_access.as_ref())
+        .ok_or_else(|| RuntimeError::Proof("chunked proof is missing its opening".into()))?;
+    verify_chunked_combined_opening(trace, &proof.access, proof.aux.as_ref(), opening)?;
     if proof.chunks.len() != proof.chain.chunks.len() || proof.chunks.is_empty() {
         return Err(RuntimeError::Proof("chunked proof shape mismatch".into()));
     }
@@ -5879,7 +5911,7 @@ mod tests {
         );
         let trace = execute(&program, config()).unwrap();
         let proof = prove_chunked_trace(&trace, 8, 2).unwrap();
-        assert!(proof.shared_access.is_some());
+        assert!(proof.aux.is_some() || proof.shared_access.is_some());
         assert!(proof.access.ram.opening.is_none());
         assert!(proof.access.registers.opening.is_none());
         let mut tampered = proof;
