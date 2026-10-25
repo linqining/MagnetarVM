@@ -417,3 +417,21 @@ mixed batch      proof 54,400 B  prove 0.66 s  verify 0.361 s
 The trace-bound mixed proof is ~6.7x faster to prove at this size with the same
 proof bytes; verification is slower because it rebuilds the trace witness and
 commitment. This is the first size/time comparison against the full gated row.
+
+
+### Mixed vs gated scaling
+
+`mixed_trace_bench` now sweeps Addi-only traces (rows power of two, width 8):
+
+```text
+rows=2   gated 47,152 B / 1.25 s   mixed 47,000 B / 0.72 s   1.74x
+rows=4   gated 54,296 B / 2.22 s   mixed 54,400 B / 1.52 s   1.46x
+rows=8   gated 57,808 B / 7.95 s   mixed 57,848 B / 3.63 s   2.19x
+rows=16  gated 75,440 B / 1.60 s   mixed 75,192 B / 3.75 s   0.43x
+```
+
+Proof bytes stay essentially equal. The prove-time advantage is not monotonic:
+at 16 rows the mixed row is slower, because the current mixed relation contains
+all seven components (ALU, branch, memory, shift, mul, div, sdiv) even when the
+trace only uses ALU/branch. The next optimization must select components per
+trace instead of always committing all of them.
