@@ -64,7 +64,7 @@ dynamic streaming chunks (4 rows)
 | D7/D9/D10 | 🟡 | bytecode 驱动的 selector/offset/width 路由仍未完全接 |
 | C5 | 🟡 | initial/final public state 仍未直接在 R1CS 内绑定 |
 | E6 | 🟡 | Ligerito 未接入 unified/chunked |
-| 硬件 SIMD | 🟡 | 只有 128-bit packing 的 AVX2/NEON kernel；域运算/sumcheck/PCS 未 SIMD 化 |
+| 硬件 SIMD | 🟡 | 128-bit packing AVX2/NEON kernel，microbench 11–12.6x；域运算/sumcheck/PCS 未 SIMD 化 |
 | F6/F7 | ❌ | 无外部安全审计、常数时间/侧信道处理 |
 
 ### 测试基线
