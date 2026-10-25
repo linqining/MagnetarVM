@@ -60,10 +60,25 @@ enforcing sequential `pc + 4`.
 batch's first PC and final next-PC are public inputs. The test also checks that
 a wrong final PC is rejected.
 
+## Selected-op extension: shifts (done)
+
+`ShiftPcRow` mirrors the ALU row with a `GatedShiftRow` instruction relation and
+the same PC-adder/statement encoding. `prove_shift_pc_batch_bits` /
+`verify_shift_pc_batch_bits` pass for a 16-cycle SLL batch. Release, width 16:
+
+```text
+cycles=64   alu+pc 57,680 B 11.0 s   shift+pc 58,192 B 12.0 s
+cycles=256  alu+pc 85,880 B  2.83 s  shift+pc 84,248 B  2.81 s
+```
+
+The ALU and shift selected-op proofs are both far below the full gated row
+(98,144 B / 5.9 s at 16 cycles) and demonstrate the PC/statement template is
+reusable across op subrelations.
+
 ## Next concrete step
 
-Extend `AluPcRow` to the selected-op relation (branch/memory/shift/mul/div as
-they appear) and then virtual segment/claim routing for unified.
+Add branch/memory/mul/div selected-op rows, define the selected-op virtual
+segment specs, then wire the selected-op batch into unified claim routing.
 
 ## Non-goals for the first step
 
