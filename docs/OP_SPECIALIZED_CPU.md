@@ -381,5 +381,11 @@ verifies with the commitment check.
 
 `ShiftPcRow` is now a fourth component with its own selector and product term.
 `alu_branch_shift_trace_binds_witness` executes Lui + Slli + Ecall, proves, and
-verifies with the commitment check. Mul/div traces still need their components
-in the mixed relation.
+verifies with the commitment check.
+
+### Multiply component (done)
+
+`MulPcRow` is a fifth component. Trace mapping accepts only the low unsigned
+`Mul` form; `mulh/mulhu/mulhsu` are rejected rather than mis-modelled.
+`alu_branch_mul_trace_binds_witness` executes Addi/Addi/Mul/Ecall, proves, and
+verifies with the commitment check. Div/rem traces still need their components.
