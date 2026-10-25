@@ -5847,6 +5847,41 @@ mod tests {
     }
 
     #[test]
+    fn chunked_shared_access_rejects_tampering() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Slli,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 3,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(&program, config()).unwrap();
+        let proof = prove_chunked_trace(&trace, 8, 2).unwrap();
+        assert!(proof.shared_access.is_some());
+        let mut tampered = proof;
+        tampered.access.ram.read.initial.rounds[0][0] =
+            tampered.access.ram.read.initial.rounds[0][0] + F2_128::from(1u64);
+        assert!(verify_chunked_trace(&trace, &tampered, 8).is_err());
+    }
+
+    #[test]
     fn chunked_trace_proof_chains_row_ranges() {
         use magnetar_spec::{Instruction, Op};
 

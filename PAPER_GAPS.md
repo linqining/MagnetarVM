@@ -4284,3 +4284,7 @@ reduction, which is the concrete remaining A2/chunked gap.
 `ConstraintProofBackend` is now a unit struct: CPU proofs select the P3 parameters
 from `system.num_vars` (`>=512` -> 3/20/2, otherwise 3/18/1), and the verifier's
 commitment check uses the same selector, removing the stale fixed-`pcs` field.
+
+
+`chunked_shared_access_rejects_tampering` tampers the RAM Twist sum-check rounds
+and verifies that the shared-access opening rejects the chunked proof.
