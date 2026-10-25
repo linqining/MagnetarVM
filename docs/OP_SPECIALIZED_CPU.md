@@ -90,11 +90,26 @@ This is expected: the multiplier carries the full product/accumulator relation.
 It still avoids the memory/shift/branch/div subrelations and validates the
 template across three op classes.
 
+## Fourth selected op: memory (done)
+
+`MemPcRow` reuses the PC-adder/statement template with `GatedMemoryRow`.
+`prove_mem_pc_batch_bits` / `verify_mem_pc_batch_bits` pass for a 16-cycle batch.
+Release, width 16:
+
+```text
+cycles=64   mem+pc 54,232 B 0.42 s
+cycles=256  mem+pc 75,632 B 1.66 s
+```
+
+This is the cheapest selected-op row so far. It proves the address-arithmetic
+and data-gating relation; the BinaryTwist address/value claims are still a
+separate layer.
+
 ## Next concrete step
 
-Add branch/memory selected-op rows (branch needs a target-PC relation instead of
-the sequential `pc+4`), define selected-op virtual segment specs, then wire the
-selected-op batch into unified claim routing.
+Add a branch selected-op row (target-PC instead of sequential `pc+4`), define
+selected-op virtual segment specs, then wire the selected-op batch into unified
+claim routing.
 
 ## Non-goals for the first step
 
