@@ -175,3 +175,13 @@ chunk=8  sequential 10.36 s parallel 3.64 s
 
 Results are stored by chunk index, so proof bytes remain identical to the
 sequential path.
+
+
+### Chunk-boundary digest precomputation
+
+Prover and verifier previously recomputed `chunk_state_digest(trace, end)` by
+scanning `rows[..end]` for every chunk, an O(chunks × rows) pass. Both now build
+all boundary digests in one O(rows + chunks) pass (`chunk_state_digests`), and
+the test `chunk_state_digests_match_prefix_recomputation` checks the new values
+against the old prefix scan. This matters for long traces with many chunks; it
+does not change proof bytes.

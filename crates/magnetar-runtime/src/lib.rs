@@ -3316,11 +3316,38 @@ pub struct ChunkedTraceProof {
     pub chain: ChainedProof,
 }
 
-fn chunk_state_digest(trace: &Trace, end_row: usize) -> [u8; 32] {
+fn chunk_state_digests(
+    trace: &Trace,
+    boundaries: &[usize],
+) -> std::collections::BTreeMap<usize, [u8; 32]> {
+    let wanted = boundaries
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut digests = std::collections::BTreeMap::new();
     let mut regs = trace.initial_state.regs;
     let mut pc = trace.initial_state.pc;
-    let mut reservation = None;
-    for row in &trace.rows[..end_row] {
+    let mut reservation: Option<u64> = None;
+    for index in 0..=trace.rows.len() {
+        if wanted.contains(&index) {
+            let mut bytes = Vec::with_capacity(8 + 32 * 8 + 9);
+            bytes.extend_from_slice(&pc.to_le_bytes());
+            for value in regs {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            match reservation {
+                Some(addr) => {
+                    bytes.push(1);
+                    bytes.extend_from_slice(&addr.to_le_bytes());
+                }
+                None => bytes.push(0),
+            }
+            digests.insert(index, magnetar_transcript::sha256(&bytes));
+        }
+        if index == trace.rows.len() {
+            break;
+        }
+        let row = &trace.rows[index];
         if let Some(rd) = row.rd {
             if rd != 0 {
                 regs[rd] = row.rd_val;
@@ -3329,19 +3356,7 @@ fn chunk_state_digest(trace: &Trace, end_row: usize) -> [u8; 32] {
         pc = row.next_pc;
         reservation = row.reservation_after;
     }
-    let mut bytes = Vec::with_capacity(8 + 32 * 8 + 9);
-    bytes.extend_from_slice(&pc.to_le_bytes());
-    for value in regs {
-        bytes.extend_from_slice(&value.to_le_bytes());
-    }
-    match reservation {
-        Some(addr) => {
-            bytes.push(1);
-            bytes.extend_from_slice(&addr.to_le_bytes());
-        }
-        None => bytes.push(0),
-    }
-    sha256(&bytes)
+    digests
 }
 
 fn chunk_proof_digest(
@@ -3720,6 +3735,11 @@ fn prove_chunked_trace_streaming_mode(
         opening: opening.clone(),
     });
     let shared_access = if aux.is_some() { None } else { Some(opening) };
+    let mut boundaries = vec![0usize];
+    for (_, end) in &ranges {
+        boundaries.push(*end);
+    }
+    let digests = chunk_state_digests(trace, &boundaries);
     let mut chunks = Vec::new();
     let mut chained = Vec::new();
     for ((start, end), cpu) in ranges.into_iter().zip(cpus) {
@@ -3727,8 +3747,8 @@ fn prove_chunked_trace_streaming_mode(
         chained.push(ChainedChunk::new(
             chained.len(),
             (end - start) as u64,
-            chunk_state_digest(trace, start),
-            chunk_state_digest(trace, end),
+            digests[&start],
+            digests[&end],
             proof_digest,
         ));
         chunks.push(ChunkCpuProof {
@@ -3813,17 +3833,27 @@ fn prove_chunked_trace_mode(
         opening: opening.clone(),
     });
     let shared_access = if aux.is_some() { None } else { Some(opening) };
-    let mut chunks = Vec::new();
-    let mut chained = Vec::new();
+    let mut ranges = Vec::new();
     let mut start = 0;
     while start < trace.rows.len() {
         let end = (start + chunk_size).min(trace.rows.len());
+        ranges.push((start, end));
+        start = end;
+    }
+    let mut boundaries = vec![0usize];
+    for (_, end) in &ranges {
+        boundaries.push(*end);
+    }
+    let digests = chunk_state_digests(trace, &boundaries);
+    let mut chunks = Vec::new();
+    let mut chained = Vec::new();
+    for (start, end) in ranges {
         let proof_digest = chunk_proof_digest(&trace_commitment, start, end, &whole_cpu);
         chained.push(ChainedChunk::new(
             chained.len(),
             (end - start) as u64,
-            chunk_state_digest(trace, start),
-            chunk_state_digest(trace, end),
+            digests[&start],
+            digests[&end],
             proof_digest,
         ));
         chunks.push(ChunkCpuProof {
@@ -3831,7 +3861,6 @@ fn prove_chunked_trace_mode(
             end,
             cpu: None,
         });
-        start = end;
     }
     let chain = ChainedRecursion.aggregate(&chained)?;
     Ok(ChunkedTraceProof {
@@ -3866,14 +3895,19 @@ fn verify_compact_chunks(
     if !ChainedRecursion.verify(&proof.chain)? {
         return Err(RuntimeError::Proof("chunk state chain mismatch".into()));
     }
+    let mut boundaries = vec![0usize];
+    for chunk in &proof.chunks {
+        boundaries.push(chunk.end);
+    }
+    let digests = chunk_state_digests(trace, &boundaries);
     let mut expected_start = 0;
     for (index, (chunk, chained)) in proof.chunks.iter().zip(&proof.chain.chunks).enumerate() {
         if chunk.start != expected_start
             || chunk.end <= chunk.start
             || (chained.trace_len as usize) != chunk.end - chunk.start
             || chained.index != index
-            || chained.state_before != chunk_state_digest(trace, chunk.start)
-            || chained.state_after != chunk_state_digest(trace, chunk.end)
+            || chained.state_before != digests[&chunk.start]
+            || chained.state_after != digests[&chunk.end]
             || chunk.cpu.is_some()
         {
             return Err(RuntimeError::Proof(format!(
@@ -3922,6 +3956,11 @@ pub fn verify_chunked_trace(
         return Err(RuntimeError::Proof("chunk state chain mismatch".into()));
     }
     let backend = ConstraintProofBackend;
+    let mut boundaries = vec![0usize];
+    for chunk in &proof.chunks {
+        boundaries.push(chunk.end);
+    }
+    let digests = chunk_state_digests(trace, &boundaries);
     let mut expected_start = 0;
     for (index, (chunk, chained)) in proof
         .chunks
@@ -3933,8 +3972,8 @@ pub fn verify_chunked_trace(
             || chunk.end <= chunk.start
             || (chained.trace_len as usize) != chunk.end - chunk.start
             || chained.index != index
-            || chained.state_before != chunk_state_digest(trace, chunk.start)
-            || chained.state_after != chunk_state_digest(trace, chunk.end)
+            || chained.state_before != digests[&chunk.start]
+            || chained.state_after != digests[&chunk.end]
         {
             return Err(RuntimeError::Proof(format!(
                 "chunk {index} metadata mismatch"
@@ -6602,6 +6641,73 @@ mod tests {
         tampered.access.ram.read.initial.rounds[0][0] =
             tampered.access.ram.read.initial.rounds[0][0] + F2_128::from(1u64);
         assert!(verify_chunked_trace(&trace, &tampered, 8).is_err());
+    }
+
+    #[test]
+    fn chunk_state_digests_match_prefix_recomputation() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 1,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Xor,
+                    rd: 3,
+                    rs1: 1,
+                    rs2: 2,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(&program, config()).unwrap();
+        let boundaries = [0usize, 1, 3, trace.rows.len()];
+        let digests = chunk_state_digests(&trace, &boundaries);
+        for end in boundaries {
+            let mut regs = trace.initial_state.regs;
+            let mut pc = trace.initial_state.pc;
+            let mut reservation = None;
+            for row in &trace.rows[..end] {
+                if let Some(rd) = row.rd {
+                    if rd != 0 {
+                        regs[rd] = row.rd_val;
+                    }
+                }
+                pc = row.next_pc;
+                reservation = row.reservation_after;
+            }
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&pc.to_le_bytes());
+            for value in regs {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            match reservation {
+                Some(addr) => {
+                    bytes.push(1);
+                    bytes.extend_from_slice(&addr.to_le_bytes());
+                }
+                None => bytes.push(0),
+            }
+            assert_eq!(digests[&end], magnetar_transcript::sha256(&bytes));
+        }
     }
 
     #[test]
