@@ -20,7 +20,7 @@ fn uses_temp(instruction: &Instruction) -> bool {
 }
 
 fn is_unrelocatable(op: Op) -> bool {
-    matches!(op, Op::Jal | Op::Jalr | Op::Auipc)
+    matches!(op, Op::Jalr | Op::Auipc)
 }
 
 fn is_branch(op: Op) -> bool {
@@ -119,10 +119,11 @@ pub fn expand_register_shifts(program: &ProgramImage) -> Option<ProgramImage> {
         .iter()
         .map(|word| magnetar_spec::decode(*word).ok())
         .collect::<Option<Vec<_>>>()?;
-    if decoded
-        .iter()
-        .any(|instruction| is_unrelocatable(instruction.op) || uses_temp(instruction))
-    {
+    if decoded.iter().any(|instruction| {
+        is_unrelocatable(instruction.op)
+            || uses_temp(instruction)
+            || (instruction.op == Op::Jal && instruction.rd != 0)
+    }) {
         return None;
     }
     let mut bodies = Vec::with_capacity(decoded.len());
@@ -149,7 +150,7 @@ pub fn expand_register_shifts(program: &ProgramImage) -> Option<ProgramImage> {
         if bodies[index].is_none() {
             rom[mapping[index]] = instruction.encode();
         }
-        if !is_branch(instruction.op) {
+        if !is_branch(instruction.op) && instruction.op != Op::Jal {
             continue;
         }
         let target = (index as i64) + instruction.imm / 4;
@@ -355,6 +356,64 @@ mod tests {
                 rd: 0,
                 rs1: 1,
                 rs2: 1,
+                imm: 8,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Sll,
+                rd: 5,
+                rs1: 1,
+                rs2: 2,
+                imm: 0,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Addi,
+                rd: 6,
+                rs1: 0,
+                rs2: 0,
+                imm: 9,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction::new(Op::Ebreak).encode(),
+        ]);
+        let expanded = expand_register_shifts(&original).expect("expandable");
+        let direct = execute(&original, config()).unwrap().final_state;
+        let actual = execute(&expanded, config()).unwrap().final_state;
+        assert_eq!(direct.reg(5), 0);
+        assert_eq!(direct.reg(6), 9);
+        assert_eq!(&actual.regs[..28], &direct.regs[..28]);
+    }
+
+    #[test]
+    fn jal_zero_link_is_relocated() {
+        let original = program(vec![
+            Instruction {
+                op: Op::Addi,
+                rd: 1,
+                rs1: 0,
+                rs2: 0,
+                imm: 5,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Addi,
+                rd: 2,
+                rs1: 0,
+                rs2: 0,
+                imm: 1,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Jal,
+                rd: 0,
+                rs1: 0,
+                rs2: 0,
                 imm: 8,
                 shamt: 0,
             }
