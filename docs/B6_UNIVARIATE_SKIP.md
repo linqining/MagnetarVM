@@ -53,6 +53,8 @@ round without the follow-up reduction would prove a different statement.
 - a `SkipRound` message that vanishes on the domain and is transmitted on a
   coset;
 - `SkipRoundProof` with transcript-bound challenge/evaluation;
+- `row_weights(at)`: the skip challenge as a weighted bound-row claim
+  `Q(r) = Σ_i w_i(r) values_i`;
 - barycentric message evaluation (O(|D|^2) instead of O(|D|^3));
 
 with tests for distinctness, interpolation at the domain points, matching a
@@ -68,9 +70,11 @@ log_size=10 1024 points   interpolation 33 ms   skip round 266 ms
 log_size=12 4096 points   interpolation 358 ms  skip round 4.65 s
 ```
 
-This is still the message layer only: the zerocheck's zero-on-domain claim and
-the inner-product-to-evaluation reduction are not yet wired into the CPU
-proof. The quadratic Lagrange cost is acceptable for small skip sizes
+Tests now also show that an all-zero domain gives a zero message and that a
+nonzero domain produces a nonzero challenge evaluation. This links the skip
+round to the B2 `bound_rows` interface; the remaining work is to prove the
+committed domain values are the constraint composition C(f) and to wire the
+result into the CPU proof. The quadratic Lagrange cost is acceptable for small skip sizes
 (k=2–4); larger skips need a product-tree/interpolation optimization.
 
 ## Recommendation

@@ -222,6 +222,43 @@ mod tests {
             UnivariateSkipError::Evaluation
         );
     }
+
+    #[test]
+    fn skip_round_detects_a_nonzero_domain() {
+        let round = SkipRound::new(2).unwrap();
+        let zero = vec![F2_128::from(0u64); 4];
+        let zero_message = round.message(&zero).unwrap();
+        assert!(zero_message
+            .iter()
+            .all(|value| *value == F2_128::from(0u64)));
+        let at = field(321);
+        assert_eq!(
+            round.evaluate(&zero_message, at).unwrap(),
+            F2_128::from(0u64)
+        );
+
+        let mut values = zero;
+        values[1] = F2_128::from(1u64);
+        let message = round.message(&values).unwrap();
+        assert!(message.iter().any(|value| *value != F2_128::from(0u64)));
+        assert_ne!(round.evaluate(&message, at).unwrap(), F2_128::from(0u64));
+    }
+
+    #[test]
+    fn skip_round_message_is_a_bound_row_claim() {
+        let round = SkipRound::new(2).unwrap();
+        let values = (0..4).map(field).collect::<Vec<_>>();
+        let message = round.message(&values).unwrap();
+        let at = field(123);
+        let weights = round.row_weights(at).unwrap();
+        let bound = weights
+            .iter()
+            .zip(&values)
+            .fold(F2_128::from(0u64), |sum, (weight, value)| {
+                sum + *weight * *value
+            });
+        assert_eq!(bound, round.evaluate(&message, at).unwrap());
+    }
 }
 
 /// One univariate-skip round over an additive subspace and one coset.
@@ -334,6 +371,19 @@ impl SkipRound {
         let mut values = vec![F2_128::from(0u64); self.combined.len()];
         values[self.domain.points().len()..].copy_from_slice(message);
         interpolate_points(&self.combined, &values, at)
+    }
+
+    /// Linear weights such that `evaluate(message(values), at) = Σ weights[i] values[i]`.
+    pub fn row_weights(&self, at: F2_128) -> Result<Vec<F2_128>, UnivariateSkipError> {
+        let len = self.domain.points().len();
+        let mut weights = Vec::with_capacity(len);
+        for index in 0..len {
+            let mut values = vec![F2_128::from(0u64); len];
+            values[index] = F2_128::from(1u64);
+            let message = self.message(&values)?;
+            weights.push(self.evaluate(&message, at)?);
+        }
+        Ok(weights)
     }
 }
 
