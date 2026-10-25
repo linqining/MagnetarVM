@@ -185,3 +185,22 @@ all boundary digests in one O(rows + chunks) pass (`chunk_state_digests`), and
 the test `chunk_state_digests_match_prefix_recomputation` checks the new values
 against the old prefix scan. This matters for long traces with many chunks; it
 does not change proof bytes.
+
+
+## Long-trace chunked scaling (streaming, parallel workers)
+
+16-bit ALU-heavy straight-line traces:
+
+```text
+rows=42   chunk=8  6 chunks  proof   870,992 B   prove 2.72 s  verify 0.43 s
+rows=42   chunk=16 3 chunks  proof   588,589 B   prove 2.27 s  verify 0.43 s
+rows=82   chunk=8 11 chunks  proof 1,495,061 B   prove 3.43 s  verify 0.84 s
+rows=82   chunk=16 6 chunks  proof   983,928 B   prove 3.31 s  verify 0.93 s
+rows=162  chunk=8 21 chunks  proof 2,733,775 B   prove 12.17 s verify 1.69 s
+rows=162  chunk=16 11 chunks proof 1,710,741 B  prove 10.53 s verify 1.77 s
+```
+
+This is the current streaming/compact tradeoff: small chunks parallelize well but
+each chunk carries its own CPU proof and chain entry, so total proof size grows
+roughly linearly with chunk count. The compact default avoids per-chunk CPU
+duplication but has a single whole-trace CPU proof.
