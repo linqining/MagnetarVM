@@ -530,7 +530,11 @@ fn workloads() -> Vec<(&'static str, ProgramImage)> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(" workload     rows  bytes   prove_ms  verify_ms");
+    let only = std::env::var("WORKLOAD").ok();
     for (name, program) in workloads() {
+        if only.as_deref().is_some_and(|only| only != name) {
+            continue;
+        }
         let trace = execute(&program, config())?;
         let started = Instant::now();
         let proof = prove_unified_trace(&trace, 16)?;

@@ -7,7 +7,7 @@
 
 use crate::p3_pcs::{P3BinaryPcs, P3Commitment, P3MosaicPoint, P3MosaicTable, P3Opening};
 use magnetar_constraint::F2_128;
-use magnetar_proof::{eq, prove, verify_rounds, Mle, Pcs, ProofError, SumcheckProof};
+use magnetar_proof::{eq, prove_product2, verify_rounds, Mle, Pcs, ProofError, SumcheckProof};
 use magnetar_transcript::Sha256Transcript;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -77,11 +77,14 @@ impl PackedMosaic {
                 return Err(MosaicError::InvalidSize(*size));
             }
         }
-        let total_size = sizes
-            .iter()
-            .try_fold(0usize, |sum, size| sum.checked_add(*size))
-            .ok_or(MosaicError::Overflow)?;
-        let total_bits = total_size.next_power_of_two().trailing_zeros() as usize;
+        let mut end = 0usize;
+        let mut offset = 0usize;
+        for size in sizes {
+            let aligned = (offset + size - 1) & !(size - 1);
+            end = aligned.checked_add(*size).ok_or(MosaicError::Overflow)?;
+            offset = end;
+        }
+        let total_bits = end.next_power_of_two().trailing_zeros() as usize;
         let total = 1usize << total_bits;
         let mut layout = Vec::with_capacity(sizes.len());
         let mut offset = 0usize;
@@ -194,23 +197,37 @@ pub fn batch_claims(
     let alphas = (0..claims.len())
         .map(|_| challenge(transcript, "batch"))
         .collect::<Vec<_>>();
-    let mle = Mle::new(values.to_vec())?;
-    let poly = |point: &[F2_128]| {
-        let weight = claims
-            .iter()
-            .zip(&alphas)
-            .fold(F2_128::from(0u64), |sum, ((claim_point, _), alpha)| {
-                sum + *alpha * eq(claim_point, point)
-            });
-        weight * mle.eval(point).unwrap_or(F2_128::from(0u64))
-    };
-    let (sumcheck, point, _) = prove(poly, total_bits, 2, |round, values| {
-        for coefficient in values {
-            transcript.absorb("round", &coefficient.value().to_le_bytes());
+    let mut weights = vec![F2_128::from(0u64); values.len()];
+    for ((claim_point, _), alpha) in claims.iter().zip(&alphas) {
+        if claim_point.len() != total_bits {
+            return Err(MosaicError::PointArity);
         }
-        transcript.absorb("round", &(round as u64).to_le_bytes());
-        challenge(transcript, "sumcheck")
-    })?;
+        let mut eq_values = vec![F2_128::from(1u64)];
+        for (bit, coordinate) in claim_point.iter().enumerate() {
+            let _ = bit;
+            let p = *coordinate;
+            let one_plus = F2_128::from(1u64) + p;
+            let stride = eq_values.len();
+            let mut next = vec![F2_128::from(0u64); stride * 2];
+            for (index, value) in eq_values.iter().enumerate() {
+                next[index] = *value * one_plus;
+                next[stride + index] = *value * p;
+            }
+            eq_values = next;
+        }
+        for (weight, value) in weights.iter_mut().zip(&eq_values) {
+            *weight = *weight + *alpha * *value;
+        }
+    }
+    let mle = Mle::new(values.to_vec())?;
+    let (sumcheck, point, _final_eval) =
+        prove_product2(weights.clone(), values.to_vec(), |round, values| {
+            for coefficient in values {
+                transcript.absorb("round", &coefficient.value().to_le_bytes());
+            }
+            transcript.absorb("round", &(round as u64).to_le_bytes());
+            challenge(transcript, "sumcheck")
+        })?;
     let value = mle.eval(&point)?;
     Ok(MosaicBatchingProof {
         sumcheck,

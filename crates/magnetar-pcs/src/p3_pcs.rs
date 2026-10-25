@@ -26,7 +26,7 @@ type P3Mmcs = MerkleTreeMmcs<F, u8, P3Hash, P3Compress, 2, 32>;
 type P3Challenger = BinaryChallenger<F, HashChallenger<u8, Keccak256Hash, 32>>;
 type P3PcsBackend = BinaryPcs<F, F, P3Mmcs, P3Mmcs>;
 type P3Proof = BinaryPcsProof<F, F, P3Mmcs, P3Mmcs>;
-type P3Cap = <P3Mmcs as Mmcs<F>>::Commitment;
+pub type P3Cap = <P3Mmcs as Mmcs<F>>::Commitment;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct P3Commitment {
@@ -97,6 +97,8 @@ pub struct P3MosaicCommitment {
     pub cap: P3Cap,
     pub tables: Vec<P3MosaicTableShape>,
     pub stacked_variables: usize,
+    #[serde(default)]
+    pub binding: [u8; 32],
 }
 
 /// One PCS opening proof covering every mosaic table and point.
@@ -595,6 +597,7 @@ impl P3BinaryPcs {
             cap,
             tables: shapes,
             stacked_variables,
+            binding: [0u8; 32],
         })
     }
 
@@ -633,6 +636,7 @@ impl P3BinaryPcs {
                 cap,
                 tables: shapes,
                 stacked_variables,
+                binding: [0u8; 32],
             },
             proof,
         })

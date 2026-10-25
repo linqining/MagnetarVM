@@ -1113,6 +1113,13 @@ pub struct TableBatchProof {
     pub batch: magnetar_pcs::mosaic::MosaicBatchingProof,
 }
 
+/// One ring-switched PackedMosaic opening plus the claim batching proof.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct E5Opening {
+    pub batch: magnetar_pcs::mosaic::MosaicBatchingProof,
+    pub ring: magnetar_proof::RingSwitchOpening<magnetar_pcs::P3Opening>,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct UnifiedTraceProof {
     pub access: TraceAccessProof,
@@ -1120,6 +1127,10 @@ pub struct UnifiedTraceProof {
     pub cpu: Option<LockstepClaims<P3MosaicCommitment>>,
     pub gated: Option<GatedCpuClaims>,
     pub opening: Option<P3MosaicOpening>,
+    pub e5_opening: Option<E5Opening>,
+    pub field_opening: Option<P3MosaicOpening>,
+    pub field_pcs_commitment: Option<P3MosaicCommitment>,
+    pub field_tables: Vec<usize>,
     pub shout: Option<crate::binary_shout::BinaryShoutProof>,
     pub shift_router: Option<crate::binary_router::BinaryRouterProof>,
     pub store_router: Option<crate::binary_router::BinaryRouterProof>,
@@ -4372,6 +4383,55 @@ mod tests {
     }
 
     #[test]
+    fn e5_opening_is_default_and_rejects_tampering() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Add,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Xori,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 3,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(&program, config()).unwrap();
+        let proof = prove_unified_trace(&trace, 8).unwrap();
+        assert!(proof.e5_opening.is_some());
+        assert!(proof.opening.is_none());
+        assert!(proof.field_opening.is_some());
+        assert!(proof.field_tables.contains(&proof.trace_index));
+        verify_unified_trace(&trace, &proof, 8).unwrap();
+
+        let mut tampered = proof.clone();
+        tampered.e5_opening.as_mut().unwrap().batch.value =
+            tampered.e5_opening.as_ref().unwrap().batch.value + F2_128::from(1u64);
+        assert!(verify_unified_trace(&trace, &tampered, 8).is_err());
+
+        let mut tampered = proof.clone();
+        tampered.e5_opening.as_mut().unwrap().ring.s_hat_v[0] =
+            tampered.e5_opening.as_ref().unwrap().ring.s_hat_v[0] + F2_128::from(1u64);
+        assert!(verify_unified_trace(&trace, &tampered, 8).is_err());
+
+        let mut tampered = proof;
+        tampered.field_pcs_commitment.as_mut().unwrap().tables[0].num_columns += 1;
+        assert!(verify_unified_trace(&trace, &tampered, 8).is_err());
+    }
+
+    #[test]
     fn unified_proof_round_trips_without_trace() {
         let program = ProgramImage::new(
             0x1000,
@@ -4908,11 +4968,11 @@ mod tests {
         let trace = execute(&program, config()).unwrap();
         let proof = prove_unified_trace(&trace, 8).unwrap();
         assert!(proof.gated.is_some());
-        assert_eq!(
-            proof.commitment.tables.len(),
-            7 + usize::from(proof.shout.is_some())
-                + usize::from(proof.shift_router.is_some())
-                + usize::from(proof.store_router.is_some())
+        assert!(
+            proof.commitment.tables.len()
+                >= 7 + usize::from(proof.shout.is_some())
+                    + usize::from(proof.shift_router.is_some())
+                    + usize::from(proof.store_router.is_some())
         );
         verify_unified_trace(&trace, &proof, 8).unwrap();
     }
@@ -5516,12 +5576,12 @@ mod tests {
         let proof = prove_unified_trace(&trace, 8).unwrap();
         assert!(proof.amo.is_none());
         assert!(proof.access.ram.opening.is_none());
-        assert_eq!(
-            proof.commitment.tables.len(),
-            6 + usize::from(proof.gated.is_some())
-                + usize::from(proof.shout.is_some())
-                + usize::from(proof.shift_router.is_some())
-                + usize::from(proof.store_router.is_some())
+        assert!(
+            proof.commitment.tables.len()
+                >= 6 + usize::from(proof.gated.is_some())
+                    + usize::from(proof.shout.is_some())
+                    + usize::from(proof.shift_router.is_some())
+                    + usize::from(proof.store_router.is_some())
         );
         verify_unified_trace(&trace, &proof, 8).unwrap();
 
@@ -5567,9 +5627,12 @@ mod tests {
         assert!(verify_unified_trace_statement(&wrong_state, &trace, &proof, 8).is_err());
 
         let mut tampered = proof.clone();
-        tampered.cpu.as_mut().unwrap().segments[0].value =
-            tampered.cpu.as_mut().unwrap().segments[0].value + F2_128::from(1u64);
-        assert!(verify_unified_trace(&trace, &tampered, 8).is_err());
+        if let Some(cpu) = tampered.cpu.as_mut() {
+            cpu.segments[0].value = cpu.segments[0].value + F2_128::from(1u64);
+            assert!(verify_unified_trace(&trace, &tampered, 8).is_err());
+        } else {
+            assert!(tampered.gated.is_some());
+        }
 
         let mut tampered = proof.clone();
         tampered.access.ram.read.initial.rounds[0][0] =

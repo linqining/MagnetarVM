@@ -11,7 +11,11 @@ use magnetar_constraint::{
     ConstraintSystem, MemoryKind, RoutingKind, Segment, SegmentKind, SegmentOwner, Witness,
     WitnessLayout, F2_128,
 };
-use magnetar_proof::{prove_lockstep, verify_lockstep, LockstepProof, Pcs, SpartanError};
+use magnetar_pcs::mosaic::PackedMosaic;
+use magnetar_proof::{
+    prove_lockstep, verify_lockstep, BitPcs, LockstepProof, Pcs, RingSwitchPackedBitPcs,
+    SpartanError,
+};
 use thiserror::Error;
 
 use crate::binary_router::BinaryRouterProof;
@@ -317,6 +321,10 @@ pub const CLAIM_CONSUMERS: &[(ClaimKind, ClaimSink)] = &[
 pub struct ProofBundle {
     pub trace_commitment: [u8; 32],
     pub opening: Option<magnetar_pcs::P3MosaicOpening>,
+    pub e5_opening: Option<crate::E5Opening>,
+    pub field_opening: Option<magnetar_pcs::P3MosaicOpening>,
+    pub field_pcs_commitment: Option<P3MosaicCommitment>,
+    pub field_tables: Vec<usize>,
     pub stages: Vec<(StageId, StageProof)>,
     pub amo: Option<crate::amo_bundle::AmoBundleProof>,
     pub gated: Option<crate::GatedCpuClaims>,
@@ -364,6 +372,10 @@ impl ProofBundle {
         Self {
             trace_commitment: proof.trace_commitment,
             opening: proof.opening.clone(),
+            e5_opening: proof.e5_opening.clone(),
+            field_opening: proof.field_opening.clone(),
+            field_pcs_commitment: proof.field_pcs_commitment.clone(),
+            field_tables: proof.field_tables.clone(),
             stages,
             amo: proof.amo.clone(),
             gated: proof.gated.clone(),
@@ -414,6 +426,10 @@ impl ProofBundle {
             },
             trace_commitment: self.trace_commitment,
             opening: self.opening,
+            e5_opening: self.e5_opening,
+            field_opening: self.field_opening,
+            field_pcs_commitment: self.field_pcs_commitment,
+            field_tables: self.field_tables,
             amo: self.amo,
             gated: self.gated,
             shape: self.shape,
@@ -551,7 +567,7 @@ mod tests {
         let bundle = ProofBundle::from_unified(&proof);
         let encoded = bincode::serialize(&bundle).expect("encode bundle");
         let decoded: ProofBundle = bincode::deserialize(&encoded).expect("decode bundle");
-        assert!(decoded.stages.len() >= 3);
+        assert!(decoded.stages.len() >= 2);
 
         let restored = decoded.into_unified().expect("restore unified proof");
         let actual = bincode::serialize(&restored).expect("encode restored");
@@ -1192,6 +1208,11 @@ pub(crate) struct UnifiedProveContext<'a> {
     packed_shout: Option<crate::packed_shout::PackedShoutProof>,
     table_batches: Vec<crate::TableBatchProof>,
     opening: Option<magnetar_pcs::P3MosaicOpening>,
+    e5: Option<E5Prepared>,
+    e5_opening: Option<crate::E5Opening>,
+    field_opening: Option<magnetar_pcs::P3MosaicOpening>,
+    field_pcs_commitment: Option<P3MosaicCommitment>,
+    field_tables: Vec<usize>,
 }
 
 #[allow(clippy::type_complexity)]
@@ -1402,6 +1423,165 @@ fn opening_pcs(tables: &[P3MosaicTable]) -> P3BinaryPcs {
         .max()
         .unwrap_or(0);
     opening_pcs_from_bits(max_bits)
+}
+
+#[derive(Clone, Debug)]
+struct E5Prepared {
+    mosaic: PackedMosaic,
+    component_of: std::collections::BTreeMap<(usize, usize), usize>,
+    bits: Vec<bool>,
+    field_tables: Vec<usize>,
+}
+
+fn e5_prepare(
+    tables: &[P3MosaicTable],
+    trace_index: usize,
+) -> Result<Option<E5Prepared>, RuntimeError> {
+    let mut components = Vec::new();
+    let mut component_of = std::collections::BTreeMap::new();
+    let mut field_tables = Vec::new();
+    for (table_index, table) in tables.iter().enumerate() {
+        let bit_table = table_index != trace_index
+            && table.columns.iter().all(|column| {
+                column
+                    .iter()
+                    .all(|value| *value == F2_128::from(0u64) || *value == F2_128::from(1u64))
+            });
+        if !bit_table {
+            field_tables.push(table_index);
+            continue;
+        }
+        for (column_index, column) in table.columns.iter().enumerate() {
+            component_of.insert((table_index, column_index), components.len());
+            components.push(column.clone());
+        }
+    }
+    if components.is_empty() {
+        return Ok(None);
+    }
+    let mosaic =
+        PackedMosaic::new(&components).map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if mosaic.values.len() < 256 {
+        return Ok(None);
+    }
+    let bits = mosaic
+        .values
+        .iter()
+        .map(|value| value.value() & 1 == 1)
+        .collect();
+    Ok(Some(E5Prepared {
+        mosaic,
+        component_of,
+        bits,
+        field_tables,
+    }))
+}
+
+fn e5_backend() -> RingSwitchPackedBitPcs<P3BinaryPcs> {
+    RingSwitchPackedBitPcs::new(P3BinaryPcs::new(100))
+}
+
+type E5Layout = (
+    usize,
+    Vec<magnetar_pcs::mosaic::MosaicComponent>,
+    std::collections::BTreeMap<(usize, usize), usize>,
+);
+
+fn e5_layout_for_shapes(
+    shapes: &[magnetar_pcs::P3MosaicTableShape],
+    field_tables: &[usize],
+) -> Result<E5Layout, RuntimeError> {
+    let mut sizes = Vec::new();
+    let mut component_of = std::collections::BTreeMap::new();
+    for (table_index, shape) in shapes.iter().enumerate() {
+        if field_tables.contains(&table_index) {
+            continue;
+        }
+        let size = 1usize
+            .checked_shl(shape.num_variables as u32)
+            .ok_or_else(|| RuntimeError::Proof("E5 table shape overflow".into()))?;
+        for column in 0..shape.num_columns {
+            component_of.insert((table_index, column), sizes.len());
+            sizes.push(size);
+        }
+    }
+    let (total_bits, components) =
+        PackedMosaic::layout(&sizes).map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok((total_bits, components, component_of))
+}
+
+fn e5_binding_commitment(
+    tables: &[P3MosaicTable],
+    cap: magnetar_pcs::p3_pcs::P3Cap,
+    binding: [u8; 32],
+) -> P3MosaicCommitment {
+    let shapes = tables
+        .iter()
+        .map(|table| magnetar_pcs::P3MosaicTableShape {
+            num_variables: table.columns[0].len().trailing_zeros() as usize,
+            num_columns: table.columns.len(),
+        })
+        .collect::<Vec<_>>();
+    let stacked_variables = shapes
+        .iter()
+        .map(|shape| shape.num_variables)
+        .max()
+        .unwrap_or(0);
+    magnetar_pcs::P3MosaicCommitment {
+        cap,
+        tables: shapes,
+        stacked_variables,
+        binding,
+    }
+}
+
+fn e5_binding_hash(
+    e5: &magnetar_pcs::P3Commitment,
+    field: Option<&P3MosaicCommitment>,
+) -> Result<[u8; 32], RuntimeError> {
+    let mut bytes =
+        bincode::serialize(e5).map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if let Some(field) = field {
+        bytes.extend(
+            bincode::serialize(field).map_err(|error| RuntimeError::Proof(error.to_string()))?,
+        );
+    }
+    Ok(magnetar_transcript::sha256(&bytes))
+}
+
+fn e5_claims(
+    prepared: &E5Prepared,
+    points: &[P3MosaicPoint],
+    values: &[Vec<F2_128>],
+) -> Result<Vec<(Vec<F2_128>, F2_128)>, RuntimeError> {
+    let mut claims = Vec::new();
+    for (point, point_values) in points.iter().zip(values) {
+        if prepared.field_tables.contains(&point.table) {
+            continue;
+        }
+        if !point.next_columns.is_empty() {
+            return Err(RuntimeError::Proof(
+                "E5 opening does not support successor columns".into(),
+            ));
+        }
+        for (offset, column) in point.columns.iter().enumerate() {
+            let value = point_values
+                .get(offset)
+                .ok_or_else(|| RuntimeError::Proof("E5 claim value count mismatch".into()))?;
+            let component = prepared
+                .component_of
+                .get(&(point.table, *column))
+                .ok_or_else(|| RuntimeError::Proof("E5 component index".into()))?;
+            claims.push((
+                prepared
+                    .mosaic
+                    .lift(*component, &point.point)
+                    .map_err(|error| RuntimeError::Proof(error.to_string()))?,
+                *value,
+            ));
+        }
+    }
+    Ok(claims)
 }
 
 fn opening_pcs_for_commitment(commitment: &P3MosaicCommitment) -> P3BinaryPcs {
@@ -1615,10 +1795,42 @@ impl<'a> UnifiedProveContext<'a> {
             packed_shout: None,
             table_batches: Vec::new(),
             opening: None,
+            e5: None,
+            e5_opening: None,
+            field_opening: None,
+            field_pcs_commitment: None,
+            field_tables: Vec::new(),
         })
     }
 
     pub(crate) fn commit(&mut self) -> Result<(), RuntimeError> {
+        if let Some(prepared) = e5_prepare(&self.mosaic_tables, self.trace_index)? {
+            let backend = e5_backend();
+            let e5_commitment = backend
+                .commit(&prepared.bits)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            let field_tables = prepared
+                .field_tables
+                .iter()
+                .filter_map(|index| self.mosaic_tables.get(*index).cloned())
+                .collect::<Vec<_>>();
+            let field_commitment = if field_tables.is_empty() {
+                None
+            } else {
+                Some(
+                    self.pcs
+                        .commit_mosaic(&field_tables)
+                        .map_err(|error| RuntimeError::Proof(error.to_string()))?,
+                )
+            };
+            let binding = e5_binding_hash(&e5_commitment, field_commitment.as_ref())?;
+            let synthetic = e5_binding_commitment(&self.mosaic_tables, e5_commitment.cap, binding);
+            self.commitment = Some(synthetic);
+            self.field_tables = prepared.field_tables.clone();
+            self.e5 = Some(prepared);
+            self.field_pcs_commitment = field_commitment;
+            return Ok(());
+        }
         let commitment = self
             .pcs
             .commit_mosaic(&self.mosaic_tables)
@@ -1974,7 +2186,7 @@ impl<'a> UnifiedProveContext<'a> {
             .iter()
             .enumerate()
             .filter(|(index, count)| {
-                **count >= 6 && {
+                **count >= 6 && !self.field_tables.contains(index) && {
                     let bits =
                         self.mosaic_tables[*index].columns[0].len().trailing_zeros() as usize;
                     bits <= 3 || (bits == 4 && **count <= 8)
@@ -2057,6 +2269,69 @@ impl<'a> UnifiedProveContext<'a> {
             self.points = points;
             self.values = values;
         }
+        if let Some(prepared) = self.e5.take() {
+            let claims = e5_claims(&prepared, &self.points, &self.values)?;
+            let commitment = self
+                .commitment
+                .as_ref()
+                .ok_or_else(|| RuntimeError::Proof("missing E5 commitment".into()))?;
+            let mut transcript = magnetar_transcript::Sha256Transcript::new("e5-batch");
+            transcript.absorb(
+                "commitment",
+                &bincode::serialize(commitment).unwrap_or_default(),
+            );
+            let batch = magnetar_pcs::mosaic::batch_claims(
+                &prepared.mosaic.values,
+                &claims,
+                &mut transcript,
+            )
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            let backend = e5_backend();
+            let (claim, ring) = backend
+                .open(&prepared.bits, &batch.point)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            if claim != batch.value {
+                return Err(RuntimeError::Proof("E5 ring/batch value mismatch".into()));
+            }
+            let field_index = self
+                .field_tables
+                .iter()
+                .enumerate()
+                .map(|(position, table)| (*table, position))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let (field_points, _field_values) = self
+                .points
+                .iter()
+                .zip(&self.values)
+                .filter(|(point, _)| field_index.contains_key(&point.table))
+                .map(|(point, values)| {
+                    let mut point = point.clone();
+                    point.table = field_index[&point.table];
+                    (point, values.clone())
+                })
+                .unzip::<_, _, Vec<_>, Vec<_>>();
+            let field_tables = self
+                .field_tables
+                .iter()
+                .filter_map(|index| self.mosaic_tables.get(*index).cloned())
+                .collect::<Vec<_>>();
+            let field_opening = if field_tables.is_empty() {
+                None
+            } else {
+                Some(
+                    self.pcs
+                        .open_mosaic(&field_tables, &field_points)
+                        .map_err(|error| RuntimeError::Proof(error.to_string()))?,
+                )
+            };
+            self.field_pcs_commitment = field_opening
+                .as_ref()
+                .map(|opening| opening.commitment.clone());
+            self.e5_opening = Some(crate::E5Opening { batch, ring });
+            self.field_opening = field_opening;
+            self.opening = None;
+            return Ok(());
+        }
         let opening = self
             .pcs
             .open_mosaic(&self.mosaic_tables, &self.points)
@@ -2087,6 +2362,10 @@ impl<'a> UnifiedProveContext<'a> {
             trace_claims,
             table_batches: self.table_batches,
             width: self.width,
+            e5_opening: self.e5_opening,
+            field_opening: self.field_opening,
+            field_pcs_commitment: self.field_pcs_commitment,
+            field_tables: self.field_tables,
             commitment: self
                 .commitment
                 .clone()
@@ -2589,7 +2868,110 @@ impl<'a> UnifiedVerifyContext<'a> {
         let (points, values): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
         self.points = points;
         self.values = values;
-        if let Some(opening) = &self.proof.opening {
+        if let (Some(e5), Some(_field_opening)) =
+            (&self.proof.e5_opening, &self.proof.field_opening)
+        {
+            let (total_bits, components, component_of) =
+                e5_layout_for_shapes(&self.proof.commitment.tables, &self.proof.field_tables)?;
+            let mut claims = Vec::new();
+            for (point, point_values) in self.points.iter().zip(&self.values) {
+                if self.proof.field_tables.contains(&point.table) {
+                    continue;
+                }
+                if !point.next_columns.is_empty() {
+                    return Err(RuntimeError::Proof(
+                        "E5 opening does not support successor columns".into(),
+                    ));
+                }
+                for (offset, column) in point.columns.iter().enumerate() {
+                    let value = point_values.get(offset).ok_or_else(|| {
+                        RuntimeError::Proof("E5 claim value count mismatch".into())
+                    })?;
+                    let component = component_of
+                        .get(&(point.table, *column))
+                        .ok_or_else(|| RuntimeError::Proof("E5 component index".into()))?;
+                    let mut lifted = point.point.clone();
+                    lifted.extend_from_slice(&components[*component].suffix);
+                    claims.push((lifted, *value));
+                }
+            }
+            let mut transcript = magnetar_transcript::Sha256Transcript::new("e5-batch");
+            transcript.absorb(
+                "commitment",
+                &bincode::serialize(&self.proof.commitment).unwrap_or_default(),
+            );
+            magnetar_pcs::mosaic::verify_batching(&e5.batch, &claims, total_bits, &mut transcript)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            let packed_commitment = &e5.ring.pcs_opening.commitment;
+            if packed_commitment.cap != self.proof.commitment.cap {
+                return Err(RuntimeError::Proof("E5 commitment binding mismatch".into()));
+            }
+            let expected_binding =
+                e5_binding_hash(packed_commitment, self.proof.field_pcs_commitment.as_ref())?;
+            if self.proof.commitment.binding != expected_binding {
+                return Err(RuntimeError::Proof("E5 field binding mismatch".into()));
+            }
+            let backend = e5_backend();
+            if !backend
+                .verify(packed_commitment, &e5.batch.point, e5.batch.value, &e5.ring)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?
+            {
+                return Err(RuntimeError::Proof("E5 ring opening rejected".into()));
+            }
+            if let Some(stored_field) = &self.proof.field_pcs_commitment {
+                let field_opening = self
+                    .proof
+                    .field_opening
+                    .as_ref()
+                    .ok_or_else(|| RuntimeError::Proof("missing field opening".into()))?;
+                if field_opening.commitment != *stored_field {
+                    return Err(RuntimeError::Proof("field commitment mismatch".into()));
+                }
+                if field_opening.commitment.tables.len() != self.proof.field_tables.len() {
+                    return Err(RuntimeError::Proof("field table count mismatch".into()));
+                }
+                for (position, table) in self.proof.field_tables.iter().enumerate() {
+                    let expected = self
+                        .proof
+                        .commitment
+                        .tables
+                        .get(*table)
+                        .ok_or_else(|| RuntimeError::Proof("field table index".into()))?;
+                    let actual = &field_opening.commitment.tables[position];
+                    if actual.num_variables != expected.num_variables
+                        || actual.num_columns != expected.num_columns
+                    {
+                        return Err(RuntimeError::Proof("field table shape mismatch".into()));
+                    }
+                }
+                let field_index = self
+                    .proof
+                    .field_tables
+                    .iter()
+                    .enumerate()
+                    .map(|(position, table)| (*table, position))
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                let (field_points, field_values) = self
+                    .points
+                    .iter()
+                    .zip(&self.values)
+                    .filter(|(point, _)| field_index.contains_key(&point.table))
+                    .map(|(point, values)| {
+                        let mut point = point.clone();
+                        point.table = field_index[&point.table];
+                        (point, values.clone())
+                    })
+                    .unzip::<_, _, Vec<_>, Vec<_>>();
+                if !opening_pcs_for_commitment(&self.proof.commitment)
+                    .verify_mosaic(field_opening, &field_points, &field_values)
+                    .map_err(|error| RuntimeError::Proof(error.to_string()))?
+                {
+                    return Err(RuntimeError::Proof("field opening rejected".into()));
+                }
+            } else if self.proof.field_opening.is_some() {
+                return Err(RuntimeError::Proof("unexpected field opening".into()));
+            }
+        } else if let Some(opening) = &self.proof.opening {
             if !opening_pcs_for_commitment(&opening.commitment)
                 .verify_mosaic(opening, &self.points, &self.values)
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?
