@@ -330,23 +330,66 @@ pub fn cpu_output_claims(claims: &[TraceClaim]) -> Vec<CpuOutputClaim> {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ClaimProof {
     pub root: [u8; 32],
+    #[serde(default)]
+    pub complete: bool,
     pub openings: Vec<TraceClaimOpening>,
 }
 
 impl ClaimProof {
     pub fn from_trace(trace: &Trace) -> Self {
         let tree = TraceClaimTree::build(trace);
+        let openings = tree
+            .claims
+            .iter()
+            .enumerate()
+            .map(|(index, claim)| TraceClaimOpening {
+                index,
+                claim: claim.clone(),
+                leaf: claim.leaf(),
+                siblings: Vec::new(),
+            })
+            .collect();
         Self {
             root: tree.root(),
-            openings: (0..trace.rows.len())
-                .filter_map(|index| tree.open(index))
-                .collect(),
+            complete: true,
+            openings,
         }
     }
 
     pub fn verify(&self) -> Option<Vec<TraceClaim>> {
-        verify_claims(self.root, &self.openings)
+        if self.complete {
+            verify_complete_claims(self.root, &self.openings)
+        } else {
+            verify_claims(self.root, &self.openings)
+        }
     }
+}
+
+/// Verify a complete (all-row) claim proof without per-row Merkle paths.
+pub fn verify_complete_claims(
+    root: [u8; 32],
+    openings: &[TraceClaimOpening],
+) -> Option<Vec<TraceClaim>> {
+    if openings.is_empty() {
+        return None;
+    }
+    let mut leaves = Vec::with_capacity(openings.len().next_power_of_two());
+    let mut claims = Vec::with_capacity(openings.len());
+    for (index, opening) in openings.iter().enumerate() {
+        if opening.index != index || opening.claim.leaf() != opening.leaf {
+            return None;
+        }
+        leaves.push(opening.leaf);
+        claims.push(opening.claim.clone());
+    }
+    leaves.resize(openings.len().next_power_of_two(), [0u8; 32]);
+    while leaves.len() > 1 {
+        leaves = leaves
+            .chunks_exact(2)
+            .map(|pair| hash(&[NODE_DOMAIN, &pair[0], &pair[1]]))
+            .collect();
+    }
+    (leaves[0] == root).then_some(claims)
 }
 
 /// Verify a contiguous list of claim openings and return their payloads.
@@ -464,6 +507,23 @@ mod tests {
         let decoded: ClaimProof = bincode::deserialize(&bytes).unwrap();
         assert_eq!(proof, decoded);
         assert_eq!(decoded.verify().unwrap().len(), trace.rows.len());
+    }
+
+    #[test]
+    fn complete_claim_proof_rejects_removed_or_reordered_rows() {
+        let trace = trace();
+        let proof = ClaimProof::from_trace(&trace);
+        assert!(proof.complete);
+        assert!(proof
+            .openings
+            .iter()
+            .all(|opening| opening.siblings.is_empty()));
+        let mut removed = proof.clone();
+        removed.openings.pop();
+        assert!(removed.verify().is_none());
+        let mut reordered = proof;
+        reordered.openings.swap(0, 1);
+        assert!(reordered.verify().is_none());
     }
 
     #[test]
