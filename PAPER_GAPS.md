@@ -24,12 +24,13 @@ benchmark                   130,287 B (gated 59,556, opening 55,953,
                             packed_shout 5,226, access 7,466)
 workloads                   15 个 workload 全部 prove/verify
 op probe                    71 条指令/寻址组合
-chunked                     707,618 / 490,018 / 352,930 / 273,610 B (chunk 2/4/8/16)
+chunked                     646,928 / 429,296 / 296,480 / 217,120 B (chunk 2/4/8/16)
 ```
 
 仍开放：chunked A2 trace-free verification、B6 sum-check 优化、E5
 aligned-subcube packing / 更低 proof size。D12 的 shift expansion 已在
-pipeline/preprocess/executor 路径落地，PC-relative/临时寄存器不兼容时回退。
+pipeline/preprocess/executor 路径落地；conditional branch 与 `jal x0` 会重定位，
+`jal rd≠0`/`jalr`/`auipc` 或使用 x28-x31 时回退原 bytecode。
 
 ## 一、结论摘要
 
