@@ -119,11 +119,10 @@ pub fn expand_register_shifts(program: &ProgramImage) -> Option<ProgramImage> {
         .iter()
         .map(|word| magnetar_spec::decode(*word).ok())
         .collect::<Option<Vec<_>>>()?;
-    if decoded.iter().any(|instruction| {
-        is_unrelocatable(instruction.op)
-            || uses_temp(instruction)
-            || (instruction.op == Op::Jal && instruction.rd != 0)
-    }) {
+    if decoded
+        .iter()
+        .any(|instruction| is_unrelocatable(instruction.op) || uses_temp(instruction))
+    {
         return None;
     }
     let mut bodies = Vec::with_capacity(decoded.len());
@@ -131,6 +130,8 @@ pub fn expand_register_shifts(program: &ProgramImage) -> Option<ProgramImage> {
     for instruction in &decoded {
         let body = if instruction.op == Op::Auipc {
             Some(vec![instruction.encode(), 0])
+        } else if instruction.op == Op::Jal && instruction.rd != 0 {
+            Some(vec![0, 0, 0])
         } else {
             expand_one(instruction)
         };
@@ -153,6 +154,50 @@ pub fn expand_register_shifts(program: &ProgramImage) -> Option<ProgramImage> {
     for (index, instruction) in decoded.iter().enumerate() {
         if bodies[index].is_none() {
             rom[mapping[index]] = instruction.encode();
+        }
+        if instruction.op == Op::Jal && instruction.rd != 0 {
+            let target = (index as i64) + instruction.imm / 4;
+            if target < 0 || target as usize >= decoded.len() {
+                return None;
+            }
+            let target_new = mapping[target as usize] as i64;
+            let new_index = mapping[index] as i64;
+            let old_link = (index as i64 + 1) * 4;
+            let new_pc = new_index * 4;
+            let delta = old_link - new_pc;
+            if !(-(1i64 << 31)..(1i64 << 31)).contains(&delta) {
+                return None;
+            }
+            let hi = (delta + 0x800) >> 12;
+            let lo = delta - (hi << 12);
+            rom[mapping[index]] = Instruction {
+                op: Op::Auipc,
+                rd: instruction.rd,
+                rs1: 0,
+                rs2: 0,
+                imm: hi << 12,
+                shamt: 0,
+            }
+            .encode();
+            rom[mapping[index] + 1] = Instruction {
+                op: Op::Addi,
+                rd: instruction.rd,
+                rs1: instruction.rd,
+                rs2: 0,
+                imm: lo,
+                shamt: 0,
+            }
+            .encode();
+            let offset = (target_new - (new_index + 2)) * 4;
+            rom[mapping[index] + 2] = Instruction {
+                op: Op::Jal,
+                rd: 0,
+                rs1: 0,
+                rs2: 0,
+                imm: offset,
+                shamt: 0,
+            }
+            .encode();
         }
         if instruction.op == Op::Auipc {
             let delta = (mapping[index] as i64 - index as i64) * 4;
@@ -520,6 +565,64 @@ mod tests {
         let direct = execute(&original, config()).unwrap().final_state;
         let actual = execute(&expanded, config()).unwrap().final_state;
         assert_eq!(direct.reg(1), 0x1000);
+        assert_eq!(&actual.regs[..28], &direct.regs[..28]);
+    }
+
+    #[test]
+    fn jal_link_values_are_preserved() {
+        let original = program(vec![
+            Instruction {
+                op: Op::Addi,
+                rd: 1,
+                rs1: 0,
+                rs2: 0,
+                imm: 5,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Addi,
+                rd: 2,
+                rs1: 0,
+                rs2: 0,
+                imm: 1,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Jal,
+                rd: 1,
+                rs1: 0,
+                rs2: 0,
+                imm: 8,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Sll,
+                rd: 5,
+                rs1: 1,
+                rs2: 2,
+                imm: 0,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Addi,
+                rd: 6,
+                rs1: 0,
+                rs2: 0,
+                imm: 9,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction::new(Op::Ebreak).encode(),
+        ]);
+        let expanded = expand_register_shifts(&original).expect("expandable");
+        let direct = execute(&original, config()).unwrap().final_state;
+        let actual = execute(&expanded, config()).unwrap().final_state;
+        assert_eq!(direct.reg(1), 0x100c);
+        assert_eq!(direct.reg(5), 0);
         assert_eq!(&actual.regs[..28], &direct.regs[..28]);
     }
 
