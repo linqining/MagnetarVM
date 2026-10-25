@@ -4417,3 +4417,7 @@ exactly (including the register file).
 
 `chunked_single_chunk_covers_the_trace` pins the compact form: passing the full
 row count as the chunk size produces exactly one chunk, and the proof verifies.
+
+
+The largest CPU tier `(4,20,2)` was also tried; chunk 16 grew from 217,120 to
+225,040 B, so `(4,20,3)` remains.
