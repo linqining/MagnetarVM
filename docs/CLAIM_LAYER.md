@@ -251,9 +251,11 @@ if selected_cpu:
   -> CpuOutputClaim rows
 ```
 
-It rejects tampered claim payloads and a tampered selected claim root. It is a
-proof-only *claim layer* verifier, not yet a full CPU verifier: the CPU relation
-and register/access proofs are still not tied to these claims.
+It rejects tampered claim payloads and a tampered selected claim root. It also
+reconstructs `AccessStatement::from_claims` and calls
+`verify_access_claims(proof)`, so the register/RAM BinaryTwist proofs must match
+the claim-derived register ops and memory events. It is still not a full CPU
+verifier: the selected CPU relation values are not constrained to the claims.
 
 
 ## Claim-to-access-statement routing
