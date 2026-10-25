@@ -260,3 +260,17 @@ After eq/product6/row-combination parallelization, the PCS grinding bits were
 re-swept. At 512 rows, selected stage was 4.08 s with 8 grinding bits versus
 4.16 s with 16 grinding bits, but the 8-bit proof is 11 KiB larger. The
 difference is noise-level, so the smaller 16-bit-proof configuration is kept.
+
+
+## Rejected: selected-only parallel P3 with serial wrapper
+
+The next attempt wrapped the full unified prover in a one-thread rayon pool and
+intended to run only the selected-CPU opening in a multi-thread pool. With
+`p3-binary-pcs/parallel` enabled, the concurrent determinism stress no longer
+completed within the test window (it hung/serialized for more than 120 s even
+with 2x2 proofs). This is not acceptable for a proof-generation path, so the
+experiment was reverted together with the feature and the rayon dependency.
+
+The P3 parallel backend remains disabled. Any future attempt needs a proof
+format with canonical output or a P3 build that is deterministic under
+parallelism; wrapper-level thread-pool switching is not sufficient.
