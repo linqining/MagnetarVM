@@ -101,11 +101,25 @@ claims 73,736 B, sums 2,736 B, commitment 48 B. The Phase 1 gate is met.
 At 1024 rows, proving time grows 4.6x and verification 2.7x for 2x rows, while
 the proof grows only 1.48x. The prover, not proof size, is now the scaling
 bottleneck.
+
+Native-dynamic stage profile (512 rows, release):
+
+```text
+Commit           44.8 ms
+Access            8.08 s
+Finish           70.1 ms
+PackedShout      15.24 s
+SelectedCpu      11.50 s
+```
+
+So the next performance targets are packed Shout (largest), BinaryTwist access,
+then the selected CPU opening. This changes the Phase 2 order: Shout/access
+prover work comes before a full BinarySpartan rewrite.
 ```
 
 ## Phase 2: CPU engine / BinarySpartan
 
-1. Complete uniform SIMD `s1`/`s2` CPU matrices.
+1. Profile and reduce packed-Shout and BinaryTwist access cost (largest stages).
 2. Pack field-valued witnesses; remove per-row witness padding.
 3. Implement BinarySpartan-style packed claims instead of committing the full
    selected witness.

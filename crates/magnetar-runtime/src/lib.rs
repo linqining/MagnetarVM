@@ -2605,9 +2605,19 @@ pub fn prove_unified_trace_dynamic_native(
     trace: &Trace,
     width: usize,
 ) -> Result<UnifiedTraceProof, RuntimeError> {
+    Ok(prove_unified_trace_dynamic_native_profile(trace, width)?.0)
+}
+
+/// Native dynamic prover with per-stage wall-clock timings.
+pub fn prove_unified_trace_dynamic_native_profile(
+    trace: &Trace,
+    width: usize,
+) -> Result<(UnifiedTraceProof, Vec<StageTiming>), RuntimeError> {
     let plan = crate::protocol::ProtocolPlan::unified();
     let mut context = crate::protocol::UnifiedProveContext::new_with_group(trace, width, None)?;
+    let mut timings = Vec::new();
     for stage in plan.execution() {
+        let started = std::time::Instant::now();
         match stage {
             crate::protocol::ExecutionStage::Commit => context.commit()?,
             crate::protocol::ExecutionStage::Access => context.prove_access()?,
@@ -2619,8 +2629,17 @@ pub fn prove_unified_trace_dynamic_native(
             }
             crate::protocol::ExecutionStage::Cpu | crate::protocol::ExecutionStage::Opening => {}
         }
+        timings.push(StageTiming {
+            stage: format!("{stage:?}"),
+            duration: started.elapsed(),
+        });
     }
+    let started = std::time::Instant::now();
     let mut proof = context.finish()?;
+    timings.push(StageTiming {
+        stage: "Finish".into(),
+        duration: started.elapsed(),
+    });
     proof.gated = None;
     proof.cpu = None;
     proof.e5_opening = None;
@@ -2631,15 +2650,25 @@ pub fn prove_unified_trace_dynamic_native(
     proof.shout_index = None;
     proof.shift_router_index = None;
     proof.store_router_index = None;
+    let started = std::time::Instant::now();
     if let Ok(witness) = crate::binary_shout::BinaryShoutWitness::from_trace(trace) {
         proof.packed_shout = Some(crate::packed_shout::prove_packed_shout(&witness)?);
     }
+    timings.push(StageTiming {
+        stage: "PackedShout".into(),
+        duration: started.elapsed(),
+    });
+    let started = std::time::Instant::now();
     proof.selected_cpu = Some(crate::simd_dual::prove_dynamic_cpu_claims(
         trace,
         width,
         &crate::protocol::selected_backend(),
     )?);
-    Ok(proof)
+    timings.push(StageTiming {
+        stage: "SelectedCpu".into(),
+        duration: started.elapsed(),
+    });
+    Ok((proof, timings))
 }
 
 /// Prove a unified trace whose CPU stage is the dynamic selected CPU proof.

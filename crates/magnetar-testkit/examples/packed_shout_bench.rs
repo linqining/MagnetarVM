@@ -6,39 +6,26 @@ use magnetar_runtime::packed_shout::{prove_packed_shout, verify_packed_shout};
 use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 
 fn main() {
-    let program = ProgramImage::new(
-        0x1000,
-        vec![
+    let rows = std::env::var("ROWS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4usize);
+    let mut rom = Vec::new();
+    for index in 0..rows.saturating_sub(1) {
+        rom.push(
             Instruction {
                 op: Op::Addi,
                 rd: 1,
                 rs1: 0,
                 rs2: 0,
-                imm: 7,
+                imm: index as i64 + 1,
                 shamt: 0,
             }
             .encode(),
-            Instruction {
-                op: Op::Xor,
-                rd: 2,
-                rs1: 1,
-                rs2: 0,
-                imm: 0,
-                shamt: 0,
-            }
-            .encode(),
-            Instruction {
-                op: Op::Slli,
-                rd: 3,
-                rs1: 2,
-                rs2: 0,
-                imm: 0,
-                shamt: 1,
-            }
-            .encode(),
-            Instruction::new(Op::Ecall).encode(),
-        ],
-    );
+        );
+    }
+    rom.push(Instruction::new(Op::Ecall).encode());
+    let program = ProgramImage::new(0x1000, rom);
     let trace = execute(
         &program,
         MachineConfig {
@@ -47,7 +34,7 @@ fn main() {
             ram_base: 0x1000_0000,
             ram_size: 0x40,
             stack_top: 0x1000_0040,
-            max_cycles: 100,
+            max_cycles: 1_000_000,
         },
     )
     .unwrap();
