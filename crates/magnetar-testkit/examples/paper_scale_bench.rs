@@ -66,5 +66,13 @@ fn main() {
             verify,
             trace.rows.len() as f64 / prove.as_secs_f64(),
         );
+        if let Some(selected) = &proof.selected_cpu {
+            println!(
+                "  selected_proof={} layout={} segments={}",
+                bincode::serialize(&selected.proof).unwrap().len(),
+                bincode::serialize(&selected.layout).unwrap().len(),
+                bincode::serialize(&selected.segments).unwrap().len()
+            );
+        }
     }
 }

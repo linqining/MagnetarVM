@@ -4346,6 +4346,7 @@ pub struct SelectedCpuClaims<C: Clone + std::fmt::Debug, O: Clone + std::fmt::De
     pub initial_pc: u64,
     pub final_pc: u64,
     pub layout: magnetar_constraint::WitnessLayout,
+    #[serde(skip)]
     pub segments: Vec<SelectedSegmentClaim>,
     #[serde(skip)]
     pub claim_root: [u8; 32],
@@ -4587,7 +4588,7 @@ pub fn verify_dynamic_cpu_claims<B: magnetar_proof::BitPcs>(
         }
     }
     let expected = selected_segment_claims(&claims.layout, &claims.proof)?;
-    if expected != claims.segments {
+    if !claims.segments.is_empty() && expected != claims.segments {
         return Err(RuntimeError::Proof(
             "dynamic selected claim segments do not match the proof".into(),
         ));
