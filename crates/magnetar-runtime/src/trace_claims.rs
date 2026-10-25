@@ -34,6 +34,7 @@ pub struct TraceClaim {
     pub rs1_value: u64,
     pub rs2_value: u64,
     pub memory: Vec<TraceMemClaim>,
+    pub syscall: Option<magnetar_spec::SyscallTrace>,
 }
 
 impl TraceClaim {
@@ -64,6 +65,7 @@ impl TraceClaim {
                     is_write: access.is_write,
                 })
                 .collect(),
+            syscall: row.syscall,
         }
     }
 
@@ -82,6 +84,16 @@ impl TraceClaim {
         bytes.extend_from_slice(&self.rd_value.to_le_bytes());
         bytes.extend_from_slice(&self.rs1_value.to_le_bytes());
         bytes.extend_from_slice(&self.rs2_value.to_le_bytes());
+        match self.syscall {
+            Some(syscall) => {
+                bytes.push(1);
+                bytes.extend_from_slice(&syscall.number.to_le_bytes());
+                for arg in syscall.args {
+                    bytes.extend_from_slice(&arg.to_le_bytes());
+                }
+            }
+            None => bytes.push(0),
+        }
         for access in &self.memory {
             bytes.extend_from_slice(&access.cycle.to_le_bytes());
             bytes.extend_from_slice(&access.addr.to_le_bytes());
@@ -256,7 +268,7 @@ pub fn claims_to_trace(
             extra_mem,
             reservation_before: None,
             reservation_after: None,
-            syscall: None,
+            syscall: claim.syscall,
         });
     }
     Ok(Trace {

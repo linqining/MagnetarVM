@@ -290,3 +290,21 @@ used: claims are authenticated by `ClaimProof`, and the dynamic selected witness
 is rebuilt from those claims and checked against the proof commitment.
 
 Tests cover a register-only program and a Lui+Lw memory program.
+
+
+## Full proof-only native unified verification (dynamic path)
+
+`verify_native_unified(statement, proof, width)` now:
+
+```text
+verify_native_claim_layer(statement, proof)
+  -> claim + access + selected claim checks
+claims_to_trace(statement, claims)
+  -> synthetic trace (decoded instructions, syscalls, memory)
+verify_unified_trace(synthetic, proof)
+  -> all unified stages against claim-derived witness
+```
+
+No original `trace.rows` are read. Syscall metadata is carried in the claim so
+the CPU shape check also succeeds. Tests cover Addi+Ecall and Lui+Lw+Ecall; both
+call the full proof-only native unified verifier.

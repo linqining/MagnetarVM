@@ -3217,6 +3217,29 @@ pub fn verify_native_claim_layer(
     Ok(crate::trace_claims::cpu_output_claims(&claims))
 }
 
+/// Proof-only unified verifier for the native dynamic path: rebuild the trace
+/// from authenticated claims and run the normal unified verifier against it.
+pub fn verify_native_unified(
+    statement: &Statement,
+    proof: &UnifiedTraceProof,
+    width: usize,
+) -> Result<(), RuntimeError> {
+    let _outputs = verify_native_claim_layer(statement, proof)?;
+    let claims = verify_unified_claim_proof(proof)?;
+    let synthetic = crate::trace_claims::claims_to_trace(statement, &claims)?;
+    if statement.trace_len != synthetic.rows.len() as u64
+        || statement.initial_state != synthetic.initial_state
+        || statement.final_state != synthetic.final_state
+        || statement.rom != synthetic.rom
+        || statement.initial_ram != synthetic.initial_ram
+    {
+        return Err(RuntimeError::Proof(
+            "claim-derived trace does not match the statement".into(),
+        ));
+    }
+    verify_unified_trace(&synthetic, proof, width)
+}
+
 pub fn verify_unified_trace_statement(
     statement: &Statement,
     trace: &Trace,
@@ -5688,6 +5711,7 @@ mod tests {
         let statement = outcome.statement.clone();
         let outputs = verify_native_claim_layer(&statement, &proof).unwrap();
         assert_eq!(outputs.len(), outcome.trace.rows.len());
+        verify_native_unified(&statement, &proof, 8).unwrap();
         assert_eq!(outputs[0].pc, 0x1000);
         assert_eq!(outputs[0].instruction_len, 4);
         let mut claim_rows = verify_unified_claim_proof(&proof).unwrap();
@@ -5756,6 +5780,7 @@ mod tests {
         .unwrap();
         let proof = prove_unified_trace_dynamic_native(&outcome.trace, 8).unwrap();
         let outputs = verify_native_claim_layer(&outcome.statement, &proof).unwrap();
+        verify_native_unified(&outcome.statement, &proof, 8).unwrap();
         assert_eq!(outputs.len(), outcome.trace.rows.len());
         assert_eq!(outputs[1].memory.len(), 1);
         assert_eq!(outputs[1].memory[0].addr, 0x1000_0000);
