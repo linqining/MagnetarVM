@@ -4260,13 +4260,15 @@ access proof, so C8 is closed for the reference ABI.
 
 ### Chunked scaling measurement
 
+`ChunkCpuProof` no longer serializes the per-chunk `CpuShape`: the chunked
+verifier already has the trace and reconstructs the shape from the row range.
 `chunked_sizes` (16-row straight-line trace, width 8) measures the chunked path:
 
 ```text
-chunk 2:    707,618 B (access 93,251, cpu 544,626, aux 68,685, chain 1,056)
-chunk 4:    490,018 B (cpu 327,474)
-chunk 8:    352,930 B (cpu 190,610)
-chunk 16:   273,610 B (cpu 111,402)
+chunk 2:    707,104 B (access 93,251, cpu 544,112, aux 68,685, chain 1,056)
+chunk 4:    489,536 B (cpu 326,992)
+chunk 8:    352,464 B (cpu 190,144)
+chunk 16:   273,152 B (cpu 110,944)
 ```
 
 The standalone CPU proof backend picks `(100,3,20,3)` for systems with
