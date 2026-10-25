@@ -169,7 +169,7 @@ verification、B6 sum-check 优化、E5 aligned-subcube packing / 更低 proof s
 | C5 | 初始/最终 public state 绑定在 proof 内（§5.1） | `Statement` + trace digest 绑定；R1CS 不直接约束 initial/final | 🟡 | 在 R1CS 中绑定 initial/final rows |
 | C6 | RV64I 核心（论文范围） | RV64I/M/A/C 已覆盖；F/D 只有 decoder | ✅/🟡 | F/D 是仓库扩展，不是论文 RV64I 核心；若要完整 RV64G 需补执行/proof |
 | C7 | 任意 aligned sub-word load/store；跨 word 的 unaligned 访问 | executor 与 gated row 支持 8-byte word 内的非对齐 sub-word load/store；跨 word 的非对齐访问仍拒绝；op_probe 覆盖 Lw offset2/4、Sw2、Sh4、Sb7 以及符号扩展 load | ✅/🟡 | 论文要求 word 内已满足；跨 word 是非论文扩展 |
-| C8 | 丰富 syscall/IO | `SYS_EXIT`/`SYS_HINT`/`SYS_READ`/`SYS_WRITE`/`SYS_CLOCK` 均由 executor 实现；clock 返回当前 cycle；`syscall_probe` 对 hint/clock/write/read 四个 syscall 做 unified prove/verify，全部通过 | ✅/🟡 | SYS_READ 直接写 executor RAM，尚未生成对应的 trace memory access，因此 Twist 不覆盖该写；更完整的 guest ABI/IO 是工程扩展 |
+| C8 | 丰富 syscall/IO | `SYS_EXIT`/`SYS_HINT`/`SYS_READ`/`SYS_WRITE`/`SYS_CLOCK` 均由 executor 实现；`SYS_READ` 的每个 8-byte write-back 记录在 `TraceRow.extra_mem`，`check_trace_linkage` 校验地址/lane/输入字节/周围字节保留，`memory_events` 把 `extra_mem` 纳入 access proof；`syscall_probe` 对四个 syscall 做 unified prove/verify | ✅ | 更完整的 guest ABI/IO 是工程扩展 |
 
 ### D. Memory / bytecode / routing
 
@@ -4252,7 +4252,6 @@ bringing the probe to 71 verified cases.
 has a fast chain/digest test.
 
 
-`syscall_probe` verifies hint/clock/write/read end to end. The read path currently
-mutates executor RAM directly without a trace memory access, so its byte writes
-are not represented in the BinaryTwist witness; this is recorded as the remaining
-C8 gap.
+`syscall_probe` verifies hint/clock/write/read end to end. `SYS_READ` write-backs
+are already represented by `TraceRow.extra_mem` and validated/consumed by the
+access proof, so C8 is closed for the reference ABI.
