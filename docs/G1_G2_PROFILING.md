@@ -132,10 +132,13 @@ path, and a test asserts both produce byte-identical proofs.
 16-row ALU trace, release:
 
 ```text
-chunk=2 sequential 635,490 B 7.36 s   parallel 4.56 s  (1.61x)
-chunk=4 sequential 414,846 B 16.93 s  parallel 10.49 s (1.61x)
-chunk=8 sequential 282,572 B 10.74 s  parallel 6.77 s  (1.59x)
+chunk=2 sequential 635,490 B 7.30 s   parallel 3.42 s  (2.13x)
+chunk=4 sequential 414,846 B 17.35 s  parallel 7.74 s  (2.24x)
+chunk=8 sequential 282,572 B 10.69 s  parallel 3.81 s  (2.80x)
 ```
+
+The parallel path now overlaps the shared access/aux proof with the per-chunk
+CPU proofs as well as parallelizing the chunks themselves.
 
 Proof size and verification time are unchanged. The compact default still uses
 one whole-trace CPU proof; this optimization applies to the optional streaming

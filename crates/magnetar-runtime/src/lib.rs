@@ -3679,14 +3679,6 @@ fn prove_chunked_trace_streaming_mode(
             "chunked proofs require rows and a nonzero chunk size".into(),
         ));
     }
-    let (access, aux_claims, opening) = prove_chunked_shared_access(trace)?;
-    let aux = aux_claims.map(|claims| AuxTraceProof {
-        shout: claims.shout,
-        shift_router: claims.shift_router,
-        store_router: claims.store_router,
-        opening: opening.clone(),
-    });
-    let shared_access = if aux.is_some() { None } else { Some(opening) };
     let trace_commitment = trace_digest(trace);
     let mut ranges = Vec::new();
     let mut start = 0;
@@ -3695,7 +3687,29 @@ fn prove_chunked_trace_streaming_mode(
         ranges.push((start, end));
         start = end;
     }
-    let cpus = chunk_cpu_proofs(trace, width, &ranges, parallel)?;
+    let (access, cpus) = if parallel {
+        std::thread::scope(|scope| {
+            let access = scope.spawn(|| prove_chunked_shared_access(trace));
+            let cpus = chunk_cpu_proofs(trace, width, &ranges, true)?;
+            let access = access
+                .join()
+                .map_err(|_| RuntimeError::Proof("access prover thread panicked".into()))??;
+            Ok::<_, RuntimeError>((access, cpus))
+        })?
+    } else {
+        (
+            prove_chunked_shared_access(trace)?,
+            chunk_cpu_proofs(trace, width, &ranges, false)?,
+        )
+    };
+    let (access, aux_claims, opening) = access;
+    let aux = aux_claims.map(|claims| AuxTraceProof {
+        shout: claims.shout,
+        shift_router: claims.shift_router,
+        store_router: claims.store_router,
+        opening: opening.clone(),
+    });
+    let shared_access = if aux.is_some() { None } else { Some(opening) };
     let mut chunks = Vec::new();
     let mut chained = Vec::new();
     for ((start, end), cpu) in ranges.into_iter().zip(cpus) {
