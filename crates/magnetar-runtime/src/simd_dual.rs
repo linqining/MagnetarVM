@@ -2619,6 +2619,51 @@ pub fn verify_branch_pc_batch_bits<B: magnetar_proof::BitPcs>(
     Ok(())
 }
 
+pub fn alu_pc_virtual_specs(
+    width: usize,
+    cycles: usize,
+) -> Result<Vec<crate::VirtualSegmentSpec>, RuntimeError> {
+    let row = AluPcRow::new(width);
+    let (base_cols, _, _) = gated_shared_matrices(&row, cycles, None)?;
+    let mut specs = Vec::with_capacity(cycles * 2 + 1);
+    for cycle in 0..cycles {
+        let base = cycle * base_cols;
+        specs.push(crate::VirtualSegmentSpec {
+            name: format!("alu{cycle}"),
+            sources: vec![(base, row.instr.relation.num_vars)],
+            owner: SegmentOwner::Cpu,
+            projection: SegmentOwner::Cpu.projection(),
+        });
+        specs.push(crate::VirtualSegmentSpec {
+            name: format!("pc_add{cycle}"),
+            sources: vec![(
+                base + row.instr.relation.num_vars,
+                row.pc[0] - row.instr.relation.num_vars,
+            )],
+            owner: SegmentOwner::Cpu,
+            projection: SegmentOwner::Cpu.projection(),
+        });
+        specs.push(crate::VirtualSegmentSpec {
+            name: format!("pc{cycle}"),
+            sources: vec![(base + row.pc[0], 2 * width)],
+            owner: SegmentOwner::Pcs,
+            projection: SegmentOwner::Pcs.projection(),
+        });
+        if row.relation.num_vars < base_cols {
+            specs.push(crate::VirtualSegmentSpec {
+                name: format!("padding{cycle}"),
+                sources: vec![(
+                    base + row.relation.num_vars,
+                    base_cols - row.relation.num_vars,
+                )],
+                owner: SegmentOwner::Cpu,
+                projection: SegmentOwner::Cpu.projection(),
+            });
+        }
+    }
+    Ok(specs)
+}
+
 pub fn prove_gated_dual_batch_bits<B: magnetar_proof::BitPcs>(
     width: usize,
     rows: &[(u64, GatedCpuRowInput)],
@@ -3049,6 +3094,23 @@ mod tests {
             &backend
         )
         .is_err());
+    }
+
+    #[test]
+    fn alu_pc_virtual_specs_partition_the_layout() {
+        let specs = alu_pc_virtual_specs(8, 16).unwrap();
+        let mut ranges = specs
+            .iter()
+            .flat_map(|spec| spec.sources.iter().copied())
+            .collect::<Vec<_>>();
+        ranges.sort_by_key(|(start, _)| *start);
+        let mut cursor = 0usize;
+        for (start, len) in ranges {
+            assert_eq!(start, cursor);
+            assert!(len > 0);
+            cursor += len;
+        }
+        assert!(cursor > 0);
     }
 
     #[test]

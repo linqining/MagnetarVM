@@ -118,10 +118,26 @@ cycles=64   branch+pc 75,408 B 2.11 s
 cycles=256  branch+pc 96,576 B 6.39 s
 ```
 
+## ALU virtual specs (done)
+
+`alu_pc_virtual_specs` emits per-cycle segments for:
+
+```text
+alu       SegmentOwner::Cpu
+pc_add    SegmentOwner::Cpu
+pc        SegmentOwner::Pcs
+padding   SegmentOwner::Cpu
+```
+
+`alu_pc_virtual_specs_partition_the_layout` checks that the emitted source ranges
+cover the padded layout exactly once, with no gaps or overlaps. This is the
+first selected-op routing table; register/memory/Shifter owners are not emitted
+because the ALU-only relation has no such variables.
+
 ## Next concrete step
 
-Define selected-op virtual segment specs and wire the selected-op batch into
-unified claim routing.
+Wire the selected-op specs into claim construction and the unified verifier,
+then add the remaining selected-op spec builders.
 
 ## Non-goals for the first step
 
