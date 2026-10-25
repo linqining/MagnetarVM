@@ -298,18 +298,8 @@ pub type MosaicSpartanProof = LockstepProof<P3MosaicCommitment, P3MosaicOpening>
 
 /// Reference proof backend: Spartan over the constraint IR with the P3
 /// multilinear binary-field PCS.
-#[derive(Clone, Copy, Debug)]
-pub struct ConstraintProofBackend {
-    pub pcs: P3BinaryPcs,
-}
-
-impl Default for ConstraintProofBackend {
-    fn default() -> Self {
-        Self {
-            pcs: P3BinaryPcs::with_params(100, 3, 18, 1),
-        }
-    }
-}
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ConstraintProofBackend;
 
 impl ConstraintProofBackend {
     fn pcs_for(system: &ConstraintSystem) -> P3BinaryPcs {
@@ -2087,7 +2077,7 @@ pub fn prove_trace_proof(trace: &Trace, width: usize) -> Result<TraceProof, Runt
     check_trace_linkage(trace)?;
     let access = prove_trace_access(trace)?;
     let mut rows = Vec::with_capacity(trace.rows.len());
-    let backend = ConstraintProofBackend::default();
+    let backend = ConstraintProofBackend;
 
     for row in &trace.rows {
         let Some((system, witness)) = row_cpu_relation(row, width)? else {
@@ -2162,7 +2152,7 @@ pub fn verify_trace_proof(
     if proof.rows.len() != trace.rows.len() {
         return Err(RuntimeError::Proof("trace row count mismatch".into()));
     }
-    let backend = ConstraintProofBackend::default();
+    let backend = ConstraintProofBackend;
     for (index, (row, row_proof)) in trace.rows.iter().zip(proof.rows.iter()).enumerate() {
         let Some((system, _)) = row_cpu_relation(row, width)? else {
             if !matches!(row_proof, RowCpuProof::Skip) {
@@ -3486,7 +3476,7 @@ pub fn prove_chunked_trace(
     }
     let (access, shared_access) = prove_chunked_shared_access(trace)?;
     let trace_commitment = trace_digest(trace);
-    let backend = ConstraintProofBackend::default();
+    let backend = ConstraintProofBackend;
     let mut chunks = Vec::new();
     let mut chained = Vec::new();
     let mut start = 0;
@@ -3545,7 +3535,7 @@ pub fn verify_chunked_trace(
     if !ChainedRecursion.verify(&proof.chain)? {
         return Err(RuntimeError::Proof("chunk state chain mismatch".into()));
     }
-    let backend = ConstraintProofBackend::default();
+    let backend = ConstraintProofBackend;
     let mut expected_start = 0;
     for (index, (chunk, chained)) in proof
         .chunks
@@ -3584,8 +3574,7 @@ pub fn verify_chunked_trace(
         let (shape_system, _) = chunk.shape.system_without_trace(width)?;
         let values = magnetar_proof::witness_vector(&system, &witness)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        let expected = backend
-            .pcs
+        let expected = ConstraintProofBackend::pcs_for(&system)
             .commit(&values)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         if bincode::serialize(&expected).unwrap_or_default()
@@ -4202,7 +4191,7 @@ mod tests {
 
         let (system, layout) = magnetar_cpu::uniform_branch_relation(64, 0x1000, 0x20);
         let witness = layout.witness(BranchOp::Blt, 0x1000, u64::MAX, 0, 0x20);
-        let backend = ConstraintProofBackend::default();
+        let backend = ConstraintProofBackend;
         let proof = backend.prove(&system, &witness).unwrap();
         assert!(backend.verify(&system, &proof).unwrap());
     }
@@ -4211,14 +4200,14 @@ mod tests {
     fn spartan_backend_proves_and_verifies_a_64_bit_beq() {
         let (system, layout) = magnetar_cpu::uniform_beq_relation(64, 0x1000, 0x20);
         let witness = layout.witness(0x1000, u64::MAX, u64::MAX, 0x20);
-        let backend = ConstraintProofBackend::default();
+        let backend = ConstraintProofBackend;
         let proof = backend.prove(&system, &witness).unwrap();
         assert!(backend.verify(&system, &proof).unwrap());
     }
 
     #[test]
     fn spartan_backend_proves_auipc_and_jalr() {
-        let backend = ConstraintProofBackend::default();
+        let backend = ConstraintProofBackend;
 
         let (auipc_system, auipc) = magnetar_cpu::uniform_auipc_relation(64, 0x1000, 0x1020);
         let auipc_proof = backend.prove(&auipc_system, &auipc.witness(0x20)).unwrap();
@@ -4235,7 +4224,7 @@ mod tests {
     fn spartan_backend_proves_and_verifies_a_64_bit_jal() {
         let (system, layout) = magnetar_cpu::uniform_jal_relation(64, 0x1000, 0x20);
         let witness = layout.witness(0x1000, 0x20);
-        let backend = ConstraintProofBackend::default();
+        let backend = ConstraintProofBackend;
         let proof = backend.prove(&system, &witness).unwrap();
         assert!(backend.verify(&system, &proof).unwrap());
     }
@@ -4246,7 +4235,7 @@ mod tests {
 
         let (system, layout) = magnetar_cpu::uniform_step_relation(64);
         let witness = layout.witness(StepOp::And, 0x1000, u64::MAX, 1, 0);
-        let backend = ConstraintProofBackend::default();
+        let backend = ConstraintProofBackend;
         let proof = backend.prove(&system, &witness).unwrap();
         assert!(backend.verify(&system, &proof).unwrap());
     }
@@ -4257,7 +4246,7 @@ mod tests {
 
         let (system, layout) = magnetar_cpu::uniform_alu_relation(64);
         let witness = layout.witness(StepOp::Add, u64::MAX, 1, 0);
-        let backend = ConstraintProofBackend::default();
+        let backend = ConstraintProofBackend;
         let proof = backend.prove(&system, &witness).unwrap();
         assert!(backend.verify(&system, &proof).unwrap());
     }
@@ -6637,7 +6626,7 @@ mod tests {
     fn spartan_backend_proves_and_verifies_a_bit_adder() {
         let (system, layout) = magnetar_cpu::bit_addition_constraints(4);
         let witness = layout.witness(3, 5);
-        let backend = ConstraintProofBackend::default();
+        let backend = ConstraintProofBackend;
         let proof = backend.prove(&system, &witness).unwrap();
         assert!(backend.verify(&system, &proof).unwrap());
     }
@@ -6653,7 +6642,7 @@ mod tests {
         system.add_constraint(Expr::var(0), Expr::var(1), Expr::var(2));
         let witness = Witness::new(vec![a, b, product]);
 
-        let backend = ConstraintProofBackend::default();
+        let backend = ConstraintProofBackend;
         let proof = backend.prove(&system, &witness).unwrap();
         assert!(backend.verify(&system, &proof).unwrap());
 

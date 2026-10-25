@@ -69,7 +69,7 @@ fn proof_path_benchmarks(c: &mut Criterion) {
     let (system, layout) =
         magnetar_cpu::uniform_alu_row_relation(16, magnetar_cpu::StepOp::Add, 5, 7, 12, 0);
     let witness = layout.witness(magnetar_cpu::StepOp::Add, 5, 7, 0);
-    let backend = ConstraintProofBackend::default();
+    let backend = ConstraintProofBackend;
     group.bench_function("spartan_alu_row_w16_prove", |bench| {
         bench.iter(|| {
             backend

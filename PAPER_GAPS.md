@@ -4278,3 +4278,8 @@ proof now dominates; larger chunks reduce it. For the same
 16-row trace the unified proof is 226,927 B with access 12,874 B: chunked still
 uses the standalone `prove_trace_access` (227,034 B) instead of the shared-access
 reduction, which is the concrete remaining A2/chunked gap.
+
+
+`ConstraintProofBackend` is now a unit struct: CPU proofs select the P3 parameters
+from `system.num_vars` (`>=512` -> 3/20/2, otherwise 3/18/1), and the verifier's
+commitment check uses the same selector, removing the stale fixed-`pcs` field.
