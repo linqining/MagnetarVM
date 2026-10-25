@@ -548,3 +548,21 @@ extracted with `selected_segment_claims`.
 traces, checks `layout.segments.len() > 2`, and checks the extracted claim count
 matches the layout. This is the claim-routing form needed for unified
 integration.
+
+
+## Dynamic selected claims in unified proof (done)
+
+`SelectedOp::Dynamic` plus `prove_dynamic_cpu_claims` package the dynamic
+segmented proof, its per-segment claims and trace metadata. The unified verifier
+now dispatches:
+
+```text
+selected.op == Dynamic
+  -> verify_dynamic_cpu_claims(trace, ...)
+     rebuilds the mixed witness, compares the commitment, verifies the proof
+```
+
+`unified_proof_verifies_dynamic_selected_cpu_claims` proves an Addi+Ecall trace,
+attaches the dynamic claim bundle and verifies the unified proof successfully.
+The full gated CPU proof is still generated, so this is integration/verification
+plumbing, not yet a prover-time win.

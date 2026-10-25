@@ -1063,6 +1063,17 @@ mod phase_tests {
     }
 
     #[test]
+    fn unified_proof_verifies_dynamic_selected_cpu_claims() {
+        let trace = trace();
+        let mut proof = crate::prove_unified_trace(&trace, 8).expect("unified proof");
+        let claims = crate::simd_dual::prove_dynamic_cpu_claims(&trace, 8, &selected_backend())
+            .expect("dynamic selected claims");
+        proof.selected_cpu = Some(claims);
+        crate::verify_unified_trace(&trace, &proof, 8)
+            .expect("verify with dynamic selected claims");
+    }
+
+    #[test]
     fn unified_proof_verifies_attached_selected_cpu_claims() {
         let trace = trace();
         let mut proof = crate::prove_unified_trace(&trace, 8).expect("unified proof");

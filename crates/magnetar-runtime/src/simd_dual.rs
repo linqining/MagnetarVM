@@ -4303,6 +4303,7 @@ pub enum SelectedOp {
     Multiply,
     Divide,
     Branch,
+    Dynamic,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -4346,6 +4347,11 @@ pub fn prove_selected_cpu_claims<B: magnetar_proof::BitPcs>(
         }
         SelectedOp::Branch => {
             prove_branch_pc_segmented_batch_bits(width, cycles, initial_pc, final_pc, backend)?
+        }
+        SelectedOp::Dynamic => {
+            return Err(RuntimeError::Proof(
+                "dynamic selected claims must be built from a trace".into(),
+            ))
         }
     };
     let segments = selected_segment_claims(&layout, &proof)?;
@@ -4427,7 +4433,48 @@ pub fn verify_selected_cpu_claims<B: magnetar_proof::BitPcs>(
             &claims.layout,
             backend,
         ),
+        SelectedOp::Dynamic => Err(RuntimeError::Proof(
+            "dynamic selected claims require the trace to verify".into(),
+        )),
     }
+}
+
+pub fn prove_dynamic_cpu_claims<B: magnetar_proof::BitPcs>(
+    trace: &magnetar_spec::Trace,
+    width: usize,
+    backend: &B,
+) -> Result<SelectedCpuClaims<B::Commitment, B::Opening>, RuntimeError> {
+    let (proof, layout) = prove_dynamic_segmented_trace(trace, width, backend)?;
+    let segments = selected_segment_claims(&layout, &proof)?;
+    Ok(SelectedCpuClaims {
+        op: SelectedOp::Dynamic,
+        width,
+        cycles: trace.rows.len().next_power_of_two(),
+        initial_pc: trace.rows[0].pc,
+        final_pc: trace.final_state.pc,
+        layout,
+        segments,
+        proof,
+    })
+}
+
+pub fn verify_dynamic_cpu_claims<B: magnetar_proof::BitPcs>(
+    trace: &magnetar_spec::Trace,
+    claims: &SelectedCpuClaims<B::Commitment, B::Opening>,
+    backend: &B,
+) -> Result<(), RuntimeError> {
+    if claims.op != SelectedOp::Dynamic {
+        return Err(RuntimeError::Proof(
+            "not a dynamic selected claim bundle".into(),
+        ));
+    }
+    let expected = selected_segment_claims(&claims.layout, &claims.proof)?;
+    if expected != claims.segments {
+        return Err(RuntimeError::Proof(
+            "dynamic selected claim segments do not match the proof".into(),
+        ));
+    }
+    verify_dynamic_segmented_trace(trace, &claims.proof, &claims.layout, claims.width, backend)
 }
 
 trait PcComponent {

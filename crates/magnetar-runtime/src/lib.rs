@@ -2521,10 +2521,18 @@ pub(crate) fn verify_unified_with_plan(
         }
     }
     if let Some(selected) = &proof.selected_cpu {
-        crate::simd_dual::verify_selected_cpu_claims(
-            selected,
-            &crate::protocol::selected_backend(),
-        )?;
+        if selected.op == crate::simd_dual::SelectedOp::Dynamic {
+            crate::simd_dual::verify_dynamic_cpu_claims(
+                trace,
+                selected,
+                &crate::protocol::selected_backend(),
+            )?;
+        } else {
+            crate::simd_dual::verify_selected_cpu_claims(
+                selected,
+                &crate::protocol::selected_backend(),
+            )?;
+        }
     }
     let has_amo = crate::amo_bundle::has_amo_events(trace);
     if has_amo != proof.amo.is_some() {
