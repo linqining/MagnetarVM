@@ -53,3 +53,9 @@ Detailed paper gap audit: [PAPER_GAPS.md](PAPER_GAPS.md).
       `preprocess_expanded`.
 - [ ] Trace-level virtual micro-op scheduling remains open.
 - [ ] `jalr` and programs using x28-x31 fall back to the original bytecode.
+
+## Chunked compact mode
+
+- [x] `prove_chunked_trace_compact` uses one whole-trace CPU proof while keeping
+      the chunk state chain; chunk-2 proof 646,938 -> 217,170 B.
+- [ ] Default streaming mode still carries one CPU proof per chunk.
