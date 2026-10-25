@@ -59,7 +59,7 @@ pub fn groups(has_q: bool) -> Vec<GroupSpec> {
         },
         GroupSpec {
             point_index: 4,
-            start: HQ_COLUMNS,
+            start: HQ_COLUMNS + 16,
             value_offset: 0,
             width: 1,
         },
