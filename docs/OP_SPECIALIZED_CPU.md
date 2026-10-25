@@ -375,5 +375,11 @@ term; the global next-PC mux XORs ALU, branch and memory products. Trace mapping
 converts `GatedCpuRowInput::Memory` into `MixedAluBranchInput::Memory`.
 
 `alu_branch_mem_trace_binds_witness` executes Lui + Lw + Ecall, proves, and
-verifies with the commitment check. Shift/mul/div traces still need their
-components in the mixed relation.
+verifies with the commitment check.
+
+### Shift component (done)
+
+`ShiftPcRow` is now a fourth component with its own selector and product term.
+`alu_branch_shift_trace_binds_witness` executes Lui + Slli + Ecall, proves, and
+verifies with the commitment check. Mul/div traces still need their components
+in the mixed relation.
