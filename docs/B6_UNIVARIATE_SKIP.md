@@ -53,9 +53,20 @@ round without the follow-up reduction would prove a different statement.
 - domain-sum verification;
 
 with tests for distinctness, interpolation at the domain points, and matching a
-low-degree polynomial at a random point. This is the domain/interpolation layer
-only; the zerocheck round and the inner-product-to-evaluation reduction are
-still pending.
+low-degree polynomial at a random point. `univariate_skip_bench` measures the
+current O(|D|^2) Lagrange interpolation:
+
+```text
+log_size=4   16 points      62 us
+log_size=8  256 points    1.45 ms
+log_size=10 1024 points   22.4 ms
+log_size=12 4096 points  376 ms
+```
+
+This is the domain/interpolation layer only; the zerocheck round and the
+inner-product-to-evaluation reduction are still pending. The quadratic Lagrange
+cost is acceptable only for small skip sizes (k=2–4); larger skips need a
+product-tree/interpolation optimization.
 
 ## Recommendation
 
