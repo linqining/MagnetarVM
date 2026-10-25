@@ -52,7 +52,9 @@ Detailed paper gap audit: [PAPER_GAPS.md](PAPER_GAPS.md).
 - [x] Integrate into `execute_expanded`, `ReferencePipeline::run_expanded` and
       `preprocess_expanded`.
 - [ ] Trace-level virtual micro-op scheduling remains open.
-- [ ] `jalr` and programs using x28-x31 fall back to the original bytecode.
+- [x] Programs using x28-x31 are expandable via dynamically chosen unused
+      temporary registers.
+- [ ] `jalr` falls back to the original bytecode.
 
 ## Chunked compact mode
 
