@@ -159,7 +159,7 @@ pipeline/preprocess/executor 路径落地并完成 statement 级验证；静态 
 | B3 | Virtual Spartan：联合两个 SIMD 关系，lockstep outer sum-check，共享 inner sum-check，per-segment claims（§5.3） | unified CPU 使用 `LockstepProof`，segment claims 重建 claim；`BitRelation`/F2 product（extension challenges）；新增 `magnetar-pcs::f2::F2Pcs`：把 F2 bits 嵌入 P3 `F2_128` 做 succinct opening；尚未接 CPU、不是原生 F2 Ligerito | 🟡 | 把 F2 relation 接进 CPU；原生 F2 PCS |
 | B4 | 两个 outer sum-check 共享 instance challenge，inner 只跑一次（§5.3） | `prove_lockstep_claims_bits` 用一个 outer product6 合并两个关系，用一个 inner product2 合并 `a+r b+r²c`，共享同一 commitment/opening | ✅ | 已实现；native F2 backend 也可走同一 lockstep |
 | B5 | 直接段 claims 进 PCS；虚拟段 claims 分发给 Twist/Shout/Router（§5.3） | gated 路径的 virtual segment claims 按 `SegmentOwner` 路由，component/shift/active/branch claims 进入同一个 Mosaic opening；`reservation_grouped_virtual_inputs`/`grouped_virtual_layout` 提供 padded/gathered 布局；shift code 与 Shout 列通过 D9 的 linear point 绑定 | ✅ | gated 路径完成；legacy per-row/chunked bundle 仍保留独立路径 |
-| B6 | sum-check 优化：univariate skip、Frobenius one-hot check、degree reduction 等（§4.2–4.4） | Frobenius collision check 已在 `binary_twist_address` 实现（r'=r³/(1+r+r²)，c=∏(1+r+r²)）；`batch_claims` 改为 weighted product2 + eq table，大 G 上 152 s → 0.7 s；univariate skip/degree reduction 仍未做 | 🟡 | univariate skip / degree reduction |
+| B6 | sum-check 优化：univariate skip、Frobenius one-hot check、degree reduction 等（§4.2–4.4） | Frobenius collision check 已在 `binary_twist_address` 实现（r'=r³/(1+r+r²)，c=∏(1+r+r²)）；5-row read/write probe：20,336 B，prove ~0.9 ms，verify 2–3 ms（`frobenius_bench`）。`batch_claims` 改为 weighted product2 + eq table，大 G 上 152 s → 0.7 s；univariate skip/degree reduction 仍未做 | 🟡 | univariate skip / degree reduction |
 | B7 | 稀疏矩阵/结构矩阵 verifier 直接求值（§4.2 Remark） | 参考实现直接构造/使用矩阵 | 🟡 | 预计算 public matrices；避免 verifier 重建 |
 | B8 | recursive-friendly verifier（§1、§6） | 只有 hash-chain/state-continuity 聚合器 | ❌ | 见 F 节 |
 
@@ -4501,3 +4501,17 @@ this shape). It was not adopted.
 
 `single_chunk_default_uses_streaming_shape` pins the single-chunk delegation:
 `whole_cpu` is absent and the chunk carries a per-chunk CPU proof.
+
+
+### B6 Frobenius probe
+
+`frobenius_bench` (release, 5-row read/write trace, one collision round):
+
+```text
+read:  20,336 B, prove ~0.87 ms, verify ~3.0 ms
+write: 20,336 B, prove ~0.98 ms, verify ~2.1 ms
+```
+
+This is the standalone `binary_twist_address` Frobenius collision/multiplicity
+argument, not yet part of the unified address reduction. Univariate skip and
+degree reduction remain open under B6.
