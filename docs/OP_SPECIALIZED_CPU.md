@@ -477,3 +477,12 @@ rows=16  gated 75,440 B/1.59 s  small 54,200 B/0.54 s  2.96x
 The 2-row case is dominated by fixed backend/proof overhead; from 4 rows onward
 the selected subset is both smaller (~30% at 16 rows) and 2.6-4.9x faster to
 prove. This is the first dynamic component selection result.
+
+
+### Subset guard
+
+`small_alu_branch_rejects_memory_trace` confirms the ALU+branch subset proof
+refuses a trace that needs memory rows instead of silently producing an
+unbound proof. A generic `DynamicMixedRow` builder was attempted this round but
+reverted before commit: it needs a cleaner component-enum/relation builder than
+the current hand-written mux expansion.
