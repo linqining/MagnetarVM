@@ -274,3 +274,19 @@ experiment was reverted together with the feature and the rayon dependency.
 The P3 parallel backend remains disabled. Any future attempt needs a proof
 format with canonical output or a P3 build that is deterministic under
 parallelism; wrapper-level thread-pool switching is not sufficient.
+
+
+## Rejected: scalar-copy collapse of eval_rs_eq
+
+The selected opening spends about 1.4 s in `a_values`, where each entry calls
+`eval_rs_eq`. The 128-lane update is
+
+```text
+eval <- vertical * eval + horizontal * transpose(eval)
+```
+
+It is tempting to collapse `eval` to a scalar multiple of `e_0`. This is wrong:
+the final `transpose128` maps a scalar multiple of `e_0` to a bit-linear
+functional of the scalar, not to field multiplication. A scalar recurrence plus
+a byte table did not match the vector implementation and was reverted. Any
+optimization here must preserve the transpose basis map exactly.
