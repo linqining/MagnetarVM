@@ -4265,11 +4265,12 @@ access proof, so C8 is closed for the reference ABI.
 chunk 2:    707,618 B (access 93,251, cpu 544,626, aux 68,685, chain 1,056)
 chunk 4:    490,018 B (cpu 327,474)
 chunk 8:    352,930 B (cpu 190,610)
-chunk 16:   274,618 B (cpu 112,410)
+chunk 16:   273,610 B (cpu 111,402)
 ```
 
-The standalone CPU proof backend picks `(100,3,20,2)` for systems with
-`num_vars >= 512` and `(100,3,18,1)` otherwise: chunk 2 cpu drops to 544,626 B
+The standalone CPU proof backend picks `(100,3,20,3)` for systems with
+`num_vars >= 4096`, `(100,3,20,2)` for `num_vars >= 512`, and `(100,3,18,1)`
+otherwise: chunk 2 cpu drops to 544,626 B
 (total 709,202 B), chunk 16 cpu to 112,410 B (total 276,202 B). The chunked access also merges points that address the same table row point
 (access 94,835 -> 93,251 B). The chunked access now uses the shared BinaryTwist claim path: RAM/register
 tables are committed once with `(100,3,21,2)` and the claims are opened together
