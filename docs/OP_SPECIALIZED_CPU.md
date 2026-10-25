@@ -118,21 +118,21 @@ cycles=64   branch+pc 75,408 B 2.11 s
 cycles=256  branch+pc 96,576 B 6.39 s
 ```
 
-## ALU virtual specs (done)
+## Selected-op virtual specs (done)
 
-`alu_pc_virtual_specs` emits per-cycle segments for:
+`pc_row_virtual_specs` emits per-cycle segments for the common PC-linked row
+shape:
 
 ```text
-alu       SegmentOwner::Cpu
+instr     SegmentOwner::Cpu
 pc_add    SegmentOwner::Cpu
 pc        SegmentOwner::Pcs
 padding   SegmentOwner::Cpu
 ```
 
-`alu_pc_virtual_specs_partition_the_layout` checks that the emitted source ranges
-cover the padded layout exactly once, with no gaps or overlaps. This is the
-first selected-op routing table; register/memory/Shifter owners are not emitted
-because the ALU-only relation has no such variables.
+Public builders exist for ALU, shift, memory, mul, div and branch selected-op
+rows. `selected_pc_virtual_specs_partition_their_layouts` checks every builder's
+source ranges cover the padded layout exactly once, with no gaps or overlaps.
 
 ## Next concrete step
 

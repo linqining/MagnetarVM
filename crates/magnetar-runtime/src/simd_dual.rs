@@ -2619,49 +2619,133 @@ pub fn verify_branch_pc_batch_bits<B: magnetar_proof::BitPcs>(
     Ok(())
 }
 
+fn pc_row_virtual_specs(
+    width: usize,
+    cycles: usize,
+    base_cols: usize,
+    instr_len: usize,
+    pc_start: usize,
+) -> Vec<crate::VirtualSegmentSpec> {
+    let mut specs = Vec::with_capacity(cycles * 4);
+    for cycle in 0..cycles {
+        let base = cycle * base_cols;
+        let mut push = |name: String, start: usize, len: usize, owner: SegmentOwner| {
+            if len > 0 {
+                specs.push(crate::VirtualSegmentSpec {
+                    name,
+                    sources: vec![(base + start, len)],
+                    owner,
+                    projection: owner.projection(),
+                });
+            }
+        };
+        push(format!("instr{cycle}"), 0, instr_len, SegmentOwner::Cpu);
+        push(
+            format!("pc_add{cycle}"),
+            instr_len,
+            pc_start.saturating_sub(instr_len),
+            SegmentOwner::Cpu,
+        );
+        push(format!("pc{cycle}"), pc_start, 2 * width, SegmentOwner::Pcs);
+        let tail = pc_start + 2 * width;
+        push(
+            format!("padding{cycle}"),
+            tail,
+            base_cols.saturating_sub(tail),
+            SegmentOwner::Cpu,
+        );
+    }
+    specs
+}
+
 pub fn alu_pc_virtual_specs(
     width: usize,
     cycles: usize,
 ) -> Result<Vec<crate::VirtualSegmentSpec>, RuntimeError> {
     let row = AluPcRow::new(width);
     let (base_cols, _, _) = gated_shared_matrices(&row, cycles, None)?;
-    let mut specs = Vec::with_capacity(cycles * 2 + 1);
-    for cycle in 0..cycles {
-        let base = cycle * base_cols;
-        specs.push(crate::VirtualSegmentSpec {
-            name: format!("alu{cycle}"),
-            sources: vec![(base, row.instr.relation.num_vars)],
-            owner: SegmentOwner::Cpu,
-            projection: SegmentOwner::Cpu.projection(),
-        });
-        specs.push(crate::VirtualSegmentSpec {
-            name: format!("pc_add{cycle}"),
-            sources: vec![(
-                base + row.instr.relation.num_vars,
-                row.pc[0] - row.instr.relation.num_vars,
-            )],
-            owner: SegmentOwner::Cpu,
-            projection: SegmentOwner::Cpu.projection(),
-        });
-        specs.push(crate::VirtualSegmentSpec {
-            name: format!("pc{cycle}"),
-            sources: vec![(base + row.pc[0], 2 * width)],
-            owner: SegmentOwner::Pcs,
-            projection: SegmentOwner::Pcs.projection(),
-        });
-        if row.relation.num_vars < base_cols {
-            specs.push(crate::VirtualSegmentSpec {
-                name: format!("padding{cycle}"),
-                sources: vec![(
-                    base + row.relation.num_vars,
-                    base_cols - row.relation.num_vars,
-                )],
-                owner: SegmentOwner::Cpu,
-                projection: SegmentOwner::Cpu.projection(),
-            });
-        }
-    }
-    Ok(specs)
+    Ok(pc_row_virtual_specs(
+        width,
+        cycles,
+        base_cols,
+        row.instr.relation.num_vars,
+        row.pc[0],
+    ))
+}
+
+pub fn shift_pc_virtual_specs(
+    width: usize,
+    cycles: usize,
+) -> Result<Vec<crate::VirtualSegmentSpec>, RuntimeError> {
+    let row = ShiftPcRow::new(width);
+    let (base_cols, _, _) = gated_shared_matrices(&row, cycles, None)?;
+    Ok(pc_row_virtual_specs(
+        width,
+        cycles,
+        base_cols,
+        row.instr.relation.num_vars,
+        row.pc[0],
+    ))
+}
+
+pub fn mem_pc_virtual_specs(
+    width: usize,
+    cycles: usize,
+) -> Result<Vec<crate::VirtualSegmentSpec>, RuntimeError> {
+    let row = MemPcRow::new(width);
+    let (base_cols, _, _) = gated_shared_matrices(&row, cycles, None)?;
+    Ok(pc_row_virtual_specs(
+        width,
+        cycles,
+        base_cols,
+        row.instr.relation.num_vars,
+        row.pc[0],
+    ))
+}
+
+pub fn mul_pc_virtual_specs(
+    width: usize,
+    cycles: usize,
+) -> Result<Vec<crate::VirtualSegmentSpec>, RuntimeError> {
+    let row = MulPcRow::new(width);
+    let (base_cols, _, _) = gated_shared_matrices(&row, cycles, None)?;
+    Ok(pc_row_virtual_specs(
+        width,
+        cycles,
+        base_cols,
+        row.instr.relation.num_vars,
+        row.pc[0],
+    ))
+}
+
+pub fn div_pc_virtual_specs(
+    width: usize,
+    cycles: usize,
+) -> Result<Vec<crate::VirtualSegmentSpec>, RuntimeError> {
+    let row = DivPcRow::new(width);
+    let (base_cols, _, _) = gated_shared_matrices(&row, cycles, None)?;
+    Ok(pc_row_virtual_specs(
+        width,
+        cycles,
+        base_cols,
+        row.instr.relation.num_vars,
+        row.pc[0],
+    ))
+}
+
+pub fn branch_pc_virtual_specs(
+    width: usize,
+    cycles: usize,
+) -> Result<Vec<crate::VirtualSegmentSpec>, RuntimeError> {
+    let row = BranchPcRow::new(width);
+    let (base_cols, _, _) = gated_shared_matrices(&row, cycles, None)?;
+    Ok(pc_row_virtual_specs(
+        width,
+        cycles,
+        base_cols,
+        row.instr.relation.num_vars,
+        row.pc[0],
+    ))
 }
 
 pub fn prove_gated_dual_batch_bits<B: magnetar_proof::BitPcs>(
@@ -3094,6 +3178,33 @@ mod tests {
             &backend
         )
         .is_err());
+    }
+
+    #[test]
+    fn selected_pc_virtual_specs_partition_their_layouts() {
+        let batches = [
+            alu_pc_virtual_specs(8, 16),
+            shift_pc_virtual_specs(8, 16),
+            mem_pc_virtual_specs(8, 16),
+            mul_pc_virtual_specs(8, 16),
+            div_pc_virtual_specs(8, 16),
+            branch_pc_virtual_specs(8, 16),
+        ];
+        for specs in batches {
+            let specs = specs.unwrap();
+            let mut ranges = specs
+                .iter()
+                .flat_map(|spec| spec.sources.iter().copied())
+                .collect::<Vec<_>>();
+            ranges.sort_by_key(|(start, _)| *start);
+            let mut cursor = 0usize;
+            for (start, len) in ranges {
+                assert_eq!(start, cursor);
+                assert!(len > 0);
+                cursor += len;
+            }
+            assert!(cursor > 0);
+        }
     }
 
     #[test]
