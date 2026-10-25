@@ -3883,6 +3883,34 @@ pub fn prove_chunked_trace_compact(
     prove_chunked_trace(trace, width, chunk_size)
 }
 
+fn verify_chunk_cpu(
+    trace: &Trace,
+    chunk: &ChunkCpuProof,
+    width: usize,
+) -> Result<(), RuntimeError> {
+    let cpu = chunk.cpu.as_ref().ok_or_else(|| {
+        RuntimeError::Proof(format!("chunk {} is missing its CPU proof", chunk.start))
+    })?;
+    let (system, witness) = merged_cpu_system_for_rows(&trace.rows[chunk.start..chunk.end], width)?;
+    let shape = crate::cpu_shape::CpuShape::from_rows(&trace.rows[chunk.start..chunk.end]);
+    let (shape_system, _) = shape.system_without_trace(width)?;
+    let values = magnetar_proof::witness_vector(&system, &witness)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let expected = ConstraintProofBackend::pcs_for(&system)
+        .commit(&values)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if bincode::serialize(&expected).unwrap_or_default()
+        != bincode::serialize(&cpu.commitment).unwrap_or_default()
+    {
+        return Err(RuntimeError::Proof(format!(
+            "chunk {} witness does not match the proof commitment",
+            chunk.start
+        )));
+    }
+    ConstraintProofBackend.verify(&shape_system, cpu)?;
+    Ok(())
+}
+
 fn verify_compact_chunks(
     trace: &Trace,
     proof: &ChunkedTraceProof,
@@ -3988,23 +4016,6 @@ pub fn verify_chunked_trace(
                 "chunk {index} proof digest mismatch"
             )));
         }
-        let (system, witness) =
-            merged_cpu_system_for_rows(&trace.rows[chunk.start..chunk.end], width)?;
-        let shape = crate::cpu_shape::CpuShape::from_rows(&trace.rows[chunk.start..chunk.end]);
-        let (shape_system, _) = shape.system_without_trace(width)?;
-        let values = magnetar_proof::witness_vector(&system, &witness)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        let expected = ConstraintProofBackend::pcs_for(&system)
-            .commit(&values)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        if bincode::serialize(&expected).unwrap_or_default()
-            != bincode::serialize(&cpu.commitment).unwrap_or_default()
-        {
-            return Err(RuntimeError::Proof(format!(
-                "chunk {index} witness does not match the proof commitment"
-            )));
-        }
-        backend.verify(&shape_system, cpu)?;
         expected_start = chunk.end;
     }
     if expected_start != trace.rows.len() {
@@ -4012,7 +4023,20 @@ pub fn verify_chunked_trace(
             "chunks do not cover the whole trace".into(),
         ));
     }
-    Ok(())
+    let _ = backend;
+    std::thread::scope(|scope| {
+        let handles = proof
+            .chunks
+            .iter()
+            .map(|chunk| scope.spawn(move || verify_chunk_cpu(trace, chunk, width)))
+            .collect::<Vec<_>>();
+        for handle in handles {
+            handle
+                .join()
+                .map_err(|_| RuntimeError::Proof("chunk verifier thread panicked".into()))??;
+        }
+        Ok::<_, RuntimeError>(())
+    })
 }
 
 /// Standalone verifier for chunked proofs; rows come from the proof and are
