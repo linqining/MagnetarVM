@@ -3299,29 +3299,32 @@ pub struct UnifiedProofSizes {
     pub field_pcs_commitment: usize,
     pub field_tables: usize,
     pub amo: usize,
+    pub serialized: usize,
 }
 
 impl UnifiedProofSizes {
     pub fn total(&self) -> usize {
-        self.access
-            + self.cpu
-            + self.gated
-            + self.opening
-            + self.commitment
-            + self.shape
-            + self.shout
-            + self.packed_shout
-            + self.shift_router
-            + self.store_router
-            + self.trace_claims
-            + self.table_batches
-            + self.claim_proof
-            + self.selected_cpu
-            + self.e5_opening
-            + self.field_opening
-            + self.field_pcs_commitment
-            + self.field_tables
-            + self.amo
+        self.serialized.max(
+            self.access
+                + self.cpu
+                + self.gated
+                + self.opening
+                + self.commitment
+                + self.shape
+                + self.shout
+                + self.packed_shout
+                + self.shift_router
+                + self.store_router
+                + self.trace_claims
+                + self.table_batches
+                + self.claim_proof
+                + self.selected_cpu
+                + self.e5_opening
+                + self.field_opening
+                + self.field_pcs_commitment
+                + self.field_tables
+                + self.amo,
+        )
     }
 }
 
@@ -3351,6 +3354,7 @@ pub fn unified_proof_sizes(proof: &UnifiedTraceProof) -> Result<UnifiedProofSize
         field_pcs_commitment: size(bincode::serialize(&proof.field_pcs_commitment))?,
         field_tables: size(bincode::serialize(&proof.field_tables))?,
         amo: size(bincode::serialize(&proof.amo))?,
+        serialized: size(bincode::serialize(proof))?,
     })
 }
 

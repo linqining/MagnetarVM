@@ -43,7 +43,7 @@ Current scale is 2^9-2^10 rows; the paper target is 2^22-2^28 cycles.
 - [x] proof-size accounting includes `claim_proof` / `selected_cpu`
 - [x] proof-only native verification works after bincode roundtrip
 - [x] full runtime suite green, 309/0
-- [ ] make proof-size accounting exactly equal to bincode size
+- [x] make proof-size accounting exactly equal to bincode size
 - [ ] add CI job for concurrent determinism and repeated full suite
 
 Exit gate:
