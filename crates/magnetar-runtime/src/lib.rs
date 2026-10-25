@@ -366,7 +366,7 @@ impl ConstraintProofBackend {
         } else if system.num_vars >= 1 << 10 {
             P3BinaryPcs::with_params(100, 3, 22, 2)
         } else if system.num_vars >= 1 << 9 {
-            P3BinaryPcs::with_params(100, 3, 20, 2)
+            P3BinaryPcs::with_params(100, 3, 21, 2)
         } else {
             P3BinaryPcs::with_params(100, 3, 18, 1)
         }
@@ -5996,7 +5996,7 @@ mod tests {
     fn cpu_backend_pcs_scale_with_system_size() {
         for (vars, rate, pow, fold) in [
             (8usize, 3usize, 18usize, 1usize),
-            (512, 3, 20, 2),
+            (512, 3, 21, 2),
             (1024, 3, 22, 2),
             (2048, 3, 22, 2),
             (4096, 4, 20, 3),
