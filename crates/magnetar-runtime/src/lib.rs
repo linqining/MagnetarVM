@@ -5880,6 +5880,8 @@ mod tests {
         let trace = execute(&program, config()).unwrap();
         let proof = prove_chunked_trace(&trace, 8, 2).unwrap();
         assert!(proof.shared_access.is_some());
+        assert!(proof.access.ram.opening.is_none());
+        assert!(proof.access.registers.opening.is_none());
         let mut tampered = proof;
         tampered.access.ram.read.initial.rounds[0][0] =
             tampered.access.ram.read.initial.rounds[0][0] + F2_128::from(1u64);

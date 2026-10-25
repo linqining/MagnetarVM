@@ -4309,3 +4309,8 @@ fold=3 (`3,21,3`) regressed access to 95,459 B (vs 93,251 B). Higher grinding
 
 CPU PCS tier threshold 2048 was rejected: it moved chunk 8 to fold=3 and raised
 that proof from 352,930 to 359,202 B. The chosen thresholds are 512 and 4096.
+
+
+`chunked_shared_access_rejects_tampering` now also asserts that the RAM/register
+standalone openings are absent and the shared opening is present, pinning the
+shared-access layout in CI.
