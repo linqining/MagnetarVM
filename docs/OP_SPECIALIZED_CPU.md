@@ -223,3 +223,16 @@ segmented  110,328 B 2.31 s
 The segmented layout costs ~28% proof size because the tiny pc/padding segments
 are rounded to powers of two, but it exposes per-op `SegmentClaim`s and is
 faster at this size.
+
+
+### Segmented selected-op rows
+
+The segmented builder is generic over `GatedRowLike`. Public prove/verify pairs
+now exist for ALU, shift, memory, multiply, divide and branch. Each remaps the
+original witness into the padded per-op layout and rebuilds the relation on the
+mapped variables.
+
+`selected_pc_segmented_batches_round_trip` proves/verifies shift, memory and
+branch segmented batches (ALU is covered by its own test). If the per-op
+segments need more than the original block, the builder grows the block to the
+next power of two instead of failing.

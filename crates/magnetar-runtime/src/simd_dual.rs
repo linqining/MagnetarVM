@@ -2748,7 +2748,7 @@ pub fn branch_pc_virtual_specs(
     ))
 }
 
-struct SegmentedAluPcRow {
+struct SegmentedPcRow {
     width: usize,
     relation: BitRelation,
     pc: Vec<magnetar_constraint::VarId>,
@@ -2756,7 +2756,7 @@ struct SegmentedAluPcRow {
     one: magnetar_constraint::VarId,
 }
 
-impl GatedRowLike for SegmentedAluPcRow {
+impl GatedRowLike for SegmentedPcRow {
     fn relation(&self) -> &BitRelation {
         &self.relation
     }
@@ -2777,24 +2777,23 @@ impl GatedRowLike for SegmentedAluPcRow {
     }
 }
 
-fn segmented_alu_pc_row(
+fn segmented_pc_row<R: GatedRowLike>(
+    original: &R,
+    instr_len: usize,
     width: usize,
     cycles: usize,
 ) -> Result<
     (
-        SegmentedAluPcRow,
+        SegmentedPcRow,
         Vec<usize>,
         magnetar_constraint::WitnessLayout,
-        AluPcRow,
     ),
     RuntimeError,
 > {
     use magnetar_constraint::{Segment, SegmentKind, SegmentOwner, WitnessLayout};
 
-    let original = AluPcRow::new(width);
-    let (base_cols, _, _) = gated_shared_matrices(&original, cycles, None)?;
-    let instr_len = original.instr.relation.num_vars;
-    let pc_start = original.pc[0];
+    let (original_cols, _, _) = gated_shared_matrices(original, cycles, None)?;
+    let pc_start = original.pc()[0];
     let pc_len = 2 * width;
     let instr_size = instr_len.next_power_of_two();
     let add_len = pc_start - instr_len;
@@ -2804,12 +2803,10 @@ fn segmented_alu_pc_row(
         add_len.next_power_of_two()
     };
     let pc_size = pc_len.next_power_of_two();
-    if instr_size + add_size + pc_size > base_cols {
-        return Err(RuntimeError::Proof(
-            "selected-op segments do not fit in the base block".into(),
-        ));
-    }
-    let mut mapping = vec![usize::MAX; original.relation.num_vars];
+    let base_cols = (instr_size + add_size + pc_size)
+        .next_power_of_two()
+        .max(original_cols);
+    let mut mapping = vec![usize::MAX; original.relation().num_vars];
     let mut blocks = Vec::new();
     let mut cursor = 0usize;
     for (index, target) in mapping.iter_mut().take(instr_len).enumerate() {
@@ -2846,24 +2843,24 @@ fn segmented_alu_pc_row(
         cursor += size;
     }
     let mut relation = BitRelation::new(base_cols - 1);
-    for row in &original.relation.rows {
+    for row in &original.relation().rows {
         let map = |vars: &[magnetar_constraint::VarId]| {
             vars.iter().map(|var| mapping[*var]).collect::<Vec<_>>()
         };
         relation.add(BitRow::new(map(&row.a), map(&row.b), map(&row.c)));
     }
     let pc = original
-        .pc
+        .pc()
         .iter()
         .map(|var| mapping[*var])
         .collect::<Vec<_>>();
     let next_pc = original
-        .next_pc
+        .next_pc()
         .iter()
         .map(|var| mapping[*var])
         .collect::<Vec<_>>();
-    let one = mapping[original.instr.one];
-    let row = SegmentedAluPcRow {
+    let one = mapping[original.one()];
+    let row = SegmentedPcRow {
         width,
         relation,
         pc,
@@ -2884,33 +2881,43 @@ fn segmented_alu_pc_row(
     }
     let layout =
         WitnessLayout::new(segments).map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    Ok((row, mapping, layout, original))
+    Ok((row, mapping, layout))
 }
 
-pub fn prove_alu_pc_segmented_batch_bits<B: magnetar_proof::BitPcs>(
+#[allow(clippy::too_many_arguments)]
+fn prove_segmented_pc_batch<B, R, F>(
+    original: &R,
+    instr_len: usize,
     width: usize,
     cycles: usize,
     initial_pc: u64,
     final_pc: u64,
+    pc_step: u64,
+    witness: F,
     backend: &B,
-) -> Result<LockstepBatch<B>, RuntimeError> {
+) -> Result<LockstepBatch<B>, RuntimeError>
+where
+    B: magnetar_proof::BitPcs,
+    R: GatedRowLike,
+    F: Fn(u64) -> Vec<bool>,
+{
     use magnetar_proof::prove_lockstep_bits;
 
-    let (row, mapping, layout, original) = segmented_alu_pc_row(width, cycles)?;
+    let (row, mapping, layout) = segmented_pc_row(original, instr_len, width, cycles)?;
     let (base_cols, s1, s2) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
     if base_cols * cycles != layout.total_bits {
         return Err(RuntimeError::Proof(format!(
-            "segmented ALU layout does not match the padded block size:              base={base_cols} cycles={cycles} total={}",
+            "segmented layout mismatch: base={base_cols} cycles={cycles} total={}",
             layout.total_bits
         )));
     }
     let mut bits = Vec::with_capacity(cycles * base_cols);
     for index in 0..cycles {
-        let pc = initial_pc + 4 * index as u64;
-        let witness = original.witness_at(pc, 0x12, 0x34, crate::simd_f2::GatedAluOp::Add);
+        let pc = initial_pc + pc_step * index as u64;
+        let instance = witness(pc);
         let mut block = vec![false; base_cols];
         for (source, target) in mapping.iter().enumerate() {
-            if witness[source] {
+            if instance[source] {
                 block[*target] = true;
             }
         }
@@ -2923,6 +2930,58 @@ pub fn prove_alu_pc_segmented_batch_bits<B: magnetar_proof::BitPcs>(
     Ok((proof, layout))
 }
 
+#[allow(clippy::too_many_arguments)]
+fn verify_segmented_pc_batch<B, R>(
+    original: &R,
+    instr_len: usize,
+    width: usize,
+    cycles: usize,
+    initial_pc: u64,
+    final_pc: u64,
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    layout: &magnetar_constraint::WitnessLayout,
+    backend: &B,
+) -> Result<(), RuntimeError>
+where
+    B: magnetar_proof::BitPcs,
+    R: GatedRowLike,
+{
+    use magnetar_proof::verify_lockstep_bits;
+
+    let (row, _, expected) = segmented_pc_row(original, instr_len, width, cycles)?;
+    if expected.total_bits != layout.total_bits || expected.segments.len() != layout.segments.len()
+    {
+        return Err(RuntimeError::Proof("segmented layout mismatch".into()));
+    }
+    let (_, s1, s2) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
+    verify_lockstep_bits(
+        &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], layout, proof, backend,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok(())
+}
+
+pub fn prove_alu_pc_segmented_batch_bits<B: magnetar_proof::BitPcs>(
+    width: usize,
+    cycles: usize,
+    initial_pc: u64,
+    final_pc: u64,
+    backend: &B,
+) -> Result<LockstepBatch<B>, RuntimeError> {
+    let row = AluPcRow::new(width);
+    prove_segmented_pc_batch(
+        &row,
+        row.instr.relation.num_vars,
+        width,
+        cycles,
+        initial_pc,
+        final_pc,
+        4,
+        |pc| row.witness_at(pc, 0x12, 0x34, crate::simd_f2::GatedAluOp::Add),
+        backend,
+    )
+}
+
 pub fn verify_alu_pc_segmented_batch_bits<B: magnetar_proof::BitPcs>(
     width: usize,
     cycles: usize,
@@ -2932,19 +2991,238 @@ pub fn verify_alu_pc_segmented_batch_bits<B: magnetar_proof::BitPcs>(
     layout: &magnetar_constraint::WitnessLayout,
     backend: &B,
 ) -> Result<(), RuntimeError> {
-    use magnetar_proof::verify_lockstep_bits;
-
-    let (row, _, expected, _) = segmented_alu_pc_row(width, cycles)?;
-    if expected.total_bits != layout.total_bits || expected.segments.len() != layout.segments.len()
-    {
-        return Err(RuntimeError::Proof("segmented ALU layout mismatch".into()));
-    }
-    let (_, s1, s2) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
-    verify_lockstep_bits(
-        &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], layout, proof, backend,
+    let row = AluPcRow::new(width);
+    verify_segmented_pc_batch(
+        &row,
+        row.instr.relation.num_vars,
+        width,
+        cycles,
+        initial_pc,
+        final_pc,
+        proof,
+        layout,
+        backend,
     )
-    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    Ok(())
+}
+
+pub fn prove_shift_pc_segmented_batch_bits<B: magnetar_proof::BitPcs>(
+    width: usize,
+    cycles: usize,
+    initial_pc: u64,
+    final_pc: u64,
+    backend: &B,
+) -> Result<LockstepBatch<B>, RuntimeError> {
+    let row = ShiftPcRow::new(width);
+    prove_segmented_pc_batch(
+        &row,
+        row.instr.relation.num_vars,
+        width,
+        cycles,
+        initial_pc,
+        final_pc,
+        4,
+        |pc| row.witness_at(pc, 0x12, 2, crate::simd_f2::BitShiftKind::Sll),
+        backend,
+    )
+}
+
+pub fn verify_shift_pc_segmented_batch_bits<B: magnetar_proof::BitPcs>(
+    width: usize,
+    cycles: usize,
+    initial_pc: u64,
+    final_pc: u64,
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    layout: &magnetar_constraint::WitnessLayout,
+    backend: &B,
+) -> Result<(), RuntimeError> {
+    let row = ShiftPcRow::new(width);
+    verify_segmented_pc_batch(
+        &row,
+        row.instr.relation.num_vars,
+        width,
+        cycles,
+        initial_pc,
+        final_pc,
+        proof,
+        layout,
+        backend,
+    )
+}
+
+pub fn prove_mem_pc_segmented_batch_bits<B: magnetar_proof::BitPcs>(
+    width: usize,
+    cycles: usize,
+    initial_pc: u64,
+    final_pc: u64,
+    backend: &B,
+) -> Result<LockstepBatch<B>, RuntimeError> {
+    let row = MemPcRow::new(width);
+    prove_segmented_pc_batch(
+        &row,
+        row.instr.relation.num_vars,
+        width,
+        cycles,
+        initial_pc,
+        final_pc,
+        4,
+        |pc| row.witness_at(pc, 0x10, 0, 0x40),
+        backend,
+    )
+}
+
+pub fn verify_mem_pc_segmented_batch_bits<B: magnetar_proof::BitPcs>(
+    width: usize,
+    cycles: usize,
+    initial_pc: u64,
+    final_pc: u64,
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    layout: &magnetar_constraint::WitnessLayout,
+    backend: &B,
+) -> Result<(), RuntimeError> {
+    let row = MemPcRow::new(width);
+    verify_segmented_pc_batch(
+        &row,
+        row.instr.relation.num_vars,
+        width,
+        cycles,
+        initial_pc,
+        final_pc,
+        proof,
+        layout,
+        backend,
+    )
+}
+
+pub fn prove_mul_pc_segmented_batch_bits<B: magnetar_proof::BitPcs>(
+    width: usize,
+    cycles: usize,
+    initial_pc: u64,
+    final_pc: u64,
+    backend: &B,
+) -> Result<LockstepBatch<B>, RuntimeError> {
+    let row = MulPcRow::new(width);
+    prove_segmented_pc_batch(
+        &row,
+        row.instr.relation.num_vars,
+        width,
+        cycles,
+        initial_pc,
+        final_pc,
+        4,
+        |pc| row.witness_at(pc, 0x12, 0x34),
+        backend,
+    )
+}
+
+pub fn verify_mul_pc_segmented_batch_bits<B: magnetar_proof::BitPcs>(
+    width: usize,
+    cycles: usize,
+    initial_pc: u64,
+    final_pc: u64,
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    layout: &magnetar_constraint::WitnessLayout,
+    backend: &B,
+) -> Result<(), RuntimeError> {
+    let row = MulPcRow::new(width);
+    verify_segmented_pc_batch(
+        &row,
+        row.instr.relation.num_vars,
+        width,
+        cycles,
+        initial_pc,
+        final_pc,
+        proof,
+        layout,
+        backend,
+    )
+}
+
+pub fn prove_div_pc_segmented_batch_bits<B: magnetar_proof::BitPcs>(
+    width: usize,
+    cycles: usize,
+    initial_pc: u64,
+    final_pc: u64,
+    backend: &B,
+) -> Result<LockstepBatch<B>, RuntimeError> {
+    let row = DivPcRow::new(width);
+    prove_segmented_pc_batch(
+        &row,
+        row.instr.relation.num_vars,
+        width,
+        cycles,
+        initial_pc,
+        final_pc,
+        4,
+        |pc| row.witness_at(pc, 0x60, 3),
+        backend,
+    )
+}
+
+pub fn verify_div_pc_segmented_batch_bits<B: magnetar_proof::BitPcs>(
+    width: usize,
+    cycles: usize,
+    initial_pc: u64,
+    final_pc: u64,
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    layout: &magnetar_constraint::WitnessLayout,
+    backend: &B,
+) -> Result<(), RuntimeError> {
+    let row = DivPcRow::new(width);
+    verify_segmented_pc_batch(
+        &row,
+        row.instr.relation.num_vars,
+        width,
+        cycles,
+        initial_pc,
+        final_pc,
+        proof,
+        layout,
+        backend,
+    )
+}
+
+pub fn prove_branch_pc_segmented_batch_bits<B: magnetar_proof::BitPcs>(
+    width: usize,
+    cycles: usize,
+    initial_pc: u64,
+    final_pc: u64,
+    backend: &B,
+) -> Result<LockstepBatch<B>, RuntimeError> {
+    let row = BranchPcRow::new(width);
+    prove_segmented_pc_batch(
+        &row,
+        row.instr.relation.num_vars,
+        width,
+        cycles,
+        initial_pc,
+        final_pc,
+        8,
+        |pc| row.witness_at(pc, 8, 0x12, 0x12, crate::branch_row::BranchKind::Beq),
+        backend,
+    )
+}
+
+pub fn verify_branch_pc_segmented_batch_bits<B: magnetar_proof::BitPcs>(
+    width: usize,
+    cycles: usize,
+    initial_pc: u64,
+    final_pc: u64,
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    layout: &magnetar_constraint::WitnessLayout,
+    backend: &B,
+) -> Result<(), RuntimeError> {
+    let row = BranchPcRow::new(width);
+    verify_segmented_pc_batch(
+        &row,
+        row.instr.relation.num_vars,
+        width,
+        cycles,
+        initial_pc,
+        final_pc,
+        proof,
+        layout,
+        backend,
+    )
 }
 
 pub fn prove_gated_dual_batch_bits<B: magnetar_proof::BitPcs>(
@@ -3421,6 +3699,43 @@ mod tests {
             cursor += len;
         }
         assert!(cursor > 0);
+    }
+
+    #[test]
+    fn selected_pc_segmented_batches_round_trip() {
+        use magnetar_pcs::P3SharedPcs;
+        use magnetar_proof::RingSwitchPackedBitPcs;
+
+        let backend =
+            RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
+        let initial = 0x1000;
+        let final_pc = initial + 4 * 16;
+        let (proof, layout) =
+            prove_shift_pc_segmented_batch_bits(8, 16, initial, final_pc, &backend).unwrap();
+        assert!(layout.segments.len() > 2);
+        verify_shift_pc_segmented_batch_bits(8, 16, initial, final_pc, &proof, &layout, &backend)
+            .unwrap();
+
+        let (proof, layout) =
+            prove_mem_pc_segmented_batch_bits(8, 16, initial, final_pc, &backend).unwrap();
+        assert!(layout.segments.len() > 2);
+        verify_mem_pc_segmented_batch_bits(8, 16, initial, final_pc, &proof, &layout, &backend)
+            .unwrap();
+
+        let branch_final = initial + 8 * 16;
+        let (proof, layout) =
+            prove_branch_pc_segmented_batch_bits(8, 16, initial, branch_final, &backend).unwrap();
+        assert!(layout.segments.len() > 2);
+        verify_branch_pc_segmented_batch_bits(
+            8,
+            16,
+            initial,
+            branch_final,
+            &proof,
+            &layout,
+            &backend,
+        )
+        .unwrap();
     }
 
     #[test]
