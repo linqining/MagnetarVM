@@ -3932,7 +3932,33 @@ pub fn prove_chunked_trace_streaming_dynamic(
         ranges.push((start, end));
         start = end;
     }
-    let (access, aux_claims, opening) = prove_chunked_shared_access(trace)?;
+    let (access, selecteds) = std::thread::scope(|scope| {
+        let access = scope.spawn(|| prove_chunked_shared_access(trace));
+        let handles = ranges
+            .iter()
+            .map(|(start, end)| {
+                let sub = chunk_trace(trace, *start, *end);
+                scope.spawn(move || {
+                    crate::simd_dual::prove_dynamic_cpu_claims(
+                        &sub,
+                        width,
+                        &crate::protocol::selected_backend(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let access = access
+            .join()
+            .map_err(|_| RuntimeError::Proof("dynamic access prover thread panicked".into()))??;
+        let mut selecteds = Vec::with_capacity(handles.len());
+        for handle in handles {
+            selecteds.push(handle.join().map_err(|_| {
+                RuntimeError::Proof("dynamic chunk CPU prover thread panicked".into())
+            })??);
+        }
+        Ok::<_, RuntimeError>((access, selecteds))
+    })?;
+    let (access, aux_claims, opening) = access;
     let aux = aux_claims.map(|claims| AuxTraceProof {
         shout: claims.shout,
         shift_router: claims.shift_router,
@@ -3940,7 +3966,6 @@ pub fn prove_chunked_trace_streaming_dynamic(
         opening: opening.clone(),
     });
     let shared_access = if aux.is_some() { None } else { Some(opening) };
-    let backend = crate::protocol::selected_backend();
     let mut boundaries = vec![0usize];
     for (_, end) in &ranges {
         boundaries.push(*end);
@@ -3948,9 +3973,7 @@ pub fn prove_chunked_trace_streaming_dynamic(
     let digests = chunk_state_digests(trace, &boundaries);
     let mut chunks = Vec::new();
     let mut chained = Vec::new();
-    for (start, end) in ranges {
-        let sub = chunk_trace(trace, start, end);
-        let selected = crate::simd_dual::prove_dynamic_cpu_claims(&sub, width, &backend)?;
+    for ((start, end), selected) in ranges.into_iter().zip(selecteds) {
         let proof_digest = selected_chunk_proof_digest(&trace_commitment, start, end, &selected);
         chained.push(ChainedChunk::new(
             chained.len(),

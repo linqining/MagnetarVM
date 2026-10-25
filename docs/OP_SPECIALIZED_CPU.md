@@ -809,12 +809,12 @@ not hardware SIMD.
 
 ```text
 rows=256  chunk=64
-  compact dynamic    564,890 B / 10.05 s
-  streaming dynamic  725,930 B /  7.62 s
+  compact dynamic    564,890 B / 11.06 s
+  streaming dynamic  725,930 B /  6.19 s
 
 rows=1024 chunk=256
-  compact dynamic  1,384,210 B / 96.89 s
-  streaming dynamic 1,543,938 B / 86.31 s
+  compact dynamic  1,384,210 B / 97.06 s
+  streaming dynamic 1,543,938 B / 79.83 s
 ```
 
 Streaming dynamic is faster than whole-trace compact here because the selected
@@ -838,3 +838,11 @@ warm runs  ~0.42-0.46 ms for both, memory-bandwidth bound
 
 So field XOR is correct and available, but its large-slab speedup disappears
 once data is cache-hot; the packing kernel remains the clear SIMD win (11-12.6x).
+
+
+### Parallel dynamic chunk CPU
+
+`prove_chunked_trace_streaming_dynamic` now proves the per-chunk selected CPU
+claims in scoped threads while the access proof runs concurrently. Proof bytes
+are unchanged; 256-row streaming dropped from 7.62 s to 6.19 s, and 1024-row
+from 86.31 s to 79.83 s on this machine.
