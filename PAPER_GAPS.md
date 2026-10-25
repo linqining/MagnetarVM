@@ -4345,3 +4345,8 @@ non-shift programs unchanged and builds the expected statement.
 `shift_expanded_proof` proves the expanded program end to end: 53 expanded rows,
 proof size 333,496 B, verify OK. This is the current D12 end-to-end evidence; the
 expansion is intentionally fixed and large compared with a hardware shift.
+
+
+`preprocess_expanded` exposes the expanded bytecode preprocessing directly, and
+`preprocess_expanded_uses_the_expanded_rom` checks that the expanded ROM is what
+the pipeline proves over.

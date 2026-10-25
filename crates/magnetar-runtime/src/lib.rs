@@ -212,6 +212,16 @@ pub fn run_guest_elf(
     ReferencePipeline::run_with_io(&loaded.image, loaded.config, chunk_size, io)
 }
 
+/// Preprocess a program after applying the fixed register-shift expansion.
+pub fn preprocess_expanded(
+    image: &ProgramImage,
+    config: MachineConfig,
+) -> Result<PreprocessedProgram, RuntimeError> {
+    let expanded = magnetar_executor::shift_expand::expand_register_shifts(image)
+        .unwrap_or_else(|| image.clone());
+    preprocess(&expanded, config).map_err(Into::into)
+}
+
 pub fn program_hash(image: &ProgramImage) -> [u8; 32] {
     rom_hash(&image.rom)
 }
@@ -5913,6 +5923,49 @@ mod tests {
         let proof = prove_chunked_trace(&trace, 8, 2).unwrap();
         assert_eq!(proof.chunks.len(), 4);
         verify_chunked_trace(&trace, &proof, 8).unwrap();
+    }
+
+    #[test]
+    fn preprocess_expanded_uses_the_expanded_rom() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x234,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 2,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 9,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Sll,
+                    rd: 3,
+                    rs1: 1,
+                    rs2: 2,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ebreak).encode(),
+            ],
+        );
+        let outcome = ReferencePipeline::run_expanded(&program, config(), 2).unwrap();
+        assert!(outcome.trace.rows.len() > 40);
+        assert_eq!(outcome.statement.rom.len(), outcome.trace.rom.len());
+        assert!(outcome.statement.rom.len() > program.rom.len());
+        let preprocessed = preprocess_expanded(&program, config()).unwrap();
+        assert_eq!(preprocessed.config.entry, 0x1000);
     }
 
     #[test]
