@@ -115,6 +115,54 @@ impl ReferencePipeline {
         Self::run_with_io(image, config, chunk_size, &mut ExecutionIo::default())
     }
 
+    /// Run the reference pipeline after applying the fixed register-shift
+    /// expansion. Programs that cannot be expanded run unchanged.
+    pub fn run_expanded(
+        image: &ProgramImage,
+        config: MachineConfig,
+        chunk_size: usize,
+    ) -> Result<ReferenceOutcome, RuntimeError> {
+        Self::run_expanded_with_io(image, config, chunk_size, &mut ExecutionIo::default())
+    }
+
+    pub fn run_expanded_with_io(
+        image: &ProgramImage,
+        config: MachineConfig,
+        chunk_size: usize,
+        io: &mut ExecutionIo,
+    ) -> Result<ReferenceOutcome, RuntimeError> {
+        let expanded = magnetar_executor::shift_expand::expand_register_shifts(image)
+            .unwrap_or_else(|| image.clone());
+        let preprocessed = preprocess(&expanded, config)?;
+        let trace = execute_with_io(&expanded, preprocessed.config.clone(), io)?;
+        check_trace(&trace)?;
+        let memory = check_memory(&trace)?;
+        let layout = preprocessed.layout(trace.len())?;
+        let chunk_plan = ChunkPlan::new(trace.len(), chunk_size)?;
+        let statement = Statement {
+            program_hash: program_hash(&expanded),
+            rom: trace.rom.clone(),
+            trace_commitment: trace_digest(&trace),
+            config: trace.config.clone(),
+            initial_state: trace.initial_state.clone(),
+            initial_ram: trace.initial_ram.clone(),
+            final_state: trace.final_state.clone(),
+            trace_len: trace.len() as u64,
+            output: trace.io_output.clone(),
+            input: trace.io_input.clone(),
+            halted: trace.halted,
+            exit_code: trace.exit_code,
+        };
+        Ok(ReferenceOutcome {
+            preprocessed,
+            trace,
+            memory,
+            layout,
+            chunk_plan,
+            statement,
+        })
+    }
+
     pub fn run_with_io(
         image: &ProgramImage,
         config: MachineConfig,
