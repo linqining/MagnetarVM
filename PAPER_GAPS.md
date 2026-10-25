@@ -13,17 +13,21 @@ Shout ROM                   committed in the shared Mosaic commitment
 Router-Shout link           public width/shift at the Shout link point
 unified opening             verify_mosaic 真正执行
 shared CPU                  shared-matrix CPU + ring switching
+gated CPU                   grouped SIMD dual relation s1 (bits) + s2 (packed)
 Router                       full-cycle witness (None routes)
 native F2                   Merkle PCS + sparse coded Ligero + NativeF2BitPcs
 Virtual Spartan lockstep    prove_lockstep_claims_bits + native BitPcs
 gated bundle soundness      rows 生成 witness 并与 proof.commitment 比较
 C3/C4                       gated row 约束 next_pc；reservation row 在 shared CPU
-benchmark                   137,120 B (opening 65,537, packed_shout 5,226)
+proof digest                unified_proof_digest(proof) 绑定完整 proof
+benchmark                   130,287 B (gated 59,556, opening 55,953,
+                            packed_shout 5,226, access 7,466)
+workloads                   15 个 workload 全部 prove/verify
+op probe                    71 条指令/寻址组合
 ```
 
-仍开放：C1/C2 bytecode/micro-PC/SIMD instance schema、B5 virtual segment
-claim router、B6 sum-check 优化、B8 recursive verifier、D2 单周期 p=2、
-E5/E6 单 packed PCS/Ligerito 集成。
+仍开放：D12 register-shift fixed virtual expansion、chunked A2 trace-free
+verification、B6 sum-check 优化、E5 aligned-subcube packing / 更低 proof size。
 
 ## 一、结论摘要
 
