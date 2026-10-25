@@ -4262,15 +4262,16 @@ access proof, so C8 is closed for the reference ABI.
 `chunked_sizes` (16-row straight-line trace, width 8) measures the chunked path:
 
 ```text
-chunk 2:    709,202 B (access 94,835, cpu 544,626, aux 68,685, chain 1,056)
-chunk 4:    491,602 B (cpu 327,474)
-chunk 8:    354,514 B (cpu 190,610)
-chunk 16:   276,202 B (cpu 112,410)
+chunk 2:    707,618 B (access 93,251, cpu 544,626, aux 68,685, chain 1,056)
+chunk 4:    490,018 B (cpu 327,474)
+chunk 8:    352,930 B (cpu 190,610)
+chunk 16:   274,618 B (cpu 112,410)
 ```
 
 The standalone CPU proof backend picks `(100,3,20,2)` for systems with
 `num_vars >= 512` and `(100,3,18,1)` otherwise: chunk 2 cpu drops to 544,626 B
-(total 709,202 B), chunk 16 cpu to 112,410 B (total 276,202 B). The chunked access now uses the shared BinaryTwist claim path: RAM/register
+(total 709,202 B), chunk 16 cpu to 112,410 B (total 276,202 B). The chunked access also merges points that address the same table row point
+(access 94,835 -> 93,251 B). The chunked access now uses the shared BinaryTwist claim path: RAM/register
 tables are committed once with `(100,3,21,2)` and the claims are opened together
 (access 227,034 -> 94,835 B). The aux commitment uses
 `P3BinaryPcs::with_params(100,3,22,2)` (aux 107,877 -> 68,685 B). The per-chunk CPU

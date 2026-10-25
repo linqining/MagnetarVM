@@ -3411,11 +3411,12 @@ fn prove_chunked_shared_access(
     )?;
     let (points, _values) = ram_claims;
     let (register_points, register_values) = register_claims;
-    let mut pairs = points
+    let pairs = points
         .into_iter()
         .zip(_values)
         .chain(register_points.into_iter().zip(register_values))
         .collect::<Vec<_>>();
+    let mut pairs = crate::merge_point_claims(pairs, &std::collections::HashSet::new());
     pairs.sort_by_key(|(point, _)| crate::point_sort_key(point));
     let (points, _values): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
     let opening = pcs
@@ -3444,11 +3445,12 @@ fn verify_chunked_shared_access(
     )?;
     let (points, values) = ram_claims;
     let (register_points, register_values) = register_claims;
-    let mut pairs = points
+    let pairs = points
         .into_iter()
         .zip(values)
         .chain(register_points.into_iter().zip(register_values))
         .collect::<Vec<_>>();
+    let mut pairs = crate::merge_point_claims(pairs, &std::collections::HashSet::new());
     pairs.sort_by_key(|(point, _)| crate::point_sort_key(point));
     let (points, values): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
     let pcs = P3BinaryPcs::with_params(100, 3, 21, 2);

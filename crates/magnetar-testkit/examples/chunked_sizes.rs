@@ -45,11 +45,17 @@ fn main() {
         let proof = prove_chunked_trace(&trace, 8, chunk).unwrap();
         let sizes = chunked_proof_sizes(&proof).unwrap();
         verify_chunked_trace(&trace, &proof, 8).unwrap();
+        let shape_bytes = proof
+            .chunks
+            .iter()
+            .map(|chunk| bincode::serialize(&chunk.shape).unwrap().len())
+            .sum::<usize>();
         println!(
-            "chunk {chunk}: total {} access {} cpu {} aux {} chain {}",
+            "chunk {chunk}: total {} access {} cpu {} (shape {}) aux {} chain {}",
             sizes.total(),
             sizes.access,
             sizes.cpu,
+            shape_bytes,
             sizes.aux,
             sizes.chain
         );
