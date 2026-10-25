@@ -4364,6 +4364,35 @@ pub fn verify_selected_claim_proof<C: Clone + std::fmt::Debug, O: Clone + std::f
     proof.verify()
 }
 
+/// Check that authenticated row claims agree with the selected CPU claim
+/// statement: row count, initial/final PC and consecutive PC linkage.
+pub fn verify_selected_claim_consistency<C: Clone + std::fmt::Debug, O: Clone + std::fmt::Debug>(
+    claims: &SelectedCpuClaims<C, O>,
+    rows: &[crate::trace_claims::TraceClaim],
+) -> Result<(), RuntimeError> {
+    if rows.is_empty() {
+        return Err(RuntimeError::Proof("claim rows are empty".into()));
+    }
+    let cycles = rows.len().next_power_of_two().max(2);
+    if claims.cycles != cycles {
+        return Err(RuntimeError::Proof("claim cycle count mismatch".into()));
+    }
+    if claims.initial_pc != rows[0].pc || claims.final_pc != rows[rows.len() - 1].next_pc {
+        return Err(RuntimeError::Proof("claim PC statement mismatch".into()));
+    }
+    for pair in rows.windows(2) {
+        if pair[0].next_pc != pair[1].pc {
+            return Err(RuntimeError::Proof("claim PC linkage mismatch".into()));
+        }
+    }
+    if rows.iter().any(|row| !matches!(row.instruction_len, 2 | 4)) {
+        return Err(RuntimeError::Proof(
+            "claim instruction length mismatch".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Bind a selected CPU claim bundle to an independently serialized claim proof.
 pub fn verify_selected_claim_binding<C: Clone + std::fmt::Debug, O: Clone + std::fmt::Debug>(
     claims: &SelectedCpuClaims<C, O>,
@@ -5739,10 +5768,15 @@ mod tests {
         let claims = prove_dynamic_cpu_claims(&trace, 8, &backend).unwrap();
         let proof = crate::trace_claims::ClaimProof::from_trace(&trace);
         assert!(verify_selected_claim_binding(&claims, &proof));
-        assert_eq!(
-            verify_selected_claim_proof(&claims, &proof).unwrap().len(),
-            trace.rows.len()
-        );
+        let recovered = verify_selected_claim_proof(&claims, &proof).unwrap();
+        assert_eq!(recovered.len(), trace.rows.len());
+        verify_selected_claim_consistency(&claims, &recovered).unwrap();
+        let mut bad_link = recovered.clone();
+        bad_link[0].next_pc ^= 2;
+        assert!(verify_selected_claim_consistency(&claims, &bad_link).is_err());
+        let mut bad_len = recovered.clone();
+        bad_len[0].instruction_len = 8;
+        assert!(verify_selected_claim_consistency(&claims, &bad_len).is_err());
         let mut bad = proof;
         bad.openings[0].claim.pc ^= 2;
         assert!(!verify_selected_claim_binding(&claims, &bad));

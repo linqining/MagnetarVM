@@ -220,3 +220,19 @@ memory records
 `verify_selected_claim_binding`/`verify_selected_claim_proof` bind a dynamic
 selected CPU proof to an independent `ClaimProof` by root and openings, and
 return the authenticated claims without reading the trace.
+
+
+## Claim/selected consistency
+
+`verify_selected_claim_consistency` checks:
+
+```text
+claim count -> selected cycles
+claimed initial/final PC
+consecutive next_pc == next.pc
+instruction_len in {2,4}
+```
+
+This runs on recovered claims without touching the trace. Tests reject a broken
+PC link and an invalid length. It still does not prove that the CPU row's ALU
+outputs/register addresses equal the claim fields; that link is the next layer.
