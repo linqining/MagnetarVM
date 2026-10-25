@@ -176,4 +176,10 @@ mod tests {
             assert_eq!((q, r), (num / den, num % den));
         }
     }
+    #[test]
+    fn witness_requires_values_within_width() {
+        let row = GatedDivRow::new(8);
+        assert!(!row.relation.check(&row.witness(0x120, 3)));
+        assert!(row.relation.check(&row.witness(0x60, 3)));
+    }
 }

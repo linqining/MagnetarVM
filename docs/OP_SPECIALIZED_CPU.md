@@ -121,12 +121,20 @@ The first milestone is a sound, PC-linked ALU-only CPU batch proof; mixed-op
 specialization follows only after that.
 
 
-## Div prototype (negative)
+## Div prototype (root cause found)
 
-A `DivPcRow` using `GatedDivRow` and the same PC-adder template was attempted.
-Even with a real one-bit variable taken from the internal add subrelation, the
-row witness failed at constraint 1755 (`lhs=1 rhs=0`), while the existing
-ALU/shift/mul/mem PC rows pass. The div relation's internal constant/one layout
-therefore needs a dedicated audit before it can be used in a selected-op row;
-the prototype was reverted. This does not affect the four working selected-op
-rows.
+A `DivPcRow` using `GatedDivRow` and the same PC-adder template was attempted
+and failed at constraint 1755 (`lhs=1 rhs=0`). The root cause is the test input:
+for `width=8`, `num=0x120` does not fit the width. The div relation's witness
+uses the full `num/den` quotient while the committed `num` bits are truncated,
+so the row is not satisfiable.
+
+New test `witness_requires_values_within_width` confirms:
+
+```text
+GatedDivRow::new(8).witness(0x120, 3)  -> relation check false
+GatedDivRow::new(8).witness(0x60, 3)   -> relation check true
+```
+
+The PC-adder template is therefore not implicated; the div row will be re-added
+with in-range inputs.
