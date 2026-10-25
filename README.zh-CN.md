@@ -225,22 +225,21 @@ SIMD R1CS/BinarySpartan 可把多条 bit-lane 打包进一个 GF(2^128) 元素�
 简洁 verifier。
 
 
-### 规模探测
+### 体积快照
 
-`cargo run --release -p magnetar-testkit --example proof_scaling` 输出当前
-unified proof 的参考测量：
+当前 release 构建参考值：
 
-| rows | unified bytes | chunked bytes | prove ms | verify ms |
-|---:|---:|---:|---:|---:|
-| 2 | 140,222 | 201,455 | 13.9 | 6.1 |
-| 4 | 175,254 | 279,911 | 31.0 | 17.2 |
-| 8 | 212,086 | 444,623 | 60.4 | 21.5 |
-| 16 | 249,046 | 749,319 | 146.4 | 49.4 |
-| 32 | 293,686 | 1,326,655 | 424.2 | 97.1 |
+| benchmark | bytes |
+|---|---:|
+| unified no-shift benchmark | 128,815 |
+| chunked 16-row trace, chunk 2 | 646,928 |
+| chunked 16-row trace, chunk 4 | 429,296 |
+| chunked 16-row trace, chunk 8 | 296,480 |
+| chunked 16-row trace, chunk 16 | 217,120 |
 
-unified proof 已不再携带 `rows`；剩余增长来自 per-row CPU relation 与 PCS 工作。
-chunked proof 还会按 chunk 复制 CPU 证明，因此增长更快。消除该依赖是后续
-A2/Virtual Spartan 的工作。
+15-workload suite 的范围是 183,989 B（clock）到 368,518 B（mem-loop），
+71-case operation probe 覆盖全部支持的 ALU/内存/分支形式。unified proof 不再
+携带 `rows`；chunked proof 仍按 chunk 复制 CPU 证明，消除该依赖仍是 A2 工作。
 
 ## 覆盖率
 
