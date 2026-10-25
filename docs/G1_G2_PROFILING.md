@@ -84,3 +84,31 @@ memory traffic, not independent matvec CPU time alone.
 The first two target the root cause (witness width), but they change the gated
 virtual layout/claim routing; they should be benchmarked against the current
 E5 proof size before adoption.
+
+
+## Op-specialization prototype
+
+`prove_alu_only_batch_bits` constructs only the ALU subrelation, pads rows, and
+proves a batch with the same lockstep/BitPcs path. It is not yet wired into the
+unified CPU layout (no PC/memory/Shifter claims), but it measures the upper
+bound from removing unused subrelations.
+
+Width 16:
+
+```text
+full GatedCpuRow  vars 21,274  nextpow2 base 32,768
+ALU-only row      vars    449  nextpow2 base    512
+base reduction    64x
+```
+
+ALU-only RingSwitch proof:
+
+```text
+cycles=16   bits   8,192  proof 40,424 B  prove 0.24 s  verify 3.2 ms
+cycles=64   bits  32,768  proof 54,224 B  prove 1.16 s  verify 3.9 ms
+cycles=256  bits 131,072  proof 75,560 B  prove 0.76 s  verify 4.8 ms
+```
+
+This confirms the witness-width bottleneck: unused mul/div/sdiv/memory/shift
+subrelations currently dominate the CPU proof, not the ALU relation actually
+executed. The next step is an op-specialized unified layout with claim routing.

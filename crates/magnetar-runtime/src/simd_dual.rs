@@ -14,6 +14,14 @@ use crate::simd_f2::{GatedCpuRow, GatedCpuRowInput};
 use crate::RuntimeError;
 use magnetar_constraint::F2_128;
 
+type LockstepBatch<B> = (
+    LockstepProof<
+        <B as magnetar_proof::BitPcs>::Commitment,
+        <B as magnetar_proof::BitPcs>::Opening,
+    >,
+    WitnessLayout,
+);
+
 fn bit_relation(layout: &magnetar_cpu::simd::UniformCpuRowLayout, op: StepOp) -> BitRelation {
     let mut relation = BitRelation::new(layout.num_vars);
     match op {
@@ -1385,11 +1393,97 @@ pub(crate) fn gated_batch_bits(
 }
 
 #[allow(clippy::type_complexity)]
+/// Prototype op-specialized row: only the ALU relation is committed, instead
+/// of the full combined gated CPU row. Used to measure the benefit of removing
+/// unused mul/div/shift/memory subrelations.
+pub fn prove_alu_only_batch_bits<B: magnetar_proof::BitPcs>(
+    width: usize,
+    cycles: usize,
+    backend: &B,
+) -> Result<LockstepBatch<B>, RuntimeError> {
+    use magnetar_proof::spartan::MatrixPart;
+    use magnetar_proof::{prove_lockstep_bits, SharedBlockMatrix};
+
+    if cycles == 0 || !cycles.is_power_of_two() {
+        return Err(RuntimeError::Proof(
+            "ALU-only batch must be a nonzero power of two".into(),
+        ));
+    }
+    let row = crate::simd_f2::GatedAluRow::new(width);
+    let relation = row.relation.clone();
+    let mut system = relation.to_system();
+    let base_cols = (system.num_vars + 1).next_power_of_two();
+    while system.constraints.len() < system.constraints.len().next_power_of_two() {
+        system.add_constraint(
+            magnetar_constraint::Expr::constant(0u64),
+            magnetar_constraint::Expr::constant(1u64),
+            magnetar_constraint::Expr::constant(0u64),
+        );
+    }
+    let matrices = |part| {
+        SharedBlockMatrix::from_system(&system, part, cycles)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))
+    };
+    let a = matrices(MatrixPart::A)?;
+    let b = matrices(MatrixPart::B)?;
+    let c = matrices(MatrixPart::C)?;
+    let mut bits = Vec::with_capacity(cycles * base_cols);
+    for row_index in 0..cycles {
+        let mut witness = row.witness(
+            0x12 + row_index as u64,
+            0x34 + row_index as u64,
+            if row_index % 2 == 0 {
+                crate::simd_f2::GatedAluOp::Add
+            } else {
+                crate::simd_f2::GatedAluOp::Xor
+            },
+        );
+        witness.resize(base_cols, false);
+        bits.extend(witness);
+    }
+    let layout = segment_layout(bits.len())?;
+    let proof = prove_lockstep_bits(&bits, &a, &b, &c, &a, &b, &c, &layout, backend)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok((proof, layout))
+}
+
+pub fn verify_alu_only_batch_bits<B: magnetar_proof::BitPcs>(
+    width: usize,
+    cycles: usize,
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    layout: &WitnessLayout,
+    backend: &B,
+) -> Result<(), RuntimeError> {
+    use magnetar_proof::spartan::MatrixPart;
+    use magnetar_proof::{verify_lockstep_bits, SharedBlockMatrix};
+
+    let row = crate::simd_f2::GatedAluRow::new(width);
+    let relation = row.relation.clone();
+    let mut system = relation.to_system();
+    while system.constraints.len() < system.constraints.len().next_power_of_two() {
+        system.add_constraint(
+            magnetar_constraint::Expr::constant(0u64),
+            magnetar_constraint::Expr::constant(1u64),
+            magnetar_constraint::Expr::constant(0u64),
+        );
+    }
+    let matrices = |part| {
+        SharedBlockMatrix::from_system(&system, part, cycles)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))
+    };
+    let a = matrices(MatrixPart::A)?;
+    let b = matrices(MatrixPart::B)?;
+    let c = matrices(MatrixPart::C)?;
+    verify_lockstep_bits(&a, &b, &c, &a, &b, &c, layout, proof, backend)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok(())
+}
+
 pub fn prove_gated_dual_batch_bits<B: magnetar_proof::BitPcs>(
     width: usize,
     rows: &[(u64, GatedCpuRowInput)],
     backend: &B,
-) -> Result<(LockstepProof<B::Commitment, B::Opening>, WitnessLayout), RuntimeError> {
+) -> Result<LockstepBatch<B>, RuntimeError> {
     use magnetar_proof::prove_lockstep_bits;
 
     if rows.is_empty() || !rows.len().is_power_of_two() {
@@ -1441,7 +1535,7 @@ pub fn prove_gated_dual_batch_bits_with_pc<B: magnetar_proof::BitPcs>(
     backend: &B,
     initial_pc: u64,
     final_pc: u64,
-) -> Result<(LockstepProof<B::Commitment, B::Opening>, WitnessLayout), RuntimeError> {
+) -> Result<LockstepBatch<B>, RuntimeError> {
     use magnetar_proof::prove_lockstep_bits;
 
     if rows.is_empty() || !rows.len().is_power_of_two() {
@@ -1717,6 +1811,17 @@ mod tests {
             8, &rows, &proof, &layout, &direct, 0x1000, 0x100c,
         )
         .is_err());
+    }
+
+    #[test]
+    fn alu_only_batch_round_trips() {
+        use magnetar_pcs::P3SharedPcs;
+        use magnetar_proof::RingSwitchPackedBitPcs;
+
+        let backend =
+            RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
+        let (proof, layout) = prove_alu_only_batch_bits(8, 16, &backend).unwrap();
+        verify_alu_only_batch_bits(8, 16, &proof, &layout, &backend).unwrap();
     }
 
     #[test]
