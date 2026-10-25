@@ -73,6 +73,16 @@ fn main() {
                 bincode::serialize(&selected.layout).unwrap().len(),
                 bincode::serialize(&selected.segments).unwrap().len()
             );
+            println!(
+                "  selected_parts commitment={} outer={} inner={} proof_segments={} opening={}",
+                bincode::serialize(&selected.proof.commitment)
+                    .unwrap()
+                    .len(),
+                bincode::serialize(&selected.proof.outer).unwrap().len(),
+                bincode::serialize(&selected.proof.inner).unwrap().len(),
+                bincode::serialize(&selected.proof.segments).unwrap().len(),
+                bincode::serialize(&selected.proof.opening).unwrap().len()
+            );
         }
     }
 }

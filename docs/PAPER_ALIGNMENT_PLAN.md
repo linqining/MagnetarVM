@@ -79,6 +79,20 @@ Interim gates:
 ```text
 512 rows: proof < 500 KiB, selected < 300 KiB, claim < 100 KiB
 (current: 445.1 KiB / 303.7 KiB / 54.1 KiB)
+
+At 64 rows, the selected proof splits as:
+
+```text
+commitment       48 B
+outer sumcheck 1,320 B
+inner sumcheck 1,032 B
+segment claims 9,224 B
+PCS opening   133,376 B
+```
+
+The selected proof is dominated by the PCS opening, so the remaining 3.7 KiB
+cannot be removed by metadata trimming. Reaching selected < 300 KiB requires a
+PCS/claim proof change (Phase 2).
 ```
 
 ## Phase 2: CPU engine / BinarySpartan
