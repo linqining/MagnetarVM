@@ -3212,6 +3212,8 @@ pub fn verify_native_claim_layer(
         if selected.op == crate::simd_dual::SelectedOp::Dynamic {
             let synthetic = crate::trace_claims::claims_to_trace(statement, &recovered)?;
             crate::simd_dual::verify_dynamic_cpu_claims(&synthetic, selected, &backend)?;
+        } else {
+            crate::simd_dual::verify_selected_cpu_claims(selected, &backend)?;
         }
     }
     Ok(crate::trace_claims::cpu_output_claims(&claims))

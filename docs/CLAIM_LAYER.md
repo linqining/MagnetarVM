@@ -308,3 +308,12 @@ verify_unified_trace(synthetic, proof)
 No original `trace.rows` are read. Syscall metadata is carried in the claim so
 the CPU shape check also succeeds. Tests cover Addi+Ecall and Lui+Lw+Ecall; both
 call the full proof-only native unified verifier.
+
+
+## Non-dynamic selected proof-only verification
+
+`verify_native_claim_layer` now also calls `verify_selected_cpu_claims` for
+non-dynamic `SelectedOp` values. This verifies the op-specialized committed
+witness and segment claims without a trace, while the claim/selected PC
+consistency check remains. Claim-to-CPU value constraints are still only
+implemented for the dynamic synthetic-trace path.
