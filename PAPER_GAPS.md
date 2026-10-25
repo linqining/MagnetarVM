@@ -223,12 +223,23 @@ x28-x31 时显式回退原 bytecode。
 
 | # | 论文要求（§6） | 当前实现 | 状态 | 剩余工作 |
 |---|---|---|---|---|
-| G1 | 2^22–2^28 cycles、100 GiB 内存 | 新增 `proof_scaling` 参考探测（2–32 rows）；未做长 trace/100 GiB | ❌ | 需要线性内存/流式证明、并行、优化 |
-| G2 | 8–12 M cycles/s（Magnetar opt 9.5–12.8 M） | 当前 ~几十 cycles/s（18 行约 0.4 s） | ❌ | 数量级性能工程；不是算法补丁 |
-| G3 | 15 个 workload（fibonacci、sha256、keccak、erc20 等） | `proof_scaling` 现在同时测 unified 与 chunked（2–32 rows）；chunked 在 32 rows 已达 1.33 MB，说明 per-chunk CPU 证明是主要扩展瓶颈；仍没有 15 个 workload suite | 🟡 | 补完整 benchmark suite；优化 chunked 的 per-chunk CPU 证明 |
-| G4 | 与 ZisK/Lineth/Jolt 对比 | 无 | ❌ | 复现实验设置与对比 |
-| G5 | optimized Magnetar（1.15–1.50×） | 无 | ❌ | 优化版本 |
+| G1 | 2^22–2^28 cycles、100 GiB 内存 | `proof_scaling` 只覆盖 2–32 rows；未做长 trace/100 GiB | ❌ | 线性内存/流式证明、并行、长 trace 工程 |
+| G2 | 8–12 M cycles/s（Magnetar opt 9.5–12.8 M） | 当前 15 workloads 约 1–3 cycles/s（例如 10-row fibonacci 约 7–8 s，44-row mem-loop 约 28 s 的 release 运行） | ❌ | 数量级性能工程；不是算法补丁 |
+| G3 | 15 个 workload（fibonacci、sha256、keccak、erc20 等） | 已有 15 个 guest workloads（fibonacci、memory、shifts、branchy、loop、clock、mem-loop、bitops、muldiv、mixedmem、bitmix、memcopy、branchmix、amo、alu）全部 prove/verify；尚未加入 SHA-256/Keccak/ERC-20 具体 guest | 🟡 | 补论文指定的具体 workload 与统一评估脚本 |
+| G4 | 与 ZisK/Lineth/Jolt 对比 | 尚无同机、同参数对比 | ❌ | 复现实验设置与对比 |
+| G5 | optimized Magnetar（1.15–1.50×） | 只有 reference 参数搜索（P3 分档/compact chunked），不是论文优化版 | ❌ | 优化版本 |
 | G6 | 内存/并行/多线程 | 单线程参考实现 | ❌ | 工程优化 |
+
+### G 的数字为什么看起来差这么多
+
+G1/G2/G4/G5/G6 是**论文优化版 Magnetar 的规模/吞吐指标**，当前仓库是 correctness-first reference：
+
+- 当前 trace 只有 2–32 rows；论文是 2^22–2^28 cycles。规模差 5–6 个数量级，固定开销（P3 opening、commitment、CPU lockstep）主导了当前小 proof。
+- 当前 CPU 仍是通用 per-row Spartan/lockstep 与 P3 多表 opening；没有把共享矩阵 SIMD、BinarySpartan 128-bit packing、完整 MosaicPCS/ring switching 组合到 unified CPU 路径。
+- 单线程 prover，没有多线程/GPU/大页/流式内存；100 GiB RAM 未实现。
+- BinaryTwist 仍保留部分 reference 表构造与逐 cell/cycle 工作，RAM 表按 trace 规模展开而不是线性流式。
+- 所以论文的 8–12 M cycles/s 与当前约 1–3 cycles/s 不能直接比较；当前数字主要说明“功能正确、proof 结构可测”，不是最终性能。
+- G3 已补 15 个 workload，但还不是论文指定的 SHA-256/Keccak/ERC-20 guest；因此仍是 🟡。
 
 ## 三、按优先级排序
 
@@ -285,11 +296,12 @@ These are architectural or research-level items; the current tree is a verified 
 
 ## Verification snapshot
 
-- Workspace: `feat/BinaryTwist`, clean; 307 tests passing at the last full run.
-- Unified hello proof: 261,695 B at width 64, 225,191 B at width 32, 228,423 B at width 8.
-- Current proof components: access 12,778; CPU lockstep 241,240; Shout 2,298; shift Router 1; store Router 5,346.
-- Trace is committed in the shared P3 commitment and routed via 2 segment claims; admission still requires the full trace to rebuild the CPU system.
-- Address multiplicity claim works standalone (including no-write and multi-table cases), but unified integration is still blocked by a trace-specific claim mismatch; the independent address table cost (+43 KB) ruled out the naive integration.
+- Workspace: `feat/BinaryTwist`, clean; `cargo clippy --workspace --all-targets` clean. Targeted tests were run instead of a full workspace suite.
+- Unified no-shift benchmark: 128,815 B (gated 59,556; opening 54,481; access 7,466; packed_shout 5,226).
+- 15-workload suite: 183,989–368,518 B, sum 3,555,811 B; each workload prove/verify passes.
+- Chunked default compact: 217,170 B at chunk 2; streaming chunk 16: 217,123 B.
+- 69-case operation probe passes; proof-only unified roundtrip and chunked tamper tests pass.
+- The historical 261 KB/241 KB CPU numbers below are from earlier, pre-optimization checkpoints, not current measurements.
 
 ### Address-claim integration diagnostic
 
