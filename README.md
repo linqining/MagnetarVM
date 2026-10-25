@@ -255,7 +255,7 @@ Current reference measurements (release build):
 | chunked 16-row trace, chunk 16 | 217,120 |
 
 The 15-workload suite spans 183,989 B (clock) to 368,518 B (mem-loop) and the
-71-case operation probe verifies every supported ALU/memory/branch form. The
+69-case operation probe verifies every supported ALU/memory/branch form. The
 unified proof no longer carries `rows`; chunked proofs still duplicate CPU
 proofs per chunk, so removing that dependence remains the A2 work.
 

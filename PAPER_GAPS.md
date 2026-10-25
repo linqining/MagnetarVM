@@ -23,7 +23,7 @@ proof digest                unified_proof_digest(proof) 绑定完整 proof
 benchmark                   128,815 B (gated 59,556, opening 54,481,
                             packed_shout 5,226, access 7,466)
 workloads                   15 个 workload 全部 prove/verify
-op probe                    71 条指令/寻址组合
+op probe                    69 条指令/寻址组合
 chunked                     646,928 / 429,296 / 296,480 / 217,120 B (chunk 2/4/8/16)
 ```
 

@@ -238,7 +238,7 @@ SIMD R1CS/BinarySpartan 可把多条 bit-lane 打包进一个 GF(2^128) 元素�
 | chunked 16-row trace, chunk 16 | 217,120 |
 
 15-workload suite 的范围是 183,989 B（clock）到 368,518 B（mem-loop），
-71-case operation probe 覆盖全部支持的 ALU/内存/分支形式。unified proof 不再
+69-case operation probe 覆盖全部支持的 ALU/内存/分支形式。unified proof 不再
 携带 `rows`；chunked proof 仍按 chunk 复制 CPU 证明，消除该依赖仍是 A2 工作。
 
 ## 覆盖率
