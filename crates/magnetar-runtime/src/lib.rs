@@ -6011,6 +6011,42 @@ mod tests {
     }
 
     #[test]
+    fn chunked_combined_opening_rejects_aux_tampering() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Slli,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 3,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(&program, config()).unwrap();
+        let proof = prove_chunked_trace(&trace, 8, 2).unwrap();
+        let mut tampered = proof;
+        let aux = tampered.aux.as_mut().expect("aux claims");
+        let shout = aux.shout.as_mut().expect("shout");
+        let value = shout.rounds[0][0];
+        shout.rounds[0][0] = value + F2_128::from(1u64);
+        assert!(verify_chunked_trace(&trace, &tampered, 8).is_err());
+    }
+
+    #[test]
     fn chunked_shared_access_rejects_tampering() {
         let program = ProgramImage::new(
             0x1000,

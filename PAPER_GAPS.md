@@ -4381,3 +4381,7 @@ stays ~7.3 s.
 
 `opening_pcs_scale_with_table_bits` pins the adaptive unified opening tiers:
 max table vars <=5 -> (3,24,2), otherwise (3,21,2).
+
+
+`chunked_combined_opening_rejects_aux_tampering` tampers a BinaryShout sum-check
+round and verifies the combined access+aux opening rejects the proof.
