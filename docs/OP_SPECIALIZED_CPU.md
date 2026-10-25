@@ -675,7 +675,7 @@ tests::trace_proof_covers_compressed_memory_operations
 passes in the full suite at HEAD. The current full runtime suite is:
 
 ```text
-299 passed / 4 failed
+303 passed / 3 failed
 ```
 
 After fixing the JALR mask relation, the AMO test tamper target and the gated
