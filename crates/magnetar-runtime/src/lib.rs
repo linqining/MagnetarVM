@@ -4094,6 +4094,49 @@ mod tests {
     }
 
     #[test]
+    fn chunked_single_chunk_covers_the_trace() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Slli,
+                    rd: 2,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 3,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 3,
+                    rs1: 2,
+                    rs2: 0,
+                    imm: 1,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(&program, config()).unwrap();
+        let proof = prove_chunked_trace(&trace, 8, trace.rows.len()).unwrap();
+        assert_eq!(proof.chunks.len(), 1);
+        assert_eq!(proof.chunks[0].start, 0);
+        assert_eq!(proof.chunks[0].end, trace.rows.len());
+        verify_chunked_trace(&trace, &proof, 8).unwrap();
+    }
+
+    #[test]
     fn chunked_proof_digest_binds_the_proof() {
         let program = ProgramImage::new(
             0x1000,

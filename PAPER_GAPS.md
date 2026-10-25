@@ -4413,3 +4413,7 @@ verification from ~8 s to ~10 s. The `rowbits=4 && count<=8` rule remains.
 `execute_expanded_falls_back_for_jalr` runs a valid jalr control-flow program
 through `execute_expanded` and checks the fallback path matches direct execution
 exactly (including the register file).
+
+
+`chunked_single_chunk_covers_the_trace` pins the compact form: passing the full
+row count as the chunk size produces exactly one chunk, and the proof verifies.
