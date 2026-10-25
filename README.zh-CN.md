@@ -215,14 +215,13 @@ shift_router=1、store_router=5,346 字节。Unified proof 不再携带冗余 tr
 会打印某个 trace 的 standalone 批量 BinaryTwist proof 大小、prove 与 verify
 时间；`prove_unified_trace` 使用共享 mosaic 路径。
 
-参考 `LT` 归约仍会物化 `j × j'` 表，因此 history 部分对 cycle 数仍是二次的；
-论文的线性时间处理留作后续。地址 sum-check 已拆成 `(cell, cycle)` 上的
-initial/base 部分和 `(cycle, previous-cycle)` 上的 history 部分，消除了
-`K × T²` 的 prover 放大，prove 时间回到几百毫秒。共享 P3 的 arity 由 CPU
-witness 决定，RAM 表都是 cycle-length。BinaryShout 与 BinaryRouter 已共享 unified proof commitment；
-SIMD R1CS/BinarySpartan 可把多条 bit-lane 打包进一个 GF(2^128) 元素。verifier
-仍会重建 trace 与合并 system，再验证简洁 CPU PCS proof，因此还不是完整的
-简洁 verifier。
+`LT` MLE 使用前缀递推（`lt_mle_matches_quadratic`），地址 sum-check 已拆成
+`(cell, cycle)` 上的 initial/base 部分和 `(cycle, previous-cycle)` 上的 history
+部分。共享 P3 的 arity 由 CPU witness 决定，RAM 表都是 cycle-length。
+BinaryShout 与 BinaryRouter 共享 unified commitment；grouped gated 路径在同一
+witness 上同时证明 bit-level relation 与 packed `F2^128` companion。
+`verify_unified_proof` 已是 proof-only（不重建 trace）；chunked/per-row 变体仍
+消费 trace。
 
 
 ### 体积快照

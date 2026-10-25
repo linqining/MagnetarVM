@@ -233,13 +233,13 @@ The reference `LT` reductions still materialize the `j × j'` table, so the
 history terms remain quadratic in the cycle count; the paper's linear-time
 treatment is future work. The address sum-check was split into an initial/base
 part over `(cell, cycle)` and a history part over `(cycle, previous-cycle)`,
-which removes the quadratic `K × T²` prover blow-up and brings prove time back
-to a few hundred milliseconds. The shared P3 arity is driven by the CPU
-witness; the RAM tables are cycle-length. BinaryShout and BinaryRouter now share the unified proof commitment,
-and SIMD R1CS/BinarySpartan would pack many bit-lanes into one GF(2^128)
-element. The verifier still reconstructs the trace and merged system before
-checking the succinct CPU PCS proof, so it is not yet a fully succinct
-verifier.
+The `LT` MLE uses the prefix recurrence (`lt_mle_matches_quadratic`), and the
+address sum-checks split `(cell,cycle)` initial/base from `(cycle,previous-cycle)`
+history work. Shared P3 arity is driven by the CPU witness; RAM tables are
+cycle-length. BinaryShout/BinaryRouter share the unified commitment, and the
+grouped gated path proves both the bit-level relation and its packed `F2_128`
+companion over one witness. `verify_unified_proof` is proof-only (no trace
+rebuild); chunked and per-row variants still consume the trace.
 
 
 ### Size snapshots
