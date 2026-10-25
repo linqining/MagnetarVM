@@ -108,3 +108,29 @@ passes `ReservationCpuRow::relation_check` can therefore still fail in the
 gated bundle's shared-matrix sumcheck. The next implementation step is to feed
 the gated bundle from the reservation rows (or an equivalent step2-carrying
 row view) instead of `gated_rows_from_trace`.
+
+
+## Step2 experiment result
+
+A local step2 prototype was built with:
+
+```text
+GatedCpuRow step2/add2/add4 variables
+ReservationCpuInput.next_pc/step2
+gated_batch_bits_with_steps
+prove/verify_gated_dual_batch_bits_steps_with_pc
+gated_bundle::prove_gated_bundle_from_trace using trace-derived steps
+```
+
+Result:
+
+```text
+prove_gated_bundle_from_trace(compressed trace)  passed
+unified prove_cpu (reservation virtual path)     sumcheck mismatch
+```
+
+So the gated bundle itself can represent `pc + 2`; the remaining failure is in
+the unified CPU stage, which builds `z` from `reservation_cpu_rows` through
+`reservation_virtual_inputs` rather than from the bundle. The prototype was
+reverted to keep HEAD green (295/3); the next change should target that unified
+reservation/virtual input path.
