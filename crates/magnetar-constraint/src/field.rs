@@ -22,6 +22,13 @@ pub trait Field:
     fn from_u64(value: u64) -> Self;
     fn inv(self) -> Option<Self>;
 
+    /// Multiply every element by `scalar` in place.
+    fn mul_slice_assign(values: &mut [Self], scalar: Self) {
+        for value in values {
+            *value = *value * scalar;
+        }
+    }
+
     fn is_zero(self) -> bool {
         self == Self::zero()
     }
@@ -130,6 +137,24 @@ impl F2_128 {
     /// XOR `src` into `dst` (field addition) with a hardware kernel when
     /// available. The slice layouts are identical because `F2_128` is
     /// `repr(transparent)` over `u128`.
+    pub fn mul_slice_assign(values: &mut [Self], scalar: Self) {
+        if values.is_empty() || scalar.0 == 1 {
+            return;
+        }
+        if scalar.0 == 0 {
+            values.fill(Self(0));
+            return;
+        }
+        use p3_binary_field::{poly_basis, BinaryField128, TowerLevel};
+        let raw = unsafe {
+            core::slice::from_raw_parts_mut(values.as_mut_ptr() as *mut u128, values.len())
+        };
+        poly_basis::from_tower_slice(raw);
+        let scalar_poly = poly_basis::from_tower(BinaryField128::from_repr(scalar.0));
+        poly_basis::mul_slice(raw, scalar_poly);
+        poly_basis::to_tower_slice(raw);
+    }
+
     pub fn add_assign_slice(dst: &mut [Self], src: &[Self]) {
         assert_eq!(dst.len(), src.len(), "field slice length mismatch");
         #[cfg(target_arch = "x86_64")]
@@ -309,6 +334,10 @@ impl Field for F2_128 {
             let inverse = P3Field::try_inverse(&BinaryField128::from_repr(self.0))?;
             Some(Self(inverse.to_repr()))
         }
+    }
+
+    fn mul_slice_assign(values: &mut [Self], scalar: Self) {
+        Self::mul_slice_assign(values, scalar);
     }
 }
 
@@ -602,6 +631,20 @@ impl Field for F61 {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn packed_mul_slice_matches_scalar() {
+        let scalar = F2_128::from(0x1234_5678_9abc_def0u64);
+        let mut left = (0..300u128)
+            .map(|index| F2_128::from(index.wrapping_mul(0x9e37_79b9_7f4a_7c15)))
+            .collect::<Vec<_>>();
+        let mut expected = left.clone();
+        for value in &mut expected {
+            *value = *value * scalar;
+        }
+        <F2_128 as Field>::mul_slice_assign(&mut left, scalar);
+        assert_eq!(left, expected);
+    }
 
     #[test]
     fn simd_slice_addition_matches_scalar() {

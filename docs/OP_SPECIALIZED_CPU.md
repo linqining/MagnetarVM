@@ -866,3 +866,24 @@ from 86.31 s to 79.83 s on this machine.
 Compact dynamic proofs now overlap the shared-access proof with the whole-trace
 selected CPU proof in scoped threads. The 256-row compact case dropped from
 11.06 s to 7.78 s and the 1024-row case from 97.06 s to 85.84 s.
+
+
+## Packed F2_128 slice multiplication
+
+`F2_128::mul_slice_assign` now converts a slice through the vendor polynomial
+basis, uses `p3_binary_field::poly_basis::mul_slice` (which has packed/CLMUL
+kernels where available), and converts back. `sumcheck::fold_vector` uses it for
+the challenge scaling of each fold.
+
+`packed_mul_slice_matches_scalar` checks 300 elements against the scalar loop.
+`simd_mul_bench` on 1,000,000 elements:
+
+```text
+scalar 8.0-11.1 ms
+packed 5.8-7.6 ms
+speedup 1.35-1.45x
+```
+
+All 40 magnetar-proof tests and the dynamic chunked tests still pass. This is a
+real batch multiplication path, though it is a vendor-packed/CLMUL kernel rather
+than a hand-written AVX2/NEON field multiplier.

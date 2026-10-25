@@ -166,10 +166,15 @@ where
 }
 
 fn fold_vector<F: Field>(values: &[F], challenge: F) -> Vec<F> {
-    values
+    let mut folded = values
         .chunks_exact(2)
-        .map(|pair| pair[0] + challenge * (pair[1] - pair[0]))
-        .collect()
+        .map(|pair| pair[1] - pair[0])
+        .collect::<Vec<_>>();
+    F::mul_slice_assign(&mut folded, challenge);
+    for (value, pair) in folded.iter_mut().zip(values.chunks_exact(2)) {
+        *value = *value + pair[0];
+    }
+    folded
 }
 
 fn vector_sum<F: Field>(values: &[F]) -> F {
