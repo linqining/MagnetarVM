@@ -774,3 +774,22 @@ The end-to-end native prove time did not show a stable win from packing alone
 (65 ms vs 44-127 ms across runs); packing is a small part of the proof. This is a
 real hardware-SIMD kernel, but not yet a broad SIMD port of the field/PCS hot
 loops.
+
+
+## Faster packed-bit transpose
+
+`RingSwitchPackedBitPcs::transpose128` now accumulates set bits into `u128`
+columns instead of adding one `F2_128` per matrix entry:
+
+```text
+while bits != 0:
+  column = trailing_zeros(bits)
+  output[column] |= 1 << row
+  bits &= bits - 1
+```
+
+`fast_transpose_matches_naive` compares it against the old entry-by-entry
+version for 128 random field elements. One native unified run dropped from
+65 ms to ~35 ms, but the measurement is variable and needs a dedicated
+microbenchmark before claiming a stable speedup. This is a scalar optimization,
+not hardware SIMD.

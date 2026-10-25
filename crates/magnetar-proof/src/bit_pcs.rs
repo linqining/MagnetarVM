@@ -78,6 +78,21 @@ impl<P: Pcs> BitPcs for DirectBitPcs<P> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn fast_transpose_matches_naive() {
+        let values = (0..128u128)
+            .map(|index| {
+                let mut state = index.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ 0xdead_beef;
+                state ^= state << 17;
+                state ^= state >> 29;
+                F2_128::from(state.wrapping_mul(index + 3))
+            })
+            .collect::<Vec<_>>();
+        let fast = RingSwitchPackedBitPcs::<TestPcs>::transpose128(&values);
+        let naive = RingSwitchPackedBitPcs::<TestPcs>::transpose128_naive(&values);
+        assert_eq!(fast, naive);
+    }
+
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct Commitment(Vec<F2_128>);
 
@@ -629,6 +644,23 @@ impl<P: Pcs> RingSwitchPackedBitPcs<P> {
     }
 
     fn transpose128(values: &[F2_128]) -> Vec<F2_128> {
+        if values.len() != 128 {
+            return Self::transpose128_naive(values);
+        }
+        let mut output = [0u128; 128];
+        for (row, value) in values.iter().enumerate() {
+            let mut bits = value.value();
+            let row_bit = 1u128 << row;
+            while bits != 0 {
+                let column = bits.trailing_zeros() as usize;
+                output[column] |= row_bit;
+                bits &= bits - 1;
+            }
+        }
+        output.into_iter().map(F2_128::from).collect()
+    }
+
+    fn transpose128_naive(values: &[F2_128]) -> Vec<F2_128> {
         let mut output = vec![F2_128::from(0u64); 128];
         for (row, value) in values.iter().enumerate() {
             let bits = value.value();
