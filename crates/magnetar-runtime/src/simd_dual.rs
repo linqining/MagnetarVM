@@ -1479,6 +1479,182 @@ pub fn verify_alu_only_batch_bits<B: magnetar_proof::BitPcs>(
     Ok(())
 }
 
+struct AluPcRow {
+    width: usize,
+    instr: crate::simd_f2::GatedAluRow,
+    pc_add: crate::simd_f2::GatedBitAdder,
+    pc: Vec<magnetar_constraint::VarId>,
+    next_pc: Vec<magnetar_constraint::VarId>,
+    relation: BitRelation,
+}
+
+impl AluPcRow {
+    fn new(width: usize) -> Self {
+        use magnetar_constraint::VarId;
+        let instr = crate::simd_f2::GatedAluRow::new(width);
+        let pc_add = crate::simd_f2::GatedBitAdder::new(width);
+        let mut relation = instr.relation.clone();
+        let add_offset = relation.num_vars;
+        relation.num_vars += pc_add.relation.num_vars;
+        for row in &pc_add.relation.rows {
+            let shift =
+                |vars: &[VarId]| vars.iter().map(|var| *var + add_offset).collect::<Vec<_>>();
+            relation.add(BitRow::new(shift(&row.a), shift(&row.b), shift(&row.c)));
+        }
+        let pc = (relation.num_vars..relation.num_vars + width)
+            .map(|var| var as VarId)
+            .collect::<Vec<_>>();
+        relation.num_vars += width;
+        let next_pc = (relation.num_vars..relation.num_vars + width)
+            .map(|var| var as VarId)
+            .collect::<Vec<_>>();
+        relation.num_vars += width;
+        let one = instr.one;
+        for bit in 0..width {
+            relation.add(BitRow::new(vec![pc[bit]], vec![pc[bit]], vec![pc[bit]]));
+            relation.add(BitRow::new(
+                vec![next_pc[bit]],
+                vec![next_pc[bit]],
+                vec![next_pc[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![pc[bit]],
+                vec![one],
+                vec![add_offset as VarId + pc_add.a[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![next_pc[bit]],
+                vec![one],
+                vec![add_offset as VarId + pc_add.out[bit]],
+            ));
+            let constant = add_offset as VarId + pc_add.b[bit];
+            if bit == 2 {
+                relation.add(BitRow::new(vec![constant], vec![one], vec![one]));
+            } else {
+                relation.add(BitRow::new(vec![constant], vec![one], Vec::new()));
+            }
+        }
+        relation.add(BitRow::new(
+            vec![add_offset as VarId + pc_add.gate],
+            vec![one],
+            vec![one],
+        ));
+        Self {
+            width,
+            instr,
+            pc_add,
+            pc,
+            next_pc,
+            relation,
+        }
+    }
+
+    fn witness_at(
+        &self,
+        pc: u64,
+        left: u64,
+        right: u64,
+        op: crate::simd_f2::GatedAluOp,
+    ) -> Vec<bool> {
+        let mut bits = self.instr.witness(left, right, op);
+        let addition = self.pc_add.witness(pc, 4, true);
+        bits.extend(addition);
+        bits.resize(self.relation.num_vars, false);
+        for bit in 0..self.width {
+            bits[self.pc[bit]] = (pc >> bit) & 1 == 1;
+            bits[self.next_pc[bit]] = ((pc + 4) >> bit) & 1 == 1;
+        }
+        bits
+    }
+}
+
+impl GatedRowLike for AluPcRow {
+    fn relation(&self) -> &BitRelation {
+        &self.relation
+    }
+    fn packed_companion_system(&self) -> magnetar_constraint::ConstraintSystem {
+        self.relation.to_system()
+    }
+    fn width(&self) -> usize {
+        self.width
+    }
+    fn pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.pc
+    }
+    fn next_pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.next_pc
+    }
+    fn one(&self) -> magnetar_constraint::VarId {
+        self.instr.one
+    }
+}
+
+pub fn prove_alu_pc_batch_bits<B: magnetar_proof::BitPcs>(
+    width: usize,
+    cycles: usize,
+    backend: &B,
+) -> Result<LockstepBatch<B>, RuntimeError> {
+    use magnetar_proof::prove_lockstep_bits;
+
+    if cycles == 0 || !cycles.is_power_of_two() {
+        return Err(RuntimeError::Proof(
+            "ALU+PC batch must be a nonzero power of two".into(),
+        ));
+    }
+    let row = AluPcRow::new(width);
+    let system = row.relation.to_system();
+    let witness = row.relation.to_witness(&row.witness_at(
+        0x1000,
+        0x12,
+        0x34,
+        crate::simd_f2::GatedAluOp::Add,
+    ));
+    system
+        .check(&witness)
+        .map_err(|error| RuntimeError::Proof(format!("ALU+PC row witness: {error}")))?;
+    let (base_cols, s1, s2) = gated_shared_matrices(&row, cycles, None)?;
+    let mut bits = Vec::with_capacity(cycles * base_cols);
+    for index in 0..cycles {
+        let pc = 0x1000 + 4 * index as u64;
+        let mut witness = row.witness_at(
+            pc,
+            0x12 + index as u64,
+            0x34 + index as u64,
+            if index % 2 == 0 {
+                crate::simd_f2::GatedAluOp::Add
+            } else {
+                crate::simd_f2::GatedAluOp::Xor
+            },
+        );
+        witness.resize(base_cols, false);
+        bits.extend(witness);
+    }
+    let layout = segment_layout(bits.len())?;
+    let proof = prove_lockstep_bits(
+        &bits, &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], &layout, backend,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok((proof, layout))
+}
+
+pub fn verify_alu_pc_batch_bits<B: magnetar_proof::BitPcs>(
+    width: usize,
+    cycles: usize,
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    layout: &WitnessLayout,
+    backend: &B,
+) -> Result<(), RuntimeError> {
+    use magnetar_proof::verify_lockstep_bits;
+
+    let row = AluPcRow::new(width);
+    let (_, s1, s2) = gated_shared_matrices(&row, cycles, None)?;
+    verify_lockstep_bits(
+        &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], layout, proof, backend,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok(())
+}
+
 pub fn prove_gated_dual_batch_bits<B: magnetar_proof::BitPcs>(
     width: usize,
     rows: &[(u64, GatedCpuRowInput)],
@@ -1811,6 +1987,17 @@ mod tests {
             8, &rows, &proof, &layout, &direct, 0x1000, 0x100c,
         )
         .is_err());
+    }
+
+    #[test]
+    fn alu_pc_batch_round_trips() {
+        use magnetar_pcs::P3SharedPcs;
+        use magnetar_proof::RingSwitchPackedBitPcs;
+
+        let backend =
+            RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
+        let (proof, layout) = prove_alu_pc_batch_bits(8, 16, &backend).unwrap();
+        verify_alu_pc_batch_bits(8, 16, &proof, &layout, &backend).unwrap();
     }
 
     #[test]

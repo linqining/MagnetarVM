@@ -28,42 +28,35 @@ batch costs 5.30 s and 98,144 B, while the ALU-only prototype costs 0.24 s and
 4. virtual segment specs/claim routing for the selected variables only;
 5. a verifier path that accepts the specialized layout.
 
-## First prototype (reverted)
+## First milestone: PC-linked ALU-only proof (done)
 
-`AluPcRow` combined:
+`AluPcRow` combines:
 
 - a `GatedAluRow` instruction relation;
-- a second `GatedAluRow` used as a PC adder (pc + 4 -> next_pc);
-- equality links from `pc` to the adder's `a`, constants into `b`, and
-  `next_pc` to the adder's `out`;
-- PC/next-PC Boolean constraints.
+- a `GatedBitAdder` for `pc + 4 -> next_pc`;
+- links `pc = adder.a`, constant 4 into `adder.b`, `next_pc = adder.out`;
+- Boolean constraints for pc/next_pc and gate = 1.
 
-The row witness failed its own constraint check with:
+The earlier failure was an encoding bug: the Boolean constraints were written
+as `pc * one = 0`, forcing every PC bit to zero. They are now `pc * pc = pc`.
+The row witness passes `ConstraintSystem::check`, and
+`alu_pc_batch_round_trips` proves/verifies a PC-linked 16-cycle batch.
+
+Release, width 16:
 
 ```text
-constraint 453: lhs=1 rhs=0
+full gated      524,288 bits  98,144 B  5.87 s
+ALU+PC           16,384 bits  47,248 B  0.83 s
+ALU-only          8,192 bits  40,424 B  0.25 s
 ```
 
-so the PC-adder/link encoding is wrong or incomplete. It was reverted rather
-than wired into the CPU proof. The ALU-only (no PC) prototype remains available
-as a performance bound.
+The ALU+PC proof is ~7x faster and ~2.1x smaller than the full gated row while
+enforcing sequential `pc + 4`.
 
 ## Next concrete step
 
-Replace the second ALU adder with an explicit bit-level increment relation:
-
-```text
-pc[0] = pc[1] = 0
-next_pc[0] = next_pc[1] = 0
-carry_2 = 1
-for bit >= 2:
-  next_pc[bit] = pc[bit] XOR carry
-  carry_{bit+1} = pc[bit] AND carry
-```
-
-with explicit XOR/AND temporary vars, then check the row witness locally before
-running any proof. Only after this passes should the specialized relation be
-wired into gated matrices/layout/claims.
+Extend `AluPcRow` to the selected-op relation and add PC statement claims
+(initial/final PC), then virtual segment/claim routing for unified.
 
 ## Non-goals for the first step
 
