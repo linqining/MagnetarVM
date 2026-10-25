@@ -111,3 +111,19 @@ A full prototype must therefore include both:
 
 Until (2) exists, the skip round must not be wired into `binary_twist` or the
 CPU proof.
+
+
+## B2 residual opening
+
+`magnetar-runtime::bound_rows` implements the first piece of the B2 interface:
+
+```text
+sum_i lambda_i f(i) = v
+-> degree-2 product sum-check over lambda and f
+-> f(r) = v_r
+-> P3 opening of f at r
+```
+
+`bound_rows_bench` measures it for k=4/8/10. This is the layer a skip
+challenge can target; the skip message relation itself must still be tied to
+this weighted claim before it can be used in `binary_twist`/CPU.
