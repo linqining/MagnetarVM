@@ -655,8 +655,8 @@ standalone proof of the high selector.
 
 ### Clean-baseline test check
 
-The 11 failing tests from the full runtime suite were rerun at baseline commit
-`d5eb67e`. Ten fail there as well:
+The 11 failing tests from the earlier full runtime suite were rerun at baseline
+commit `d5eb67e`. Ten fail there as well:
 
 ```text
 binary_twist::ram_tests::ram_binary_twist_bundle_round_trips
@@ -671,10 +671,14 @@ tests::trace_proof_covers_compressed_instructions
 tests::trace_proof_covers_compressed_memory_operations
 ```
 
-`protocol_plan_and_orchestrator_preserve_proof_bytes` passes at baseline and when
-rerun individually at HEAD; its full-suite failure is parallel-test/state
-sensitivity. So 10 of 11 are pre-existing at `d5eb67e`; the protocol test is not
-a deterministic regression.
+`protocol_plan_and_orchestrator_preserve_proof_bytes` passes at baseline and now
+passes in the full suite at HEAD. The current full runtime suite is:
+
+```text
+285 passed / 10 failed
+```
+
+All 10 remaining failures are the pre-existing baseline failures listed above.
 
 
 ## Dynamic CPU in compact chunked proofs (done)
