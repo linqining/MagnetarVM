@@ -4220,7 +4220,7 @@ rejected: fibonacci grew 4.2 KB and bitops 3.1 KB.
 
 ### PCS parameter search notes
 
-`bits=12` uses `(3,20,2)`; `bits=13` tries `(3,20,2)/(3,20,3)/(4,20,2)` all
+`bits=12` uses `(3,21,2)`; `bits=13` tries `(3,20,2)/(3,20,3)/(4,20,2)` all
 regressed fibonacci or bitops; `bits=14` tries `(3,20,2)/(3,20,3)/(4,22,3)/
 (4,20,2)` and the default `(4,20,3)` remains best for size+latency. For the
 9-variable branch, fold=1, fold=3 and rate=4 all regressed or ran much slower.
@@ -4369,3 +4369,11 @@ The unified opening picks `pow=24` for mosaics whose largest table has <=5
 variables and `pow=21` otherwise. The no-shift benchmark drops 130,287 ->
 128,815 B (opening 55,953 -> 54,481 B); the 15 workload sizes are unchanged.
 Pow=25 saved another 0.7 KB but made the benchmark take ~48 s, so 24 is kept.
+
+
+### 12-variable gated tables: 21 grinding bits
+
+`bits=12` moves from `(3,20,2)` to `(3,21,2)`. The 15-workload sum drops
+3,567,043 -> 3,555,811 B (-11.2 KB), mainly memory -2.2 KB, memcopy -2.7 KB,
+mixedmem -1.6 KB, bitmix -1.4 KB, loop -1.3 KB; muldiv grows 0.3 KB. AMO latency
+stays ~7.3 s.
