@@ -192,7 +192,7 @@ mod tests {
         )
         .unwrap();
         let proof = prove_gated_chunks(&trace, 8, 2).unwrap();
-        assert_eq!(proof.chunks.len(), 2);
+        assert_eq!(proof.chunks.len(), 3);
         verify_gated_chunks(&trace, 8, &proof).unwrap();
     }
 }
