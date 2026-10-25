@@ -339,3 +339,32 @@ alu+branch mixed proof=112,368 B prove=10.49 s
 
 This is the first mixed-op selected row and the prerequisite for binding a real
 trace (which contains Fetch rows). It is not yet segmented/claim-routed.
+
+
+## Trace-bound mixed CPU proof (done)
+
+`prove_alu_branch_trace` / `verify_alu_branch_trace` build the mixed ALU+branch
+rows directly from a trace:
+
+```text
+gated_rows_from_trace -> Alu or Branch
+  -> MixedAluBranchInput
+  -> pad to a power of two
+  -> selected CPU proof
+```
+
+The verifier rebuilds the same witness bits and compares
+
+```text
+backend.commitment_bytes(backend.commit(bits))
+  == backend.commitment_bytes(proof.commitment)
+```
+
+before verifying the proof, so the selected CPU witness is bound to the trace.
+The last row is mapped to the branch component when the trace halts at the same
+PC (e.g. Ecall), because the ALU row would wrongly advance `pc + 4`.
+
+`alu_branch_trace_binds_witness` executes Addi + Ecall, proves the selected CPU
+batch, and verifies it with the commitment check. This is the first sound,
+trace-bound op-specialized CPU proof, but it still supports only ALU/branch rows;
+memory/shift/mul/div traces need those components in the mixed relation.

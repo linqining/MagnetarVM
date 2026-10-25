@@ -3240,7 +3240,8 @@ struct MixedAluBranchRow {
     relation: BitRelation,
 }
 
-enum MixedAluBranchInput {
+#[derive(Clone, Copy)]
+pub enum MixedAluBranchInput {
     Alu {
         left: u64,
         right: u64,
@@ -3471,6 +3472,130 @@ pub fn verify_alu_branch_pc_batch_bits<B: magnetar_proof::BitPcs>(
 ) -> Result<(), RuntimeError> {
     use magnetar_proof::verify_lockstep_bits;
 
+    let row = MixedAluBranchRow::new(width);
+    let (_, s1, s2) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
+    verify_lockstep_bits(
+        &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], layout, proof, backend,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok(())
+}
+
+pub fn mixed_alu_branch_rows_from_trace(
+    trace: &magnetar_spec::Trace,
+    width: usize,
+) -> Result<Vec<(u64, MixedAluBranchInput)>, RuntimeError> {
+    use crate::simd_f2::GatedCpuRowInput;
+
+    let rows = crate::simd_full::gated_rows_from_trace(trace, width)?;
+    rows.into_iter()
+        .map(|(pc, input)| match input {
+            GatedCpuRowInput::Alu { left, right, op } => {
+                Ok((pc, MixedAluBranchInput::Alu { left, right, op }))
+            }
+            GatedCpuRowInput::Branch {
+                left,
+                right,
+                imm,
+                kind,
+            } => Ok((
+                pc,
+                MixedAluBranchInput::Fetch {
+                    left,
+                    right,
+                    imm,
+                    kind,
+                },
+            )),
+            other => Err(RuntimeError::Proof(format!(
+                "mixed ALU+branch row does not support {other:?}"
+            ))),
+        })
+        .collect()
+}
+
+fn mixed_trace_bits(
+    width: usize,
+    rows: &[(u64, MixedAluBranchInput)],
+    final_pc: u64,
+) -> Result<(Vec<bool>, usize, usize, u64, u64), RuntimeError> {
+    if rows.is_empty() {
+        return Err(RuntimeError::Proof("empty mixed trace".into()));
+    }
+    let row = MixedAluBranchRow::new(width);
+    let cycles = rows.len().next_power_of_two();
+    let initial_pc = rows[0].0;
+    let (base_cols, _, _) = gated_shared_matrices(&row, cycles, None)?;
+    let mut bits = Vec::with_capacity(cycles * base_cols);
+    for index in 0..cycles {
+        let (pc, mut input) = if index < rows.len() {
+            rows[index]
+        } else {
+            (
+                final_pc,
+                MixedAluBranchInput::Fetch {
+                    left: 0,
+                    right: 0,
+                    imm: 0,
+                    kind: crate::branch_row::BranchKind::Beq,
+                },
+            )
+        };
+        if index + 1 == rows.len() && final_pc == pc {
+            input = MixedAluBranchInput::Fetch {
+                left: 0,
+                right: 0,
+                imm: 0,
+                kind: crate::branch_row::BranchKind::Beq,
+            };
+        }
+        let mut instance = row.witness_at(pc, &input);
+        instance.resize(base_cols, false);
+        bits.extend(instance);
+    }
+    Ok((bits, cycles, row.relation.num_vars, initial_pc, final_pc))
+}
+
+pub fn prove_alu_branch_trace<B: magnetar_proof::BitPcs>(
+    trace: &magnetar_spec::Trace,
+    width: usize,
+    backend: &B,
+) -> Result<LockstepBatch<B>, RuntimeError> {
+    use magnetar_proof::prove_lockstep_bits;
+
+    let rows = mixed_alu_branch_rows_from_trace(trace, width)?;
+    let final_pc = trace.final_state.pc;
+    let (bits, cycles, _, initial_pc, _) = mixed_trace_bits(width, &rows, final_pc)?;
+    let row = MixedAluBranchRow::new(width);
+    let (base_cols, s1, s2) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
+    let layout = segment_layout(cycles * base_cols)?;
+    let proof = prove_lockstep_bits(
+        &bits, &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], &layout, backend,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok((proof, layout))
+}
+
+pub fn verify_alu_branch_trace<B: magnetar_proof::BitPcs>(
+    trace: &magnetar_spec::Trace,
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    layout: &magnetar_constraint::WitnessLayout,
+    width: usize,
+    backend: &B,
+) -> Result<(), RuntimeError> {
+    use magnetar_proof::verify_lockstep_bits;
+
+    let rows = mixed_alu_branch_rows_from_trace(trace, width)?;
+    let (bits, cycles, _, initial_pc, _) = mixed_trace_bits(width, &rows, trace.final_state.pc)?;
+    let expected = backend
+        .commit(&bits)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if backend.commitment_bytes(&expected) != backend.commitment_bytes(&proof.commitment) {
+        return Err(RuntimeError::Proof(
+            "mixed selected CPU witness does not match the proof commitment".into(),
+        ));
+    }
+    let final_pc = trace.final_state.pc;
     let row = MixedAluBranchRow::new(width);
     let (_, s1, s2) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
     verify_lockstep_bits(
@@ -3997,6 +4122,55 @@ mod tests {
             8, &rows, &proof, &layout, &direct, 0x1000, 0x100c,
         )
         .is_err());
+    }
+
+    #[test]
+    fn alu_branch_trace_binds_witness() {
+        use magnetar_executor::execute;
+        use magnetar_pcs::P3SharedPcs;
+        use magnetar_proof::RingSwitchPackedBitPcs;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 11,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let backend =
+            RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
+        for row in &trace.rows {
+            eprintln!(
+                "row pc={:x} micro={:?} op={}",
+                row.pc,
+                row.micro_op,
+                row.instruction.op.name()
+            );
+        }
+        eprintln!("final pc={:x}", trace.final_state.pc);
+        let (proof, layout) = prove_alu_branch_trace(&trace, 8, &backend).unwrap();
+        verify_alu_branch_trace(&trace, &proof, &layout, 8, &backend).unwrap();
     }
 
     #[test]
