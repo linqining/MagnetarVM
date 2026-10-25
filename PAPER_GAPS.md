@@ -4294,3 +4294,11 @@ and verifies that the shared-access opening rejects the chunked proof.
 `cpu_backend_pcs_scale_with_system_size` pins the three adaptive CPU PCS tiers
 (3/18/1, 3/20/2, 3/20/3) to their `num_vars` thresholds so future parameter
 changes cannot silently desynchronize prover and verifier.
+
+
+### Chunked PCS search notes
+
+Aux fold=3 (`3,20,3`) regressed aux to 75,605 B (vs 68,685 B), and access
+fold=3 (`3,21,3`) regressed access to 95,459 B (vs 93,251 B). Higher grinding
+(pow22/24) on the largest CPU tier saved 1-4 KB but raised `chunked_sizes` to
+34-48 s, so the current tiers remain the chosen point.
