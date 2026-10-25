@@ -252,3 +252,8 @@ canonicalized.
 
 A parallel product2 attempt was also reverted: at 512 rows it measured 0.48 s
 versus 0.40 s sequential, so it added overhead without benefit.
+
+After eq/product6/row-combination parallelization, the PCS grinding bits were
+re-swept. At 512 rows, selected stage was 4.08 s with 8 grinding bits versus
+4.16 s with 16 grinding bits, but the 8-bit proof is 11 KiB larger. The
+difference is noise-level, so the smaller 16-bit-proof configuration is kept.

@@ -40,13 +40,13 @@ fn main() {
     )
     .unwrap();
     let configs = [
-        ("default(2,4,1)", 100usize, 2usize, 4usize, 1usize),
-        ("rate1-pow8-f1", 100, 1, 8, 1),
-        ("rate1-pow16-f1", 100, 1, 16, 1),
-        ("rate1-pow16-f2", 100, 1, 16, 2),
-        ("rate1-pow16-f3", 100, 1, 16, 3),
-        ("rate2-pow8-f2", 100, 2, 8, 2),
-        ("rate4-pow16-f3", 100, 4, 16, 3),
+        ("rate4-pow0-f3", 100usize, 4usize, 0usize, 3usize),
+        ("rate4-pow4-f3", 100, 4, 4, 3),
+        ("rate4-pow8-f3", 100, 4, 8, 3),
+        ("rate4-pow12-f3", 100, 4, 12, 3),
+        ("rate4-pow16-f4", 100, 4, 16, 4),
+        ("rate4-pow16-f0", 100, 4, 16, 0),
+        ("rate8-pow8-f3", 100, 8, 8, 3),
     ];
     for (name, security, inv_rate, pow, folding) in configs {
         let backend =
