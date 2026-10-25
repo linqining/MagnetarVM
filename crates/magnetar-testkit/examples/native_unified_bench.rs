@@ -1,0 +1,48 @@
+use std::time::Instant;
+
+use magnetar_executor::execute;
+use magnetar_runtime::{prove_unified_trace_auto, verify_unified_trace};
+use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+fn main() {
+    for adds in [1u64, 3, 7, 15, 31, 63] {
+        let mut rom = Vec::new();
+        for index in 0..adds {
+            rom.push(
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: index as i64 + 1,
+                    shamt: 0,
+                }
+                .encode(),
+            );
+        }
+        rom.push(Instruction::new(Op::Ecall).encode());
+        let trace = execute(
+            &ProgramImage::new(0x1000, rom),
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 1000,
+            },
+        )
+        .unwrap();
+        let started = Instant::now();
+        let proof = prove_unified_trace_auto(&trace, 8).unwrap();
+        let prove = started.elapsed();
+        let bytes = bincode::serialize(&proof).unwrap().len();
+        let started = Instant::now();
+        verify_unified_trace(&trace, &proof, 8).unwrap();
+        let verify = started.elapsed();
+        println!(
+            "adds={adds} rows={} proof={bytes}B prove={prove:?} verify={verify:?}",
+            trace.rows.len()
+        );
+    }
+}

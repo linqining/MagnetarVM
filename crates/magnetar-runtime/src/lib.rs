@@ -2576,6 +2576,18 @@ pub(crate) fn verify_unified_inner(
 
 /// Verify a unified proof against the public statement before rebuilding the
 /// row systems. Program identity is bound through the ROM carried by the trace.
+/// Pick the native dynamic selected CPU path when the trace is expressible by
+/// the dynamic component row; otherwise fall back to the reference prover.
+pub fn prove_unified_trace_auto(
+    trace: &Trace,
+    width: usize,
+) -> Result<UnifiedTraceProof, RuntimeError> {
+    match crate::simd_dual::mixed_trace_component_mask(trace, width) {
+        Ok(_) => prove_unified_trace_dynamic_native(trace, width),
+        Err(_) => prove_unified_trace(trace, width),
+    }
+}
+
 pub fn prove_unified_trace_dynamic_native(
     trace: &Trace,
     width: usize,

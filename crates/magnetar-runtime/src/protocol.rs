@@ -1063,6 +1063,15 @@ mod phase_tests {
     }
 
     #[test]
+    fn unified_auto_selects_native_dynamic() {
+        let trace = trace();
+        let proof = crate::prove_unified_trace_auto(&trace, 8).expect("auto proof");
+        assert!(proof.selected_cpu.is_some());
+        assert!(proof.gated.is_none());
+        crate::verify_unified_trace(&trace, &proof, 8).expect("verify auto proof");
+    }
+
+    #[test]
     fn unified_dynamic_native_round_trips() {
         let trace = trace();
         let full = crate::prove_unified_trace(&trace, 8).expect("full");

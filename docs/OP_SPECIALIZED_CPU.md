@@ -621,3 +621,25 @@ native    55,754 B  prove  0.127 s verify 0.042 s
 
 The native path is ~130x faster to prove and about half the proof bytes, because
 it never constructs the full gated CPU/E5 opening.
+
+
+## Auto selection and scaling (done)
+
+`prove_unified_trace_auto` uses the native dynamic prover when
+`mixed_trace_component_mask` can express the trace, otherwise falls back to the
+reference prover.
+
+`native_unified_bench` (Addi-only, width 8):
+
+```text
+rows=2   proof  55,706 B  prove 0.048 s  verify 0.031 s
+rows=4   proof  74,230 B  prove 0.101 s  verify 0.063 s
+rows=8   proof  93,526 B  prove 0.180 s  verify 0.163 s
+rows=16  proof 120,170 B  prove 0.366 s  verify 0.149 s
+rows=32  proof 159,426 B  prove 0.772 s  verify 0.354 s
+rows=64  proof 220,906 B  prove 3.66 s   verify 0.520 s
+```
+
+`unified_auto_selects_native_dynamic` verifies the auto-selected proof. The B6
+tests (`address_multiplicity_and_collision_round_trip`,
+`booleanity_round_trip_and_tamper`) and E5 tests still pass.
