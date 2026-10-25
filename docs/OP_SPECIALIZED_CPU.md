@@ -888,3 +888,31 @@ speedup 1.35-1.45x
 All 40 magnetar-proof tests and the dynamic chunked tests still pass. This is a
 real batch multiplication path, though it is a vendor-packed/CLMUL kernel rather
 than a hand-written AVX2/NEON field multiplier.
+
+
+## A2 and remaining-test blockers (current)
+
+A2 trace-free native verification is blocked by missing claim bindings, not by the
+selected proof layout alone. The dynamic selected row currently proves the ALU
+relation and PC transition, but does not expose or link:
+
+```text
+rd / rs1 / rs2 register claims
+memory address/value claims
+per-row output claims consumed by register/access proofs
+```
+
+Removing the trace witness comparison would therefore drop the only binding
+between the selected CPU witness and the executed trace. A2 needs those claims
+added to the selected row/claim routing first.
+
+The remaining 7 runtime failures are independent pre-existing issues:
+
+```text
+binary_twist ram bundle: verifier is proof-only and does not bind witness
+  final_value/initial (soundness gap in the witness-taking wrapper)
+gated_aux/packed_router: GroupSpec point_index/start mapping does not match the
+  claim point/value order for the field groups
+compressed trace tests: gated sequential PC is hard-coded to +4; the relation
+  has no +2 step variable/instruction-length binding
+```
