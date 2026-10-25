@@ -3170,6 +3170,25 @@ pub fn verify_unified_claim_proof(
         .ok_or_else(|| RuntimeError::Proof("claim proof opening mismatch".into()))
 }
 
+/// Proof-only claim-layer verifier: authenticate row claims and, when a
+/// dynamic selected CPU proof is present, bind it to the same claim proof and
+/// check the PC statement.
+pub fn verify_native_claim_layer(
+    proof: &UnifiedTraceProof,
+) -> Result<Vec<crate::trace_claims::CpuOutputClaim>, RuntimeError> {
+    let claims = verify_unified_claim_proof(proof)?;
+    if let Some(selected) = &proof.selected_cpu {
+        let claim_proof = proof
+            .claim_proof
+            .as_ref()
+            .ok_or_else(|| RuntimeError::Proof("missing claim proof".into()))?;
+        let recovered = crate::simd_dual::verify_selected_claim_proof(selected, claim_proof)
+            .ok_or_else(|| RuntimeError::Proof("selected claim binding mismatch".into()))?;
+        crate::simd_dual::verify_selected_claim_consistency(selected, &recovered)?;
+    }
+    Ok(crate::trace_claims::cpu_output_claims(&claims))
+}
+
 pub fn verify_unified_trace_statement(
     statement: &Statement,
     trace: &Trace,
@@ -5613,6 +5632,43 @@ mod tests {
             .claim
             .instruction_len = 2;
         assert!(verify_unified_claim_proof(&tampered).is_err());
+    }
+
+    #[test]
+    fn native_claim_layer_verifies_without_trace() {
+        let outcome = ReferencePipeline::run(
+            &ProgramImage::new(
+                0x1000,
+                vec![
+                    magnetar_spec::Instruction {
+                        op: magnetar_spec::Op::Addi,
+                        rd: 1,
+                        rs1: 0,
+                        rs2: 0,
+                        imm: 7,
+                        shamt: 0,
+                    }
+                    .encode(),
+                    magnetar_spec::Instruction::new(magnetar_spec::Op::Ecall).encode(),
+                ],
+            ),
+            config(),
+            2,
+        )
+        .unwrap();
+        let proof = prove_unified_trace_dynamic_native(&outcome.trace, 8).unwrap();
+        let outputs = verify_native_claim_layer(&proof).unwrap();
+        assert_eq!(outputs.len(), outcome.trace.rows.len());
+        assert_eq!(outputs[0].pc, 0x1000);
+        assert_eq!(outputs[0].instruction_len, 4);
+        let mut bad = proof.clone();
+        bad.claim_proof.as_mut().unwrap().openings[0]
+            .claim
+            .instruction_len = 2;
+        assert!(verify_native_claim_layer(&bad).is_err());
+        let mut bad = proof;
+        bad.selected_cpu.as_mut().unwrap().claim_root[0] ^= 1;
+        assert!(verify_native_claim_layer(&bad).is_err());
     }
 
     #[test]

@@ -236,3 +236,21 @@ instruction_len in {2,4}
 This runs on recovered claims without touching the trace. Tests reject a broken
 PC link and an invalid length. It still does not prove that the CPU row's ALU
 outputs/register addresses equal the claim fields; that link is the next layer.
+
+
+## Native claim-layer verifier
+
+`verify_native_claim_layer(proof)` runs without a trace:
+
+```text
+verify_unified_claim_proof
+  -> recovered TraceClaim rows
+if selected_cpu:
+  verify_selected_claim_proof
+  verify_selected_claim_consistency
+  -> CpuOutputClaim rows
+```
+
+It rejects tampered claim payloads and a tampered selected claim root. It is a
+proof-only *claim layer* verifier, not yet a full CPU verifier: the CPU relation
+and register/access proofs are still not tied to these claims.
