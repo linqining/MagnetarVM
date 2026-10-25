@@ -233,3 +233,22 @@ Proof size and prover time are currently dominated by the selected CPU opening
 and per-row claim openings, not by the field arithmetic. Optimizing the CPU
 engine before removing those linear components would not reach the paper's
 proof-size target. Phase 1 is therefore the first performance milestone.
+
+
+## Rejected: P3 parallel feature
+
+Enabling `p3-binary-pcs/parallel` (rayon) gave:
+
+```text
+512 rows:  8.76 s -> 7.46 s
+1024 rows: 45.16 s -> 23.42 s
+```
+
+but it broke proof-byte determinism: the concurrent determinism stress reported
+`91 / 120` mismatches, and `protocol_plan_and_orchestrator_preserve_proof_bytes`
+failed. The feature was reverted. Deterministic bytes are a hard requirement for
+this protocol, so the parallel P3 backend cannot be enabled until its output is
+canonicalized.
+
+A parallel product2 attempt was also reverted: at 512 rows it measured 0.48 s
+versus 0.40 s sequential, so it added overhead without benefit.
