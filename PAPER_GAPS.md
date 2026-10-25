@@ -4471,3 +4471,7 @@ checks the chunk metadata/state chain and then verifies the whole CPU proof once
 At chunk 2 this drops 646,938 -> 217,170 B (equal to the chunk-16 cost), removing
 the multi-chunk CPU linearity in compact mode. The default `prove_chunked_trace`
 keeps per-chunk CPU proofs for streaming use.
+
+
+`compact_chunked_proof_is_smaller` also tampers `whole_cpu.vw` and checks the
+compact verifier rejects it.

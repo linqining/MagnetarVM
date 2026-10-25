@@ -4248,6 +4248,10 @@ mod tests {
             bincode::serialize(&compact).unwrap().len()
                 < bincode::serialize(&normal).unwrap().len()
         );
+        let mut tampered = compact;
+        let cpu = tampered.whole_cpu.as_mut().unwrap();
+        cpu.vw = cpu.vw + F2_128::from(1u64);
+        assert!(verify_chunked_trace(&trace, &tampered, 8).is_err());
     }
 
     #[test]
