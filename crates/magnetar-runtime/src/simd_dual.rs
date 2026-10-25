@@ -3914,7 +3914,7 @@ pub fn prove_alu_branch_trace<B: magnetar_proof::BitPcs>(
 pub fn verify_alu_branch_trace<B: magnetar_proof::BitPcs>(
     trace: &magnetar_spec::Trace,
     proof: &LockstepProof<B::Commitment, B::Opening>,
-    _layout: &magnetar_constraint::WitnessLayout,
+    layout: &magnetar_constraint::WitnessLayout,
     width: usize,
     backend: &B,
 ) -> Result<(), RuntimeError> {
@@ -5336,7 +5336,7 @@ pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
 pub fn verify_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
     trace: &magnetar_spec::Trace,
     proof: &LockstepProof<B::Commitment, B::Opening>,
-    layout: &magnetar_constraint::WitnessLayout,
+    _layout: &magnetar_constraint::WitnessLayout,
     width: usize,
     backend: &B,
 ) -> Result<(), RuntimeError> {
