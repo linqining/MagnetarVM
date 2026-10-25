@@ -24,6 +24,7 @@ benchmark                   130,287 B (gated 59,556, opening 55,953,
                             packed_shout 5,226, access 7,466)
 workloads                   15 个 workload 全部 prove/verify
 op probe                    71 条指令/寻址组合
+chunked                     707,618 / 490,018 / 352,930 / 273,610 B (chunk 2/4/8/16)
 ```
 
 仍开放：D12 register-shift fixed virtual expansion、chunked A2 trace-free
@@ -4302,3 +4303,7 @@ Aux fold=3 (`3,20,3`) regressed aux to 75,605 B (vs 68,685 B), and access
 fold=3 (`3,21,3`) regressed access to 95,459 B (vs 93,251 B). Higher grinding
 (pow22/24) on the largest CPU tier saved 1-4 KB but raised `chunked_sizes` to
 34-48 s, so the current tiers remain the chosen point.
+
+
+CPU PCS tier threshold 2048 was rejected: it moved chunk 8 to fold=3 and raised
+that proof from 352,930 to 359,202 B. The chosen thresholds are 512 and 4096.
