@@ -62,7 +62,7 @@ fn main() {
     let packed = prove_packed_shout(&witness).unwrap();
     let packed_time = started.elapsed();
     let packed_bytes = bincode::serialize(&packed).unwrap().len();
-    verify_packed_shout(&witness, &packed).unwrap();
+    verify_packed_shout(&packed).unwrap();
 
     println!("reference: {reference_bytes} B prove={reference_time:?}");
     println!("packed:    {packed_bytes} B prove={packed_time:?}");

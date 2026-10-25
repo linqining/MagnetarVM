@@ -4226,3 +4226,7 @@ regressed fibonacci or bitops; `bits=14` tries `(3,20,2)/(3,20,3)/(4,22,3)/
 loop, clock, mem-loop, bitops, muldiv, mixedmem, bitmix, memcopy, branchmix,
 amo and alu. All 15 prove and verify; sizes span 183,989 (clock) to 368,518 B
 (mem-loop). This closes the paper's 15-workload coverage target.
+
+
+`packed_shout_bench` was updated to the current one-argument `verify_packed_shout`
+signature, so `cargo clippy --all-targets` is clean again.
