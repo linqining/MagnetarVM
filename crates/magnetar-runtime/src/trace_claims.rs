@@ -26,7 +26,7 @@ fn hash(parts: &[&[u8]]) -> [u8; 32] {
     for part in parts {
         bytes.extend_from_slice(part);
     }
-    magnetar_transcript::sha256(&bytes).into()
+    magnetar_transcript::sha256(&bytes)
 }
 
 pub fn claim_leaf(row: &TraceRow) -> [u8; 32] {
