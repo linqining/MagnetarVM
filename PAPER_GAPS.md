@@ -4230,3 +4230,11 @@ amo and alu. All 15 prove and verify; sizes span 183,989 (clock) to 368,518 B
 
 `packed_shout_bench` was updated to the current one-argument `verify_packed_shout`
 signature, so `cargo clippy --all-targets` is clean again.
+
+
+### Recursion hook: canonical proof digest
+
+`unified_proof_digest` hashes the serialized unified proof (bincode) so an outer
+chain/recursive verifier can bind the full proof object without re-encoding it.
+`unified_proof_digest_binds_the_proof` checks determinism and that tampering the
+trace commitment changes the digest.

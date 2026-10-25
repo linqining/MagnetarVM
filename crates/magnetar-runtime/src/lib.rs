@@ -3031,6 +3031,14 @@ pub fn chunked_proof_sizes(proof: &ChunkedTraceProof) -> Result<ChunkedProofSize
     })
 }
 
+/// Canonical digest of a serialized unified proof, for external chains and
+/// recursion-friendly verifiers that want to bind the full proof object.
+pub fn unified_proof_digest(proof: &UnifiedTraceProof) -> Result<[u8; 32], RuntimeError> {
+    let bytes =
+        bincode::serialize(proof).map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok(magnetar_transcript::sha256(&bytes))
+}
+
 pub fn decode_unified_proof(bytes: &[u8]) -> Result<UnifiedTraceProof, RuntimeError> {
     bincode::deserialize(bytes).map_err(|error| RuntimeError::Proof(error.to_string()))
 }
@@ -3888,6 +3896,32 @@ mod tests {
         let rows =
             crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, 8).unwrap();
         assert!(rows.len() >= trace.rows.len());
+    }
+
+    #[test]
+    fn unified_proof_digest_binds_the_proof() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(&program, config()).unwrap();
+        let proof = prove_unified_trace(&trace, 8).unwrap();
+        let digest = unified_proof_digest(&proof).unwrap();
+        let mut tampered = proof.clone();
+        tampered.trace_commitment[0] ^= 1;
+        assert_ne!(digest, unified_proof_digest(&tampered).unwrap());
+        verify_unified_proof(&proof).unwrap();
     }
 
     #[test]
