@@ -48,6 +48,34 @@ fn main() {
         bincode::serialize(&revealed).unwrap().len(),
         revealed.opening.is_some()
     );
+    println!(
+        "e5 batch {} ring {} field {} field_commitment {} e5_field_tables {}",
+        proof
+            .unified
+            .e5_opening
+            .as_ref()
+            .map(|opening| bincode::serialize(&opening.batch).unwrap().len())
+            .unwrap_or(0),
+        proof
+            .unified
+            .e5_opening
+            .as_ref()
+            .map(|opening| bincode::serialize(&opening.ring).unwrap().len())
+            .unwrap_or(0),
+        proof
+            .unified
+            .field_opening
+            .as_ref()
+            .map(|opening| bincode::serialize(opening).unwrap().len())
+            .unwrap_or(0),
+        proof
+            .unified
+            .field_pcs_commitment
+            .as_ref()
+            .map(|commitment| bincode::serialize(commitment).unwrap().len())
+            .unwrap_or(0),
+        proof.unified.field_tables.len(),
+    );
     let p = &proof.unified;
     for (index, table) in p.commitment.tables.iter().enumerate() {
         println!(
