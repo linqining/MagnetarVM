@@ -84,8 +84,9 @@ memory address/value/width
 
 `TraceClaimTree::open(index)` returns an inclusion path and
 `verify_opening(root, opening)` checks it. Tests cover every row, tampered
-leaves and instruction-length changes. `Statement` and `UnifiedTraceProof` now carry `trace_claim_root`, and the unified
-proof carries an inclusion opening per row. `verify_unified_trace` checks the
-root against the trace and verifies every opening. The next step is to make the
-gated/proof-only verifiers consume the opened `instruction_len`/CPU fields
-instead of rebuilding the trace.
+leaves and instruction-length changes. `Statement` and `UnifiedTraceProof` now carry `trace_claim_root`, and the
+trace-aware verifier checks it against the trace. Inclusion openings are
+implemented and tested in `TraceClaimTree`, but are not yet serialized in the
+unified proof: adding every row's opening changed proof-byte equality in the
+protocol round-trip test, so serialization will be added per-claim once the
+proof-only verifier needs specific fields.
