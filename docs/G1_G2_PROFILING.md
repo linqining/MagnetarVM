@@ -158,3 +158,20 @@ compact chunk=4 sequential 204,118 B 3.58 s  parallel 3.16 s (1.13x)
 
 Smaller relative gain because the whole CPU proof dominates, but it is free in
 proof size and keeps byte-identical output.
+
+
+### Bounded chunk worker pool
+
+Parallel streaming chunks now use a bounded worker pool sized by
+`available_parallelism` instead of spawning one thread per chunk. This keeps
+peak memory bounded by the number of workers for long traces while preserving
+the measured throughput:
+
+```text
+chunk=2  sequential 7.37 s  parallel 3.41 s
+chunk=4  sequential 16.94 s parallel 7.38 s
+chunk=8  sequential 10.36 s parallel 3.64 s
+```
+
+Results are stored by chunk index, so proof bytes remain identical to the
+sequential path.

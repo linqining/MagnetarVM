@@ -3619,26 +3619,36 @@ fn chunk_cpu_proofs(
 ) -> Result<Vec<CpuSpartanProof>, RuntimeError> {
     let backend = ConstraintProofBackend;
     if parallel {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Mutex;
+
+        let threads = std::thread::available_parallelism()
+            .map(|threads| threads.get())
+            .unwrap_or(1)
+            .min(ranges.len());
+        let next = AtomicUsize::new(0);
+        let results = Mutex::new((0..ranges.len()).map(|_| None).collect::<Vec<_>>());
         std::thread::scope(|scope| {
-            let handles = ranges
-                .iter()
-                .map(|(start, end)| {
-                    let rows = &trace.rows[*start..*end];
-                    scope.spawn(move || -> Result<CpuSpartanProof, RuntimeError> {
-                        let (system, witness) = merged_cpu_system_for_rows(rows, width)?;
-                        backend.prove(&system, &witness)
-                    })
-                })
-                .collect::<Vec<_>>();
-            handles
-                .into_iter()
-                .map(|handle| {
-                    handle
-                        .join()
-                        .map_err(|_| RuntimeError::Proof("chunk prover thread panicked".into()))?
-                })
-                .collect::<Result<Vec<_>, RuntimeError>>()
-        })
+            for _ in 0..threads {
+                scope.spawn(|| loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    if index >= ranges.len() {
+                        break;
+                    }
+                    let (start, end) = ranges[index];
+                    let result = merged_cpu_system_for_rows(&trace.rows[start..end], width)
+                        .and_then(|(system, witness)| backend.prove(&system, &witness));
+                    results.lock().expect("chunk result mutex")[index] = Some(result);
+                });
+            }
+        });
+        let results = results.into_inner().expect("chunk result mutex");
+        results
+            .into_iter()
+            .map(|result| {
+                result.ok_or_else(|| RuntimeError::Proof("missing chunk proof".into()))?
+            })
+            .collect()
     } else {
         ranges
             .iter()
