@@ -1836,18 +1836,27 @@ pub fn prove_binary_twist_ram(
 }
 
 pub(crate) fn verify_binary_twist_claims(
-    _witness: &BinaryTwistWitness,
+    witness: &BinaryTwistWitness,
     proof: &BinaryTwistRamProof,
     commitment: &P3MosaicCommitment,
     table_index: usize,
 ) -> Result<Option<MosaicClaims>, ProofError> {
-    verify_binary_twist_from_proof(proof, commitment, table_index)
+    verify_binary_twist_from_proof_inner(proof, commitment, table_index, Some(witness))
 }
 
 pub(crate) fn verify_binary_twist_from_proof(
     proof: &BinaryTwistRamProof,
     commitment: &P3MosaicCommitment,
     table_index: usize,
+) -> Result<Option<MosaicClaims>, ProofError> {
+    verify_binary_twist_from_proof_inner(proof, commitment, table_index, None)
+}
+
+fn verify_binary_twist_from_proof_inner(
+    proof: &BinaryTwistRamProof,
+    commitment: &P3MosaicCommitment,
+    table_index: usize,
+    witness: Option<&BinaryTwistWitness>,
 ) -> Result<Option<MosaicClaims>, ProofError> {
     if commitment.tables.len() <= table_index + 4 {
         return Ok(None);
@@ -2138,6 +2147,13 @@ pub(crate) fn verify_binary_twist_from_proof(
     let wa_valid_eval = final_values_evals[address_bits];
     let inc_eval = final_values_evals[address_bits + 1];
     let final_eval = final_values_evals[address_bits + 2];
+    if let Some(witness) = witness {
+        if initial_update_eval != fold_all(&witness.initial, r_k)
+            || final_eval != fold_all(&witness.final_value, r_k)
+        {
+            return Ok(None);
+        }
+    }
     let eq_eval = eq_points(&rho_k, r_k);
     let delta_eval = eq_at_index(r_jp, 0);
     let m0_eval = proof.initial_update_eval;
