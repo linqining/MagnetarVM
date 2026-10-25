@@ -873,7 +873,8 @@ selected CPU proof in scoped threads. The 256-row compact case dropped from
 `F2_128::mul_slice_assign` now converts a slice through the vendor polynomial
 basis, uses `p3_binary_field::poly_basis::mul_slice` (which has packed/CLMUL
 kernels where available), and converts back. `sumcheck::fold_vector` uses it for
-the challenge scaling of each fold.
+the challenge scaling of each fold, and the packed-bit PCS `scale_vertical`
+uses it for the per-round scalar multiplications.
 
 `packed_mul_slice_matches_scalar` checks 300 elements against the scalar loop.
 `simd_mul_bench` on 1,000,000 elements:
