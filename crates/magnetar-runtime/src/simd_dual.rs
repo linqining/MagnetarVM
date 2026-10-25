@@ -13,6 +13,7 @@ use magnetar_proof::{prove_lockstep, verify_lockstep, witness_vector, LockstepPr
 use crate::simd_f2::{GatedCpuRow, GatedCpuRowInput};
 use crate::RuntimeError;
 use magnetar_constraint::F2_128;
+use serde::{Deserialize as _, Serialize as _};
 
 type LockstepBatch<B> = (
     LockstepProof<
@@ -4335,6 +4336,51 @@ pub enum SelectedOp {
     Dynamic,
 }
 
+type SelectedLayoutTuple = (
+    usize,
+    Vec<(
+        usize,
+        usize,
+        magnetar_constraint::SegmentKind,
+        magnetar_constraint::SegmentOwner,
+    )>,
+);
+
+fn serialize_selected_layout<S>(
+    layout: &magnetar_constraint::WitnessLayout,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let segments = layout
+        .segments
+        .iter()
+        .map(|segment| (segment.offset, segment.len, segment.kind, segment.owner))
+        .collect::<Vec<_>>();
+    (layout.total_bits, segments).serialize(serializer)
+}
+
+fn deserialize_selected_layout<'de, D>(
+    deserializer: D,
+) -> Result<magnetar_constraint::WitnessLayout, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let (total_bits, segments) = SelectedLayoutTuple::deserialize(deserializer)?;
+    let segments = segments
+        .into_iter()
+        .enumerate()
+        .map(|(index, (offset, len, kind, owner))| {
+            magnetar_constraint::Segment::new(format!("s{index}"), offset, len, kind, owner)
+        })
+        .collect();
+    Ok(magnetar_constraint::WitnessLayout {
+        total_bits,
+        segments,
+    })
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(
     bound = "C: serde::Serialize + serde::de::DeserializeOwned, O: serde::Serialize + serde::de::DeserializeOwned"
@@ -4345,6 +4391,10 @@ pub struct SelectedCpuClaims<C: Clone + std::fmt::Debug, O: Clone + std::fmt::De
     pub cycles: usize,
     pub initial_pc: u64,
     pub final_pc: u64,
+    #[serde(
+        serialize_with = "serialize_selected_layout",
+        deserialize_with = "deserialize_selected_layout"
+    )]
     pub layout: magnetar_constraint::WitnessLayout,
     #[serde(skip)]
     pub segments: Vec<SelectedSegmentClaim>,

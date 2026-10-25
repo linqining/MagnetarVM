@@ -11,20 +11,20 @@ This is a roadmap, not a claim that the implementation is aligned yet.
 | rows | bytes | prove | verify | cycles/s |
 |---:|---:|---:|---:|---:|
 | 16 | 122,484 | 0.368 s | 0.158 s | 43.5 |
-| 64 | 206,598 | 1.849 s | 0.483 s | 34.6 |
-| 512 | 649,354 | 28.34 s | 4.80 s | 18.1 |
+| 64 | 196,768 | 1.817 s | 0.571 s | 35.2 |
+| 512 | 566,376 | 28.70 s | 4.63 s | 17.8 |
 
 512-row split:
 
 ```text
-selected_cpu 504,591 B
+selected_cpu 421,613 B
 claim_proof   55,370 B
 packed_shout  58,866 B
 access        16,018 B
 shape         13,320 B
 ```
 
-Selected CPU is about 78% of the proof. The claim proof dropped from
+Selected CPU is about 74% of the proof. The claim proof dropped from
 202,825 B to 55,370 B by proving a complete claim set against the Merkle root
 instead of carrying one sibling path per row, and the duplicated selected
 segment list is no longer serialized.
@@ -63,6 +63,8 @@ openings.
    complete claim set against the Merkle root without per-row sibling paths.
    [x] Stop serializing the duplicated selected segment list; it is rebuilt from
    the layout and proof during verification.
+   [x] Serialize the selected layout as offsets/lengths/owners without per-segment
+   names.
 2. Reduce the dynamic selected witness width: a trace containing only ALU +
    halt currently pays for every component (memory/shift/mul/div/sdiv).
    Introduce an ALU+branch composite row or select the exact component set.
@@ -74,7 +76,7 @@ Interim gates:
 
 ```text
 512 rows: proof < 500 KiB, selected < 300 KiB, claim < 100 KiB
-(current: 634.1 KiB / 492.8 KiB / 54.1 KiB)
+(current: 553.1 KiB / 411.7 KiB / 54.1 KiB)
 ```
 
 ## Phase 2: CPU engine / BinarySpartan
