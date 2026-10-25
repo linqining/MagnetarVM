@@ -2611,8 +2611,9 @@ impl UniformJalrLayout {
         for (bit, var) in self.pc_in.iter().enumerate() {
             values[*var] = F2_128::from((pc >> bit) & 1);
         }
+        let target = rs1.wrapping_add(imm) & !1;
         for (bit, var) in self.target_out.iter().enumerate() {
-            values[*var] = F2_128::from((rs1.wrapping_add(imm) >> bit) & 1);
+            values[*var] = F2_128::from((target >> bit) & 1);
         }
         for (bit, var) in self.link_out.iter().enumerate() {
             values[*var] = F2_128::from((pc.wrapping_add(self.link_increment) >> bit) & 1);
@@ -2700,11 +2701,13 @@ fn uniform_jalr_inner(
             one.clone(),
             Expr::var(pc_in[index]),
         );
-        system.add_constraint(
-            Expr::var(target_out[index]),
-            one.clone(),
-            Expr::var(target_adder.sum[index]),
-        );
+        if index != 0 {
+            system.add_constraint(
+                Expr::var(target_out[index]),
+                one.clone(),
+                Expr::var(target_adder.sum[index]),
+            );
+        }
         system.add_constraint(
             Expr::var(link_out[index]),
             one.clone(),

@@ -6458,8 +6458,12 @@ mod tests {
         let unified = prove_unified_trace(&trace, 8).unwrap();
         verify_unified_trace(&trace, &unified, 8).unwrap();
         let mut tampered = unified;
-        tampered.cpu.as_mut().unwrap().segments[0].value =
-            tampered.cpu.as_mut().unwrap().segments[0].value + F2_128::from(1u64);
+        if let Some(gated) = tampered.gated.as_mut() {
+            gated.proof.segments[0].value = gated.proof.segments[0].value + F2_128::from(1u64);
+        } else {
+            tampered.cpu.as_mut().unwrap().segments[0].value =
+                tampered.cpu.as_mut().unwrap().segments[0].value + F2_128::from(1u64);
+        }
         assert!(verify_unified_trace(&trace, &tampered, 8).is_err());
     }
 
