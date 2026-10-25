@@ -12,8 +12,8 @@ This is a roadmap, not a claim that the implementation is aligned yet.
 |---:|---:|---:|---:|---:|
 | 16 | 92,528 | 0.347 s | 0.162 s | 46.2 |
 | 64 | 136,472 | 1.957 s | 0.502 s | 32.7 |
-| 512 | 348,368 | 12.68 s | 4.74 s | 40.4 |
-| 1024 | 516,792 | 52.11 s | 9.93 s | 19.7 |
+| 512 | 348,368 | 10.71 s | 4.76 s | 47.8 |
+| 1024 | 516,792 | 44.70 s | 10.44 s | 22.9 |
 
 512-row split:
 
@@ -150,18 +150,19 @@ Selected CPU internals (512 rows, profile mode):
 ```text
 matvec               110 ms
 MLE                   30 ms
-product6            1.24 s
-row combinations    1.04 s   (4.66 s before parallelization)
-product2              471 ms
-segment claims         49 ms
-SelectedCpu stage    5.79 s
+product6              709 ms (1.24 s before parallelization)
+row combinations      758 ms (4.66 s before parallelization)
+product2              647 ms
+segment claims         20 ms
+SelectedCpu stage    5.10 s
 ```
 ```
 
 ## Phase 2: CPU engine / BinarySpartan
 
 1. [x] Parallelize Shout/Twist degree-point evaluations with bounded memory.
-   [x] Parallelize the six lockstep row combinations (4.66 s -> 1.04 s at 512).
+   [x] Parallelize the six lockstep row combinations (4.66 s -> 0.76 s at 512).
+   [x] Parallelize product6 degree-point evaluations (1.24 s -> 0.71 s).
 2. Replace the quadratic packed-Shout factor materialization with a linear/sparse
    sum-check (still the largest single algorithm cost).
 2. Pack field-valued witnesses; remove per-row witness padding.

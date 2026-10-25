@@ -291,7 +291,7 @@ pub fn prove_product4<F, C>(
     mut challenge: C,
 ) -> Result<(SumcheckProof<F>, Vec<F>, F), ProofError>
 where
-    F: Field,
+    F: Field + Send + Sync,
     C: FnMut(usize, &[F]) -> F,
 {
     let len = eq_values.len();
@@ -510,7 +510,7 @@ pub fn prove_product6<F, C>(
     mut challenge: C,
 ) -> Result<(SumcheckProof<F>, Vec<F>, F), ProofError>
 where
-    F: Field,
+    F: Field + Send + Sync,
     C: FnMut(usize, &[F]) -> F,
 {
     let len = eq_values.len();
@@ -542,9 +542,8 @@ where
     let mut round_polys = Vec::with_capacity(rounds);
 
     for round in 0..rounds {
-        let mut polynomial = Vec::with_capacity(4);
-        for t in 0..=3 {
-            let t = F::from_u64(t as u64);
+        let mut polynomial = vec![F::zero(); 4];
+        let evaluate = |t: F| {
             let eq_t = fold_vector(&eq_values, t);
             let a0_t = fold_vector(&a0_values, t);
             let b0_t = fold_vector(&b0_values, t);
@@ -552,11 +551,28 @@ where
             let a1_t = fold_vector(&a1_values, t);
             let b1_t = fold_vector(&b1_values, t);
             let c1_t = fold_vector(&c1_values, t);
-            polynomial.push((0..eq_t.len()).fold(F::zero(), |sum, index| {
+            (0..eq_t.len()).fold(F::zero(), |sum, index| {
                 sum + eq_t[index]
                     * (a0_t[index] * b0_t[index] - c0_t[index]
                         + alpha * (a1_t[index] * b1_t[index] - c1_t[index]))
-            }));
+            })
+        };
+        if len >= 1024 {
+            std::thread::scope(|scope| {
+                let mut handles = Vec::with_capacity(4);
+                for t in 0..=3 {
+                    let evaluate = &evaluate;
+                    handles.push(scope.spawn(move || (t, evaluate(F::from_u64(t as u64)))));
+                }
+                for handle in handles {
+                    let (t, value) = handle.join().expect("product6 worker");
+                    polynomial[t] = value;
+                }
+            });
+        } else {
+            for (t, value) in polynomial.iter_mut().enumerate() {
+                *value = evaluate(F::from_u64(t as u64));
+            }
         }
         let r = challenge(round, &polynomial);
         challenges.push(r);
