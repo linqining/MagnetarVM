@@ -3297,6 +3297,20 @@ pub enum MixedAluBranchInput {
     },
 }
 
+impl MixedAluBranchInput {
+    fn kind(&self) -> u8 {
+        match self {
+            Self::Alu { .. } => MIXED_ALU,
+            Self::Fetch { .. } => MIXED_BRANCH,
+            Self::Memory { .. } => MIXED_MEMORY,
+            Self::Shift { .. } => MIXED_SHIFT,
+            Self::Multiply { .. } => MIXED_MULTIPLY,
+            Self::Divide { .. } => MIXED_DIVIDE,
+            Self::SignedDivide { .. } => MIXED_SDIV,
+        }
+    }
+}
+
 impl MixedAluBranchRow {
     fn new(width: usize) -> Self {
         use magnetar_constraint::VarId;
@@ -4416,6 +4430,455 @@ pub fn verify_selected_cpu_claims<B: magnetar_proof::BitPcs>(
     }
 }
 
+trait PcComponent {
+    fn kind(&self) -> u8;
+    fn relation(&self) -> &BitRelation;
+    fn pc(&self) -> &[magnetar_constraint::VarId];
+    fn next_pc(&self) -> &[magnetar_constraint::VarId];
+    fn one(&self) -> magnetar_constraint::VarId;
+    fn witness(&self, pc: u64, input: &MixedAluBranchInput) -> Result<Vec<bool>, RuntimeError>;
+}
+
+impl PcComponent for AluPcRow {
+    fn kind(&self) -> u8 {
+        MIXED_ALU
+    }
+    fn relation(&self) -> &BitRelation {
+        &self.relation
+    }
+    fn pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.pc
+    }
+    fn next_pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.next_pc
+    }
+    fn one(&self) -> magnetar_constraint::VarId {
+        self.instr.one
+    }
+    fn witness(&self, pc: u64, input: &MixedAluBranchInput) -> Result<Vec<bool>, RuntimeError> {
+        Ok(match input {
+            MixedAluBranchInput::Alu { left, right, op } => self.witness_at(pc, *left, *right, *op),
+            _ => self.witness_at(pc, 0, 0, crate::simd_f2::GatedAluOp::Inactive),
+        })
+    }
+}
+
+impl PcComponent for BranchPcRow {
+    fn kind(&self) -> u8 {
+        MIXED_BRANCH
+    }
+    fn relation(&self) -> &BitRelation {
+        &self.relation
+    }
+    fn pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.pc
+    }
+    fn next_pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.next_pc
+    }
+    fn one(&self) -> magnetar_constraint::VarId {
+        self.instr.one
+    }
+    fn witness(&self, pc: u64, input: &MixedAluBranchInput) -> Result<Vec<bool>, RuntimeError> {
+        Ok(match input {
+            MixedAluBranchInput::Fetch {
+                left,
+                right,
+                imm,
+                kind,
+            } => self.witness_at(pc, *imm, *left, *right, *kind),
+            _ => self.witness_at(pc, 0, 0, 1, crate::branch_row::BranchKind::Beq),
+        })
+    }
+}
+
+impl PcComponent for MemPcRow {
+    fn kind(&self) -> u8 {
+        MIXED_MEMORY
+    }
+    fn relation(&self) -> &BitRelation {
+        &self.relation
+    }
+    fn pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.pc
+    }
+    fn next_pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.next_pc
+    }
+    fn one(&self) -> magnetar_constraint::VarId {
+        self.instr.adder.gate
+    }
+    fn witness(&self, pc: u64, input: &MixedAluBranchInput) -> Result<Vec<bool>, RuntimeError> {
+        Ok(match input {
+            MixedAluBranchInput::Memory { rs1, imm, value } => {
+                self.witness_at(pc, *rs1, *imm, *value)
+            }
+            _ => self.witness_at(pc, 0x10, 0, 0x40),
+        })
+    }
+}
+
+impl PcComponent for ShiftPcRow {
+    fn kind(&self) -> u8 {
+        MIXED_SHIFT
+    }
+    fn relation(&self) -> &BitRelation {
+        &self.relation
+    }
+    fn pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.pc
+    }
+    fn next_pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.next_pc
+    }
+    fn one(&self) -> magnetar_constraint::VarId {
+        self.instr.one
+    }
+    fn witness(&self, pc: u64, input: &MixedAluBranchInput) -> Result<Vec<bool>, RuntimeError> {
+        Ok(match input {
+            MixedAluBranchInput::Shift { left, shamt, kind } => {
+                self.witness_at(pc, *left, *shamt, *kind)
+            }
+            _ => self.witness_at(pc, 0x12, 2, crate::simd_f2::BitShiftKind::Sll),
+        })
+    }
+}
+
+impl PcComponent for MulPcRow {
+    fn kind(&self) -> u8 {
+        MIXED_MULTIPLY
+    }
+    fn relation(&self) -> &BitRelation {
+        &self.relation
+    }
+    fn pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.pc
+    }
+    fn next_pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.next_pc
+    }
+    fn one(&self) -> magnetar_constraint::VarId {
+        self.instr.one
+    }
+    fn witness(&self, pc: u64, input: &MixedAluBranchInput) -> Result<Vec<bool>, RuntimeError> {
+        Ok(match input {
+            MixedAluBranchInput::Multiply { left, right } => self.witness_at(pc, *left, *right),
+            _ => self.witness_at(pc, 0x12, 0x34),
+        })
+    }
+}
+
+impl PcComponent for DivPcRow {
+    fn kind(&self) -> u8 {
+        MIXED_DIVIDE
+    }
+    fn relation(&self) -> &BitRelation {
+        &self.relation
+    }
+    fn pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.pc
+    }
+    fn next_pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.next_pc
+    }
+    fn one(&self) -> magnetar_constraint::VarId {
+        self.one
+    }
+    fn witness(&self, pc: u64, input: &MixedAluBranchInput) -> Result<Vec<bool>, RuntimeError> {
+        Ok(match input {
+            MixedAluBranchInput::Divide { num, den } => self.witness_at(pc, *num, *den),
+            _ => self.witness_at(pc, 0x60, 3),
+        })
+    }
+}
+
+impl PcComponent for SDivPcRow {
+    fn kind(&self) -> u8 {
+        MIXED_SDIV
+    }
+    fn relation(&self) -> &BitRelation {
+        &self.relation
+    }
+    fn pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.pc
+    }
+    fn next_pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.next_pc
+    }
+    fn one(&self) -> magnetar_constraint::VarId {
+        self.one
+    }
+    fn witness(&self, pc: u64, input: &MixedAluBranchInput) -> Result<Vec<bool>, RuntimeError> {
+        Ok(match input {
+            MixedAluBranchInput::SignedDivide { num, den } => self.witness_at(pc, *num, *den),
+            _ => self.witness_at(pc, 0x20, 3),
+        })
+    }
+}
+
+struct DynamicMixedRow {
+    width: usize,
+    components: Vec<Box<dyn PcComponent>>,
+    offsets: Vec<usize>,
+    pc: Vec<magnetar_constraint::VarId>,
+    next_pc: Vec<magnetar_constraint::VarId>,
+    selectors: Vec<magnetar_constraint::VarId>,
+    ands: Vec<Vec<magnetar_constraint::VarId>>,
+    one: magnetar_constraint::VarId,
+    relation: BitRelation,
+}
+
+impl DynamicMixedRow {
+    fn build(mask: u8, width: usize) -> Result<Self, RuntimeError> {
+        use magnetar_constraint::VarId;
+        let mut components: Vec<Box<dyn PcComponent>> = Vec::new();
+        if mask & MIXED_ALU != 0 {
+            components.push(Box::new(AluPcRow::new(width)));
+        }
+        if mask & MIXED_BRANCH != 0 {
+            components.push(Box::new(BranchPcRow::new(width)));
+        }
+        if mask & MIXED_MEMORY != 0 {
+            components.push(Box::new(MemPcRow::new(width)));
+        }
+        if mask & MIXED_SHIFT != 0 {
+            components.push(Box::new(ShiftPcRow::new(width)));
+        }
+        if mask & MIXED_MULTIPLY != 0 {
+            components.push(Box::new(MulPcRow::new(width)));
+        }
+        if mask & MIXED_DIVIDE != 0 {
+            components.push(Box::new(DivPcRow::new(width)));
+        }
+        if mask & MIXED_SDIV != 0 {
+            components.push(Box::new(SDivPcRow::new(width)));
+        }
+        if components.is_empty() {
+            return Err(RuntimeError::Proof("empty component mask".into()));
+        }
+        let mut relation = BitRelation::new(0);
+        let mut offsets = Vec::with_capacity(components.len());
+        for component in &components {
+            let offset = relation.num_vars;
+            offsets.push(offset);
+            relation.num_vars += component.relation().num_vars;
+            for row in &component.relation().rows {
+                let shift = |vars: &[VarId]| vars.iter().map(|v| *v + offset).collect::<Vec<_>>();
+                relation.add(BitRow::new(shift(&row.a), shift(&row.b), shift(&row.c)));
+            }
+        }
+        let take = |relation: &mut BitRelation, n: usize| {
+            let start = relation.num_vars;
+            relation.num_vars += n;
+            (start..start + n).map(|v| v as VarId).collect::<Vec<_>>()
+        };
+        let pc = take(&mut relation, width);
+        let next_pc = take(&mut relation, width);
+        let selectors = take(&mut relation, components.len());
+        let mut ands = Vec::with_capacity(components.len());
+        for _ in 0..components.len() {
+            ands.push(take(&mut relation, width));
+        }
+        let one = offsets[0] + components[0].one();
+        for bit in 0..width {
+            relation.add(BitRow::new(vec![pc[bit]], vec![pc[bit]], vec![pc[bit]]));
+            relation.add(BitRow::new(
+                vec![next_pc[bit]],
+                vec![next_pc[bit]],
+                vec![next_pc[bit]],
+            ));
+            let mut next_terms = Vec::with_capacity(components.len());
+            for (index, component) in components.iter().enumerate() {
+                relation.add(BitRow::new(
+                    vec![component.pc()[bit] + offsets[index]],
+                    vec![one],
+                    vec![pc[bit]],
+                ));
+                relation.add(BitRow::new(
+                    vec![selectors[index]],
+                    vec![component.next_pc()[bit] + offsets[index]],
+                    vec![ands[index][bit]],
+                ));
+                next_terms.push(ands[index][bit]);
+            }
+            relation.add(BitRow::new(vec![next_pc[bit]], vec![one], next_terms));
+        }
+        for selector in &selectors {
+            relation.add(BitRow::new(
+                vec![*selector],
+                vec![*selector],
+                vec![*selector],
+            ));
+        }
+        relation.add(BitRow::new(selectors.clone(), vec![one], vec![one]));
+        Ok(Self {
+            width,
+            components,
+            offsets,
+            pc,
+            next_pc,
+            selectors,
+            ands,
+            one,
+            relation,
+        })
+    }
+
+    fn witness_at(&self, pc: u64, input: &MixedAluBranchInput) -> Result<Vec<bool>, RuntimeError> {
+        let mut bits = Vec::new();
+        for component in &self.components {
+            let mut instance = component.witness(pc, input)?;
+            instance.resize(component.relation().num_vars, false);
+            bits.extend(instance);
+        }
+        bits.resize(self.relation.num_vars, false);
+        let kind = input.kind();
+        if !self
+            .components
+            .iter()
+            .any(|component| component.kind() == kind)
+        {
+            return Err(RuntimeError::Proof(
+                "trace row needs a component missing from the selected mask".into(),
+            ));
+        }
+        for (index, selector) in self.selectors.iter().enumerate() {
+            bits[*selector] = self.components[index].kind() == kind;
+        }
+        for bit in 0..self.width {
+            bits[self.pc[bit]] = (pc >> bit) & 1 == 1;
+        }
+        for bit in 0..self.width {
+            let mut next_value = false;
+            for (index, component) in self.components.iter().enumerate() {
+                let value = bits[component.next_pc()[bit] + self.offsets[index]];
+                bits[self.ands[index][bit]] = bits[self.selectors[index]] && value;
+                next_value ^= bits[self.ands[index][bit]];
+            }
+            bits[self.next_pc[bit]] = next_value;
+        }
+        Ok(bits)
+    }
+}
+
+impl GatedRowLike for DynamicMixedRow {
+    fn relation(&self) -> &BitRelation {
+        &self.relation
+    }
+    fn packed_companion_system(&self) -> magnetar_constraint::ConstraintSystem {
+        self.relation.to_system()
+    }
+    fn width(&self) -> usize {
+        self.width
+    }
+    fn pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.pc
+    }
+    fn next_pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.next_pc
+    }
+    fn one(&self) -> magnetar_constraint::VarId {
+        self.one
+    }
+}
+
+fn dynamic_trace_bits(
+    width: usize,
+    rows: &[(u64, MixedAluBranchInput)],
+    final_pc: u64,
+    mask: u8,
+) -> Result<(Vec<bool>, usize, u64), RuntimeError> {
+    let row = DynamicMixedRow::build(mask, width)?;
+    let cycles = rows.len().next_power_of_two();
+    let initial_pc = rows[0].0;
+    let (base_cols, _, _) = gated_shared_matrices(&row, cycles, None)?;
+    let mut bits = Vec::with_capacity(cycles * base_cols);
+    for index in 0..cycles {
+        let (pc, mut input) = if index < rows.len() {
+            rows[index]
+        } else {
+            (
+                final_pc,
+                MixedAluBranchInput::Fetch {
+                    left: 0,
+                    right: 0,
+                    imm: 0,
+                    kind: crate::branch_row::BranchKind::Beq,
+                },
+            )
+        };
+        if index + 1 == rows.len() && final_pc == pc {
+            input = MixedAluBranchInput::Fetch {
+                left: 0,
+                right: 0,
+                imm: 0,
+                kind: crate::branch_row::BranchKind::Beq,
+            };
+        }
+        let mut instance = row.witness_at(pc, &input)?;
+        instance.resize(base_cols, false);
+        bits.extend(instance);
+    }
+    Ok((bits, cycles, initial_pc))
+}
+
+pub fn prove_dynamic_selected_trace<B: magnetar_proof::BitPcs>(
+    trace: &magnetar_spec::Trace,
+    width: usize,
+    backend: &B,
+) -> Result<LockstepBatch<B>, RuntimeError> {
+    use magnetar_proof::prove_lockstep_bits;
+
+    let rows = mixed_alu_branch_rows_from_trace(trace, width)?;
+    let final_pc = trace.final_state.pc;
+    let mut mask = mixed_rows_component_mask(&rows);
+    if rows.last().map(|(pc, _)| *pc) == Some(final_pc) {
+        mask |= MIXED_BRANCH;
+    }
+    let (bits, cycles, initial_pc) = dynamic_trace_bits(width, &rows, final_pc, mask)?;
+    let row = DynamicMixedRow::build(mask, width)?;
+    let (base_cols, s1, s2) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
+    let layout = segment_layout(cycles * base_cols)?;
+    let proof = prove_lockstep_bits(
+        &bits, &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], &layout, backend,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok((proof, layout))
+}
+
+pub fn verify_dynamic_selected_trace<B: magnetar_proof::BitPcs>(
+    trace: &magnetar_spec::Trace,
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    layout: &magnetar_constraint::WitnessLayout,
+    width: usize,
+    backend: &B,
+) -> Result<(), RuntimeError> {
+    use magnetar_proof::verify_lockstep_bits;
+
+    let rows = mixed_alu_branch_rows_from_trace(trace, width)?;
+    let final_pc = trace.final_state.pc;
+    let mut mask = mixed_rows_component_mask(&rows);
+    if rows.last().map(|(pc, _)| *pc) == Some(final_pc) {
+        mask |= MIXED_BRANCH;
+    }
+    let (bits, cycles, initial_pc) = dynamic_trace_bits(width, &rows, final_pc, mask)?;
+    let expected = backend
+        .commit(&bits)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if backend.commitment_bytes(&expected) != backend.commitment_bytes(&proof.commitment) {
+        return Err(RuntimeError::Proof(
+            "dynamic selected witness does not match the proof commitment".into(),
+        ));
+    }
+    let row = DynamicMixedRow::build(mask, width)?;
+    let (_, s1, s2) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
+    verify_lockstep_bits(
+        &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], layout, proof, backend,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok(())
+}
+
 pub fn prove_gated_dual_batch_bits<B: magnetar_proof::BitPcs>(
     width: usize,
     rows: &[(u64, GatedCpuRowInput)],
@@ -4584,6 +5047,94 @@ mod shared_claim_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dynamic_selected_trace_binds_witness() {
+        use magnetar_executor::execute;
+        use magnetar_pcs::P3SharedPcs;
+        use magnetar_proof::RingSwitchPackedBitPcs;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+        let backend =
+            RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
+        let config = MachineConfig {
+            entry: 0x1000,
+            rom_base: 0x1000,
+            ram_base: 0x1000_0000,
+            ram_size: 0x40,
+            stack_top: 0x1000_0040,
+            max_cycles: 100,
+        };
+        let programs = [
+            ProgramImage::new(
+                0x1000,
+                vec![
+                    Instruction {
+                        op: Op::Addi,
+                        rd: 1,
+                        rs1: 0,
+                        rs2: 0,
+                        imm: 7,
+                        shamt: 0,
+                    }
+                    .encode(),
+                    Instruction::new(Op::Ecall).encode(),
+                ],
+            ),
+            ProgramImage::new(
+                0x1000,
+                vec![
+                    Instruction {
+                        op: Op::Lui,
+                        rd: 1,
+                        rs1: 0,
+                        rs2: 0,
+                        imm: 0x10,
+                        shamt: 0,
+                    }
+                    .encode(),
+                    Instruction {
+                        op: Op::Slli,
+                        rd: 1,
+                        rs1: 1,
+                        rs2: 0,
+                        imm: 0,
+                        shamt: 2,
+                    }
+                    .encode(),
+                    Instruction::new(Op::Ecall).encode(),
+                ],
+            ),
+            ProgramImage::new(
+                0x1000,
+                vec![
+                    Instruction {
+                        op: Op::Lui,
+                        rd: 20,
+                        rs1: 0,
+                        rs2: 0,
+                        imm: 0x1000_0000,
+                        shamt: 0,
+                    }
+                    .encode(),
+                    Instruction {
+                        op: Op::Lw,
+                        rd: 6,
+                        rs1: 20,
+                        rs2: 0,
+                        imm: 2,
+                        shamt: 0,
+                    }
+                    .encode(),
+                    Instruction::new(Op::Ecall).encode(),
+                ],
+            ),
+        ];
+        for program in programs {
+            let trace = execute(&program, config.clone()).unwrap();
+            let (proof, layout) = prove_dynamic_selected_trace(&trace, 8, &backend).unwrap();
+            verify_dynamic_selected_trace(&trace, &proof, &layout, 8, &backend).unwrap();
+        }
+    }
 
     #[test]
     fn f2_xor_and_packed_cpu_run_in_lockstep() {

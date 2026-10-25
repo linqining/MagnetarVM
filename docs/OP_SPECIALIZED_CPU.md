@@ -500,3 +500,36 @@ The memory component is only added when the trace mask needs it; proof bytes
 drop by ~50% on this trace. A shift-component extension was attempted this round
 but reverted before commit because the hand-written relation/witness expansion
 became error-prone.
+
+
+## Generic dynamic component row (done)
+
+`DynamicMixedRow` holds a `Vec<Box<dyn PcComponent>>` built from the trace
+component mask. Each selected component supplies its relation, PC/next-PC, one
+bit and witness; the row adds the global PC, selectors, per-component products
+and the XOR next-PC mux.
+
+`prove_dynamic_selected_trace` / `verify_dynamic_selected_trace` build the mask
+from the trace (adding branch for the halt row), commit only selected
+components, and bind the rebuilt witness to the proof commitment.
+
+Addi-only traces, width 8:
+
+```text
+rows=2   dynamic 23,384 B / 0.12 s
+rows=4   dynamic 40,432 B / 0.08 s
+rows=8   dynamic 47,216 B / 0.20 s
+rows=16  dynamic 54,104 B / 0.94 s
+```
+
+Compared with the full gated row:
+
+```text
+rows=2   1.13 s  -> 0.12 s
+rows=4   2.20 s  -> 0.08 s
+rows=8   8.00 s  -> 0.20 s
+rows=16  1.53 s  -> 0.94 s
+```
+
+This is the general dynamic builder the earlier hand-written subsets were
+approximating.

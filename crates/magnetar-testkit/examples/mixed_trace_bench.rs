@@ -4,8 +4,9 @@ use magnetar_executor::execute;
 use magnetar_pcs::P3SharedPcs;
 use magnetar_proof::RingSwitchPackedBitPcs;
 use magnetar_runtime::simd_dual::{
-    prove_alu_branch_trace, prove_gated_dual_batch_bits, prove_small_alu_branch_trace,
-    verify_alu_branch_trace, verify_gated_dual_batch_bits, verify_small_alu_branch_trace,
+    prove_alu_branch_trace, prove_dynamic_selected_trace, prove_gated_dual_batch_bits,
+    prove_small_alu_branch_trace, verify_alu_branch_trace, verify_dynamic_selected_trace,
+    verify_gated_dual_batch_bits, verify_small_alu_branch_trace,
 };
 use magnetar_runtime::simd_full::gated_rows_from_trace;
 use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
@@ -64,6 +65,14 @@ fn main() {
         let mixed_verify = started.elapsed();
 
         let started = Instant::now();
+        let (dynamic_proof, dynamic_layout) =
+            prove_dynamic_selected_trace(&trace, width, &backend).unwrap();
+        let dynamic_prove = started.elapsed();
+        let dynamic_bytes = bincode::serialize(&dynamic_proof).unwrap().len();
+        verify_dynamic_selected_trace(&trace, &dynamic_proof, &dynamic_layout, width, &backend)
+            .unwrap();
+
+        let started = Instant::now();
         let (small_proof, small_layout) =
             prove_small_alu_branch_trace(&trace, width, &backend).unwrap();
         let small_prove = started.elapsed();
@@ -87,6 +96,7 @@ fn main() {
             small_verify,
             gated_prove.as_secs_f64() / small_prove.as_secs_f64()
         );
+        println!("  dynamic={}B/{:?}", dynamic_bytes, dynamic_prove);
     }
 
     let mem_program = ProgramImage::new(
