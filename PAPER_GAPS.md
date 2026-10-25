@@ -1231,15 +1231,15 @@ Ring-switch proof overhead is about 2 KB for `s_hat_v` plus the sum-check and PC
 
 `prove_gated_dual_batch_bits` / `verify_gated_dual_batch_bits` are generic over `BitPcs`, so the same gated s1/s2 matrices run with Direct (M4) and RingSwitch (M5).
 
-`gated_dual_m4_m5_bench` (P3, release, mixed ALU/memory):
+`gated_dual_m4_m5_bench` (P3Shared, release, mixed ALU/memory):
 
 | cycles | M4 proof | M5 ring proof | M4 prove | M5 ring prove |
 |---:|---:|---:|---:|---:|
-| 2 | 84,696 B | 4,816 B | 6.3 ms | 4.3 ms |
-| 4 | 106,352 B | 6,624 B | 9.8 ms | 7.5 ms |
-| 8 | 130,888 B | 10,736 B | 16.7 ms | 14.2 ms |
+| 2 | 121,496 B | 47,248 B | 851 ms | 515 ms |
+| 4 | 140,344 B | 54,328 B | 430 ms | 1.22 s |
+| 8 | 152,544 B | 57,520 B | 1.80 s | 1.22 s |
 
-At q=8 the ring-switch M5 proof is ~12x smaller, with comparable prover/verifier time. Test `gated_dual_batch_runs_with_both_backends_on_q8` verifies both backends on q=8.
+At q=8 the ring-switch M5 proof is ~2.65x smaller; M5 wins in proof size at q=2/4/8 but its prover is slower at q=4. These are the current full dual s1+s2 measurements; the earlier 4.8-10.7 KB table was a smaller prototype configuration and is superseded. Test `gated_dual_batch_runs_with_both_backends_on_q2_q4_q8` verifies both backends at all three sizes.
 
 
 ### Generic gated bundle with M5 ring CPU proof

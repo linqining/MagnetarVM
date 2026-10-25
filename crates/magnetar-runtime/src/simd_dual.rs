@@ -1720,42 +1720,44 @@ mod tests {
     }
 
     #[test]
-    fn gated_dual_batch_runs_with_both_backends_on_q8() {
+    fn gated_dual_batch_runs_with_both_backends_on_q2_q4_q8() {
         use magnetar_proof::{DirectBitPcs, RingSwitchPackedBitPcs};
 
-        let rows = (0..8usize)
-            .map(|index| {
-                (
-                    0x1000 + 4 * index as u64,
-                    if index % 5 == 4 {
-                        GatedCpuRowInput::Shift {
-                            left: 0x12 + index as u64,
-                            shamt: 2,
-                            kind: crate::simd_f2::BitShiftKind::Sll,
-                        }
-                    } else {
-                        GatedCpuRowInput::Alu {
-                            left: 0x12 + index as u64,
-                            right: 0x34 + index as u64,
-                            op: match index % 4 {
-                                0 => crate::simd_f2::GatedAluOp::Add,
-                                1 => crate::simd_f2::GatedAluOp::Sub,
-                                2 => crate::simd_f2::GatedAluOp::Sltu,
-                                _ => crate::simd_f2::GatedAluOp::Slt,
-                            },
-                        }
-                    },
-                )
-            })
-            .collect::<Vec<_>>();
-        let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
-        let direct = DirectBitPcs::new(pcs.clone());
-        let (proof, layout) = prove_gated_dual_batch_bits(8, &rows, &direct).unwrap();
-        verify_gated_dual_batch_bits(8, &rows, &proof, &layout, &direct).unwrap();
+        for cycles in [2usize, 4, 8] {
+            let rows = (0..cycles)
+                .map(|index| {
+                    (
+                        0x1000 + 4 * index as u64,
+                        if index % 5 == 4 {
+                            GatedCpuRowInput::Shift {
+                                left: 0x12 + index as u64,
+                                shamt: 2,
+                                kind: crate::simd_f2::BitShiftKind::Sll,
+                            }
+                        } else {
+                            GatedCpuRowInput::Alu {
+                                left: 0x12 + index as u64,
+                                right: 0x34 + index as u64,
+                                op: match index % 4 {
+                                    0 => crate::simd_f2::GatedAluOp::Add,
+                                    1 => crate::simd_f2::GatedAluOp::Sub,
+                                    2 => crate::simd_f2::GatedAluOp::Sltu,
+                                    _ => crate::simd_f2::GatedAluOp::Slt,
+                                },
+                            }
+                        },
+                    )
+                })
+                .collect::<Vec<_>>();
+            let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
+            let direct = DirectBitPcs::new(pcs.clone());
+            let (proof, layout) = prove_gated_dual_batch_bits(8, &rows, &direct).unwrap();
+            verify_gated_dual_batch_bits(8, &rows, &proof, &layout, &direct).unwrap();
 
-        let ring = RingSwitchPackedBitPcs::new(pcs);
-        let (proof, layout) = prove_gated_dual_batch_bits(8, &rows, &ring).unwrap();
-        verify_gated_dual_batch_bits(8, &rows, &proof, &layout, &ring).unwrap();
+            let ring = RingSwitchPackedBitPcs::new(pcs);
+            let (proof, layout) = prove_gated_dual_batch_bits(8, &rows, &ring).unwrap();
+            verify_gated_dual_batch_bits(8, &rows, &proof, &layout, &ring).unwrap();
+        }
     }
 
     #[test]
