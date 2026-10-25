@@ -119,6 +119,16 @@ mod tests {
     }
 
     #[test]
+    fn avx2_and_scalar_packing_agree() {
+        let bits = (0..1024usize)
+            .map(|index| (index * index + 3 * index + 1) % 7 < 3)
+            .collect::<Vec<_>>();
+        let scalar = RingSwitchPackedBitPcs::<TestPcs>::pack_scalar(&bits);
+        let packed = RingSwitchPackedBitPcs::<TestPcs>::pack(&bits).unwrap();
+        assert_eq!(scalar, packed);
+    }
+
+    #[test]
     fn packed_and_direct_agree_on_all_points_128() {
         let bits = (0..128).map(|index| index % 3 == 0).collect::<Vec<_>>();
         let direct = DirectBitPcs::new(TestPcs);
@@ -528,20 +538,94 @@ impl<P: Pcs> RingSwitchPackedBitPcs<P> {
                 "ring-switch packing requires at least 256 bits".into(),
             ));
         }
+        #[cfg(target_arch = "x86_64")]
+        {
+            if std::is_x86_feature_detected!("avx2") {
+                // SAFETY: the length is checked above and the slice is at least
+                // 256 bytes, so four 32-byte loads per 128-bit chunk are in
+                // bounds; `bool` has a one-byte 0/1 representation.
+                return Ok(unsafe { Self::pack_avx2(bits) });
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            // SAFETY: NEON is baseline on aarch64; each load reads 16 bytes
+            // within a 128-byte chunk and `bool` is a 0/1 byte.
+            return Ok(unsafe { Self::pack_neon(bits) });
+        }
+        #[allow(unreachable_code)]
+        Ok(Self::pack_scalar(bits))
+    }
+
+    fn pack_scalar(bits: &[bool]) -> Vec<F2_128> {
         let low_bits = 7;
         let low_len = 1usize << low_bits;
         let high_len = bits.len() / low_len;
         let mut packed = vec![F2_128::from(0u64); high_len];
-        for high in 0..high_len {
-            let mut value = F2_128::from(0u64);
+        for (high, slot) in packed.iter_mut().enumerate() {
+            let mut word = 0u128;
             for low in 0..low_len {
                 if bits[high * low_len + low] {
-                    value = value + F2_128::from(1u128 << low);
+                    word |= 1u128 << low;
                 }
             }
-            packed[high] = value;
+            *slot = F2_128::from(word);
         }
-        Ok(packed)
+        packed
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    unsafe fn pack_avx2(bits: &[bool]) -> Vec<F2_128> {
+        use std::arch::x86_64::{
+            __m256i, _mm256_cmpeq_epi8, _mm256_loadu_si256, _mm256_movemask_epi8,
+            _mm256_setzero_si256,
+        };
+        let low_len = 128usize;
+        let high_len = bits.len() / low_len;
+        let mut packed = vec![F2_128::from(0u64); high_len];
+        let zero: __m256i = _mm256_setzero_si256();
+        for (high, slot) in packed.iter_mut().enumerate() {
+            let ptr = bits.as_ptr().add(high * low_len) as *const __m256i;
+            let mut word = 0u128;
+            for group in 0..4usize {
+                let value = unsafe { _mm256_loadu_si256(ptr.add(group)) };
+                let equal = _mm256_cmpeq_epi8(value, zero);
+                let nonzero = !(_mm256_movemask_epi8(equal) as u32);
+                word |= u128::from(nonzero) << (group * 32);
+            }
+            *slot = F2_128::from(word);
+        }
+        packed
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[target_feature(enable = "neon")]
+    unsafe fn pack_neon(bits: &[bool]) -> Vec<F2_128> {
+        use std::arch::aarch64::{
+            vaddvq_u16, vget_high_u8, vget_low_u8, vld1q_s16, vld1q_u8, vmovl_u8, vshlq_u16,
+        };
+        let shift_values = [0i16, 1, 2, 3, 4, 5, 6, 7];
+        let shifts = unsafe { vld1q_s16(shift_values.as_ptr()) };
+        unsafe fn pack_u16(ptr: *const u8, shifts: std::arch::aarch64::int16x8_t) -> u16 {
+            let value = unsafe { vld1q_u8(ptr) };
+            let low = unsafe { vaddvq_u16(vshlq_u16(vmovl_u8(vget_low_u8(value)), shifts)) };
+            let high = unsafe { vaddvq_u16(vshlq_u16(vmovl_u8(vget_high_u8(value)), shifts)) };
+            low | (high << 8)
+        }
+        let low_len = 128usize;
+        let high_len = bits.len() / low_len;
+        let mut packed = vec![F2_128::from(0u64); high_len];
+        for (high, slot) in packed.iter_mut().enumerate() {
+            let ptr = bits.as_ptr().add(high * low_len);
+            let mut word = 0u128;
+            for group in 0..8usize {
+                let value = unsafe { pack_u16(ptr.add(group * 16) as *const u8, shifts) };
+                word |= u128::from(value) << (group * 16);
+            }
+            *slot = F2_128::from(word);
+        }
+        packed
     }
 
     fn transpose128(values: &[F2_128]) -> Vec<F2_128> {

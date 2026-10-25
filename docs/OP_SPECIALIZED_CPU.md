@@ -733,3 +733,42 @@ chunk=2  compact 191,423 B/4.96 s  dynamic 173,827 B/0.33 s  stream 257,967 B/1.
 ```
 
 `dynamic_chunked_streaming_round_trips` verifies the per-chunk selected proof.
+
+
+## Streaming per-chunk dynamic CPU (done)
+
+`prove_chunked_trace_streaming_dynamic` builds a dynamic selected CPU proof per
+chunk, using a sub-trace whose final PC is the next chunk's first PC. Each chunk
+stores `selected_cpu`, `cpu = None`, and the selected-proof digest in the chain.
+`verify_chunked_trace` verifies each selected claim against the sub-trace and
+checks the selected digest.
+
+4-row Addi/Slli/Addi/Ecall, width 8:
+
+```text
+chunk=1  stream 344,907 B / 0.35 s  stream-dynamic 265,683 B / 0.39 s
+chunk=2  stream 257,967 B / 1.78 s  stream-dynamic 178,395 B / 0.45 s
+```
+
+`dynamic_chunked_streaming_round_trips` verifies the per-chunk selected path. A
+minimum of two cycles is forced for the selected proof so a one-row chunk can be
+padded with a branch row.
+
+## Hardware SIMD (first integration)
+
+`RingSwitchPackedBitPcs::pack` now has hardware bit-packing kernels:
+
+```text
+x86_64 AVX2   _mm256_loadu_si256 + _mm256_cmpeq_epi8 + movemask
+aarch64 NEON  vld1q_u8 + vmovl_u8 + vshlq_u16 + vaddvq_u16
+fallback      scalar bit loop
+```
+
+`avx2_and_scalar_packing_agree` compares the accelerated pack to the scalar pack
+on a 1,024-bit pattern; on this arm64 host the NEON path is the one actually
+executed. The AVX2 path is cfg-gated and not executable on this host.
+
+The end-to-end native prove time did not show a stable win from packing alone
+(65 ms vs 44-127 ms across runs); packing is a small part of the proof. This is a
+real hardware-SIMD kernel, but not yet a broad SIMD port of the field/PCS hot
+loops.
