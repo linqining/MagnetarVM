@@ -49,7 +49,7 @@ pub struct SparseMatrix {
 /// Matrix interface consumed by the Spartan reduction. `SparseMatrix` is the
 /// materialized form; `SharedBlockMatrix` represents q block-diagonal
 /// instances with one base matrix.
-pub trait SpartanMatrix {
+pub trait SpartanMatrix: Sync {
     fn rows(&self) -> usize;
     fn cols(&self) -> usize;
     fn mul_vec(&self, z: &[F2_128]) -> Result<Vec<F2_128>, SpartanError>;
@@ -77,6 +77,44 @@ impl SpartanMatrix for SparseMatrix {
     fn eval_mle(&self, row_point: &[F2_128], col_point: &[F2_128]) -> Result<F2_128, SpartanError> {
         SparseMatrix::eval_mle(self, row_point, col_point)
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn row_combinations_parallel(
+    a0: &dyn SpartanMatrix,
+    b0: &dyn SpartanMatrix,
+    c0: &dyn SpartanMatrix,
+    a1: &dyn SpartanMatrix,
+    b1: &dyn SpartanMatrix,
+    c1: &dyn SpartanMatrix,
+    rx: &[F2_128],
+) -> Result<[Vec<F2_128>; 6], SpartanError> {
+    if a0.rows() < 4096 {
+        return Ok([
+            a0.row_combination(rx)?,
+            b0.row_combination(rx)?,
+            c0.row_combination(rx)?,
+            a1.row_combination(rx)?,
+            b1.row_combination(rx)?,
+            c1.row_combination(rx)?,
+        ]);
+    }
+    std::thread::scope(|scope| {
+        let a0h = scope.spawn(|| a0.row_combination(rx));
+        let b0h = scope.spawn(|| b0.row_combination(rx));
+        let c0h = scope.spawn(|| c0.row_combination(rx));
+        let a1h = scope.spawn(|| a1.row_combination(rx));
+        let b1h = scope.spawn(|| b1.row_combination(rx));
+        let c1h = scope.spawn(|| c1.row_combination(rx));
+        Ok([
+            a0h.join().expect("row-combination worker")?,
+            b0h.join().expect("row-combination worker")?,
+            c0h.join().expect("row-combination worker")?,
+            a1h.join().expect("row-combination worker")?,
+            b1h.join().expect("row-combination worker")?,
+            c1h.join().expect("row-combination worker")?,
+        ])
+    })
 }
 
 impl SparseMatrix {
@@ -1028,18 +1066,27 @@ pub fn prove_lockstep_claims_bits<B: BitPcs>(
     {
         return Err(SpartanError::Dimensions);
     }
+    let profile = std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some();
+    let started = std::time::Instant::now();
     let az0 = a0.mul_vec(z)?;
     let bz0 = b0.mul_vec(z)?;
     let cz0 = c0.mul_vec(z)?;
     let az1 = a1.mul_vec(z)?;
     let bz1 = b1.mul_vec(z)?;
     let cz1 = c1.mul_vec(z)?;
+    if profile {
+        eprintln!("selected matvec: {:?}", started.elapsed());
+    }
+    let started = std::time::Instant::now();
     let az0_mle = Mle::new(az0.clone())?;
     let bz0_mle = Mle::new(bz0.clone())?;
     let cz0_mle = Mle::new(cz0.clone())?;
     let az1_mle = Mle::new(az1.clone())?;
     let bz1_mle = Mle::new(bz1.clone())?;
     let cz1_mle = Mle::new(cz1.clone())?;
+    if profile {
+        eprintln!("selected mle: {:?}", started.elapsed());
+    }
     let row_bits = a0.rows().trailing_zeros() as usize;
     let transcript = RefCell::new(Sha256Transcript::new("lockstep-reference-v1"));
     let tau = {
@@ -1058,6 +1105,7 @@ pub fn prove_lockstep_claims_bits<B: BitPcs>(
         let mut transcript = transcript.borrow_mut();
         challenge_field(&mut transcript, "relation-batch")
     };
+    let started = std::time::Instant::now();
     let (outer, rx, _) = prove_product6(
         eq_values,
         az0,
@@ -1074,6 +1122,9 @@ pub fn prove_lockstep_claims_bits<B: BitPcs>(
             expected: F2_128::from(0u64),
             actual: outer.claimed_sum,
         });
+    }
+    if profile {
+        eprintln!("selected product6: {:?}", started.elapsed());
     }
     let va0 = az0_mle.eval(&rx)?;
     let vb0 = bz0_mle.eval(&rx)?;
@@ -1093,12 +1144,13 @@ pub fn prove_lockstep_claims_bits<B: BitPcs>(
     };
     let expected_inner_claim =
         va0 + r0 * vb0 + r0 * r0 * vc0 + alpha * (va1 + r1 * vb1 + r1 * r1 * vc1);
-    let a0_values = a0.row_combination(&rx)?;
-    let b0_values = b0.row_combination(&rx)?;
-    let c0_values = c0.row_combination(&rx)?;
-    let a1_values = a1.row_combination(&rx)?;
-    let b1_values = b1.row_combination(&rx)?;
-    let c1_values = c1.row_combination(&rx)?;
+    let started = std::time::Instant::now();
+    let [a0_values, b0_values, c0_values, a1_values, b1_values, c1_values] =
+        row_combinations_parallel(a0, b0, c0, a1, b1, c1, &rx)?;
+    if profile {
+        eprintln!("selected row-combinations: {:?}", started.elapsed());
+    }
+    let started = std::time::Instant::now();
     let left_values = (0..z.len())
         .map(|index| {
             a0_values[index]
@@ -1116,7 +1168,14 @@ pub fn prove_lockstep_claims_bits<B: BitPcs>(
             actual: inner.claimed_sum,
         });
     }
+    if profile {
+        eprintln!("selected product2: {:?}", started.elapsed());
+    }
+    let started = std::time::Instant::now();
     let segments = split_segment_claims(layout, z, &ry)?;
+    if profile {
+        eprintln!("selected segments: {:?}", started.elapsed());
+    }
     Ok((
         LockstepClaims {
             commitment,
