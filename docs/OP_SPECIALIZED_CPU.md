@@ -366,5 +366,14 @@ PC (e.g. Ecall), because the ALU row would wrongly advance `pc + 4`.
 
 `alu_branch_trace_binds_witness` executes Addi + Ecall, proves the selected CPU
 batch, and verifies it with the commitment check. This is the first sound,
-trace-bound op-specialized CPU proof, but it still supports only ALU/branch rows;
-memory/shift/mul/div traces need those components in the mixed relation.
+trace-bound op-specialized CPU proof.
+
+### Memory component (done)
+
+The mixed row now also contains a `MemPcRow` with its own selector and product
+term; the global next-PC mux XORs ALU, branch and memory products. Trace mapping
+converts `GatedCpuRowInput::Memory` into `MixedAluBranchInput::Memory`.
+
+`alu_branch_mem_trace_binds_witness` executes Lui + Lw + Ecall, proves, and
+verifies with the commitment check. Shift/mul/div traces still need their
+components in the mixed relation.
