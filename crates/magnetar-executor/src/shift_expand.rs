@@ -19,18 +19,14 @@ fn uses_temp(instruction: &Instruction) -> bool {
         || TEMPS.contains(&instruction.rs2)
 }
 
-fn is_pc_relative(op: Op) -> bool {
+fn is_unrelocatable(op: Op) -> bool {
+    matches!(op, Op::Jal | Op::Jalr | Op::Auipc)
+}
+
+fn is_branch(op: Op) -> bool {
     matches!(
         op,
-        Op::Beq
-            | Op::Bne
-            | Op::Blt
-            | Op::Bge
-            | Op::Bltu
-            | Op::Bgeu
-            | Op::Jal
-            | Op::Jalr
-            | Op::Auipc
+        Op::Beq | Op::Bne | Op::Blt | Op::Bge | Op::Bltu | Op::Bgeu
     )
 }
 
@@ -118,22 +114,52 @@ fn expand_one(instruction: &Instruction) -> Option<Vec<u32>> {
 
 /// Expand register-specified shifts into branchless fixed sequences.
 pub fn expand_register_shifts(program: &ProgramImage) -> Option<ProgramImage> {
+    let decoded = program
+        .rom
+        .iter()
+        .map(|word| magnetar_spec::decode(*word).ok())
+        .collect::<Option<Vec<_>>>()?;
+    if decoded
+        .iter()
+        .any(|instruction| is_unrelocatable(instruction.op) || uses_temp(instruction))
+    {
+        return None;
+    }
+    let mut bodies = Vec::with_capacity(decoded.len());
     let mut changed = false;
-    let mut rom = Vec::with_capacity(program.rom.len());
-    for word in &program.rom {
-        let instruction = magnetar_spec::decode(*word).ok()?;
-        if is_pc_relative(instruction.op) || uses_temp(&instruction) {
-            return None;
-        }
-        if let Some(body) = expand_one(&instruction) {
-            rom.extend(body);
-            changed = true;
-        } else {
-            rom.push(*word);
-        }
+    for instruction in &decoded {
+        let body = expand_one(instruction);
+        changed |= body.is_some();
+        bodies.push(body);
     }
     if !changed {
         return None;
+    }
+    let mut mapping = Vec::with_capacity(decoded.len());
+    let mut rom = Vec::new();
+    for body in &bodies {
+        mapping.push(rom.len());
+        if let Some(body) = body {
+            rom.extend(body.iter().copied());
+        } else {
+            rom.push(0);
+        }
+    }
+    for (index, instruction) in decoded.iter().enumerate() {
+        if bodies[index].is_none() {
+            rom[mapping[index]] = instruction.encode();
+        }
+        if !is_branch(instruction.op) {
+            continue;
+        }
+        let target = (index as i64) + instruction.imm / 4;
+        if target < 0 || target as usize >= decoded.len() {
+            return None;
+        }
+        let relocated = (mapping[target as usize] as i64 - mapping[index] as i64) * 4;
+        let mut branch = *instruction;
+        branch.imm = relocated;
+        rom[mapping[index]] = branch.encode();
     }
     Some(ProgramImage {
         entry: program.entry,
@@ -301,6 +327,64 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn branch_targets_are_relocated() {
+        let original = program(vec![
+            Instruction {
+                op: Op::Addi,
+                rd: 1,
+                rs1: 0,
+                rs2: 0,
+                imm: 5,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Addi,
+                rd: 2,
+                rs1: 0,
+                rs2: 0,
+                imm: 1,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Beq,
+                rd: 0,
+                rs1: 1,
+                rs2: 1,
+                imm: 8,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Sll,
+                rd: 5,
+                rs1: 1,
+                rs2: 2,
+                imm: 0,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Addi,
+                rd: 6,
+                rs1: 0,
+                rs2: 0,
+                imm: 9,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction::new(Op::Ebreak).encode(),
+        ]);
+        let expanded = expand_register_shifts(&original).expect("expandable");
+        let direct = execute(&original, config()).unwrap().final_state;
+        let actual = execute(&expanded, config()).unwrap().final_state;
+        assert_eq!(direct.reg(5), 0);
+        assert_eq!(direct.reg(6), 9);
+        assert_eq!(&actual.regs[..28], &direct.regs[..28]);
     }
 
     #[test]

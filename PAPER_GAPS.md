@@ -188,7 +188,7 @@ pipeline/preprocess/executor 路径落地，PC-relative/临时寄存器不兼容
 | D9 | BinaryRouter for shifts：`Y(o,j)=Σ X·Q·R`，`Q` 来自 bytecode 并由 Shout 认证；register-specified shift 展开为固定 virtual instructions（§5.4） | 64 列 one-hot `Q` + 64 列 `hQ`；booleanity + `Σ Q = is_shift` + `Σ hQ = shamt`；Router 表包含 shamt/kind 位，`shift_linear_ok` 在随机点检查 `hQ_h=h·Q_h`、选中 index=shamt、`shift_code=shamt+64·kind`，并与 Shout 认证的 `shift_code` 列链接；tamper 测试通过 | ✅/🟡 | Shout/Q 绑定完成；register-specified shift 的固定 virtual instruction 展开仍归 D12 |
 | D10 | BinaryRouter for stores：输出是 `Inc`（old XOR new），`R_st` 带 3 个 offset bits，`Q_st` 4 个 width selector（§5.4） | 路由 `Inc`；offset/width/is_shift/is_store bits 已提交并链接到 public route；routing coefficients 现在从 committed bits 重建（`route_coefficients_from_selectors`）；未接 bytecode selector | 🟡 | 让 routing 直接使用 offset/width 的 MLE；接 bytecode width selector `Q_st` |
 | D11 | 两个 BinaryRouter 实例（shift、store） | `RouterMode`/`RouterRoute::None` 支持 standalone 实例；unified 与 chunked `AuxTraceProof` 都使用独立的 `shift_router`/`store_router` tables 与 claims | ✅ | 已实现 |
-| D12 | bytecode 预处理：instruction expansion、public ROM/bytecode table（§2、§5.5） | public `preprocess` bytecode table 已存在并被 Shout 使用；`shift_expand::expand_register_shifts` 把 Sll/Srl/Sra/Sllw/Srlw/Sraw 展开成固定 branchless 序列（x28-x31 临时寄存器），`execute_expanded`、`ReferencePipeline::run_expanded`、`preprocess_expanded` 在实际执行/预处理/证明路径中使用展开后的 bytecode；`shift_expanded_proof` 对 53-row 展开程序完成 unified prove/verify | ✅/🟡 | PC-relative 或使用 x28-x31 的程序回退原 bytecode；如需所有程序强制展开，可扩展临时寄存器分配 |
+| D12 | bytecode 预处理：instruction expansion、public ROM/bytecode table（§2、§5.5） | public `preprocess` bytecode table 已存在并被 Shout 使用；`shift_expand::expand_register_shifts` 把 Sll/Srl/Sra/Sllw/Srlw/Sraw 展开成固定 branchless 序列（x28-x31 临时寄存器），`execute_expanded`、`ReferencePipeline::run_expanded`、`preprocess_expanded` 在实际执行/预处理/证明路径中使用展开后的 bytecode；`shift_expanded_proof` 对 53-row 展开程序完成 unified prove/verify | ✅/🟡 | 条件分支会被重定位（`branch_targets_are_relocated`）；Jal/Jalr/Auipc 或使用 x28-x31 的程序回退原 bytecode；如需所有程序强制展开，可扩展临时寄存器分配与链接寄存器语义 |
 | D13 | ROM/bytecode 是 public input，不由 proof 携带 | `Statement` 现在携带 `rom`；`TraceProof`/`UnifiedTraceProof`/`ChunkedTraceProof` 已移除 `rom` 字段；verifier 从 statement 使用 ROM | ✅ | bytecode table/micro-PC 仍需按 D7/D12 完成 |
 
 ### E. PCS / MosaicPCS
@@ -4351,3 +4351,8 @@ expansion is intentionally fixed and large compared with a hardware shift.
 `preprocess_expanded` exposes the expanded bytecode preprocessing directly, and
 `preprocess_expanded_uses_the_expanded_rom` checks that the expanded ROM is what
 the pipeline proves over.
+
+
+The expansion now relocates conditional branch targets after inserting the fixed
+sequences, so branchy straight-line guest code can use the expanded bytecode;
+Jal/Jalr/Auipc and x28-x31 users still fall back.
