@@ -278,3 +278,15 @@ supplied rows. `verify_unified_trace` now applies this check in the trace-aware
 reference path, so the Merkle claim layer cannot silently diverge from the
 executed trace. The proof-only path still relies on the access statement/proofs
 and selected PC statement.
+
+
+## Trace-free dynamic selected CPU verification
+
+`claims_to_trace` rebuilds `TraceRow`s from authenticated claims, including
+decoded instructions, register presence/values and memory records.
+`verify_native_claim_layer` now uses this synthetic trace to call
+`verify_dynamic_cpu_claims` for `SelectedOp::Dynamic`. The original trace is not
+used: claims are authenticated by `ClaimProof`, and the dynamic selected witness
+is rebuilt from those claims and checked against the proof commitment.
+
+Tests cover a register-only program and a Lui+Lw memory program.

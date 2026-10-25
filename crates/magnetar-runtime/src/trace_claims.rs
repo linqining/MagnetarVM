@@ -205,6 +205,87 @@ pub fn verify_claims_against_trace(trace: &Trace, claims: &[TraceClaim]) -> bool
     })
 }
 
+/// Rebuild a trace-shaped row set from authenticated claims for the
+/// trace-free selected CPU verifier. Decoding uses the authenticated word.
+pub fn claims_to_trace(
+    statement: &crate::Statement,
+    claims: &[TraceClaim],
+) -> Result<Trace, crate::RuntimeError> {
+    use magnetar_spec::{Instruction, MemoryAccess, MicroOpKind, TraceRow};
+
+    let mut rows = Vec::with_capacity(claims.len());
+    for (index, claim) in claims.iter().enumerate() {
+        let instruction = if claim.instruction_len == 2 {
+            magnetar_spec::decode_compressed(claim.instruction_word as u16)
+                .map_err(|error| crate::RuntimeError::Proof(error.to_string()))?
+        } else {
+            magnetar_spec::decode(claim.instruction_word)
+                .map_err(|error| crate::RuntimeError::Proof(error.to_string()))?
+        };
+        let mut memory = claim.memory.iter();
+        let first = memory.next().map(|event| MemoryAccess {
+            addr: event.addr,
+            value: event.value,
+            width: event.width,
+            is_write: event.is_write,
+        });
+        let extra_mem = memory
+            .map(|event| MemoryAccess {
+                addr: event.addr,
+                value: event.value,
+                width: event.width,
+                is_write: event.is_write,
+            })
+            .collect();
+        rows.push(TraceRow {
+            cycle: index as u64,
+            pc: claim.pc,
+            micro_pc: claim.pc,
+            micro_op: MicroOpKind::Execute,
+            next_pc: claim.next_pc,
+            instruction_word: claim.instruction_word,
+            instruction_len: claim.instruction_len,
+            instruction,
+            rs1: claim.rs1_present.then_some(claim.rs1 as usize),
+            rs2: claim.rs2_present.then_some(claim.rs2 as usize),
+            rd: claim.rd_present.then_some(claim.rd as usize),
+            rs1_val: claim.rs1_value,
+            rs2_val: claim.rs2_value,
+            rd_val: claim.rd_value,
+            mem: first,
+            extra_mem,
+            reservation_before: None,
+            reservation_after: None,
+            syscall: None,
+        });
+    }
+    Ok(Trace {
+        config: statement.config.clone(),
+        rom: statement.rom.clone(),
+        initial_state: statement.initial_state.clone(),
+        final_state: statement.final_state.clone(),
+        rows,
+        memory_events: claims
+            .iter()
+            .flat_map(|claim| claim.memory.iter())
+            .map(|event| magnetar_spec::MemoryEvent {
+                cycle: event.cycle,
+                access: MemoryAccess {
+                    addr: event.addr,
+                    value: event.value,
+                    width: event.width,
+                    is_write: event.is_write,
+                },
+            })
+            .collect(),
+        initial_ram: statement.initial_ram.clone(),
+        halted: statement.halted,
+        exit_code: statement.exit_code,
+        io_output: Vec::new(),
+        io_input: Vec::new(),
+    })
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CpuOutputClaim {
     pub pc: u64,

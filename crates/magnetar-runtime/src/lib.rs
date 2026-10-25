@@ -3208,6 +3208,11 @@ pub fn verify_native_claim_layer(
         let recovered = crate::simd_dual::verify_selected_claim_proof(selected, claim_proof)
             .ok_or_else(|| RuntimeError::Proof("selected claim binding mismatch".into()))?;
         crate::simd_dual::verify_selected_claim_consistency(selected, &recovered)?;
+        if selected.op == crate::simd_dual::SelectedOp::Dynamic {
+            let synthetic = crate::trace_claims::claims_to_trace(statement, &recovered)?;
+            let backend = crate::protocol::selected_backend();
+            crate::simd_dual::verify_dynamic_cpu_claims(&synthetic, selected, &backend)?;
+        }
     }
     Ok(crate::trace_claims::cpu_output_claims(&claims))
 }
@@ -5686,6 +5691,20 @@ mod tests {
         assert_eq!(outputs[0].pc, 0x1000);
         assert_eq!(outputs[0].instruction_len, 4);
         let mut claim_rows = verify_unified_claim_proof(&proof).unwrap();
+        let synthetic = crate::trace_claims::claims_to_trace(&statement, &claim_rows).unwrap();
+        assert_eq!(synthetic.rows.len(), claim_rows.len());
+        assert_eq!(synthetic.rows[0].pc, claim_rows[0].pc);
+        assert_eq!(
+            synthetic.rows[0].instruction_len,
+            claim_rows[0].instruction_len
+        );
+        for (row, claim) in synthetic.rows.iter().zip(&claim_rows) {
+            assert_eq!(&crate::trace_claims::TraceClaim::from_row(row), claim);
+        }
+        if let Some(selected) = &proof.selected_cpu {
+            let backend = crate::protocol::selected_backend();
+            crate::simd_dual::verify_dynamic_cpu_claims(&synthetic, selected, &backend).unwrap();
+        }
         claim_rows[0].rd_value ^= 1;
         let access = crate::access_statement::AccessStatement::from_claims(
             statement.config.clone(),
@@ -5702,6 +5721,44 @@ mod tests {
         let mut bad = proof;
         bad.selected_cpu.as_mut().unwrap().claim_root[0] ^= 1;
         assert!(verify_native_claim_layer(&statement, &bad).is_err());
+    }
+
+    #[test]
+    fn native_claim_layer_handles_memory_rows() {
+        let outcome = ReferencePipeline::run(
+            &ProgramImage::new(
+                0x1000,
+                vec![
+                    magnetar_spec::Instruction {
+                        op: magnetar_spec::Op::Lui,
+                        rd: 20,
+                        rs1: 0,
+                        rs2: 0,
+                        imm: 0x1000_0000,
+                        shamt: 0,
+                    }
+                    .encode(),
+                    magnetar_spec::Instruction {
+                        op: magnetar_spec::Op::Lw,
+                        rd: 6,
+                        rs1: 20,
+                        rs2: 0,
+                        imm: 0,
+                        shamt: 0,
+                    }
+                    .encode(),
+                    magnetar_spec::Instruction::new(magnetar_spec::Op::Ecall).encode(),
+                ],
+            ),
+            config(),
+            3,
+        )
+        .unwrap();
+        let proof = prove_unified_trace_dynamic_native(&outcome.trace, 8).unwrap();
+        let outputs = verify_native_claim_layer(&outcome.statement, &proof).unwrap();
+        assert_eq!(outputs.len(), outcome.trace.rows.len());
+        assert_eq!(outputs[1].memory.len(), 1);
+        assert_eq!(outputs[1].memory[0].addr, 0x1000_0000);
     }
 
     #[test]
