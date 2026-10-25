@@ -101,6 +101,26 @@ fn fetch_instruction(
     Ok((u32::from(half), 2, decode_compressed(half)?))
 }
 
+/// Execute a program after applying the fixed register-shift expansion.
+///
+/// Programs that cannot be expanded (PC-relative control flow or x28-x31 use)
+/// fall back to the original bytecode, preserving normal execution semantics.
+pub fn execute_expanded(program: &ProgramImage, config: MachineConfig) -> Result<Trace, ExecError> {
+    execute_expanded_with_io(program, config, &mut ExecutionIo::default())
+}
+
+/// IO-aware variant of [`execute_expanded`].
+pub fn execute_expanded_with_io(
+    program: &ProgramImage,
+    config: MachineConfig,
+    io: &mut ExecutionIo,
+) -> Result<Trace, ExecError> {
+    match shift_expand::expand_register_shifts(program) {
+        Some(expanded) => execute_with_io(&expanded, config, io),
+        None => execute_with_io(program, config, io),
+    }
+}
+
 pub fn execute_with_io(
     program: &ProgramImage,
     config: MachineConfig,

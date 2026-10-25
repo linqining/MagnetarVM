@@ -189,6 +189,46 @@ mod tests {
     }
 
     #[test]
+    fn execute_expanded_matches_direct_execution() {
+        let original = program(vec![
+            Instruction {
+                op: Op::Addi,
+                rd: 1,
+                rs1: 0,
+                rs2: 0,
+                imm: 0x1234,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Addi,
+                rd: 2,
+                rs1: 0,
+                rs2: 0,
+                imm: 9,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Srl,
+                rd: 3,
+                rs1: 1,
+                rs2: 2,
+                imm: 0,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction::new(Op::Ebreak).encode(),
+        ]);
+        let direct = execute(&original, config()).unwrap();
+        let expanded = crate::execute_expanded(&original, config()).unwrap();
+        assert_eq!(
+            &expanded.final_state.regs[..28],
+            &direct.final_state.regs[..28]
+        );
+    }
+
+    #[test]
     fn expansion_reuses_no_temporaries() {
         let program = program(vec![
             Instruction {
