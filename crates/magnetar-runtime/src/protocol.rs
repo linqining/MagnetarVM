@@ -1389,7 +1389,7 @@ pub(crate) fn gated_component_claims(
 
 fn opening_pcs_from_bits(max_bits: usize) -> P3BinaryPcs {
     if max_bits <= 5 {
-        P3BinaryPcs::with_params(100, 3, 23, 2)
+        P3BinaryPcs::with_params(100, 3, 24, 2)
     } else {
         P3BinaryPcs::with_params(100, 3, 21, 2)
     }

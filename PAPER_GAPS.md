@@ -20,7 +20,7 @@ Virtual Spartan lockstep    prove_lockstep_claims_bits + native BitPcs
 gated bundle soundness      rows 生成 witness 并与 proof.commitment 比较
 C3/C4                       gated row 约束 next_pc；reservation row 在 shared CPU
 proof digest                unified_proof_digest(proof) 绑定完整 proof
-benchmark                   129,151 B (gated 59,556, opening 54,817,
+benchmark                   128,815 B (gated 59,556, opening 54,481,
                             packed_shout 5,226, access 7,466)
 workloads                   15 个 workload 全部 prove/verify
 op probe                    71 条指令/寻址组合
@@ -4365,6 +4365,7 @@ still force the original bytecode path because their link/PC values would change
 
 ### Adaptive shared opening
 
-The unified opening picks `pow=23` for mosaics whose largest table has <=5
+The unified opening picks `pow=24` for mosaics whose largest table has <=5
 variables and `pow=21` otherwise. The no-shift benchmark drops 130,287 ->
-129,151 B (opening 55,953 -> 54,817 B); the 15 workload sizes are unchanged.
+128,815 B (opening 55,953 -> 54,481 B); the 15 workload sizes are unchanged.
+Pow=25 saved another 0.7 KB but made the benchmark take ~48 s, so 24 is kept.
