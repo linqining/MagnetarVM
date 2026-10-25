@@ -20,7 +20,7 @@ fn uses_temp(instruction: &Instruction) -> bool {
 }
 
 fn is_unrelocatable(op: Op) -> bool {
-    matches!(op, Op::Jalr | Op::Auipc)
+    matches!(op, Op::Jalr)
 }
 
 fn is_branch(op: Op) -> bool {
@@ -129,7 +129,11 @@ pub fn expand_register_shifts(program: &ProgramImage) -> Option<ProgramImage> {
     let mut bodies = Vec::with_capacity(decoded.len());
     let mut changed = false;
     for instruction in &decoded {
-        let body = expand_one(instruction);
+        let body = if instruction.op == Op::Auipc {
+            Some(vec![instruction.encode(), 0])
+        } else {
+            expand_one(instruction)
+        };
         changed |= body.is_some();
         bodies.push(body);
     }
@@ -149,6 +153,22 @@ pub fn expand_register_shifts(program: &ProgramImage) -> Option<ProgramImage> {
     for (index, instruction) in decoded.iter().enumerate() {
         if bodies[index].is_none() {
             rom[mapping[index]] = instruction.encode();
+        }
+        if instruction.op == Op::Auipc {
+            let delta = (mapping[index] as i64 - index as i64) * 4;
+            let correction = -delta;
+            if !(-2048..=2047).contains(&correction) {
+                return None;
+            }
+            rom[mapping[index] + 1] = Instruction {
+                op: Op::Addi,
+                rd: instruction.rd,
+                rs1: instruction.rd,
+                rs2: 0,
+                imm: correction,
+                shamt: 0,
+            }
+            .encode();
         }
         if !is_branch(instruction.op) && instruction.op != Op::Jal {
             continue;
@@ -443,6 +463,63 @@ mod tests {
         let actual = execute(&expanded, config()).unwrap().final_state;
         assert_eq!(direct.reg(5), 0);
         assert_eq!(direct.reg(6), 9);
+        assert_eq!(&actual.regs[..28], &direct.regs[..28]);
+    }
+
+    #[test]
+    fn auipc_values_are_preserved() {
+        let original = program(vec![
+            Instruction {
+                op: Op::Auipc,
+                rd: 1,
+                rs1: 0,
+                rs2: 0,
+                imm: 0,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Addi,
+                rd: 2,
+                rs1: 1,
+                rs2: 0,
+                imm: 16,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Addi,
+                rd: 3,
+                rs1: 0,
+                rs2: 0,
+                imm: 4,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Addi,
+                rd: 4,
+                rs1: 0,
+                rs2: 0,
+                imm: 1,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Sll,
+                rd: 5,
+                rs1: 3,
+                rs2: 4,
+                imm: 0,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction::new(Op::Ebreak).encode(),
+        ]);
+        let expanded = expand_register_shifts(&original).expect("expandable");
+        let direct = execute(&original, config()).unwrap().final_state;
+        let actual = execute(&expanded, config()).unwrap().final_state;
+        assert_eq!(direct.reg(1), 0x1000);
         assert_eq!(&actual.regs[..28], &direct.regs[..28]);
     }
 
