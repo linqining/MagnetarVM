@@ -203,3 +203,20 @@ return Vec<TraceClaim>
 `unified_claim_proof_verifies_without_trace` checks recovery and rejects a
 tampered instruction length. This is the first proof-only verifier entry point;
 it authenticates claims but not yet the CPU/register/access relations.
+
+
+## CPU output claims and selected binding
+
+`CpuOutputClaim` extracts the CPU-consumable view from an authenticated
+`TraceClaim`:
+
+```text
+pc, next_pc, instruction_len
+rd/rs1/rs2 (register, value)
+memory records
+```
+
+`cpu_output_claims` maps a recovered claim vector into this bus.
+`verify_selected_claim_binding`/`verify_selected_claim_proof` bind a dynamic
+selected CPU proof to an independent `ClaimProof` by root and openings, and
+return the authenticated claims without reading the trace.

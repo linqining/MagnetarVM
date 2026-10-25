@@ -180,6 +180,35 @@ pub fn verify_opening(root: [u8; 32], opening: &TraceClaimOpening) -> bool {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CpuOutputClaim {
+    pub pc: u64,
+    pub next_pc: u64,
+    pub instruction_len: u8,
+    pub rd: Option<(u8, u64)>,
+    pub rs1: Option<(u8, u64)>,
+    pub rs2: Option<(u8, u64)>,
+    pub memory: Vec<TraceMemClaim>,
+}
+
+impl CpuOutputClaim {
+    pub fn from_claim(claim: &TraceClaim) -> Self {
+        Self {
+            pc: claim.pc,
+            next_pc: claim.next_pc,
+            instruction_len: claim.instruction_len,
+            rd: (claim.rd != 0).then_some((claim.rd, claim.rd_value)),
+            rs1: (claim.rs1 != 0).then_some((claim.rs1, claim.rs1_value)),
+            rs2: (claim.rs2 != 0).then_some((claim.rs2, claim.rs2_value)),
+            memory: claim.memory.clone(),
+        }
+    }
+}
+
+pub fn cpu_output_claims(claims: &[TraceClaim]) -> Vec<CpuOutputClaim> {
+    claims.iter().map(CpuOutputClaim::from_claim).collect()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ClaimProof {
     pub root: [u8; 32],
     pub openings: Vec<TraceClaimOpening>,
@@ -283,6 +312,18 @@ mod tests {
         let mut bad = openings;
         bad[0].claim.instruction_len = 2;
         assert!(verify_claims(tree.root(), &bad).is_none());
+    }
+
+    #[test]
+    fn cpu_output_claims_extract_register_and_memory() {
+        let trace = trace();
+        let proof = ClaimProof::from_trace(&trace);
+        let claims = proof.verify().unwrap();
+        let outputs = cpu_output_claims(&claims);
+        assert_eq!(outputs[0].pc, 0x1000);
+        assert_eq!(outputs[0].instruction_len, 4);
+        assert_eq!(outputs[0].rd, Some((1, 5)));
+        assert_eq!(outputs[1].instruction_len, 4);
     }
 
     #[test]

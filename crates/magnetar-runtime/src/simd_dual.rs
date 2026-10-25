@@ -4352,6 +4352,26 @@ pub struct SelectedCpuClaims<C: Clone + std::fmt::Debug, O: Clone + std::fmt::De
     pub proof: LockstepProof<C, O>,
 }
 
+/// Verify a selected CPU claim bundle against an independent claim proof,
+/// returning the authenticated row claims without reading the trace.
+pub fn verify_selected_claim_proof<C: Clone + std::fmt::Debug, O: Clone + std::fmt::Debug>(
+    claims: &SelectedCpuClaims<C, O>,
+    proof: &crate::trace_claims::ClaimProof,
+) -> Option<Vec<crate::trace_claims::TraceClaim>> {
+    if !verify_selected_claim_binding(claims, proof) {
+        return None;
+    }
+    proof.verify()
+}
+
+/// Bind a selected CPU claim bundle to an independently serialized claim proof.
+pub fn verify_selected_claim_binding<C: Clone + std::fmt::Debug, O: Clone + std::fmt::Debug>(
+    claims: &SelectedCpuClaims<C, O>,
+    proof: &crate::trace_claims::ClaimProof,
+) -> bool {
+    claims.claim_root == proof.root && claims.claim_openings == proof.openings
+}
+
 /// Verify the trace claim openings carried by a selected CPU claim bundle
 /// without reading `trace.rows`.
 pub fn verify_selected_claim_openings<C: Clone + std::fmt::Debug, O: Clone + std::fmt::Debug>(
@@ -5679,6 +5699,53 @@ mod tests {
         let mut tampered = claims.clone();
         tampered.claim_openings[0].claim.instruction_len = 2;
         assert!(verify_selected_claim_openings(&tampered).is_none());
+    }
+
+    #[test]
+    fn selected_claims_bind_to_independent_proof() {
+        use magnetar_executor::execute;
+        use magnetar_pcs::P3SharedPcs;
+        use magnetar_proof::RingSwitchPackedBitPcs;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+        let backend =
+            RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 10,
+            },
+        )
+        .unwrap();
+        let claims = prove_dynamic_cpu_claims(&trace, 8, &backend).unwrap();
+        let proof = crate::trace_claims::ClaimProof::from_trace(&trace);
+        assert!(verify_selected_claim_binding(&claims, &proof));
+        assert_eq!(
+            verify_selected_claim_proof(&claims, &proof).unwrap().len(),
+            trace.rows.len()
+        );
+        let mut bad = proof;
+        bad.openings[0].claim.pc ^= 2;
+        assert!(!verify_selected_claim_binding(&claims, &bad));
     }
 
     #[test]
