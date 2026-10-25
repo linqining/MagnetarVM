@@ -3208,9 +3208,9 @@ pub fn verify_native_claim_layer(
         let recovered = crate::simd_dual::verify_selected_claim_proof(selected, claim_proof)
             .ok_or_else(|| RuntimeError::Proof("selected claim binding mismatch".into()))?;
         crate::simd_dual::verify_selected_claim_consistency(selected, &recovered)?;
+        let backend = crate::protocol::selected_backend();
         if selected.op == crate::simd_dual::SelectedOp::Dynamic {
             let synthetic = crate::trace_claims::claims_to_trace(statement, &recovered)?;
-            let backend = crate::protocol::selected_backend();
             crate::simd_dual::verify_dynamic_cpu_claims(&synthetic, selected, &backend)?;
         }
     }
