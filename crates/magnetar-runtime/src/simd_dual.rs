@@ -2144,6 +2144,165 @@ pub fn verify_mem_pc_batch_bits<B: magnetar_proof::BitPcs>(
     Ok(())
 }
 
+struct DivPcRow {
+    width: usize,
+    instr: crate::div_row::GatedDivRow,
+    pc_add: crate::simd_f2::GatedBitAdder,
+    pc: Vec<magnetar_constraint::VarId>,
+    next_pc: Vec<magnetar_constraint::VarId>,
+    relation: BitRelation,
+    one: magnetar_constraint::VarId,
+}
+
+impl DivPcRow {
+    fn new(width: usize) -> Self {
+        use magnetar_constraint::VarId;
+        let instr = crate::div_row::GatedDivRow::new(width);
+        let pc_add = crate::simd_f2::GatedBitAdder::new(width);
+        let mut relation = instr.relation.clone();
+        let add_offset = relation.num_vars;
+        relation.num_vars += pc_add.relation.num_vars;
+        for row in &pc_add.relation.rows {
+            let shift =
+                |vars: &[VarId]| vars.iter().map(|var| *var + add_offset).collect::<Vec<_>>();
+            relation.add(BitRow::new(shift(&row.a), shift(&row.b), shift(&row.c)));
+        }
+        let pc = (relation.num_vars..relation.num_vars + width)
+            .map(|var| var as VarId)
+            .collect::<Vec<_>>();
+        relation.num_vars += width;
+        let next_pc = (relation.num_vars..relation.num_vars + width)
+            .map(|var| var as VarId)
+            .collect::<Vec<_>>();
+        relation.num_vars += width;
+        let one = (instr.add_offset + instr.add_alu.one) as VarId;
+        for bit in 0..width {
+            relation.add(BitRow::new(vec![pc[bit]], vec![pc[bit]], vec![pc[bit]]));
+            relation.add(BitRow::new(
+                vec![next_pc[bit]],
+                vec![next_pc[bit]],
+                vec![next_pc[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![pc[bit]],
+                vec![one],
+                vec![add_offset as VarId + pc_add.a[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![next_pc[bit]],
+                vec![one],
+                vec![add_offset as VarId + pc_add.out[bit]],
+            ));
+            let constant = add_offset as VarId + pc_add.b[bit];
+            if bit == 2 {
+                relation.add(BitRow::new(vec![constant], vec![one], vec![one]));
+            } else {
+                relation.add(BitRow::new(vec![constant], vec![one], Vec::new()));
+            }
+        }
+        relation.add(BitRow::new(
+            vec![add_offset as VarId + pc_add.gate],
+            vec![one],
+            vec![one],
+        ));
+        Self {
+            width,
+            instr,
+            pc_add,
+            pc,
+            next_pc,
+            relation,
+            one,
+        }
+    }
+
+    fn witness_at(&self, pc: u64, num: u64, den: u64) -> Vec<bool> {
+        let mut bits = self.instr.witness(num, den);
+        let addition = self.pc_add.witness(pc, 4, true);
+        bits.extend(addition);
+        bits.resize(self.relation.num_vars, false);
+        for bit in 0..self.width {
+            bits[self.pc[bit]] = (pc >> bit) & 1 == 1;
+            bits[self.next_pc[bit]] = ((pc + 4) >> bit) & 1 == 1;
+        }
+        bits
+    }
+}
+
+impl GatedRowLike for DivPcRow {
+    fn relation(&self) -> &BitRelation {
+        &self.relation
+    }
+    fn packed_companion_system(&self) -> magnetar_constraint::ConstraintSystem {
+        self.relation.to_system()
+    }
+    fn width(&self) -> usize {
+        self.width
+    }
+    fn pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.pc
+    }
+    fn next_pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.next_pc
+    }
+    fn one(&self) -> magnetar_constraint::VarId {
+        self.one
+    }
+}
+
+pub fn prove_div_pc_batch_bits<B: magnetar_proof::BitPcs>(
+    width: usize,
+    cycles: usize,
+    initial_pc: u64,
+    final_pc: u64,
+    backend: &B,
+) -> Result<LockstepBatch<B>, RuntimeError> {
+    use magnetar_proof::prove_lockstep_bits;
+
+    let row = DivPcRow::new(width);
+    let system = row.relation.to_system();
+    let witness = row
+        .relation
+        .to_witness(&row.witness_at(initial_pc, 0x60, 3));
+    system
+        .check(&witness)
+        .map_err(|error| RuntimeError::Proof(format!("div+PC row witness: {error}")))?;
+    let (base_cols, s1, s2) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
+    let mut bits = Vec::with_capacity(cycles * base_cols);
+    for index in 0..cycles {
+        let pc = initial_pc + 4 * index as u64;
+        let mut witness = row.witness_at(pc, 0x60 + (index as u64 % 16), 3);
+        witness.resize(base_cols, false);
+        bits.extend(witness);
+    }
+    let layout = segment_layout(bits.len())?;
+    let proof = prove_lockstep_bits(
+        &bits, &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], &layout, backend,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok((proof, layout))
+}
+
+pub fn verify_div_pc_batch_bits<B: magnetar_proof::BitPcs>(
+    width: usize,
+    cycles: usize,
+    initial_pc: u64,
+    final_pc: u64,
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    layout: &WitnessLayout,
+    backend: &B,
+) -> Result<(), RuntimeError> {
+    use magnetar_proof::verify_lockstep_bits;
+
+    let row = DivPcRow::new(width);
+    let (_, s1, s2) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
+    verify_lockstep_bits(
+        &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], layout, proof, backend,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok(())
+}
+
 pub fn prove_gated_dual_batch_bits<B: magnetar_proof::BitPcs>(
     width: usize,
     rows: &[(u64, GatedCpuRowInput)],
@@ -2476,6 +2635,19 @@ mod tests {
             8, &rows, &proof, &layout, &direct, 0x1000, 0x100c,
         )
         .is_err());
+    }
+
+    #[test]
+    fn div_pc_batch_round_trips() {
+        use magnetar_pcs::P3SharedPcs;
+        use magnetar_proof::RingSwitchPackedBitPcs;
+
+        let backend =
+            RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
+        let initial = 0x1000;
+        let final_pc = initial + 4 * 16;
+        let (proof, layout) = prove_div_pc_batch_bits(8, 16, initial, final_pc, &backend).unwrap();
+        verify_div_pc_batch_bits(8, 16, initial, final_pc, &proof, &layout, &backend).unwrap();
     }
 
     #[test]
