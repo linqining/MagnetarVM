@@ -602,3 +602,20 @@ dynamic   92,994 B  prove 16.18 s  verify 0.031 s
 Proof bytes drop ~14% and verification is ~5x faster. Prove time is unchanged
 because this prototype still builds the full gated/E5 proof before stripping it;
 the next step is to skip that construction in the prover.
+
+
+### Skipping gated construction in the prover (attempt)
+
+A native dynamic prover that runs the access/register/router stages but skips
+`ProveCpu` and `ProveOpening` was attempted. The resulting proof fails
+verification at:
+
+```text
+Proof("BinaryShout proof presence does not match the trace")
+```
+
+So the stage context cannot simply skip the CPU/opening stages; the proof
+objects produced by the preceding stages (presence/claims/opening shape) are
+coupled to the unified plan. Skipping gated construction needs a prover-context
+refactor, not just a stage filter. The stripping variant
+(`prove_unified_trace_dynamic`) remains the working proof shape.
