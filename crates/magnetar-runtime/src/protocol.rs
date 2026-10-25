@@ -1387,6 +1387,33 @@ pub(crate) fn gated_component_claims(
     Ok((replacements, columns))
 }
 
+fn opening_pcs_from_bits(max_bits: usize) -> P3BinaryPcs {
+    if max_bits <= 5 {
+        P3BinaryPcs::with_params(100, 3, 23, 2)
+    } else {
+        P3BinaryPcs::with_params(100, 3, 21, 2)
+    }
+}
+
+fn opening_pcs(tables: &[P3MosaicTable]) -> P3BinaryPcs {
+    let max_bits = tables
+        .iter()
+        .map(|table| table.columns[0].len().trailing_zeros() as usize)
+        .max()
+        .unwrap_or(0);
+    opening_pcs_from_bits(max_bits)
+}
+
+fn opening_pcs_for_commitment(commitment: &P3MosaicCommitment) -> P3BinaryPcs {
+    let max_bits = commitment
+        .tables
+        .iter()
+        .map(|table| table.num_variables)
+        .max()
+        .unwrap_or(0);
+    opening_pcs_from_bits(max_bits)
+}
+
 impl<'a> UnifiedProveContext<'a> {
     pub(crate) fn new(trace: &'a Trace, width: usize) -> Result<Self, RuntimeError> {
         Self::new_with_group(trace, width, None)
@@ -1418,7 +1445,6 @@ impl<'a> UnifiedProveContext<'a> {
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         let register_tables = batch_tables(&register_witness)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        let pcs = P3BinaryPcs::with_params(100, 3, 21, 2);
         let shared_cpu = width <= 128
             && crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(trace, width)
                 .ok()
@@ -1474,6 +1500,7 @@ impl<'a> UnifiedProveContext<'a> {
             columns: vec![trace_witness.values.clone()],
         };
         mosaic_tables.push(trace_table.clone());
+        let pcs = opening_pcs(&mosaic_tables);
 
         let gated_input =
             crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(trace, width)
@@ -2563,8 +2590,7 @@ impl<'a> UnifiedVerifyContext<'a> {
         self.points = points;
         self.values = values;
         if let Some(opening) = &self.proof.opening {
-            let pcs = P3BinaryPcs::with_params(100, 3, 21, 2);
-            if !pcs
+            if !opening_pcs_for_commitment(&opening.commitment)
                 .verify_mosaic(opening, &self.points, &self.values)
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?
             {
@@ -2578,7 +2604,7 @@ impl<'a> UnifiedVerifyContext<'a> {
     #[allow(dead_code)]
     fn verify_revealed_opening(&self) -> Result<(), RuntimeError> {
         let context = UnifiedProveContext::new(self.trace, self.width)?;
-        let commitment = P3BinaryPcs::with_params(100, 3, 21, 2)
+        let commitment = opening_pcs(&context.mosaic_tables)
             .commit_mosaic(&context.mosaic_tables)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         if commitment != self.proof.commitment {
