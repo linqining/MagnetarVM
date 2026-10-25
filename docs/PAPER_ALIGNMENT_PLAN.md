@@ -245,8 +245,11 @@ Enabling `p3-binary-pcs/parallel` (rayon) gave:
 ```
 
 but it broke proof-byte determinism: the concurrent determinism stress reported
-`91 / 120` mismatches, and `protocol_plan_and_orchestrator_preserve_proof_bytes`
-failed. The feature was reverted. Deterministic bytes are a hard requirement for
+`83 / 120` mismatches, and `protocol_plan_and_orchestrator_preserve_proof_bytes`
+failed. Field-level diagnostics localized the differences to `gated`,
+`e5_opening`, and `packed_shout`; `selected_cpu` was not reported as differing.
+The feature still has to remain off because the full proof contains those
+fields. The feature was reverted. Deterministic bytes are a hard requirement for
 this protocol, so the parallel P3 backend cannot be enabled until its output is
 canonicalized.
 
