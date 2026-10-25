@@ -4385,3 +4385,11 @@ max table vars <=5 -> (3,24,2), otherwise (3,21,2).
 
 `chunked_combined_opening_rejects_aux_tampering` tampers a BinaryShout sum-check
 round and verifies the combined access+aux opening rejects the proof.
+
+
+### More chunked CPU tier search
+
+`>=2048` with `(4,22,2)` regressed chunk 8 from 296,480 to 302,272 B. Bits=9
+`(2,24,2)` regressed the benchmark gated part to 63,508 B. Both are rejected;
+the four-tier CPU selector (3/18/1, 3/21/2, 3/22/2, 4/20/3) and bits=9 3/24/2
+remain.
