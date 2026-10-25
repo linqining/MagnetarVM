@@ -2516,7 +2516,15 @@ pub(crate) fn verify_unified_with_plan(
             crate::protocol::ExecutionStage::RegisterAndTrace => {
                 context.verify_register_and_trace()?
             }
-            crate::protocol::ExecutionStage::Cpu => context.verify_cpu()?,
+            crate::protocol::ExecutionStage::Cpu => {
+                let dynamic_selected = proof
+                    .selected_cpu
+                    .as_ref()
+                    .is_some_and(|selected| selected.op == crate::simd_dual::SelectedOp::Dynamic);
+                if !(dynamic_selected && proof.gated.is_none()) {
+                    context.verify_cpu()?
+                }
+            }
             crate::protocol::ExecutionStage::Opening => context.verify_opening()?,
         }
     }
