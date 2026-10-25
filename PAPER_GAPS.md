@@ -4238,3 +4238,7 @@ signature, so `cargo clippy --all-targets` is clean again.
 chain/recursive verifier can bind the full proof object without re-encoding it.
 `unified_proof_digest_binds_the_proof` checks determinism and that tampering the
 trace commitment changes the digest.
+
+
+`op_probe` adds unaligned-within-word stores (`Sw` at 2, `Sh` at 4, `Sb` at 7),
+bringing the probe to 71 verified cases.

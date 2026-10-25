@@ -201,6 +201,21 @@ fn cases() -> Vec<(&'static str, ProgramImage)> {
             ]),
         ));
     }
+    for (name, store, offset) in [
+        ("sw2", Op::Sw, 2i64),
+        ("sh4", Op::Sh, 4),
+        ("sb7", Op::Sb, 7),
+    ] {
+        cases.push((
+            name,
+            program(vec![
+                ins(Op::Lui, 20, 0, 0, 0x1000_0000, 0),
+                ins(Op::Addi, 1, 0, 0, 0x5a, 0),
+                ins(store, 0, 20, 1, offset, 0),
+                ins(Op::Ld, 2, 20, 0, 0, 0),
+            ]),
+        ));
+    }
     for (name, store) in [
         ("sb", Op::Sb),
         ("sh", Op::Sh),
