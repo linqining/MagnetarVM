@@ -45,6 +45,7 @@ pub mod simd_dual;
 pub mod simd_f2;
 pub mod simd_full;
 pub mod simd_memory;
+pub mod trace_claims;
 pub mod trace_commitment;
 pub mod unified_gated;
 pub mod word_div_row;

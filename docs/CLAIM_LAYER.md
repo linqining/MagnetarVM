@@ -69,3 +69,20 @@ traces that cannot express the required claims.
 The grouped gated witness/matrix path still assumes a fixed `pc + 4`; a local
 `step2` relation check passes, but the shared-matrix sumcheck rejects the grouped
 proof. The instruction-length claim must be designed together with that path.
+
+
+## Implemented first layer
+
+`crates/magnetar-runtime/src/trace_claims.rs` adds a Merkle tree over per-row
+claim leaves. A leaf commits to:
+
+```text
+pc, next_pc, instruction_word, instruction_len
+rd, rs1, rs2 and their values
+memory address/value/width
+```
+
+`TraceClaimTree::open(index)` returns an inclusion path and
+`verify_opening(root, opening)` checks it. Tests cover every row, tampered
+leaves and instruction-length changes. The next step is to put the root into the
+statement and make the gated/proof-only verifiers consume openings.
