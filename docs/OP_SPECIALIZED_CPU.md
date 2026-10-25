@@ -456,3 +456,24 @@ Lui + Lw + Ecall    -> MIXED_ALU | MIXED_MEMORY
 
 The fixed mixed row still commits all seven components; this mask is the input
 for the next step, building only the selected component relations.
+
+
+## Dynamic component subset (ALU+branch)
+
+`SmallAluBranchRow` commits only ALU and branch (plus the PC mux), unlike the
+fixed mixed row that always commits seven components. `prove_small_alu_branch_trace`
+/ `verify_small_alu_branch_trace` use the same trace witness/commitment binding
+and reject traces that need memory/shift/mul/div.
+
+Addi-only traces, width 8:
+
+```text
+rows=2   gated 47,152 B/1.11 s  small 23,384 B/1.86 s  0.59x
+rows=4   gated 54,296 B/2.12 s  small 40,432 B/0.81 s  2.61x
+rows=8   gated 57,808 B/7.71 s  small 46,992 B/1.59 s  4.86x
+rows=16  gated 75,440 B/1.59 s  small 54,200 B/0.54 s  2.96x
+```
+
+The 2-row case is dominated by fixed backend/proof overhead; from 4 rows onward
+the selected subset is both smaller (~30% at 16 rows) and 2.6-4.9x faster to
+prove. This is the first dynamic component selection result.

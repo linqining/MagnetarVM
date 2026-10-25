@@ -4,8 +4,8 @@ use magnetar_executor::execute;
 use magnetar_pcs::P3SharedPcs;
 use magnetar_proof::RingSwitchPackedBitPcs;
 use magnetar_runtime::simd_dual::{
-    prove_alu_branch_trace, prove_gated_dual_batch_bits, verify_alu_branch_trace,
-    verify_gated_dual_batch_bits,
+    prove_alu_branch_trace, prove_gated_dual_batch_bits, prove_small_alu_branch_trace,
+    verify_alu_branch_trace, verify_gated_dual_batch_bits, verify_small_alu_branch_trace,
 };
 use magnetar_runtime::simd_full::gated_rows_from_trace;
 use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
@@ -63,8 +63,18 @@ fn main() {
         verify_alu_branch_trace(&trace, &mixed_proof, &mixed_layout, width, &backend).unwrap();
         let mixed_verify = started.elapsed();
 
+        let started = Instant::now();
+        let (small_proof, small_layout) =
+            prove_small_alu_branch_trace(&trace, width, &backend).unwrap();
+        let small_prove = started.elapsed();
+        let small_bytes = bincode::serialize(&small_proof).unwrap().len();
+        let started = Instant::now();
+        verify_small_alu_branch_trace(&trace, &small_proof, &small_layout, width, &backend)
+            .unwrap();
+        let small_verify = started.elapsed();
+
         println!(
-            "adds={adds} rows={} gated={}B/{:?}/{:?} mixed={}B/{:?}/{:?} speedup={:.2}x",
+            "adds={adds} rows={} gated={}B/{:?}/{:?} fixed={}B/{:?}/{:?} small={}B/{:?}/{:?} gated/small={:.2}x",
             trace.rows.len(),
             gated_bytes,
             gated_prove,
@@ -72,7 +82,10 @@ fn main() {
             mixed_bytes,
             mixed_prove,
             mixed_verify,
-            gated_prove.as_secs_f64() / mixed_prove.as_secs_f64()
+            small_bytes,
+            small_prove,
+            small_verify,
+            gated_prove.as_secs_f64() / small_prove.as_secs_f64()
         );
     }
 }
