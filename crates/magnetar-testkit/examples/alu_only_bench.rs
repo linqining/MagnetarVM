@@ -4,8 +4,8 @@ use magnetar_pcs::P3SharedPcs;
 use magnetar_proof::RingSwitchPackedBitPcs;
 use magnetar_runtime::simd_dual::{
     prove_alu_only_batch_bits, prove_alu_pc_batch_bits, prove_gated_dual_batch_bits,
-    prove_shift_pc_batch_bits, verify_alu_only_batch_bits, verify_alu_pc_batch_bits,
-    verify_shift_pc_batch_bits,
+    prove_mul_pc_batch_bits, prove_shift_pc_batch_bits, verify_alu_only_batch_bits,
+    verify_alu_pc_batch_bits, verify_mul_pc_batch_bits, verify_shift_pc_batch_bits,
 };
 use magnetar_runtime::simd_f2::{GatedAluOp, GatedCpuRowInput};
 use magnetar_runtime::simd_f2::{GatedAluRow, GatedCpuRow};
@@ -98,6 +98,21 @@ fn main() {
         .unwrap();
         println!(
             "  shift+pc cycles={cycles} proof={bytes} prove={prove_time:?} verify={:?}",
+            started.elapsed()
+        );
+
+        let started = Instant::now();
+        let (proof, layout) =
+            prove_mul_pc_batch_bits(width, cycles, initial_pc, final_pc, &backend).unwrap();
+        let prove_time = started.elapsed();
+        let bytes = bincode::serialize(&proof).unwrap().len();
+        let started = Instant::now();
+        verify_mul_pc_batch_bits(
+            width, cycles, initial_pc, final_pc, &proof, &layout, &backend,
+        )
+        .unwrap();
+        println!(
+            "  mul+pc cycles={cycles} proof={bytes} prove={prove_time:?} verify={:?}",
             started.elapsed()
         );
     }

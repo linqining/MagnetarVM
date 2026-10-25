@@ -75,10 +75,26 @@ The ALU and shift selected-op proofs are both far below the full gated row
 (98,144 B / 5.9 s at 16 cycles) and demonstrate the PC/statement template is
 reusable across op subrelations.
 
+## Third selected op: multiply (done)
+
+`MulPcRow` reuses the same PC-adder/statement template with `GatedMulRow`.
+`prove_mul_pc_batch_bits` / `verify_mul_pc_batch_bits` pass for a 16-cycle
+batch. The multiply subrelation is heavier than ALU/shift:
+
+```text
+cycles=64   mul+pc 98,752 B 5.84 s
+cycles=256  mul+pc 125,560 B 22.6 s
+```
+
+This is expected: the multiplier carries the full product/accumulator relation.
+It still avoids the memory/shift/branch/div subrelations and validates the
+template across three op classes.
+
 ## Next concrete step
 
-Add branch/memory/mul/div selected-op rows, define the selected-op virtual
-segment specs, then wire the selected-op batch into unified claim routing.
+Add branch/memory selected-op rows (branch needs a target-PC relation instead of
+the sequential `pc+4`), define selected-op virtual segment specs, then wire the
+selected-op batch into unified claim routing.
 
 ## Non-goals for the first step
 
