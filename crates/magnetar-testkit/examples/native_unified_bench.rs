@@ -5,7 +5,7 @@ use magnetar_runtime::{prove_unified_trace_auto, verify_unified_trace};
 use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 
 fn main() {
-    for adds in [255u64, 511] {
+    for adds in [511u64, 1023] {
         let mut rom = Vec::new();
         for index in 0..adds {
             rom.push(
@@ -29,7 +29,7 @@ fn main() {
                 ram_base: 0x1000_0000,
                 ram_size: 0x40,
                 stack_top: 0x1000_0040,
-                max_cycles: 1000,
+                max_cycles: 10_000,
             },
         )
         .unwrap();
