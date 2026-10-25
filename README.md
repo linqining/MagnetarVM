@@ -249,11 +249,11 @@ Current reference measurements (release build):
 | benchmark | bytes |
 |---|---:|
 | unified no-shift benchmark | 128,815 |
-| chunked 16-row trace, chunk 2 | 646,938 |
-| chunked compact (chunk 2) | 217,170 |
-| chunked 16-row trace, chunk 4 | 429,296 |
-| chunked 16-row trace, chunk 8 | 296,480 |
-| chunked 16-row trace, chunk 16 | 217,120 |
+| chunked compact (default, chunk 2) | 217,170 |
+| chunked streaming, chunk 2 | 646,938 |
+| chunked streaming, chunk 4 | 429,302 |
+| chunked streaming, chunk 8 | 296,484 |
+| chunked streaming, chunk 16 | 217,123 |
 
 The 15-workload suite spans 183,989 B (clock) to 368,518 B (mem-loop) and the
 69-case operation probe verifies every supported ALU/memory/branch form. The

@@ -24,8 +24,8 @@ benchmark                   128,815 B (gated 59,556, opening 54,481,
                             packed_shout 5,226, access 7,466)
 workloads                   15 个 workload 全部 prove/verify
 op probe                    69 条指令/寻址组合
-chunked                     646,938 / 429,302 / 296,484 / 217,123 B (chunk 2/4/8/16)
-chunked compact (chunk2)    217,170 B
+chunked default (compact)   217,170 B (chunk 2)
+chunked streaming           646,938 / 429,302 / 296,484 / 217,123 B
 ```
 
 仍开放：chunked A2 trace-free verification、B6 sum-check 优化、E5
@@ -4464,13 +4464,13 @@ Deliberately not adopted after measurement:
 
 ### Compact chunked CPU proof
 
-`prove_chunked_trace_compact` keeps the chunk chain/access/aux sharing but
-replaces the per-chunk CPU proofs with one CPU proof over the whole trace
-(`ChunkCpuProof.cpu = None`, `ChunkedTraceProof.whole_cpu = Some`). The verifier
-checks the chunk metadata/state chain and then verifies the whole CPU proof once.
-At chunk 2 this drops 646,938 -> 217,170 B (equal to the chunk-16 cost), removing
-the multi-chunk CPU linearity in compact mode. The default `prove_chunked_trace`
-keeps per-chunk CPU proofs for streaming use.
+`prove_chunked_trace` now defaults to compact mode: it keeps the chunk
+chain/access/aux sharing but replaces per-chunk CPU proofs with one CPU proof
+over the whole trace (`ChunkCpuProof.cpu = None`,
+`ChunkedTraceProof.whole_cpu = Some`). The verifier checks chunk metadata/state
+chain then verifies the whole CPU proof once. At chunk 2 this is 217,170 B versus
+646,938 B for streaming. `prove_chunked_trace_streaming` (and the
+`prove_chunked_trace_compact` alias) retain both entry points.
 
 
 `compact_chunked_proof_is_smaller` also tampers `whole_cpu.vw` and checks the

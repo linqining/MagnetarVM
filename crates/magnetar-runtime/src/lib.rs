@@ -3553,7 +3553,7 @@ fn verify_chunked_combined_opening(
     Ok(())
 }
 
-pub fn prove_chunked_trace(
+pub fn prove_chunked_trace_streaming(
     trace: &Trace,
     width: usize,
     chunk_size: usize,
@@ -3609,7 +3609,7 @@ pub fn prove_chunked_trace(
 }
 
 /// Chunked proof with one CPU proof over the whole trace (compact mode).
-pub fn prove_chunked_trace_compact(
+pub fn prove_chunked_trace(
     trace: &Trace,
     width: usize,
     chunk_size: usize,
@@ -3662,6 +3662,15 @@ pub fn prove_chunked_trace_compact(
         chunks,
         chain,
     })
+}
+
+/// Compatibility alias for the compact default.
+pub fn prove_chunked_trace_compact(
+    trace: &Trace,
+    width: usize,
+    chunk_size: usize,
+) -> Result<ChunkedTraceProof, RuntimeError> {
+    prove_chunked_trace(trace, width, chunk_size)
 }
 
 fn verify_compact_chunks(
@@ -4237,8 +4246,8 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let normal = prove_chunked_trace(&trace, 8, 2).unwrap();
-        let compact = prove_chunked_trace_compact(&trace, 8, 2).unwrap();
+        let normal = prove_chunked_trace_streaming(&trace, 8, 2).unwrap();
+        let compact = prove_chunked_trace(&trace, 8, 2).unwrap();
         verify_chunked_trace(&trace, &normal, 8).unwrap();
         verify_chunked_trace(&trace, &compact, 8).unwrap();
         assert!(compact.whole_cpu.is_some());
@@ -6359,7 +6368,7 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let proof = prove_chunked_trace(&trace, 8, 2).unwrap();
+        let proof = prove_chunked_trace_streaming(&trace, 8, 2).unwrap();
         assert_eq!(proof.chunks.len(), 3);
         assert_eq!(proof.chunks[0].end, 2);
         assert_eq!(proof.chunks[2].end, trace.rows.len());

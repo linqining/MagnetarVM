@@ -1,7 +1,7 @@
 use magnetar_executor::execute;
 use magnetar_runtime::{
-    chunked_proof_sizes, prove_chunked_trace, prove_chunked_trace_compact, prove_unified_trace,
-    unified_proof_sizes, verify_chunked_trace,
+    chunked_proof_sizes, prove_chunked_trace_compact, prove_chunked_trace_streaming,
+    prove_unified_trace, unified_proof_sizes, verify_chunked_trace,
 };
 use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 
@@ -53,7 +53,7 @@ fn main() {
         compact_sizes.chain
     );
     for chunk in [2usize, 4, 8, 16] {
-        let proof = prove_chunked_trace(&trace, 8, chunk).unwrap();
+        let proof = prove_chunked_trace_streaming(&trace, 8, chunk).unwrap();
         let sizes = chunked_proof_sizes(&proof).unwrap();
         verify_chunked_trace(&trace, &proof, 8).unwrap();
         println!(
