@@ -6,6 +6,7 @@
 
 pub mod bound_rows;
 pub mod univariate_skip;
+pub mod zerocheck;
 
 pub mod access_statement;
 pub mod amo_add_row;

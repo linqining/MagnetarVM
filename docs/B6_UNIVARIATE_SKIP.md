@@ -156,3 +156,30 @@ and require the skip evaluation to be zero. Tests accept an all-zero committed
 row vector and reject a nonzero one. This validates the B2 residual chain, but
 the committed rows are still an arbitrary vector; tying them to a constraint
 composition `C(f)` is the remaining zerocheck layer.
+
+
+## B-c composition prototype
+
+`magnetar-runtime::zerocheck` now implements a real booleanity zerocheck over a
+committed bit vector:
+
+```text
+sum_x eq(rho, x) * (f(x) + f(x)^2) = 0
+```
+
+The prover folds the committed row vector, applies `C(y)=y+y^2` at each
+partial point, and ends at `eq(rho,r) * C(f(r))`; the verifier needs only one
+opening of `f` at `r`.
+
+Measurements (release, standalone):
+
+```text
+log_size=8  256 rows  proof 67,168 B   prove 1.53 ms  verify 0.72 ms
+log_size=10 1024 rows proof 106,432 B  prove 5.11 ms  verify 1.22 ms
+log_size=12 4096 rows proof 163,328 B  prove 10.1 ms  verify 1.70 ms
+```
+
+This is the composition relation missing from the earlier bound-row toy: the
+committed rows are actually constrained by `C(f)`. The next integration step is
+to apply the skip round to this zerocheck's first coordinates, then connect the
+result to the B2 bound-row residual.
