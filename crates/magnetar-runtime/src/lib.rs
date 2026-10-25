@@ -5789,6 +5789,18 @@ mod tests {
     }
 
     #[test]
+    fn native_claim_layer_verifies_compressed_trace() {
+        let outcome = ReferencePipeline::run(
+            &ProgramImage::new(0x1000, vec![0x008d_4095, 0x0000_9002]),
+            config(),
+            2,
+        )
+        .unwrap();
+        let proof = prove_unified_trace(&outcome.trace, 8).unwrap();
+        verify_native_unified(&outcome.statement, &proof, 8).unwrap();
+    }
+
+    #[test]
     fn trace_digest_binds_rows_and_configuration() {
         let trace = execute(&program(), config()).unwrap();
         let digest = trace_digest(&trace);

@@ -317,3 +317,12 @@ non-dynamic `SelectedOp` values. This verifies the op-specialized committed
 witness and segment claims without a trace, while the claim/selected PC
 consistency check remains. Claim-to-CPU value constraints are still only
 implemented for the dynamic synthetic-trace path.
+
+
+## Compressed claim-only verification
+
+`prove_unified_trace` now succeeds on compressed traces (step2 + corrected
+padding/link/halt rows). `verify_native_unified` authenticates the claims,
+rebuilds a compressed synthetic trace (`instruction_len=2`), and verifies the
+full unified proof. `native_claim_layer_verifies_compressed_trace` covers a
+compressed c.li/c.addi/c.ebreak program end to end without the original trace.
