@@ -805,11 +805,16 @@ not hardware SIMD.
 
 ### Large chunked dynamic benchmark
 
-`dynamic_large_bench` (256 Addi rows, width 8, chunk 64):
+`dynamic_large_bench` (Addi-only, width 8):
 
 ```text
-compact dynamic    564,890 B / 10.05 s
-streaming dynamic  725,930 B /  7.62 s
+rows=256  chunk=64
+  compact dynamic    564,890 B / 10.05 s
+  streaming dynamic  725,930 B /  7.62 s
+
+rows=1024 chunk=256
+  compact dynamic  1,384,210 B / 96.89 s
+  streaming dynamic 1,543,938 B / 86.31 s
 ```
 
 Streaming dynamic is faster than whole-trace compact here because the selected
