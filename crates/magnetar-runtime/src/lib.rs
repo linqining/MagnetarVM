@@ -306,7 +306,7 @@ pub struct ConstraintProofBackend {
 impl Default for ConstraintProofBackend {
     fn default() -> Self {
         Self {
-            pcs: P3BinaryPcs::new(100),
+            pcs: P3BinaryPcs::with_params(100, 3, 18, 1),
         }
     }
 }
