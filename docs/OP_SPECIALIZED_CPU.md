@@ -533,3 +533,18 @@ rows=16  1.53 s  -> 0.94 s
 
 This is the general dynamic builder the earlier hand-written subsets were
 approximating.
+
+
+## Dynamic segmented row (done)
+
+`segmented_dynamic_row` builds the selected components, PC segment, mux segment
+and padding into a per-op layout. The witness is remapped, the relation rebuilt
+on mapped variables, and the block size expanded to cover all segments.
+`prove_dynamic_segmented_trace` / `verify_dynamic_segmented_trace` keep the
+trace-witness commitment binding, and the resulting `SegmentClaim`s are
+extracted with `selected_segment_claims`.
+
+`dynamic_segmented_trace_binds_witness` proves/verifies ALU, shift and memory
+traces, checks `layout.segments.len() > 2`, and checks the extracted claim count
+matches the layout. This is the claim-routing form needed for unified
+integration.

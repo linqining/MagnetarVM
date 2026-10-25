@@ -4879,6 +4879,291 @@ pub fn verify_dynamic_selected_trace<B: magnetar_proof::BitPcs>(
     Ok(())
 }
 
+struct SegmentedDynamicRow {
+    width: usize,
+    relation: BitRelation,
+    pc: Vec<magnetar_constraint::VarId>,
+    next_pc: Vec<magnetar_constraint::VarId>,
+    one: magnetar_constraint::VarId,
+}
+
+impl GatedRowLike for SegmentedDynamicRow {
+    fn relation(&self) -> &BitRelation {
+        &self.relation
+    }
+    fn packed_companion_system(&self) -> magnetar_constraint::ConstraintSystem {
+        self.relation.to_system()
+    }
+    fn width(&self) -> usize {
+        self.width
+    }
+    fn pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.pc
+    }
+    fn next_pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.next_pc
+    }
+    fn one(&self) -> magnetar_constraint::VarId {
+        self.one
+    }
+}
+
+fn segmented_dynamic_row(
+    mask: u8,
+    width: usize,
+    cycles: usize,
+) -> Result<
+    (
+        SegmentedDynamicRow,
+        Vec<usize>,
+        magnetar_constraint::WitnessLayout,
+    ),
+    RuntimeError,
+> {
+    use magnetar_constraint::{Segment, SegmentKind, SegmentOwner, WitnessLayout};
+    let original = DynamicMixedRow::build(mask, width)?;
+    let mut mapping = vec![usize::MAX; original.relation.num_vars];
+    let mut blocks: Vec<(String, usize, usize, SegmentOwner)> = Vec::new();
+    let mut cursor = 0usize;
+    let mut place = |size: usize| {
+        let start = (cursor + size - 1) & !(size - 1);
+        cursor = start + size;
+        start
+    };
+    for (index, component) in original.components.iter().enumerate() {
+        let len = component.relation().num_vars;
+        let size = len.next_power_of_two();
+        let start = place(size);
+        for local in 0..len {
+            mapping[original.offsets[index] + local] = start + local;
+        }
+        let owner = match component.kind() {
+            MIXED_MEMORY => SegmentOwner::Memory(crate::MemoryKind::Ram),
+            MIXED_SHIFT => SegmentOwner::Routing(crate::RoutingKind::Shifts),
+            _ => SegmentOwner::Cpu,
+        };
+        blocks.push((format!("component{index}"), start, size, owner));
+    }
+    let pc_size = (2 * width).next_power_of_two();
+    let pc_start = place(pc_size);
+    for bit in 0..width {
+        mapping[original.pc[bit]] = pc_start + bit;
+        mapping[original.next_pc[bit]] = pc_start + width + bit;
+    }
+    blocks.push(("pc".into(), pc_start, pc_size, SegmentOwner::Pcs));
+    let mux_len = original.selectors.len() + original.ands.iter().map(Vec::len).sum::<usize>();
+    let mux_size = mux_len.next_power_of_two();
+    let mux_start = place(mux_size);
+    let mut local = 0usize;
+    for selector in &original.selectors {
+        mapping[*selector] = mux_start + local;
+        local += 1;
+    }
+    for and in &original.ands {
+        for var in and {
+            mapping[*var] = mux_start + local;
+            local += 1;
+        }
+    }
+    blocks.push(("mux".into(), mux_start, mux_size, SegmentOwner::Cpu));
+    let block_cols = cursor.next_power_of_two();
+    let mut padding_index = 0usize;
+    while cursor < block_cols {
+        let remaining = block_cols - cursor;
+        let mut size = 1usize << (usize::BITS - 1 - remaining.leading_zeros());
+        while size > 1 && !cursor.is_multiple_of(size) {
+            size >>= 1;
+        }
+        blocks.push((
+            format!("padding{padding_index}"),
+            cursor,
+            size,
+            SegmentOwner::Cpu,
+        ));
+        padding_index += 1;
+        cursor += size;
+    }
+    if mapping.contains(&usize::MAX) {
+        return Err(RuntimeError::Proof(
+            "dynamic segmented mapping is incomplete".into(),
+        ));
+    }
+    let mut relation = BitRelation::new(block_cols - 1);
+    let map = |vars: &[magnetar_constraint::VarId]| {
+        vars.iter().map(|var| mapping[*var]).collect::<Vec<_>>()
+    };
+    for row in &original.relation.rows {
+        relation.add(BitRow::new(map(&row.a), map(&row.b), map(&row.c)));
+    }
+    let pc = original
+        .pc
+        .iter()
+        .map(|var| mapping[*var])
+        .collect::<Vec<_>>();
+    let next_pc = original
+        .next_pc
+        .iter()
+        .map(|var| mapping[*var])
+        .collect::<Vec<_>>();
+    let one = mapping[original.one];
+    let row = SegmentedDynamicRow {
+        width,
+        relation,
+        pc,
+        next_pc,
+        one,
+    };
+    let mut segments = Vec::with_capacity(cycles * blocks.len());
+    for cycle in 0..cycles {
+        for (name, start, size, owner) in &blocks {
+            segments.push(Segment::new(
+                format!("{name}{cycle}"),
+                cycle * block_cols + start,
+                *size,
+                SegmentKind::Direct,
+                *owner,
+            ));
+        }
+    }
+    let layout =
+        WitnessLayout::new(segments).map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok((row, mapping, layout))
+}
+
+pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
+    trace: &magnetar_spec::Trace,
+    width: usize,
+    backend: &B,
+) -> Result<LockstepBatch<B>, RuntimeError> {
+    use magnetar_proof::prove_lockstep_bits;
+
+    let rows = mixed_alu_branch_rows_from_trace(trace, width)?;
+    let final_pc = trace.final_state.pc;
+    let mut mask = mixed_rows_component_mask(&rows);
+    if rows.last().map(|(pc, _)| *pc) == Some(final_pc) {
+        mask |= MIXED_BRANCH;
+    }
+    let cycles = rows.len().next_power_of_two();
+    let initial_pc = rows[0].0;
+    let original = DynamicMixedRow::build(mask, width)?;
+    let (row, mapping, layout) = segmented_dynamic_row(mask, width, cycles)?;
+    let (base_cols, s1, s2) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
+    if layout.total_bits != cycles * base_cols {
+        return Err(RuntimeError::Proof(
+            "dynamic segmented layout mismatch".into(),
+        ));
+    }
+    let mut bits = Vec::with_capacity(cycles * base_cols);
+    for index in 0..cycles {
+        let (pc, mut input) = if index < rows.len() {
+            rows[index]
+        } else {
+            (
+                final_pc,
+                MixedAluBranchInput::Fetch {
+                    left: 0,
+                    right: 0,
+                    imm: 0,
+                    kind: crate::branch_row::BranchKind::Beq,
+                },
+            )
+        };
+        if index + 1 == rows.len() && final_pc == pc {
+            input = MixedAluBranchInput::Fetch {
+                left: 0,
+                right: 0,
+                imm: 0,
+                kind: crate::branch_row::BranchKind::Beq,
+            };
+        }
+        let source = original.witness_at(pc, &input)?;
+        let mut block = vec![false; base_cols];
+        for (from, to) in mapping.iter().enumerate() {
+            if source[from] {
+                block[*to] = true;
+            }
+        }
+        bits.extend(block);
+    }
+    let proof = prove_lockstep_bits(
+        &bits, &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], &layout, backend,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok((proof, layout))
+}
+
+pub fn verify_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
+    trace: &magnetar_spec::Trace,
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    layout: &magnetar_constraint::WitnessLayout,
+    width: usize,
+    backend: &B,
+) -> Result<(), RuntimeError> {
+    use magnetar_proof::verify_lockstep_bits;
+
+    let rows = mixed_alu_branch_rows_from_trace(trace, width)?;
+    let final_pc = trace.final_state.pc;
+    let mut mask = mixed_rows_component_mask(&rows);
+    if rows.last().map(|(pc, _)| *pc) == Some(final_pc) {
+        mask |= MIXED_BRANCH;
+    }
+    let cycles = rows.len().next_power_of_two();
+    let initial_pc = rows[0].0;
+    let original = DynamicMixedRow::build(mask, width)?;
+    let (row, mapping, expected_layout) = segmented_dynamic_row(mask, width, cycles)?;
+    if expected_layout.total_bits != layout.total_bits {
+        return Err(RuntimeError::Proof(
+            "dynamic segmented layout mismatch".into(),
+        ));
+    }
+    let (base_cols, s1, s2) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
+    let mut bits = Vec::with_capacity(cycles * base_cols);
+    for index in 0..cycles {
+        let (pc, mut input) = if index < rows.len() {
+            rows[index]
+        } else {
+            (
+                final_pc,
+                MixedAluBranchInput::Fetch {
+                    left: 0,
+                    right: 0,
+                    imm: 0,
+                    kind: crate::branch_row::BranchKind::Beq,
+                },
+            )
+        };
+        if index + 1 == rows.len() && final_pc == pc {
+            input = MixedAluBranchInput::Fetch {
+                left: 0,
+                right: 0,
+                imm: 0,
+                kind: crate::branch_row::BranchKind::Beq,
+            };
+        }
+        let source = original.witness_at(pc, &input)?;
+        let mut block = vec![false; base_cols];
+        for (from, to) in mapping.iter().enumerate() {
+            if source[from] {
+                block[*to] = true;
+            }
+        }
+        bits.extend(block);
+    }
+    let expected = backend
+        .commit(&bits)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if backend.commitment_bytes(&expected) != backend.commitment_bytes(&proof.commitment) {
+        return Err(RuntimeError::Proof(
+            "dynamic segmented witness does not match the proof commitment".into(),
+        ));
+    }
+    verify_lockstep_bits(
+        &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], layout, proof, backend,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok(())
+}
+
 pub fn prove_gated_dual_batch_bits<B: magnetar_proof::BitPcs>(
     width: usize,
     rows: &[(u64, GatedCpuRowInput)],
@@ -5047,6 +5332,98 @@ mod shared_claim_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dynamic_segmented_trace_binds_witness() {
+        use magnetar_executor::execute;
+        use magnetar_pcs::P3SharedPcs;
+        use magnetar_proof::RingSwitchPackedBitPcs;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+        let backend =
+            RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
+        let config = MachineConfig {
+            entry: 0x1000,
+            rom_base: 0x1000,
+            ram_base: 0x1000_0000,
+            ram_size: 0x40,
+            stack_top: 0x1000_0040,
+            max_cycles: 100,
+        };
+        let programs = [
+            ProgramImage::new(
+                0x1000,
+                vec![
+                    Instruction {
+                        op: Op::Addi,
+                        rd: 1,
+                        rs1: 0,
+                        rs2: 0,
+                        imm: 7,
+                        shamt: 0,
+                    }
+                    .encode(),
+                    Instruction::new(Op::Ecall).encode(),
+                ],
+            ),
+            ProgramImage::new(
+                0x1000,
+                vec![
+                    Instruction {
+                        op: Op::Lui,
+                        rd: 1,
+                        rs1: 0,
+                        rs2: 0,
+                        imm: 0x10,
+                        shamt: 0,
+                    }
+                    .encode(),
+                    Instruction {
+                        op: Op::Slli,
+                        rd: 1,
+                        rs1: 1,
+                        rs2: 0,
+                        imm: 0,
+                        shamt: 2,
+                    }
+                    .encode(),
+                    Instruction::new(Op::Ecall).encode(),
+                ],
+            ),
+            ProgramImage::new(
+                0x1000,
+                vec![
+                    Instruction {
+                        op: Op::Lui,
+                        rd: 20,
+                        rs1: 0,
+                        rs2: 0,
+                        imm: 0x1000_0000,
+                        shamt: 0,
+                    }
+                    .encode(),
+                    Instruction {
+                        op: Op::Lw,
+                        rd: 6,
+                        rs1: 20,
+                        rs2: 0,
+                        imm: 2,
+                        shamt: 0,
+                    }
+                    .encode(),
+                    Instruction::new(Op::Ecall).encode(),
+                ],
+            ),
+        ];
+        for program in programs {
+            let trace = execute(&program, config.clone()).unwrap();
+            let (proof, layout) = prove_dynamic_segmented_trace(&trace, 8, &backend).unwrap();
+            assert!(layout.segments.len() > 2);
+            let claims = selected_segment_claims(&layout, &proof).unwrap();
+            assert_eq!(claims.len(), layout.segments.len());
+            verify_dynamic_segmented_trace(&trace, &proof, &layout, 8, &backend).unwrap();
+        }
+    }
 
     #[test]
     fn dynamic_selected_trace_binds_witness() {
