@@ -1064,7 +1064,7 @@ fn sumcheck_terms(
     factors: &[Vec<F2_128>],
     degrees: &[usize],
     transcript: &mut Sha256Transcript,
-    mut summand: impl FnMut(&[Vec<F2_128>]) -> F2_128,
+    summand: impl Fn(&[Vec<F2_128>]) -> F2_128 + Sync,
 ) -> Result<(Vec<Vec<F2_128>>, Vec<F2_128>), ProofError> {
     let len = factors[0].len();
     if factors.iter().any(|factor| factor.len() != len) {
@@ -1077,15 +1077,53 @@ fn sumcheck_terms(
     let mut factors = factors.to_vec();
     let mut polynomials = Vec::with_capacity(rounds);
     let mut challenges = Vec::with_capacity(rounds);
+    let per_point_bytes = factors.len().saturating_mul(len).saturating_mul(16);
+    let requested = std::env::var("MAGNETAR_SUMCHECK_THREADS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|count| count.get())
+                .unwrap_or(1)
+        });
+    let memory_budget = 8usize << 30;
+    let threads = requested.max(1).min(if per_point_bytes == 0 {
+        1
+    } else {
+        (memory_budget / per_point_bytes).max(1)
+    });
     for degree in degrees {
-        let mut polynomial = Vec::with_capacity(degree + 1);
-        for point in 0..=*degree {
-            let point = F2_128::from(point as u64);
-            let folded = factors
-                .iter()
-                .map(|factor| fold(factor, point))
-                .collect::<Vec<_>>();
-            polynomial.push(summand(&folded));
+        let points = (0..=*degree)
+            .map(|point| F2_128::from(point as u64))
+            .collect::<Vec<_>>();
+        let mut polynomial = vec![F2_128::from(0u64); points.len()];
+        if threads > 1 && points.len() > 1 {
+            std::thread::scope(|scope| {
+                let mut handles = Vec::with_capacity(points.len());
+                for (index, point) in points.iter().enumerate() {
+                    let factors = &factors;
+                    let summand = &summand;
+                    handles.push(scope.spawn(move || {
+                        let folded = factors
+                            .iter()
+                            .map(|factor| fold(factor, *point))
+                            .collect::<Vec<_>>();
+                        (index, summand(&folded))
+                    }));
+                }
+                for handle in handles {
+                    let (index, value) = handle.join().expect("sumcheck worker");
+                    polynomial[index] = value;
+                }
+            });
+        } else {
+            for (index, point) in points.iter().enumerate() {
+                let folded = factors
+                    .iter()
+                    .map(|factor| fold(factor, *point))
+                    .collect::<Vec<_>>();
+                polynomial[index] = summand(&folded);
+            }
         }
         for coefficient in &polynomial {
             transcript.absorb("round", &coefficient.value().to_le_bytes());

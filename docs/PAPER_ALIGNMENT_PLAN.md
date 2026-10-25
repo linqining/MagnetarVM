@@ -12,8 +12,8 @@ This is a roadmap, not a claim that the implementation is aligned yet.
 |---:|---:|---:|---:|---:|
 | 16 | 92,528 | 0.347 s | 0.162 s | 46.2 |
 | 64 | 136,472 | 1.957 s | 0.502 s | 32.7 |
-| 512 | 348,368 | 30.67 s | 4.80 s | 16.7 |
-| 1024 | 516,792 | 141.60 s | 13.13 s | 7.2 |
+| 512 | 348,368 | 14.27 s | 4.96 s | 35.9 |
+| 1024 | 516,792 | 55.11 s | 11.02 s | 18.6 |
 
 512-row split:
 
@@ -98,7 +98,7 @@ PCS opening   133,376 B
 At 512 rows the selected proof is now 203,605 B: opening 126,936 B, segment
 claims 73,736 B, sums 2,736 B, commitment 48 B. The Phase 1 gate is met.
 
-At 1024 rows, proving time grows 4.6x and verification 2.7x for 2x rows, while
+At 1024 rows, proving time grows 3.9x and verification 2.2x for 2x rows, while
 the proof grows only 1.48x. The prover, not proof size, is now the scaling
 bottleneck.
 
@@ -116,7 +116,7 @@ So the next performance targets are packed Shout (largest), BinaryTwist access,
 then the selected CPU opening. This changes the Phase 2 order: Shout/access
 prover work comes before a full BinarySpartan rewrite.
 
-Packed-Shout internal profile (512 rows):
+Packed-Shout internal profile before parallelization (512 rows):
 
 ```text
 TableCommit    26.2 ms
@@ -127,15 +127,27 @@ PackedOpen    107.1 ms
 
 The Shout claim prover materializes `cells × cycles` factors and folds them for
 every degree point of every round. With `cells = next_pow2(2 * ROM words)` and
-`cycles = next_pow2(rows)`, this is quadratic in trace length. The next concrete
-optimization is a linear/sparse Shout sum-check rather than another serialization
-change.
+`cycles = next_pow2(rows)`, this is quadratic in trace length.
+
+The degree-point evaluations are now parallelized with a bounded memory budget
+(8 GiB per worker set; `MAGNETAR_SUMCHECK_THREADS` overrides). ShoutClaims at
+512 rows drops from 15.65 s to 1.85 s with 4 workers, and BinaryTwist access
+drops from 8.08 s to 3.68 s. Full prover:
+
+```text
+512 rows: 30.67 s -> 14.27 s
+1024 rows: 141.60 s -> 55.11 s
+```
+
+The next step is still a linear/sparse Shout sum-check; parallelization is only
+a constant-factor improvement.
 ```
 
 ## Phase 2: CPU engine / BinarySpartan
 
-1. Replace the quadratic packed-Shout factor materialization with a linear/sparse
-   sum-check (largest stage: 15.65 s at 512 rows).
+1. [x] Parallelize Shout/Twist degree-point evaluations with bounded memory.
+2. Replace the quadratic packed-Shout factor materialization with a linear/sparse
+   sum-check (still the largest single algorithm cost).
 2. Pack field-valued witnesses; remove per-row witness padding.
 3. Implement BinarySpartan-style packed claims instead of committing the full
    selected witness.
