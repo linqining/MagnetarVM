@@ -479,10 +479,9 @@ the selected subset is both smaller (~30% at 16 rows) and 2.6-4.9x faster to
 prove. This is the first dynamic component selection result.
 
 
-### Subset guard
+### Subset guard and memory
 
-`small_alu_branch_rejects_memory_trace` confirms the ALU+branch subset proof
-refuses a trace that needs memory rows instead of silently producing an
-unbound proof. A generic `DynamicMixedRow` builder was attempted this round but
-reverted before commit: it needs a cleaner component-enum/relation builder than
-the current hand-written mux expansion.
+`SmallAluBranchRow` now optionally includes the memory component, selected from
+the trace mask. `small_alu_branch_mem_trace_binds_witness` proves Lui + Lw +
+Ecall; `small_alu_branch_rejects_shift_trace` confirms unsupported row kinds are
+still rejected instead of producing an unbound proof.

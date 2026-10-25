@@ -3900,29 +3900,51 @@ struct SmallAluBranchRow {
     width: usize,
     alu: AluPcRow,
     branch: BranchPcRow,
+    mem: Option<MemPcRow>,
     branch_offset: usize,
+    mem_offset: usize,
     pc: Vec<magnetar_constraint::VarId>,
     next_pc: Vec<magnetar_constraint::VarId>,
     select_alu: magnetar_constraint::VarId,
     select_branch: magnetar_constraint::VarId,
+    select_mem: Option<magnetar_constraint::VarId>,
     and_alu: Vec<magnetar_constraint::VarId>,
     and_branch: Vec<magnetar_constraint::VarId>,
+    and_mem: Option<Vec<magnetar_constraint::VarId>>,
     one: magnetar_constraint::VarId,
     relation: BitRelation,
 }
 
 impl SmallAluBranchRow {
-    fn new(width: usize) -> Self {
+    fn new(width: usize, with_memory: bool) -> Self {
         use magnetar_constraint::VarId;
         let alu = AluPcRow::new(width);
         let branch = BranchPcRow::new(width);
+        let mem = with_memory.then(|| MemPcRow::new(width));
         let branch_offset = alu.relation.num_vars;
+        let mem_offset = branch_offset + branch.relation.num_vars;
         let mut relation = alu.relation.clone();
         relation.num_vars += branch.relation.num_vars;
-        for row in &branch.relation.rows {
-            let shift =
-                |vars: &[VarId]| vars.iter().map(|v| *v + branch_offset).collect::<Vec<_>>();
-            relation.add(BitRow::new(shift(&row.a), shift(&row.b), shift(&row.c)));
+        if let Some(mem) = &mem {
+            relation.num_vars += mem.relation.num_vars;
+        }
+        for (source, offset) in [
+            (&branch.relation, branch_offset),
+            #[allow(clippy::unnecessary_lazy_evaluations)]
+            (
+                mem.as_ref()
+                    .map(|m| &m.relation)
+                    .unwrap_or(&branch.relation),
+                mem_offset,
+            ),
+        ] {
+            if !with_memory && offset == mem_offset {
+                continue;
+            }
+            for row in &source.rows {
+                let shift = |vars: &[VarId]| vars.iter().map(|v| *v + offset).collect::<Vec<_>>();
+                relation.add(BitRow::new(shift(&row.a), shift(&row.b), shift(&row.c)));
+            }
         }
         let take = |relation: &mut BitRelation, n: usize| {
             let start = relation.num_vars;
@@ -3933,9 +3955,11 @@ impl SmallAluBranchRow {
         let next_pc = take(&mut relation, width);
         let select_alu = relation.num_vars as VarId;
         let select_branch = select_alu + 1;
-        relation.num_vars += 2;
+        let select_mem = with_memory.then_some(select_alu + 2);
+        relation.num_vars += if with_memory { 3 } else { 2 };
         let and_alu = take(&mut relation, width);
         let and_branch = take(&mut relation, width);
+        let and_mem = with_memory.then(|| take(&mut relation, width));
         let one = alu.instr.one;
         for bit in 0..width {
             relation.add(BitRow::new(vec![pc[bit]], vec![pc[bit]], vec![pc[bit]]));
@@ -3960,11 +3984,21 @@ impl SmallAluBranchRow {
                 vec![branch.next_pc[bit] + branch_offset],
                 vec![and_branch[bit]],
             ));
-            relation.add(BitRow::new(
-                vec![next_pc[bit]],
-                vec![one],
-                vec![and_alu[bit], and_branch[bit]],
-            ));
+            let mut next_terms = vec![and_alu[bit], and_branch[bit]];
+            if let (Some(mem), Some(select), Some(and)) = (&mem, select_mem, &and_mem) {
+                relation.add(BitRow::new(
+                    vec![mem.pc[bit] + mem_offset],
+                    vec![one],
+                    vec![pc[bit]],
+                ));
+                relation.add(BitRow::new(
+                    vec![select],
+                    vec![mem.next_pc[bit] + mem_offset],
+                    vec![and[bit]],
+                ));
+                next_terms.push(and[bit]);
+            }
+            relation.add(BitRow::new(vec![next_pc[bit]], vec![one], next_terms));
         }
         relation.add(BitRow::new(
             vec![select_alu],
@@ -3976,28 +4010,35 @@ impl SmallAluBranchRow {
             vec![select_branch],
             vec![select_branch],
         ));
-        relation.add(BitRow::new(
-            vec![select_alu, select_branch],
-            vec![one],
-            vec![one],
-        ));
+        if let Some(select) = select_mem {
+            relation.add(BitRow::new(vec![select], vec![select], vec![select]));
+        }
+        let mut selectors = vec![select_alu, select_branch];
+        if let Some(select) = select_mem {
+            selectors.push(select);
+        }
+        relation.add(BitRow::new(selectors, vec![one], vec![one]));
         Self {
             width,
             alu,
             branch,
+            mem,
             branch_offset,
+            mem_offset,
             pc,
             next_pc,
             select_alu,
             select_branch,
+            select_mem,
             and_alu,
             and_branch,
+            and_mem,
             one,
             relation,
         }
     }
 
-    fn witness_at(&self, pc: u64, input: &MixedAluBranchInput) -> Vec<bool> {
+    fn witness_at(&self, pc: u64, input: &MixedAluBranchInput) -> Result<Vec<bool>, RuntimeError> {
         let (left, right, op) = match input {
             MixedAluBranchInput::Alu { left, right, op } => (*left, *right, *op),
             _ => (0, 0, crate::simd_f2::GatedAluOp::Add),
@@ -4011,31 +4052,58 @@ impl SmallAluBranchRow {
             } => (*left, *right, *imm, *kind),
             _ => (0, 1, 0, crate::branch_row::BranchKind::Beq),
         };
+        let (rs1, mem_imm, value) = match input {
+            MixedAluBranchInput::Memory { rs1, imm, value } => (*rs1, *imm, *value),
+            _ => (0x10, 0, 0x40),
+        };
+        if matches!(input, MixedAluBranchInput::Memory { .. }) && self.mem.is_none() {
+            return Err(RuntimeError::Proof(
+                "small row was built without a memory component".into(),
+            ));
+        }
         let mut bits = self.alu.witness_at(pc, left, right, op);
         bits.extend(self.branch.witness_at(pc, imm, bl, br, kind));
+        if let Some(mem) = &self.mem {
+            bits.extend(mem.witness_at(pc, rs1, mem_imm, value));
+        }
         bits.resize(self.relation.num_vars, false);
-        let alu_selected = matches!(input, MixedAluBranchInput::Alu { .. });
-        let next = if alu_selected {
-            self.alu.next_pc.clone()
-        } else {
-            self.branch
-                .next_pc
-                .iter()
-                .map(|v| *v + self.branch_offset)
-                .collect()
+        let selected = match input {
+            MixedAluBranchInput::Alu { .. } => 0usize,
+            MixedAluBranchInput::Fetch { .. } => 1,
+            MixedAluBranchInput::Memory { .. } => 2,
+            _ => {
+                return Err(RuntimeError::Proof(
+                    "small row only supports ALU/branch/memory".into(),
+                ))
+            }
         };
+        bits[self.select_alu] = selected == 0;
+        bits[self.select_branch] = selected == 1;
+        if let Some(select) = self.select_mem {
+            bits[select] = selected == 2;
+        }
         for bit in 0..self.width {
             bits[self.pc[bit]] = (pc >> bit) & 1 == 1;
-            bits[self.next_pc[bit]] = bits[next[bit]];
         }
-        bits[self.select_alu] = alu_selected;
-        bits[self.select_branch] = !alu_selected;
         for bit in 0..self.width {
             bits[self.and_alu[bit]] = bits[self.select_alu] && bits[self.alu.next_pc[bit]];
             bits[self.and_branch[bit]] =
                 bits[self.select_branch] && bits[self.branch.next_pc[bit] + self.branch_offset];
+            if let (Some(mem), Some(and), Some(select)) =
+                (&self.mem, &self.and_mem, self.select_mem)
+            {
+                bits[and[bit]] = bits[select] && bits[mem.next_pc[bit] + self.mem_offset];
+            }
         }
-        bits
+        let mut next_value = vec![false; self.width];
+        for bit in 0..self.width {
+            next_value[bit] = bits[self.and_alu[bit]] ^ bits[self.and_branch[bit]];
+            if let Some(and) = &self.and_mem {
+                next_value[bit] ^= bits[and[bit]];
+            }
+            bits[self.next_pc[bit]] = next_value[bit];
+        }
+        Ok(bits)
     }
 }
 
@@ -4064,8 +4132,9 @@ fn small_trace_bits(
     width: usize,
     rows: &[(u64, MixedAluBranchInput)],
     final_pc: u64,
+    with_memory: bool,
 ) -> Result<(Vec<bool>, usize, u64), RuntimeError> {
-    let row = SmallAluBranchRow::new(width);
+    let row = SmallAluBranchRow::new(width, with_memory);
     let cycles = rows.len().next_power_of_two();
     let initial_pc = rows[0].0;
     let (base_cols, _, _) = gated_shared_matrices(&row, cycles, None)?;
@@ -4092,7 +4161,7 @@ fn small_trace_bits(
                 kind: crate::branch_row::BranchKind::Beq,
             };
         }
-        let mut instance = row.witness_at(pc, &input);
+        let mut instance = row.witness_at(pc, &input)?;
         instance.resize(base_cols, false);
         bits.extend(instance);
     }
@@ -4107,23 +4176,16 @@ pub fn prove_small_alu_branch_trace<B: magnetar_proof::BitPcs>(
     use magnetar_proof::prove_lockstep_bits;
 
     let rows = mixed_alu_branch_rows_from_trace(trace, width)?;
-    if rows.iter().any(|(_, input)| {
-        matches!(
-            input,
-            MixedAluBranchInput::Memory { .. }
-                | MixedAluBranchInput::Shift { .. }
-                | MixedAluBranchInput::Multiply { .. }
-                | MixedAluBranchInput::Divide { .. }
-                | MixedAluBranchInput::SignedDivide { .. }
-        )
-    }) {
+    let mask = mixed_rows_component_mask(&rows);
+    if mask & !(MIXED_ALU | MIXED_BRANCH | MIXED_MEMORY) != 0 {
         return Err(RuntimeError::Proof(
-            "small ALU+branch row only supports ALU/branch rows".into(),
+            "small row only supports ALU/branch/memory rows".into(),
         ));
     }
+    let with_memory = mask & MIXED_MEMORY != 0;
     let final_pc = trace.final_state.pc;
-    let (bits, cycles, initial_pc) = small_trace_bits(width, &rows, final_pc)?;
-    let row = SmallAluBranchRow::new(width);
+    let (bits, cycles, initial_pc) = small_trace_bits(width, &rows, final_pc, with_memory)?;
+    let row = SmallAluBranchRow::new(width, with_memory);
     let (base_cols, s1, s2) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
     let layout = segment_layout(cycles * base_cols)?;
     let proof = prove_lockstep_bits(
@@ -4143,22 +4205,15 @@ pub fn verify_small_alu_branch_trace<B: magnetar_proof::BitPcs>(
     use magnetar_proof::verify_lockstep_bits;
 
     let rows = mixed_alu_branch_rows_from_trace(trace, width)?;
-    if rows.iter().any(|(_, input)| {
-        matches!(
-            input,
-            MixedAluBranchInput::Memory { .. }
-                | MixedAluBranchInput::Shift { .. }
-                | MixedAluBranchInput::Multiply { .. }
-                | MixedAluBranchInput::Divide { .. }
-                | MixedAluBranchInput::SignedDivide { .. }
-        )
-    }) {
+    let mask = mixed_rows_component_mask(&rows);
+    if mask & !(MIXED_ALU | MIXED_BRANCH | MIXED_MEMORY) != 0 {
         return Err(RuntimeError::Proof(
-            "small ALU+branch row only supports ALU/branch rows".into(),
+            "small row only supports ALU/branch/memory rows".into(),
         ));
     }
+    let with_memory = mask & MIXED_MEMORY != 0;
     let final_pc = trace.final_state.pc;
-    let (bits, cycles, initial_pc) = small_trace_bits(width, &rows, final_pc)?;
+    let (bits, cycles, initial_pc) = small_trace_bits(width, &rows, final_pc, with_memory)?;
     let expected = backend
         .commit(&bits)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
@@ -4167,7 +4222,7 @@ pub fn verify_small_alu_branch_trace<B: magnetar_proof::BitPcs>(
             "small ALU+branch witness does not match the proof commitment".into(),
         ));
     }
-    let row = SmallAluBranchRow::new(width);
+    let row = SmallAluBranchRow::new(width, with_memory);
     let (_, s1, s2) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
     verify_lockstep_bits(
         &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], layout, proof, backend,
@@ -5018,7 +5073,7 @@ mod tests {
     }
 
     #[test]
-    fn small_alu_branch_rejects_memory_trace() {
+    fn small_alu_branch_mem_trace_binds_witness() {
         use magnetar_executor::execute;
         use magnetar_pcs::P3SharedPcs;
         use magnetar_proof::RingSwitchPackedBitPcs;
@@ -5062,11 +5117,12 @@ mod tests {
         .unwrap();
         let backend =
             RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
-        assert!(prove_small_alu_branch_trace(&trace, 8, &backend).is_err());
+        let (proof, layout) = prove_small_alu_branch_trace(&trace, 8, &backend).unwrap();
+        verify_small_alu_branch_trace(&trace, &proof, &layout, 8, &backend).unwrap();
     }
 
     #[test]
-    fn small_alu_branch_trace_binds_witness() {
+    fn small_alu_branch_rejects_shift_trace() {
         use magnetar_executor::execute;
         use magnetar_pcs::P3SharedPcs;
         use magnetar_proof::RingSwitchPackedBitPcs;
@@ -5076,12 +5132,21 @@ mod tests {
             0x1000,
             vec![
                 Instruction {
-                    op: Op::Addi,
+                    op: Op::Lui,
                     rd: 1,
                     rs1: 0,
                     rs2: 0,
-                    imm: 11,
+                    imm: 0x10,
                     shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Slli,
+                    rd: 1,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 2,
                 }
                 .encode(),
                 Instruction::new(Op::Ecall).encode(),
@@ -5101,8 +5166,7 @@ mod tests {
         .unwrap();
         let backend =
             RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
-        let (proof, layout) = prove_small_alu_branch_trace(&trace, 8, &backend).unwrap();
-        verify_small_alu_branch_trace(&trace, &proof, &layout, 8, &backend).unwrap();
+        assert!(prove_small_alu_branch_trace(&trace, 8, &backend).is_err());
     }
 
     #[test]
