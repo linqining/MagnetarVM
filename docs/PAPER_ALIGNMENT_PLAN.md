@@ -10,7 +10,7 @@ This is a roadmap, not a claim that the implementation is aligned yet.
 
 | rows | bytes | prove | verify | cycles/s |
 |---:|---:|---:|---:|---:|
-| 16 | 122,484 | 0.368 s | 0.158 s | 43.5 |
+| 16 | 114,816 | 0.287 s | 0.172 s | 55.7 |
 | 64 | 196,768 | 1.817 s | 0.571 s | 35.2 |
 | 512 | 566,376 | 28.70 s | 4.63 s | 17.8 |
 
@@ -44,7 +44,7 @@ Current scale is 2^9-2^10 rows; the paper target is 2^22-2^28 cycles.
 - [x] concurrent determinism reproducer
 - [x] proof-size accounting includes `claim_proof` / `selected_cpu`
 - [x] proof-only native verification works after bincode roundtrip
-- [x] full runtime suite green, 309/0
+- [x] full runtime suite green, 310/0
 - [x] make proof-size accounting exactly equal to bincode size
 - [ ] add CI job for concurrent determinism and repeated full suite
 
