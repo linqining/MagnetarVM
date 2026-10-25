@@ -170,3 +170,19 @@ confirmed across ALU, shift, mul, mem and div.
 `SDivPcRow` reuses the same template with `SignedDivRow` and its exposed one
 variable; `sdiv_pc_batch_round_trips` passes (16-cycle release test). It is the
 heaviest selected-op row, so it is tested but not added to the timing sweep.
+
+
+### Spec-to-matrix constraint
+
+`build_padded_virtual_layout` pads each selected-op segment to the next power of
+two and may move it. The current selected-op proof, however, commits the
+original `cycles * base_cols` witness and its matrices use that block stride.
+Feeding the per-op specs directly into the proof would therefore mismatch the
+matrix column layout.
+
+The next routing step must be a `selected_grouped_virtual_inputs` analogue:
+build the padded mapping, remap the witness into the padded layout, and derive
+the matrices with the padded block stride (as `reservation_grouped_virtual_inputs`
+does for the full gated row). `alu_pc_virtual_specs` is the segment description;
+it must not be wired into the current `segment_layout` proof without that
+remapping.
