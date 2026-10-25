@@ -5996,6 +5996,29 @@ mod tests {
     }
 
     #[test]
+    fn preprocess_expanded_falls_back_without_shifts() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 5,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ebreak).encode(),
+            ],
+        );
+        let preprocessed = preprocess_expanded(&program, config()).unwrap();
+        assert_eq!(preprocessed.config.entry, 0x1000);
+        let trace = execute(&program, preprocessed.config.clone()).unwrap();
+        assert_eq!(trace.final_state.reg(1), 5);
+    }
+
+    #[test]
     fn preprocess_expanded_uses_the_expanded_rom() {
         let program = ProgramImage::new(
             0x1000,

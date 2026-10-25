@@ -4431,3 +4431,6 @@ through statement construction, proof and verification.
 
 `unified_proof_round_trips_without_trace` serializes/deserializes the unified
 proof and verifies it with the trace dropped, covering the proof-only path.
+
+
+`preprocess_expanded_falls_back_without_shifts` covers the preprocess API fallback.
