@@ -73,7 +73,7 @@ dynamic streaming chunks (4 rows)
 full-suite failing tests: 10
   全部在 d5eb67e 基线已失败（pre-existing）
   protocol plan test 已在 full suite 通过
-  当前 full suite: 303 passed / 3 failed
+  当前 full suite: 305 passed / 3 failed
 ```
 
 ### 当前建议顺序
