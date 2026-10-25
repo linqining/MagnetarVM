@@ -105,11 +105,23 @@ This is the cheapest selected-op row so far. It proves the address-arithmetic
 and data-gating relation; the BinaryTwist address/value claims are still a
 separate layer.
 
+## Branch selected op (done)
+
+`BranchPcRow` links the branch relation's already-selected `next` vector to the
+external `next_pc`, and links the external `pc` into both `target_alu.a` and
+`seq_alu.a`. This preserves the taken target-PC path without a separate adder.
+`branch_pc_batch_round_trips` takes the Beq target `pc+8` on every row and
+passes initial/final PC verification. Release, width 16:
+
+```text
+cycles=64   branch+pc 75,408 B 2.11 s
+cycles=256  branch+pc 96,576 B 6.39 s
+```
+
 ## Next concrete step
 
-Add a branch selected-op row (target-PC instead of sequential `pc+4`), define
-selected-op virtual segment specs, then wire the selected-op batch into unified
-claim routing.
+Define selected-op virtual segment specs and wire the selected-op batch into
+unified claim routing.
 
 ## Non-goals for the first step
 
