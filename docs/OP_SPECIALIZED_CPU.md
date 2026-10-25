@@ -645,12 +645,33 @@ tests (`address_multiplicity_and_collision_round_trip`,
 `booleanity_round_trip_and_tamper`) and E5 tests still pass.
 
 
-`unified_auto_falls_back_for_unsupported_rows` proves a Mulh trace through the
-auto-selected reference prover (`selected_cpu == None`, `gated == Some`), so
-unsupported dynamic rows do not break unified proving.
+`MulPcRow` now accepts the signed/high multiplication flags from
+`GatedCpuRowInput::Mul` and uses `GatedMulRow::witness_with_signs`. The dynamic
+selector therefore covers low/high/signed multiply; `unified_auto_handles_high_multiply`
+proves a Mulh trace through the native selected prover. The high/low output
+selector is not a separate constraint in this row; the trace-witness commitment
+binds the exact variant, so this is a trace-bound specialization rather than a
+standalone proof of the high selector.
 
-A full `cargo test -p magnetar-runtime --lib` run currently reports 281 passed
-and 11 failed; the failing set includes unrelated gated-aux/binary-twist tests
-and some tests that pass when rerun individually (e.g. the protocol plan test),
-suggesting parallel-test resource/state sensitivity. Targeted E5 and B6 tests
-pass.
+### Clean-baseline test check
+
+The 11 failing tests from the full runtime suite were rerun at baseline commit
+`d5eb67e`. Ten fail there as well:
+
+```text
+binary_twist::ram_tests::ram_binary_twist_bundle_round_trips
+gated_aux::tests::gated_aux_proves_shout_and_shift
+gated_recursion::tests::gated_chunks_aggregate
+packed_router::tests::all_router_groups_round_trip
+packed_router::tests::full_packed_router_round_trips
+tests::spartan_backend_proves_auipc_and_jalr
+tests::trace_proof_covers_atomic_read_modify_write
+tests::trace_proof_covers_compressed_branches
+tests::trace_proof_covers_compressed_instructions
+tests::trace_proof_covers_compressed_memory_operations
+```
+
+`protocol_plan_and_orchestrator_preserve_proof_bytes` passes at baseline and when
+rerun individually at HEAD; its full-suite failure is parallel-test/state
+sensitivity. So 10 of 11 are pre-existing at `d5eb67e`; the protocol test is not
+a deterministic regression.

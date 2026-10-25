@@ -1063,7 +1063,7 @@ mod phase_tests {
     }
 
     #[test]
-    fn unified_auto_falls_back_for_unsupported_rows() {
+    fn unified_auto_handles_high_multiply() {
         use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
         let addi = |rd, imm| {
             Instruction {
@@ -1105,10 +1105,10 @@ mod phase_tests {
             },
         )
         .unwrap();
-        let proof = crate::prove_unified_trace_auto(&trace, 8).expect("fallback proof");
-        assert!(proof.selected_cpu.is_none());
-        assert!(proof.gated.is_some());
-        crate::verify_unified_trace(&trace, &proof, 8).expect("verify fallback");
+        let proof = crate::prove_unified_trace_auto(&trace, 8).expect("high-mul proof");
+        assert!(proof.selected_cpu.is_some());
+        assert!(proof.gated.is_none());
+        crate::verify_unified_trace(&trace, &proof, 8).expect("verify high-mul");
     }
 
     #[test]

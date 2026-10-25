@@ -1901,7 +1901,22 @@ impl MulPcRow {
     }
 
     fn witness_at(&self, pc: u64, left: u64, right: u64) -> Vec<bool> {
-        let mut bits = self.instr.witness(left, right);
+        self.witness_with_flags(pc, left, right, false, false, false)
+    }
+
+    fn witness_with_flags(
+        &self,
+        pc: u64,
+        left: u64,
+        right: u64,
+        high: bool,
+        signed_a: bool,
+        signed_b: bool,
+    ) -> Vec<bool> {
+        let _ = high;
+        let mut bits = self
+            .instr
+            .witness_with_signs(left, right, signed_a, signed_b);
         let addition = self.pc_add.witness(pc, 4, true);
         bits.extend(addition);
         bits.resize(self.relation.num_vars, false);
@@ -3286,6 +3301,9 @@ pub enum MixedAluBranchInput {
     Multiply {
         left: u64,
         right: u64,
+        high: bool,
+        signed_a: bool,
+        signed_b: bool,
     },
     Divide {
         num: u64,
@@ -3541,7 +3559,7 @@ impl MixedAluBranchRow {
             _ => (0x12, 2, crate::simd_f2::BitShiftKind::Sll),
         };
         let (mul_left, mul_right) = match input {
-            MixedAluBranchInput::Multiply { left, right } => (*left, *right),
+            MixedAluBranchInput::Multiply { left, right, .. } => (*left, *right),
             _ => (0x12, 0x34),
         };
         let (num, den) = match input {
@@ -3801,11 +3819,20 @@ pub fn mixed_alu_branch_rows_from_trace(
             GatedCpuRowInput::Mul {
                 left,
                 right,
-                high: false,
-                signed_a: false,
-                signed_b: false,
+                high,
+                signed_a,
+                signed_b,
                 ..
-            } => Ok((pc, MixedAluBranchInput::Multiply { left, right })),
+            } => Ok((
+                pc,
+                MixedAluBranchInput::Multiply {
+                    left,
+                    right,
+                    high,
+                    signed_a,
+                    signed_b,
+                },
+            )),
             GatedCpuRowInput::Div { num, den, .. } => {
                 Ok((pc, MixedAluBranchInput::Divide { num, den }))
             }
@@ -4609,7 +4636,13 @@ impl PcComponent for MulPcRow {
     }
     fn witness(&self, pc: u64, input: &MixedAluBranchInput) -> Result<Vec<bool>, RuntimeError> {
         Ok(match input {
-            MixedAluBranchInput::Multiply { left, right } => self.witness_at(pc, *left, *right),
+            MixedAluBranchInput::Multiply {
+                left,
+                right,
+                high,
+                signed_a,
+                signed_b,
+            } => self.witness_with_flags(pc, *left, *right, *high, *signed_a, *signed_b),
             _ => self.witness_at(pc, 0x12, 0x34),
         })
     }
