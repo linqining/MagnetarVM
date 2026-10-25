@@ -138,3 +138,7 @@ cycles=256  div+pc 124,216 B 24.3 s
 
 The div row is heavy (it embeds a multiplier), but the PC/statement template is
 confirmed across ALU, shift, mul, mem and div.
+
+`SDivPcRow` reuses the same template with `SignedDivRow` and its exposed one
+variable; `sdiv_pc_batch_round_trips` passes (16-cycle release test). It is the
+heaviest selected-op row, so it is tested but not added to the timing sweep.
