@@ -1139,6 +1139,8 @@ pub struct UnifiedTraceProof {
     pub trace_commitment: [u8; 32],
     #[serde(default)]
     pub trace_claim_root: [u8; 32],
+    #[serde(default)]
+    pub claim_proof: Option<crate::trace_claims::ClaimProof>,
     pub cpu: Option<LockstepClaims<P3MosaicCommitment>>,
     pub gated: Option<GatedCpuClaims>,
     #[serde(default)]
@@ -3142,7 +3144,30 @@ pub fn verify_unified_trace(
     if proof.trace_claim_root != crate::trace_claims::TraceClaimTree::build(trace).root() {
         return Err(RuntimeError::Proof("trace claim root mismatch".into()));
     }
+    if let Some(claims) = &proof.claim_proof {
+        if claims.root != proof.trace_claim_root
+            || claims.verify().map(|values| values.len()) != Some(trace.rows.len())
+        {
+            return Err(RuntimeError::Proof("claim proof mismatch".into()));
+        }
+    }
     crate::protocol::Orchestrator::default().verify(trace, proof, width)
+}
+
+/// Verify the proof-carried CPU claim layer without the trace.
+pub fn verify_unified_claim_proof(
+    proof: &UnifiedTraceProof,
+) -> Result<Vec<crate::trace_claims::TraceClaim>, RuntimeError> {
+    let claims = proof
+        .claim_proof
+        .as_ref()
+        .ok_or_else(|| RuntimeError::Proof("missing claim proof".into()))?;
+    if claims.root != proof.trace_claim_root {
+        return Err(RuntimeError::Proof("claim proof root mismatch".into()));
+    }
+    claims
+        .verify()
+        .ok_or_else(|| RuntimeError::Proof("claim proof opening mismatch".into()))
 }
 
 pub fn verify_unified_trace_statement(
@@ -5566,6 +5591,28 @@ mod tests {
         let proof = prove_trace_proof(&trace, 8).unwrap();
         assert!(matches!(proof.rows[5], RowCpuProof::Skip));
         verify_trace_proof(&trace, &proof, 8).unwrap();
+    }
+
+    #[test]
+    fn unified_claim_proof_verifies_without_trace() {
+        let outcome = ReferencePipeline::run(
+            &ProgramImage::new(
+                0x1000,
+                vec![magnetar_spec::Instruction::new(magnetar_spec::Op::Ecall).encode()],
+            ),
+            config(),
+            1,
+        )
+        .unwrap();
+        let proof = prove_unified_trace(&outcome.trace, 8).unwrap();
+        let claims = verify_unified_claim_proof(&proof).unwrap();
+        assert_eq!(claims.len(), outcome.trace.rows.len());
+        assert_eq!(claims[0].pc, 0x1000);
+        let mut tampered = proof.clone();
+        tampered.claim_proof.as_mut().unwrap().openings[0]
+            .claim
+            .instruction_len = 2;
+        assert!(verify_unified_claim_proof(&tampered).is_err());
     }
 
     #[test]

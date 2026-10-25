@@ -186,3 +186,20 @@ payloads without reading `trace.rows`.
 The fields are `serde(skip)` for now because serializing them changed the
 protocol proof-byte round-trip; proof-only serialization will be added as a
 separate claim proof rather than inside the existing selected claim struct.
+
+
+## Serialized ClaimProof and proof-only entry
+
+`ClaimProof { root, openings }` is now serialized in `UnifiedTraceProof` as
+`claim_proof`, and `verify_unified_claim_proof(proof)` verifies it without the
+trace:
+
+```text
+root matches proof.trace_claim_root
+verify_claims(root, openings)
+return Vec<TraceClaim>
+```
+
+`unified_claim_proof_verifies_without_trace` checks recovery and rejects a
+tampered instruction length. This is the first proof-only verifier entry point;
+it authenticates claims but not yet the CPU/register/access relations.

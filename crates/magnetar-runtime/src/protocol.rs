@@ -321,6 +321,7 @@ pub const CLAIM_CONSUMERS: &[(ClaimKind, ClaimSink)] = &[
 pub struct ProofBundle {
     pub trace_commitment: [u8; 32],
     pub trace_claim_root: [u8; 32],
+    pub claim_proof: Option<crate::trace_claims::ClaimProof>,
     pub opening: Option<magnetar_pcs::P3MosaicOpening>,
     pub e5_opening: Option<crate::E5Opening>,
     pub field_opening: Option<magnetar_pcs::P3MosaicOpening>,
@@ -373,6 +374,7 @@ impl ProofBundle {
         Self {
             trace_commitment: proof.trace_commitment,
             trace_claim_root: proof.trace_claim_root,
+            claim_proof: proof.claim_proof.clone(),
             opening: proof.opening.clone(),
             e5_opening: proof.e5_opening.clone(),
             field_opening: proof.field_opening.clone(),
@@ -428,6 +430,7 @@ impl ProofBundle {
             },
             trace_commitment: self.trace_commitment,
             trace_claim_root: self.trace_claim_root,
+            claim_proof: self.claim_proof,
             opening: self.opening,
             e5_opening: self.e5_opening,
             field_opening: self.field_opening,
@@ -2499,6 +2502,7 @@ impl<'a> UnifiedProveContext<'a> {
         Ok(UnifiedTraceProof {
             shape: crate::cpu_shape::CpuShape::from_trace(self.trace).zeroed(),
             trace_claim_root: claim_tree.root(),
+            claim_proof: Some(crate::trace_claims::ClaimProof::from_trace(self.trace)),
             register_index: self.register_index,
             ram_index: self.ram_index,
             rom_index: self.rom_index,

@@ -179,6 +179,28 @@ pub fn verify_opening(root: [u8; 32], opening: &TraceClaimOpening) -> bool {
     node == root
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ClaimProof {
+    pub root: [u8; 32],
+    pub openings: Vec<TraceClaimOpening>,
+}
+
+impl ClaimProof {
+    pub fn from_trace(trace: &Trace) -> Self {
+        let tree = TraceClaimTree::build(trace);
+        Self {
+            root: tree.root(),
+            openings: (0..trace.rows.len())
+                .filter_map(|index| tree.open(index))
+                .collect(),
+        }
+    }
+
+    pub fn verify(&self) -> Option<Vec<TraceClaim>> {
+        verify_claims(self.root, &self.openings)
+    }
+}
+
 /// Verify a contiguous list of claim openings and return their payloads.
 pub fn verify_claims(root: [u8; 32], openings: &[TraceClaimOpening]) -> Option<Vec<TraceClaim>> {
     let mut claims = Vec::with_capacity(openings.len());
@@ -261,6 +283,16 @@ mod tests {
         let mut bad = openings;
         bad[0].claim.instruction_len = 2;
         assert!(verify_claims(tree.root(), &bad).is_none());
+    }
+
+    #[test]
+    fn claim_proof_round_trips_serde() {
+        let trace = trace();
+        let proof = ClaimProof::from_trace(&trace);
+        let bytes = bincode::serialize(&proof).unwrap();
+        let decoded: ClaimProof = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(proof, decoded);
+        assert_eq!(decoded.verify().unwrap().len(), trace.rows.len());
     }
 
     #[test]
