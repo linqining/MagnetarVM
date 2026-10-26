@@ -627,7 +627,7 @@ where
                 }
             }
         }
-        let mut polynomial = polynomial.to_vec();
+        let polynomial = polynomial.to_vec();
         let r = challenge(round, &polynomial);
         challenges.push(r);
         eq_values = fold_vector(&eq_values, r);
