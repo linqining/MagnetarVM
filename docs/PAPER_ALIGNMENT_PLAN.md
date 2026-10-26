@@ -461,3 +461,19 @@ The prototype did not integrate cleanly with the existing generic closure and
 was not kept. The current degree-point-parallel implementation remains. Making
 this worthwhile requires a fully specialized Shout prover (no per-pair Vec
 allocation) and is a prerequisite for the eventual linear/sparse rewrite.
+
+
+## Determinism and current benchmark envelope
+
+After the register-phase compaction and product6/product2 coefficient changes:
+
+```text
+protocol_determinism stress: 120 runs, 0 failures
+full runtime lib suite:      310 passed, 0 failed
+```
+
+The 1024-row prover has been observed from 8.43 s up to 12.9 s depending on
+sustained host load; 512 rows from 3.72 s to 6.7 s. The best measured values are
+512 rows: 3.72 s / 1.05 s verify / 137.7 cycles/s; 1024 rows: 8.43 s / 2.31 s
+verify / 121.5 cycles/s. These are point measurements, not a controlled
+benchmark.
