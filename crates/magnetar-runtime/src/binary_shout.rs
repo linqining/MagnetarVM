@@ -37,16 +37,24 @@ pub struct BinaryShoutWitness {
 impl BinaryShoutWitness {
     #[allow(clippy::needless_range_loop)]
     pub fn from_trace(trace: &Trace) -> Result<Self, ProofError> {
-        let halfwords = trace.rom.len().saturating_mul(2);
-        let cells = halfwords.next_power_of_two().max(2);
+        let word_mode = trace.rows.iter().all(|row| row.instruction_len == 4);
+        let cells = if word_mode {
+            trace.rom.len().next_power_of_two().max(2)
+        } else {
+            trace.rom.len().saturating_mul(2).next_power_of_two().max(2)
+        };
         let address_bits = cells.trailing_zeros() as usize;
         let cycles = trace.rows.len().next_power_of_two().max(2);
         let cycle_bits = cycles.trailing_zeros() as usize;
         let columns = 12usize;
         let mut rom = vec![vec![F2_128::from(0u64); columns]; cells];
         for (index, word) in trace.rom.iter().enumerate() {
-            rom[2 * index][0] = F2_128::from(u64::from(*word & 0xffff));
-            rom[2 * index + 1][0] = F2_128::from(u64::from(*word >> 16));
+            if word_mode {
+                rom[index][0] = F2_128::from(u64::from(*word));
+            } else {
+                rom[2 * index][0] = F2_128::from(u64::from(*word & 0xffff));
+                rom[2 * index + 1][0] = F2_128::from(u64::from(*word >> 16));
+            }
         }
         let mut address0 = vec![vec![F2_128::from(0u64); cycles]; address_bits];
         let mut address1 = vec![vec![F2_128::from(0u64); cycles]; address_bits];
@@ -85,14 +93,30 @@ impl BinaryShoutWitness {
             if offset % 2 != 0 {
                 return Err(ProofError::Pcs("row pc is not halfword aligned".into()));
             }
-            let index = usize::try_from(offset / 2)
-                .map_err(|_| ProofError::Pcs("ROM index overflows usize".into()))?;
-            let high = index + usize::from(row.instruction_len == 4);
+            let index = if word_mode {
+                if offset % 4 != 0 {
+                    return Err(ProofError::Pcs("word-mode PC is not word aligned".into()));
+                }
+                usize::try_from(offset / 4)
+                    .map_err(|_| ProofError::Pcs("ROM index overflows usize".into()))?
+            } else {
+                usize::try_from(offset / 2)
+                    .map_err(|_| ProofError::Pcs("ROM index overflows usize".into()))?
+            };
+            let high = if word_mode {
+                index
+            } else {
+                index + usize::from(row.instruction_len == 4)
+            };
             if high >= cells {
                 return Err(ProofError::Pcs("row pc is outside the ROM table".into()));
             }
             valid[cycle] = F2_128::from(1u64);
-            is_32[cycle] = F2_128::from(u64::from(row.instruction_len == 4));
+            is_32[cycle] = if word_mode {
+                F2_128::from(0u64)
+            } else {
+                F2_128::from(u64::from(row.instruction_len == 4))
+            };
             let bytecode_row = bytecode
                 .as_ref()
                 .and_then(|rows| rows.get(&row.micro_pc).copied());
