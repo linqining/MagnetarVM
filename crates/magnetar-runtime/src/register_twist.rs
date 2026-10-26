@@ -14,12 +14,6 @@ use magnetar_spec::Trace;
 const REGISTER_BITS: usize = 5;
 const REGISTER_COUNT: usize = 1 << REGISTER_BITS;
 
-fn one_hot(index: usize) -> Vec<F2_128> {
-    let mut address = vec![F2_128::from(0u64); REGISTER_COUNT];
-    address[index] = F2_128::from(1u64);
-    address
-}
-
 /// Build the two-phase register-file Twist witness for a trace.
 pub fn register_twist_witness(trace: &Trace) -> Result<BinaryTwistWitness, ProofError> {
     let mut registers = trace.initial_state.regs;
@@ -84,11 +78,7 @@ pub fn register_twist_witness(trace: &Trace) -> Result<BinaryTwistWitness, Proof
                 push_phase(Some(reads[1]), None);
             }
             (1, write) => push_phase(Some(reads[0]), write),
-            (0, write) => {
-                if write.is_some() {
-                    push_phase(Some(0), write);
-                }
-            }
+            (0, Some(write)) => push_phase(Some(0), Some(write)),
             _ => {}
         }
     }
