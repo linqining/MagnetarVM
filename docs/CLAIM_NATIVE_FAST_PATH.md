@@ -124,3 +124,15 @@ The P2 segment router now checks cycle ranges in parallel when `cycles >= 1024`
 (up to eight workers). At 8192 rows the verifier dropped from 29.8 s to 23.4 s.
 A 16384-row run during sustained host load measured 228 s prove / 315 s verify
 and is not representative.
+
+Final scale points:
+
+| rows | proof | prove | verify | cycles/s |
+|---:|---:|---:|---:|---:|
+| 16384 | 4,349,654 B | 148.48 s | 53.41 s | 110.4 |
+| 32768 | 8,498,798 B | 203.63 s | 83.30 s | 160.9 |
+| 65536 | 16,782,598 B | 418.04 s | 197.69 s | 156.8 |
+
+At 2^16 the paper reports 35 ms / 8 ms / 1.9M cycles/s / 380 KiB. Claim-native
+is therefore about 1.2e4x slower on throughput and 44x larger on proof size at
+the same row count.

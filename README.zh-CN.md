@@ -15,7 +15,7 @@ native proof-only 路径现在包含经认证的 TraceClaim/ClaimProof 层、dyn
 | 512 | 341,448 B | 3.7–5.1 s | 1.0–3.2 s | 101–138 |
 | 1024 | 520,400 B | 8.4–16.1 s | 2.3–7.6 s | 64–122 |
 
-论文 2^22 为 547 ms、7.7M cycles/s。claim-native 快速路径已到 4096 行 27.5 s / 1.21 MB、8192 行 58.6 s / 2.27 MB（仍远低于论文，且不是 BinaryShout/Twist 协议）。剩余硬缺口是 linear/sparse BinaryShout、BinaryTwist 以及 recursion/verifier-in-the-VM。
+论文 2^22 为 547 ms、7.7M cycles/s。claim-native 快速路径已到 4096 行 27.5 s / 1.21 MB、8192 行 58.6 s / 2.27 MB、2^15 行 203.6 s / 8.5 MB、2^16 行 418.0 s / 16.8 MB。论文 2^16 为 35 ms / 1.9M cycles/s / 380 KiB，仍远低于论文，且不是 BinaryShout/Twist 协议。剩余硬缺口是 linear/sparse BinaryShout、BinaryTwist 以及 recursion/verifier-in-the-VM。
 
 已实现：
 
