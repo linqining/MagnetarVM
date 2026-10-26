@@ -37,3 +37,14 @@ soundness/performance role.
 
 Design only. This is not a constant-factor change; it changes the verifier's
 trusted inputs and proof format. It should be its own workstream before P1.1.
+
+## Concrete blocker found
+
+Serializing `SelectedCpuClaims::segments`/`claim_root` was tried directly. It
+breaks `selected_cpu_claims_round_trip`: after deserialization the compact
+selected layout no longer reconstructs the same segment metadata, so
+`selected_segment_claims(layout, proof)` differs from the serialized segments.
+Proof-only verification therefore needs a canonical segment layout encoding,
+not just removing `#[serde(skip)]`.
+
+The experiment was reverted. This confirms P2 requires a proof-format redesign.
