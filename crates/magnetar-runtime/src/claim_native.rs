@@ -251,10 +251,10 @@ fn check_claim_semantics(
                     consumed_input.extend_from_slice(chunk);
                     input_cursor += count;
                 }
-            } else if number == magnetar_spec::syscall::SYS_EXIT || number == 0 {
-                if statement.exit_code != Some(a0) {
-                    return Err(RuntimeError::Proof("syscall exit code mismatch".into()));
-                }
+            } else if (number == magnetar_spec::syscall::SYS_EXIT || number == 0)
+                && statement.exit_code != Some(a0)
+            {
+                return Err(RuntimeError::Proof("syscall exit code mismatch".into()));
             }
         }
         for event in &claim.memory {
