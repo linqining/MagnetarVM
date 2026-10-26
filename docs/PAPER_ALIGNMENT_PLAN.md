@@ -385,3 +385,18 @@ opening. Changing only the bits=9 configuration to
 62,329 B -> 66,713 B packed proof, and total 1024-row proof 516,912 -> 521,520 B.
 The bits=12 and bits>=4 configurations were left unchanged. The ring-switch
 profile markers are available under `MAGNETAR_PROFILE_RING`.
+
+
+## Access bottleneck: register Twist
+
+At 1024 rows, `prove_trace_access_shared` breaks down as:
+
+```text
+RAM claims       4.5 ms
+register claims 13.78 s
+```
+
+The RAM side is negligible for this workload; the register Twist proof is the
+access bottleneck. Register witnesses double the cycle count (two phases per
+row), so the history sum-check is over `(2 * rows)^2` pairs. The gated
+`MAGNETAR_PROFILE_ACCESS` markers remain in the code for future profiling.

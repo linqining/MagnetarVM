@@ -1006,8 +1006,14 @@ pub(crate) fn prove_trace_access_shared(
     register_index: usize,
 ) -> Result<(TraceAccessProof, MosaicClaims, MosaicClaims), RuntimeError> {
     check_trace_access_bindings(trace, witness)?;
+    let profile = std::env::var_os("MAGNETAR_PROFILE_ACCESS").is_some();
+    let started = std::time::Instant::now();
     let (ram, ram_claims) = prove_binary_twist_claims(tables, witness, commitment, ram_index)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if profile {
+        eprintln!("access ram claims: {:?}", started.elapsed());
+    }
+    let started = std::time::Instant::now();
     let (registers, register_claims) = prove_binary_twist_claims(
         register_tables,
         register_witness,
@@ -1015,6 +1021,9 @@ pub(crate) fn prove_trace_access_shared(
         register_index,
     )
     .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if profile {
+        eprintln!("access register claims: {:?}", started.elapsed());
+    }
     Ok((
         TraceAccessProof { registers, ram },
         ram_claims,
