@@ -16,8 +16,10 @@ proofs, replacing them with linear checks over the authenticated rows.
 
 ## What it does not yet handle
 
-- Syscall write/read IO binding; proofs with nonempty `statement.output`/`input`
-  are rejected.
+- Syscall write/read/exit binding is implemented directly, but the store-heavy
+  test program that exercises `SYS_WRITE` failed inside the selected dynamic
+  prover with a sumcheck claim mismatch. Until that selected-prover store path
+  is fixed, claim-native should be treated as tested only for non-IO workloads.
 - The paper's BinaryShout/BinaryTwist semantics; this is a native claim-layer
   path, not paper parity.
 - A third-party audit.
