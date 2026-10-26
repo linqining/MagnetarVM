@@ -98,3 +98,17 @@ after Shout and Twist are both virtual.
 
 See `docs/P1_LINEAR_SHOUT.md`, `docs/P2_PROOF_ONLY_VERIFIER.md`, and
 `docs/VIRTUAL_CLAIM_REWRITE.md`. Current runtime suite: 316 passing.
+
+## Track 3 baseline
+
+`logup_shout_mixed` on the tiny compressed + 32-bit program:
+
+```text
+standalone logup Shout: ok
+native auto fallback proof: 117,730 B
+native auto fallback prove: 8.35 s
+native auto fallback verify: 96.4 ms
+```
+
+The fallback is many times slower than the dynamic word path for such a tiny
+trace, which is the concrete reason to finish compressed-PC support.

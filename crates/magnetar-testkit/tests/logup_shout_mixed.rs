@@ -27,6 +27,14 @@ fn logup_shout_and_native_handle_compressed_trace() {
 
     // Native selected CPU still lacks compressed PC rows; auto must fall back
     // to the reference proof and verify.
+    let started = std::time::Instant::now();
     let native = prove_unified_trace_auto(&trace, 8).unwrap();
+    let prove = started.elapsed();
+    let bytes = bincode::serialize(&native).unwrap().len();
+    let started = std::time::Instant::now();
     verify_unified_trace(&trace, &native, 8).unwrap();
+    eprintln!(
+        "compressed native fallback proof={bytes}B prove={prove:?} verify={:?}",
+        started.elapsed()
+    );
 }
