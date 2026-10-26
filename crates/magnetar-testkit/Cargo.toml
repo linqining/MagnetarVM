@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+p3-binary-field = { path = "../../vendor/plonky3/binary-field" }
+p3-challenger = { path = "../../vendor/plonky3/challenger" }
+p3-field = { path = "../../vendor/plonky3/field" }
+p3-keccak = { path = "../../vendor/plonky3/keccak" }
+p3-multi-stark = { path = "../../vendor/plonky3/multi-stark" }
+p3-multilinear-util = { path = "../../vendor/plonky3/multilinear-util" }
 magnetar-spec.workspace = true
 magnetar-guest.workspace = true
 magnetar-preprocess.workspace = true

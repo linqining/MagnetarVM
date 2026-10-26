@@ -86,3 +86,35 @@ table cell.
 
 The first version is linear-prover and linear-verifier in `K`. It is not the
 paper's final succinct verifier and must not be described as full paper parity.
+
+
+## logup* implementation found and prototyped
+
+Relevant papers and implementations:
+
+- Twist and Shout: <https://eprint.iacr.org/2025/105>
+- Twist and Shout via logup* (hash-based adaptation): <https://powdr.org/papers/twist_shout_logup_star.pdf>
+- logup*: <https://eprint.iacr.org/2025/946>
+- Vendored P3 implementation: `vendor/plonky3/multi-stark/src/logup_star/`
+- Jolt Twist/Shout reference: <https://github.com/a16z/jolt/tree/main/crates/jolt-claims/src/twist>
+
+The P3 `logup_star` reduction proves `X[i] = T[I[i]]` with the
+pushforward/fractional-GKR construction. A standalone Shout prototype is in
+`crates/magnetar-testkit/tests/logup_star_shout.rs`: it builds the ROM table,
+reader values and positions from `BinaryShoutWitness`, computes the reader
+claims at a point, and runs P3 `LogupStarProof`.
+
+Reduction-only measurements (no PCS binding yet):
+
+| rows | prove | verify | proof |
+|---:|---:|---:|---:|
+| 1024 | 2.65 ms | 0.44 ms | 20,520 B |
+| 8192 | 16.17 ms | 1.07 ms | 137,272 B |
+
+For comparison the old quadratic Shout is 1.70 s / 337 KB at 1024 rows and
+757 s / 506 KB at 8192 rows.
+
+This is a sound reduction, but not yet a complete Shout proof: the table,
+reader-value and position columns are still trusted inputs, not bound by a PCS.
+The next milestone is to commit those columns and discharge the logup* output
+claims through P3 openings.
