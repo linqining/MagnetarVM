@@ -5,7 +5,16 @@ use magnetar_runtime::{prove_unified_trace_auto, unified_proof_sizes, verify_uni
 use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 
 fn main() {
-    for adds in [511u64, 1023] {
+    let adds_list = std::env::var("ADDS")
+        .ok()
+        .map(|value| {
+            value
+                .split(',')
+                .map(|item| item.parse::<u64>().expect("ADDS item"))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| vec![511, 1023]);
+    for adds in adds_list {
         let mut rom = Vec::new();
         for index in 0..adds {
             rom.push(

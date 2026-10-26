@@ -214,3 +214,20 @@ than producing a broken dynamic proof. Removing that fallback requires
 compressed-PC support in the selected dynamic layout.
 
 Full runtime suite after the change: 316 passed.
+
+
+## Native scale with logup Shout
+
+`ADDS=... native_unified_bench`:
+
+| rows | proof | prove | verify | logup | selected | claim |
+|---:|---:|---:|---:|---:|---:|---:|
+| 512 | 425,513 B | 2.76 s | 1.15 s | 137,921 B | 203,550 B | 55,370 B |
+| 1024 | 614,001 B | 5.54 s | 2.21 s | 164,369 B | 295,830 B | 110,666 B |
+| 2048 | 951,769 B | 15.58 s | 4.87 s | 198,249 B | 461,350 B | 221,258 B |
+| 4096 | 1,583,937 B | 47.75 s | 12.21 s | 245,881 B | 770,302 B | 442,442 B |
+
+The prover is now dominated by the selected CPU proof and the O(rows) claim
+layer, not by Shout. Claim-native remains faster at 4096 rows (27.5 s /
+1.21 MB / 149 cycles/s), because it replaces Access/Twist with direct claim
+checks.
