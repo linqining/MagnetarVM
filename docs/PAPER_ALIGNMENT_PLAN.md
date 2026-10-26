@@ -477,3 +477,13 @@ sustained host load; 512 rows from 3.72 s to 6.7 s. The best measured values are
 512 rows: 3.72 s / 1.05 s verify / 137.7 cycles/s; 1024 rows: 8.43 s / 2.31 s
 verify / 121.5 cycles/s. These are point measurements, not a controlled
 benchmark.
+
+
+## Rejected: direct-pair History sum-check
+
+A specialized History sum-check evaluated each `(cycle, previous)` pair at every
+degree point directly instead of folding the ten factor arrays once per point.
+At 1024 rows the register access stage measured 5.74 s versus 3.90 s with the
+generic degree-point-parallel fold, and total prover time rose from 8.43 s to
+18.05 s under load. The per-index factor recomputation outweighed the saved
+allocations, so the change was reverted. The generic implementation remains.
