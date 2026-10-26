@@ -61,3 +61,18 @@ selected dynamic prover (`sumcheck claim mismatch`) even after the full-row fix;
 the simple `Lui/Addi/Sb/SYS_WRITE/SYS_EXIT` program passes. The compiled guest
 uses a richer instruction mix, so the dynamic row/component mask coverage is
 still incomplete. The integration test was removed rather than left failing.
+
+
+## Compiled-guest failure narrowed to jumps
+
+The checked-in `hello.elf` trace starts with:
+
+```text
+Lui, Auipc, Jalr, Addi, Sd, Sd, ...
+```
+
+The dynamic selected row currently has ALU/branch/memory/shift/mul/div
+components only. Its ALU component hard-codes `next_pc = pc + 4`, so a `Jalr`
+(or `Jal`) target other than `pc + 4` makes the selected sumcheck unsatisfiable.
+A dedicated jump component that binds both `rd = pc + len` and an arbitrary
+`next_pc` is required before hello guest or compiled-guest coverage can pass.
