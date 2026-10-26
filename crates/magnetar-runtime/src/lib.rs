@@ -5870,6 +5870,14 @@ mod tests {
         let decoded: UnifiedTraceProof =
             bincode::deserialize(&bincode::serialize(&proof).unwrap()).unwrap();
         verify_native_unified(&statement, &decoded, 8).unwrap();
+        let mut bad_root = proof.clone();
+        bad_root.trace_claim_root[0] ^= 1;
+        assert!(verify_native_unified(&statement, &bad_root, 8).is_err());
+        assert!(verify_native_claim_layer(&statement, &bad_root).is_err());
+        let mut bad_commitment = proof.clone();
+        bad_commitment.trace_commitment[0] ^= 1;
+        assert!(verify_native_unified(&statement, &bad_commitment, 8).is_err());
+        assert!(verify_native_claim_layer(&statement, &bad_commitment).is_err());
         assert_eq!(outputs[0].pc, 0x1000);
         assert_eq!(outputs[0].instruction_len, 4);
         let mut claim_rows = verify_unified_claim_proof(&proof).unwrap();
