@@ -3316,6 +3316,9 @@ pub enum MixedAluBranchInput {
         num: u64,
         den: u64,
     },
+    Jump {
+        target: u64,
+    },
 }
 
 impl MixedAluBranchInput {
@@ -3328,6 +3331,7 @@ impl MixedAluBranchInput {
             Self::Multiply { .. } => MIXED_MULTIPLY,
             Self::Divide { .. } => MIXED_DIVIDE,
             Self::SignedDivide { .. } => MIXED_SDIV,
+            Self::Jump { .. } => MIXED_JUMP,
         }
     }
 }
@@ -3589,6 +3593,7 @@ impl MixedAluBranchRow {
             MixedAluBranchInput::Multiply { .. } => 4,
             MixedAluBranchInput::Divide { .. } => 5,
             MixedAluBranchInput::SignedDivide { .. } => 6,
+            MixedAluBranchInput::Jump { .. } => 0,
         };
         let next = match selected {
             0 => self.alu.next_pc.clone(),
@@ -3760,6 +3765,7 @@ pub const MIXED_SHIFT: u8 = 1 << 3;
 pub const MIXED_MULTIPLY: u8 = 1 << 4;
 pub const MIXED_DIVIDE: u8 = 1 << 5;
 pub const MIXED_SDIV: u8 = 1 << 6;
+pub const MIXED_JUMP: u8 = 1 << 7;
 
 pub fn mixed_rows_component_mask(rows: &[(u64, MixedAluBranchInput)]) -> u8 {
     rows.iter().fold(0u8, |mask, (_, input)| {
@@ -3771,6 +3777,7 @@ pub fn mixed_rows_component_mask(rows: &[(u64, MixedAluBranchInput)]) -> u8 {
             MixedAluBranchInput::Multiply { .. } => MIXED_MULTIPLY,
             MixedAluBranchInput::Divide { .. } => MIXED_DIVIDE,
             MixedAluBranchInput::SignedDivide { .. } => MIXED_SDIV,
+            MixedAluBranchInput::Jump { .. } => MIXED_JUMP,
         }
     })
 }
@@ -3793,6 +3800,19 @@ pub fn mixed_alu_branch_rows_from_trace(
     let rows = crate::simd_full::gated_rows_from_trace_full(trace, width)?;
     rows.into_iter()
         .map(|(pc, input)| match input {
+            GatedCpuRowInput::Alu { left, right, op }
+                if matches!(
+                    op,
+                    crate::simd_f2::GatedAluOp::Jal | crate::simd_f2::GatedAluOp::Jalr
+                ) =>
+            {
+                Ok((
+                    pc,
+                    MixedAluBranchInput::Jump {
+                        target: left.wrapping_add(right) & !1,
+                    },
+                ))
+            }
             GatedCpuRowInput::Alu { left, right, op } => {
                 Ok((pc, MixedAluBranchInput::Alu { left, right, op }))
             }
@@ -4673,6 +4693,133 @@ where
     verify_dynamic_segmented_trace(trace, &claims.proof, &claims.layout, claims.width, backend)
 }
 
+struct JumpPcRow {
+    width: usize,
+    pc_add: crate::simd_f2::GatedBitAdder,
+    pc: Vec<magnetar_constraint::VarId>,
+    next_pc: Vec<magnetar_constraint::VarId>,
+    target: Vec<magnetar_constraint::VarId>,
+    link: Vec<magnetar_constraint::VarId>,
+    one: magnetar_constraint::VarId,
+    relation: BitRelation,
+}
+
+impl JumpPcRow {
+    fn new(width: usize) -> Self {
+        use magnetar_constraint::VarId;
+        let pc_add = crate::simd_f2::GatedBitAdder::new(width);
+        let mut relation = pc_add.relation.clone();
+        let take = |relation: &mut BitRelation, n: usize| {
+            let start = relation.num_vars;
+            relation.num_vars += n;
+            (start..start + n)
+                .map(|var| var as VarId)
+                .collect::<Vec<_>>()
+        };
+        let pc = take(&mut relation, width);
+        let next_pc = take(&mut relation, width);
+        let target = take(&mut relation, width);
+        let link = take(&mut relation, width);
+        let one = (3 * width + 1) as VarId;
+        for bit in 0..width {
+            relation.add(BitRow::new(vec![pc[bit]], vec![pc[bit]], vec![pc[bit]]));
+            relation.add(BitRow::new(
+                vec![next_pc[bit]],
+                vec![next_pc[bit]],
+                vec![next_pc[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![target[bit]],
+                vec![target[bit]],
+                vec![target[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![link[bit]],
+                vec![link[bit]],
+                vec![link[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![pc[bit]],
+                vec![one],
+                vec![pc_add.a[bit] as VarId],
+            ));
+            relation.add(BitRow::new(
+                vec![link[bit]],
+                vec![one],
+                vec![pc_add.out[bit] as VarId],
+            ));
+            let constant = pc_add.b[bit] as VarId;
+            if bit == 2 {
+                relation.add(BitRow::new(vec![constant], vec![one], vec![one]));
+            } else {
+                relation.add(BitRow::new(vec![constant], vec![one], Vec::new()));
+            }
+            relation.add(BitRow::new(
+                vec![next_pc[bit]],
+                vec![one],
+                vec![target[bit]],
+            ));
+        }
+        relation.add(BitRow::new(
+            vec![pc_add.gate as VarId],
+            vec![one],
+            vec![one],
+        ));
+        Self {
+            width,
+            pc_add,
+            pc,
+            next_pc,
+            target,
+            link,
+            one,
+            relation,
+        }
+    }
+
+    fn witness_bits(&self, pc: u64, target: u64) -> Vec<bool> {
+        // Always drive the adder gate high so the relation holds for inactive
+        // rows too; inactive rows are ignored by the selector/PC mux.
+        let mut bits = self.pc_add.witness(pc, 4, true);
+        bits.resize(self.relation.num_vars, false);
+        for bit in 0..self.width {
+            bits[self.pc[bit]] = (pc >> bit) & 1 == 1;
+            bits[self.link[bit]] = ((pc + 4) >> bit) & 1 == 1;
+            bits[self.target[bit]] = (target >> bit) & 1 == 1;
+            bits[self.next_pc[bit]] = (target >> bit) & 1 == 1;
+        }
+        bits
+    }
+
+    fn witness_at(&self, pc: u64, target: u64) -> Vec<bool> {
+        self.witness_bits(pc, target)
+    }
+}
+
+impl PcComponent for JumpPcRow {
+    fn kind(&self) -> u8 {
+        MIXED_JUMP
+    }
+    fn relation(&self) -> &BitRelation {
+        &self.relation
+    }
+    fn pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.pc
+    }
+    fn next_pc(&self) -> &[magnetar_constraint::VarId] {
+        &self.next_pc
+    }
+    fn one(&self) -> magnetar_constraint::VarId {
+        self.one
+    }
+    fn witness(&self, pc: u64, input: &MixedAluBranchInput) -> Result<Vec<bool>, RuntimeError> {
+        match input {
+            MixedAluBranchInput::Jump { target } => Ok(self.witness_at(pc, *target)),
+            _ => Ok(self.witness_bits(pc, 0)),
+        }
+    }
+}
+
 trait PcComponent {
     fn kind(&self) -> u8;
     fn relation(&self) -> &BitRelation;
@@ -4901,6 +5048,9 @@ impl DynamicMixedRow {
         }
         if mask & MIXED_SDIV != 0 {
             components.push(Box::new(SDivPcRow::new(width)));
+        }
+        if mask & MIXED_JUMP != 0 {
+            components.push(Box::new(JumpPcRow::new(width)));
         }
         if components.is_empty() {
             return Err(RuntimeError::Proof("empty component mask".into()));
@@ -6689,6 +6839,87 @@ mod tests {
             mixed_trace_component_mask(&mem_trace, 8).unwrap(),
             MIXED_ALU | MIXED_MEMORY | MIXED_BRANCH
         );
+    }
+
+    #[test]
+    fn dynamic_jump_witness_satisfies_relation() {
+        use magnetar_executor::execute;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+        let trace = execute(
+            &ProgramImage::new(
+                0x1000,
+                vec![
+                    Instruction {
+                        op: Op::Jal,
+                        rd: 1,
+                        rs1: 0,
+                        rs2: 0,
+                        imm: 8,
+                        shamt: 0,
+                    }
+                    .encode(),
+                    Instruction {
+                        op: Op::Addi,
+                        rd: 2,
+                        rs1: 0,
+                        rs2: 0,
+                        imm: 1,
+                        shamt: 0,
+                    }
+                    .encode(),
+                    Instruction::new(Op::Ecall).encode(),
+                ],
+            ),
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let rows = mixed_alu_branch_rows_from_trace(&trace, 8).unwrap();
+        let mask = mixed_rows_component_mask(&rows);
+        let original = DynamicMixedRow::build(mask, 8).unwrap();
+        for (pc, input) in rows {
+            let bits = original.witness_at(pc, &input).unwrap();
+            if !original.relation.check(&bits) {
+                let parity =
+                    |terms: &[usize]| terms.iter().filter(|term| bits[**term]).count() % 2 == 1;
+                for (index, row) in original.relation.rows.iter().enumerate() {
+                    let a = parity(&row.a);
+                    let b = parity(&row.b);
+                    let c = parity(&row.c);
+                    if (a && b) != c {
+                        eprintln!(
+                            "fail row {index} a={:?} b={:?} c={:?} pc={pc:#x}",
+                            row.a, row.b, row.c
+                        );
+                        break;
+                    }
+                }
+                eprintln!(
+                    "num_vars={} offsets={:?} pc={:?} next={:?} selectors={:?}",
+                    original.relation.num_vars,
+                    original.offsets,
+                    original.pc,
+                    original.next_pc,
+                    original.selectors
+                );
+                panic!("dynamic jump row relation mask={mask}");
+            }
+        }
+    }
+
+    #[test]
+    fn jump_relation_check() {
+        let row = JumpPcRow::new(8);
+        let active = row.witness_at(0x1000, 0x1008);
+        assert!(row.relation.check(&active), "active jump relation");
+        let inactive = row.witness_bits(0, 0);
+        assert!(row.relation.check(&inactive), "inactive jump relation");
     }
 
     #[test]
