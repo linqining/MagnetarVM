@@ -565,30 +565,38 @@ pub(crate) fn prove_binary_shout_claims(
             });
     transcript.absorb("claimed", &claimed.value().to_le_bytes());
     let terms = witness.cells * cycles;
-    let mut factors = vec![vec![F2_128::from(0u64); terms]; 2 * a + 3 + columns];
+    let has_32 = witness.is_32.iter().any(|value| value.value() != 0);
+    let rom_offset = if has_32 { 3 } else { 2 };
+    let low_offset = rom_offset + columns;
+    let factor_count = if has_32 {
+        2 * a + 3 + columns
+    } else {
+        a + 3 + columns
+    };
+    let mut factors = vec![vec![F2_128::from(0u64); terms]; factor_count];
     for cell in 0..witness.cells {
         for cycle in 0..cycles {
             let index = cell * cycles + cycle;
             factors[0][index] = eq_j[cycle];
             factors[1][index] = witness.valid[cycle];
-            factors[2][index] = witness.is_32[cycle];
+            if has_32 {
+                factors[2][index] = witness.is_32[cycle];
+            }
             for column in 0..columns {
-                factors[3 + column][index] = witness.rom[cell][column];
+                factors[rom_offset + column][index] = witness.rom[cell][column];
             }
             for bit in 0..a {
                 let k = F2_128::from(((cell >> bit) & 1) as u64);
-                factors[3 + columns + bit][index] =
+                factors[low_offset + bit][index] =
                     F2_128::from(1u64) + witness.address0[bit][cycle] + k;
-                factors[3 + columns + a + bit][index] =
-                    F2_128::from(1u64) + witness.address1[bit][cycle] + k;
+                if has_32 {
+                    factors[low_offset + a + bit][index] =
+                        F2_128::from(1u64) + witness.address1[bit][cycle] + k;
+                }
             }
         }
     }
-    let read_degree = if witness.is_32.iter().any(|value| value.value() != 0) {
-        a + 4
-    } else {
-        a + 2
-    };
+    let read_degree = if has_32 { a + 4 } else { a + 2 };
     let mut degrees = vec![read_degree; terms.trailing_zeros() as usize];
     for degree in degrees.iter_mut().skip(n) {
         *degree = 2;
@@ -597,18 +605,22 @@ pub(crate) fn prove_binary_shout_claims(
         (0..folded[0].len()).fold(F2_128::from(0u64), |sum, index| {
             let mut low = F2_128::from(1u64);
             for bit in 0..a {
-                low = low * folded[3 + columns + bit][index];
+                low = low * folded[low_offset + bit][index];
             }
-            let mut high = F2_128::from(1u64);
-            for bit in 0..a {
-                high = high * folded[3 + columns + a + bit][index];
-            }
-            let word = gammas[0]
-                * folded[3][index]
-                * (low + folded[2][index] * high * F2_128::from(HIGH_SCALE));
+            let word = if has_32 {
+                let mut high = F2_128::from(1u64);
+                for bit in 0..a {
+                    high = high * folded[low_offset + a + bit][index];
+                }
+                gammas[0]
+                    * folded[rom_offset][index]
+                    * (low + folded[2][index] * high * F2_128::from(HIGH_SCALE))
+            } else {
+                gammas[0] * folded[rom_offset][index] * low
+            };
             let mut metadata = F2_128::from(0u64);
             for column in 1..columns {
-                metadata = metadata + gammas[column] * low * folded[3 + column][index];
+                metadata = metadata + gammas[column] * low * folded[rom_offset + column][index];
             }
             sum + folded[0][index] * folded[1][index] * (word + metadata)
         })

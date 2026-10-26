@@ -12,8 +12,9 @@ This is a roadmap, not a claim that the implementation is aligned yet.
 |---:|---:|---:|---:|---:|
 | 16 | 92,528 | 0.184 s | 0.134 s | 87.2 |
 | 64 | 136,472 | 1.30 s | 0.837 s | 49.3 |
-| 512 | 340,472 | 3.9–5.2 s | 1.16–1.52 s | 99–132 |
-| 1024 | 516,912 | 18.4–21.7 s | 2.29–2.76 s | 56–60 |
+| 512 | 340,472 | 4.43 s | 1.27 s | 115.6 |
+| 1024 | 516,912 | 15.70 s | 3.15 s | 65.2 |
+| 2048 | 833,256 | 59.30 s | 5.97 s | 34.5 |
 
 512-row split:
 
@@ -346,7 +347,7 @@ still four.
 
 | rows | proof | prove | verify | cycles/s |
 |---:|---:|---:|---:|---:|
-| 2048 | 833,064 B | 72.63 s | 4.59 s | 28.2 |
+| 2048 | 833,256 B | 59.30 s | 5.97 s | 34.5 |
 | 4096 | 1,432,880 B | 680.62 s | 19.25 s | 6.0 |
 
 Doubling from 1024 to 2048 is roughly linear (18.4 s -> 72.6 s, 3.96x), but
@@ -369,3 +370,7 @@ rounds instead of `a + 4`; the verifier derives the bound from the proof rounds.
 Mixed 32-bit/16-bit traces retain `a + 4`. This shrinks packed Shout by about
 450 B (51,418 -> 50,970 at 512 rows) and removes two evaluation points per cycle
 round.
+
+For halfword-only reads the address1/is32 factors are also omitted from the
+read sum-check entirely (the prover still includes their folded evaluations in
+the linking claim). At 2048 rows this reduced the prover from 72.6 s to 59.3 s.
