@@ -451,3 +451,13 @@ parallelized across contiguous chunks. On a loaded machine it measured
 than the expected saving and the change was reverted. The remaining selected
 cost is row-combinations (~2.3 s), product6 (~2.2 s), product2 (~1.0 s), and
 the concurrent packed-Shout wall time.
+
+
+## Shout direct-pair sum-check: not adopted
+
+I prototyped a specialized read sum-check that evaluates each adjacent pair at
+all degree points directly instead of folding the factor arrays once per point.
+The prototype did not integrate cleanly with the existing generic closure and
+was not kept. The current degree-point-parallel implementation remains. Making
+this worthwhile requires a fully specialized Shout prover (no per-pair Vec
+allocation) and is a prerequisite for the eventual linear/sparse rewrite.
