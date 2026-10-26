@@ -104,12 +104,28 @@ pushforward/fractional-GKR construction. A standalone Shout prototype is in
 reader values and positions from `BinaryShoutWitness`, computes the reader
 claims at a point, and runs P3 `LogupStarProof`.
 
-Reduction-only measurements (no PCS binding yet):
+Reduction-only measurements (no PCS binding):
 
 | rows | prove | verify | proof |
 |---:|---:|---:|---:|
 | 1024 | 2.65 ms | 0.44 ms | 20,520 B |
 | 8192 | 16.17 ms | 1.07 ms | 137,272 B |
+
+The test now also commits the 12 table columns, 12 reader columns and the
+position column with `P3BinaryPcs`, opens them at the logup* points, and checks
+every claim. The reader point is drawn after all commitments. Tampering a
+reader claim is rejected.
+
+PCS-bound measurements:
+
+| rows | prove | verify | logup proof |
+|---:|---:|---:|---:|
+| 1024 | 24.5 ms | 110.1 ms | 20,520 B |
+| 8192 | 165.7 ms | 430.6 ms | 137,272 B |
+
+The current verifier opens every committed column separately, which dominates
+its time; batching those openings is the next optimization. The prover is still
+far below the old quadratic Shout (1.70 s at 1024 rows, 757 s at 8192 rows).
 
 For comparison the old quadratic Shout is 1.70 s / 337 KB at 1024 rows and
 757 s / 506 KB at 8192 rows.
