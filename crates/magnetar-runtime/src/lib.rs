@@ -2518,6 +2518,16 @@ pub(crate) fn verify_unified_with_plan(
     width: usize,
     plan: &crate::protocol::ProtocolPlan,
 ) -> Result<(), RuntimeError> {
+    verify_unified_with_plan_impl(trace, proof, width, plan, true)
+}
+
+pub(crate) fn verify_unified_with_plan_impl(
+    trace: &Trace,
+    proof: &UnifiedTraceProof,
+    width: usize,
+    plan: &crate::protocol::ProtocolPlan,
+    verify_selected: bool,
+) -> Result<(), RuntimeError> {
     let mut context = crate::protocol::UnifiedVerifyContext::new(trace, proof, width)?;
     for stage in plan.execution() {
         match stage {
@@ -2541,18 +2551,20 @@ pub(crate) fn verify_unified_with_plan(
             crate::protocol::ExecutionStage::Opening => context.verify_opening()?,
         }
     }
-    if let Some(selected) = &proof.selected_cpu {
-        if selected.op == crate::simd_dual::SelectedOp::Dynamic {
-            crate::simd_dual::verify_dynamic_cpu_claims(
-                trace,
-                selected,
-                &crate::protocol::selected_backend(),
-            )?;
-        } else {
-            crate::simd_dual::verify_selected_cpu_claims(
-                selected,
-                &crate::protocol::selected_backend(),
-            )?;
+    if verify_selected {
+        if let Some(selected) = &proof.selected_cpu {
+            if selected.op == crate::simd_dual::SelectedOp::Dynamic {
+                crate::simd_dual::verify_dynamic_cpu_claims(
+                    trace,
+                    selected,
+                    &crate::protocol::selected_backend(),
+                )?;
+            } else {
+                crate::simd_dual::verify_selected_cpu_claims(
+                    selected,
+                    &crate::protocol::selected_backend(),
+                )?;
+            }
         }
     }
     let has_amo = crate::amo_bundle::has_amo_events(trace);
