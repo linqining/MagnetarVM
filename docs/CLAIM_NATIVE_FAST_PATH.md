@@ -76,3 +76,20 @@ components only. Its ALU component hard-codes `next_pc = pc + 4`, so a `Jalr`
 (or `Jal`) target other than `pc + 4` makes the selected sumcheck unsatisfiable.
 A dedicated jump component that binds both `rd = pc + len` and an arbitrary
 `next_pc` is required before hello guest or compiled-guest coverage can pass.
+
+
+## JumpPcRow prototype: not yet correct
+
+A `JumpPcRow` component was prototyped with:
+
+```text
+pc + 4 = link
+next_pc = target
+target bits free and bound to next_pc
+```
+
+It removed the "jump component received a non-jump row" error, but both
+`Jal` and `Jalr` dynamic proofs still fail with a selected sumcheck mismatch.
+The prototype was reverted. The remaining issue is inside the JUMP component
+relation or its integration with the dynamic PC mux; it needs bit-level relation
+debugging before hello.elf can be covered.
