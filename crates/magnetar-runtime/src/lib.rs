@@ -3257,6 +3257,16 @@ pub fn verify_native_claim_layer(
     statement: &Statement,
     proof: &UnifiedTraceProof,
 ) -> Result<Vec<crate::trace_claims::CpuOutputClaim>, RuntimeError> {
+    if proof.trace_claim_root != statement.trace_claim_root {
+        return Err(RuntimeError::Proof(
+            "claim root does not match the public statement".into(),
+        ));
+    }
+    if proof.trace_commitment != statement.trace_commitment {
+        return Err(RuntimeError::Proof(
+            "trace commitment does not match the public statement".into(),
+        ));
+    }
     let claims = verify_unified_claim_proof(proof)?;
     let access = crate::access_statement::AccessStatement::from_claims(
         statement.config.clone(),
@@ -3292,6 +3302,16 @@ pub fn verify_native_unified(
     proof: &UnifiedTraceProof,
     width: usize,
 ) -> Result<(), RuntimeError> {
+    if proof.trace_claim_root != statement.trace_claim_root {
+        return Err(RuntimeError::Proof(
+            "claim root does not match the public statement".into(),
+        ));
+    }
+    if proof.trace_commitment != statement.trace_commitment {
+        return Err(RuntimeError::Proof(
+            "trace commitment does not match the public statement".into(),
+        ));
+    }
     let claims = verify_unified_claim_proof(proof)?;
     let access = crate::access_statement::AccessStatement::from_claims(
         statement.config.clone(),
