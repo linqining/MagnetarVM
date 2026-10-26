@@ -8,6 +8,15 @@ A 15-crate RV64 zkVM workspace structured after the Magnetar paper (IACR ePrint 
 
 This is a **compilable, testable architecture scaffold plus a P0 vertical slice**. It is not a usable zkVM, and it is not a secure implementation.
 
+The native proof-only path now has an authenticated TraceClaim/ClaimProof layer, a dynamic selected-CPU lockstep proof, compressed PC+2 support, word-granularity BinaryShout for all-32-bit traces, and deterministic proof bytes. The selected CPU, packed Shout, and context stages are proved concurrently; selected-CPU verification and orchestrator verification also run concurrently. Current point measurements (host-load dependent) are:
+
+| rows | proof | prove | verify | cycles/s |
+|---:|---:|---:|---:|---:|
+| 512 | 339,352 B | 3.72 s | 1.05 s | 137.7 |
+| 1024 | 520,400 B | 8.43 s | 2.31 s | 121.5 |
+
+For comparison, the paper reports 2^22 in 547 ms with 7.7M cycles/s. This implementation is still roughly 6e4x behind on throughput; the remaining hard gaps are linear/sparse BinaryShout and BinaryTwist and recursion/verifier-in-the-VM.
+
 Implemented:
 
 - RV64I base ISA (including the `*W` word operations), RV64M multiply/divide, RV64A AMO/LR/SC, RV64C integer compressed instructions (decode and execution), and an RV64F/D core decoder, interpreter, trace recording, and RV64 ELF loading via `goblin`, plus `ecall` handling for `exit`/`hint`/`write` and byte-range `read` with short-read handling in the reference executor (buffered input/output), a standalone guest ABI dispatcher, and `run_guest_elf` orchestration from ELF loading through execution and preprocessing;
@@ -40,7 +49,7 @@ Explicitly not implemented:
 - RV64A reservation semantics inside R1CS (the reservation chain is recorded in the trace and checked during proof verification), RV64F/D execution and proof support (the decoder covers the core FP subset), executor/proof integration of the Sv39 walker, and a richer syscall runtime beyond `exit`/`hint`/`write`/`read`;
 - Unaligned memory accesses (the executor rejects them); the proof path covers every aligned width that stays inside one 8-byte word;
 - PC-linkage and reservation-chain constraints inside the proof (both are checked on the authenticated trace before proving);
-- Performance optimization and third-party security audit.
+- Performance remains far from the paper: BinaryShout and the BinaryTwist history still materialize quadratic `cells × cycles` / `cycles²` tables, and there is no third-party security audit.
 
 > Important: `UnimplementedBackend` returns an explicit error; it never fabricates a "proof". Reference implementations exist only to validate protocol wiring and semantics.
 >
@@ -122,8 +131,8 @@ cargo fmt --all -- --check
 cargo test --workspace
 ```
 
-At the time of writing the suite contains **431 tests across the 15 crates,
-all passing**; clippy with `-D warnings` and `rustfmt --check` are clean.
+The runtime library suite currently reports **310 passing tests**; the workspace
+suite is green, and clippy with `-D warnings` and `rustfmt --check` are clean.
 The dev profile optimizes dependencies at `opt-level = 3` and workspace crates
 at `opt-level = 2`, so the PCS-heavy tests stay in the second range instead of
 taking tens of seconds in an unoptimized build.

@@ -8,6 +8,15 @@
 
 这是 **可编译、可测试的架构骨架 + P0 垂直切片**，不是可用的 zkVM，也不是安全实现。
 
+native proof-only 路径现在包含经认证的 TraceClaim/ClaimProof 层、dynamic selected-CPU lockstep proof、compressed PC+2 支持、针对全 32-bit trace 的 word-granularity BinaryShout，并保证 proof 字节确定性。selected CPU、packed Shout 与 context 阶段并发证明；selected-CPU 验证与 orchestrator 验证也并发执行。当前点测（受机器负载影响）：
+
+| rows | proof | prove | verify | cycles/s |
+|---:|---:|---:|---:|---:|
+| 512 | 339,352 B | 3.72 s | 1.05 s | 137.7 |
+| 1024 | 520,400 B | 8.43 s | 2.31 s | 121.5 |
+
+论文 2^22 为 547 ms、7.7M cycles/s；当前吞吐仍差约 6e4 倍。剩余硬缺口是 linear/sparse BinaryShout、BinaryTwist 以及 recursion/verifier-in-the-VM。
+
 已实现：
 
 - RV64I base ISA（含 `*W` 字操作）、RV64M 乘除法、RV64A AMO/LR/SC、RV64C 整数压缩指令（解码与执行）以及 RV64F/D 核心解码器、解释执行、trace 记录，基于 `goblin` 的 RV64 ELF loader；参考 executor 支持 `exit`/`hint`/`write` 与按字节范围 `read`（含短读）的 `ecall` 处理（输入/输出缓冲），guest ABI 另有独立 dispatcher，并提供从 ELF 加载到执行/预处理的 `run_guest_elf` 编排入口；
@@ -40,7 +49,7 @@
 - R1CS 内部的 RV64A reservation 语义（reservation 链写入 trace，并在 proof 验证时检查）、RV64F/D 执行与 proof（当前实现核心 FP 解码子集）、Sv39 walker 的 executor/proof 集成，以及 `exit`/`hint`/`write`/`read` 之外的更完整 syscall runtime；
 - 非对齐内存访问（executor 会拒绝）；proof 路径覆盖所有保持在同一 8 字节 word 内的对齐宽度；
 - proof 内部的 PC 链接与 reservation 链约束（两者当前都在证明前对经认证的 trace 做检查）；
-- 性能优化与第三方安全审计。
+- 性能仍远低于论文：BinaryShout 与 BinaryTwist history 仍会物化 quadratic `cells × cycles` / `cycles²` 表，且没有第三方安全审计。
 
 > 重要：`UnimplementedBackend` 会明确返回错误，不会伪造一个“proof”。参考实现只用于验证协议接线和语义。
 >
@@ -122,7 +131,7 @@ cargo fmt --all -- --check
 cargo test --workspace
 ```
 
-当前测试套件包含 **15 个 crate 的 431 个测试，全部通过**；
+当前 runtime library suite 为 **310 个测试全部通过**；
 `clippy -D warnings` 与 `rustfmt --check` 均无问题。dev profile 将依赖设为
 `opt-level = 3`、workspace crate 设为 `opt-level = 2`，避免 PCS 密集的测试
 在未优化构建里跑到几十秒。
