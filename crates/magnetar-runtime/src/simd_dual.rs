@@ -5460,10 +5460,10 @@ where
         let row = &rows[cycle];
         let mut bits = Vec::with_capacity(1usize << size_bits);
         for bit in 0..claims.width {
-            bits.push(F2_128::from(((row.pc >> bit) & 1) as u64));
+            bits.push(F2_128::from((row.pc >> bit) & 1));
         }
         for bit in 0..claims.width {
-            bits.push(F2_128::from(((row.next_pc >> bit) & 1) as u64));
+            bits.push(F2_128::from((row.next_pc >> bit) & 1));
         }
         bits.resize(1usize << size_bits, F2_128::from(0u64));
         let expected = bits
