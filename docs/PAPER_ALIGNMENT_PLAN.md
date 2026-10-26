@@ -12,8 +12,8 @@ This is a roadmap, not a claim that the implementation is aligned yet.
 |---:|---:|---:|---:|---:|
 | 16 | 92,528 | 0.184 s | 0.134 s | 87.2 |
 | 64 | 136,472 | 1.30 s | 0.837 s | 49.3 |
-| 512 | 339,352 | 3.25–4.10 s | 1.18–1.37 s | 125–158 |
-| 1024 | 520,400 | 10.37–10.63 s | 2.62–2.66 s | 98 |
+| 512 | 339,352 | 3.72 s | 1.05 s | 137.7 |
+| 1024 | 520,400 | 8.43 s | 2.31 s | 121.5 |
 | 2048 | 832,136 | 35.8–44.3 s | 7.7–10.1 s | 46–57 |
 
 512-row split:
@@ -426,3 +426,18 @@ for each pair, evaluate the folded left/right values at t=0,1,2 and accumulate
 three partial sums. It also uses `one_plus = 1 - t` (the generic-field fold is
 `x0*(1-t) + x1*t`; the F2 specialization is unchanged). Proof bytes are
 unchanged and the full suite passes.
+
+
+## Product6/product2 polynomial coefficients
+
+Instead of evaluating four (or three) folded points per adjacent pair, the
+provers now accumulate the coefficients of the round polynomial and evaluate
+the four (or three) points once per round. This removes most per-pair field
+multiplications. At 1024 rows:
+
+```text
+product6 5.03 s -> 2.21 s
+product2 1.19 s -> 1.00 s
+```
+
+Proof bytes are unchanged.

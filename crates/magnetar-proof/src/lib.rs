@@ -257,18 +257,10 @@ where
             let left = index * 2;
             let right = left + 1;
             let l0 = left_values[left];
-            let l1 = left_values[right];
+            let ld = left_values[right] - left_values[left];
             let r0 = right_values[left];
-            let r1 = right_values[right];
-            let mut values = [F::zero(); 3];
-            for (point, value) in values.iter_mut().enumerate() {
-                let t = F::from_u64(point as u64);
-                let one_plus = F::one() - t;
-                let l = l0 * one_plus + l1 * t;
-                let r = r0 * one_plus + r1 * t;
-                *value = l * r;
-            }
-            values
+            let rd = right_values[right] - right_values[left];
+            [l0 * r0, l0 * rd + ld * r0, ld * rd]
         };
         let workers = std::env::var("MAGNETAR_PRODUCT2_THREADS")
             .ok()
@@ -322,7 +314,13 @@ where
                 }
             }
         }
-        let polynomial = partial_polynomial.to_vec();
+        let mut evaluated = [F::zero(); 3];
+        for (point, value) in evaluated.iter_mut().enumerate() {
+            let t = F::from_u64(point as u64);
+            *value =
+                partial_polynomial[0] + partial_polynomial[1] * t + partial_polynomial[2] * t * t;
+        }
+        let polynomial = evaluated.to_vec();
         let r = challenge(round, &polynomial);
         challenges.push(r);
         left_values = fold_vector(&left_values, r);
@@ -608,32 +606,27 @@ where
             let left = index * 2;
             let right = left + 1;
             let eq0 = eq_values[left];
-            let eq1 = eq_values[right];
-            let a00 = a0_values[left];
-            let a01 = a0_values[right];
-            let b00 = b0_values[left];
-            let b01 = b0_values[right];
-            let c00 = c0_values[left];
-            let c01 = c0_values[right];
-            let a10 = a1_values[left];
-            let a11 = a1_values[right];
-            let b10 = b1_values[left];
-            let b11 = b1_values[right];
-            let c10 = c1_values[left];
-            let c11 = c1_values[right];
+            let eqd = eq_values[right] - eq_values[left];
+            let a0 = a0_values[left];
+            let a0d = a0_values[right] - a0_values[left];
+            let b0 = b0_values[left];
+            let b0d = b0_values[right] - b0_values[left];
+            let c0 = c0_values[left];
+            let c0d = c0_values[right] - c0_values[left];
+            let a1 = a1_values[left];
+            let a1d = a1_values[right] - a1_values[left];
+            let b1 = b1_values[left];
+            let b1d = b1_values[right] - b1_values[left];
+            let c1 = c1_values[left];
+            let c1d = c1_values[right] - c1_values[left];
+            let p0 = a0 * b0 - c0 + alpha * (a1 * b1 - c1);
+            let p1 = a0 * b0d + a0d * b0 - c0d + alpha * (a1 * b1d + a1d * b1 - c1d);
+            let p2 = a0d * b0d + alpha * (a1d * b1d);
             let mut values = [F::zero(); 4];
-            for (point, value) in values.iter_mut().enumerate() {
-                let t = F::from_u64(point as u64);
-                let one_plus = F::one() - t;
-                let eq = eq0 * one_plus + eq1 * t;
-                let a0 = a00 * one_plus + a01 * t;
-                let b0 = b00 * one_plus + b01 * t;
-                let c0 = c00 * one_plus + c01 * t;
-                let a1 = a10 * one_plus + a11 * t;
-                let b1 = b10 * one_plus + b11 * t;
-                let c1 = c10 * one_plus + c11 * t;
-                *value = eq * (a0 * b0 - c0 + alpha * (a1 * b1 - c1));
-            }
+            values[0] = eq0 * p0;
+            values[1] = eq0 * p1 + eqd * p0;
+            values[2] = eq0 * p2 + eqd * p1;
+            values[3] = eqd * p2;
             values
         };
         let workers = std::env::var("MAGNETAR_PRODUCT6_THREADS")
@@ -688,7 +681,15 @@ where
                 }
             }
         }
-        let polynomial = polynomial.to_vec();
+        let mut evaluated = [F::zero(); 4];
+        for (point, value) in evaluated.iter_mut().enumerate() {
+            let t = F::from_u64(point as u64);
+            *value = polynomial[0]
+                + polynomial[1] * t
+                + polynomial[2] * t * t
+                + polynomial[3] * t * t * t;
+        }
+        let polynomial = evaluated.to_vec();
         let r = challenge(round, &polynomial);
         challenges.push(r);
         eq_values = fold_vector(&eq_values, r);
