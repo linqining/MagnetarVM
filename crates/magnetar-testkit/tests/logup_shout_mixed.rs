@@ -59,3 +59,57 @@ fn logup_shout_and_native_handle_compressed_trace() {
     );
 }
 
+#[test]
+fn native_dynamic_handles_more_compressed_programs() {
+    use magnetar_executor::execute;
+    let config = MachineConfig {
+        entry: 0x1000,
+        rom_base: 0x1000,
+        ram_base: 0x1000_0000,
+        ram_size: 0x1000,
+        stack_top: 0x1000_1000,
+        max_cycles: 100,
+    };
+    let lui = |rd, imm| {
+        Instruction {
+            op: Op::Lui,
+            rd,
+            rs1: 0,
+            rs2: 0,
+            imm,
+            shamt: 0,
+        }
+        .encode()
+    };
+    let addi = |rd, rs1, imm| {
+        Instruction {
+            op: Op::Addi,
+            rd,
+            rs1,
+            rs2: 0,
+            imm,
+            shamt: 0,
+        }
+        .encode()
+    };
+    let programs = vec![
+        ("branches", vec![0xc011_4481, 0x9002_9002]),
+        ("jalr", vec![lui(5, 0x1000), addi(5, 5, 10), 0x9002_9282]),
+        (
+            "memory",
+            vec![lui(9, 0x1000_0000), 0xc080_4429, 0x9002_4088],
+        ),
+    ];
+    for (name, rom) in programs {
+        let trace = execute(&ProgramImage::new(0x1000, rom), config.clone())
+            .unwrap_or_else(|error| panic!("{name} execute: {error:?}"));
+        let proof = magnetar_runtime::prove_unified_trace_auto(&trace, 8)
+            .unwrap_or_else(|error| panic!("{name} prove: {error:?}"));
+        assert!(
+            proof.logup_shout.is_some(),
+            "{name} did not use logup Shout"
+        );
+        magnetar_runtime::verify_unified_trace(&trace, &proof, 8)
+            .unwrap_or_else(|error| panic!("{name} verify: {error:?}"));
+    }
+}

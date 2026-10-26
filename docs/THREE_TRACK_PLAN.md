@@ -123,6 +123,11 @@ old reference fallback: 117,730 B / 8.35 s prove / 96.4 ms verify
 new dynamic native:     103,067 B / 96.8 ms prove / 49.4 ms verify
 ```
 
+Compressed branch, `c.jalr`, and compressed load/store programs now also
+produce dynamic native proofs and verify. The native prover keeps the
+shift/store BinaryRouter proofs for traces that need them; only the old
+`shout` proof is dropped in favor of logup Shout.
+
 Full runtime suite after the change: 317 passed; clippy clean.
 
 ## Track 3 baseline

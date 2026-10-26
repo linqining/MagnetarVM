@@ -2750,11 +2750,7 @@ pub fn prove_unified_trace_dynamic_native_profile(
         proof.e5_opening = None;
         proof.opening = None;
         proof.shout = None;
-        proof.shift_router = None;
-        proof.store_router = None;
         proof.shout_index = None;
-        proof.shift_router_index = None;
-        proof.store_router_index = None;
         if let Some(logup_shout) = logup_shout {
             proof.logup_shout = Some(
                 logup_shout
