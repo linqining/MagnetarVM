@@ -5296,7 +5296,7 @@ pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
     trace: &magnetar_spec::Trace,
     width: usize,
     backend: &B,
-) -> Result<DynamicSegmentProof<B::Commitment, B::Opening>, RuntimeError>> {
+) -> Result<DynamicSegmentProof<B::Commitment, B::Opening>, RuntimeError> {
     use magnetar_proof::prove_lockstep_bits;
 
     let rows = mixed_alu_branch_rows_from_trace(trace, width)?;
