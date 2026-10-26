@@ -82,3 +82,16 @@ ClaimProof rows without rebuilding the witness.
 
 Remaining router fields: instruction/selector (`mux`) and register/memory
 component segments.
+
+## Progress: full segment router
+
+`verify_dynamic_segments_against_trace` rebuilds each cycle's component source
+from `MixedAluBranchInput`, applies the segmented mapping, evaluates every
+layout segment's MLE at the public verifier's `ry`, and compares it with
+`proof.segments`. This covers component, PC, mux and padding segments.
+
+`verify_dynamic_claim_bundle` then takes only a `Statement`, a `ClaimProof` and
+the selected proof: it authenticates the claims, rebuilds the synthetic trace
+from them, checks PC consistency, and runs the full segment router. No external
+trace is required. The dynamic test rejects a tampered `rs1_val` and a tampered
+proof segment.

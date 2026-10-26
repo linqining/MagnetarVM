@@ -5894,6 +5894,13 @@ mod tests {
         if let Some(selected) = &proof.selected_cpu {
             let backend = crate::protocol::selected_backend();
             crate::simd_dual::verify_dynamic_cpu_claims(&synthetic, selected, &backend).unwrap();
+            crate::simd_dual::verify_dynamic_claim_bundle(
+                &statement,
+                proof.claim_proof.as_ref().unwrap(),
+                selected,
+                &backend,
+            )
+            .unwrap();
         }
         claim_rows[0].rd_value ^= 1;
         let access = crate::access_statement::AccessStatement::from_claims(

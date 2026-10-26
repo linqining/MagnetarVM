@@ -5484,6 +5484,143 @@ where
     Ok(())
 }
 
+/// Bind every dynamic segment claim to a trace-derived witness source using the
+/// public verifier's `ry` point. This is the segment-claim router; the caller
+/// should pass a trace rebuilt from the authenticated ClaimProof.
+pub fn verify_dynamic_segments_against_trace<B: magnetar_proof::BitPcs + Sync>(
+    claims: &SelectedCpuClaims<B::Commitment, B::Opening>,
+    trace: &magnetar_spec::Trace,
+    backend: &B,
+) -> Result<(), RuntimeError>
+where
+    B::Commitment: Sync,
+    B::Opening: Sync,
+{
+    let matrix_cycles = if claims.matrix_cycles == 0 {
+        claims.cycles
+    } else {
+        claims.matrix_cycles
+    };
+    let (_, mapping, layout) = segmented_dynamic_row(claims.mask, claims.width, matrix_cycles)?;
+    let ry = verify_dynamic_segments_public_point(claims, backend)?;
+    if claims.proof.segments.len() != layout.segments.len() {
+        return Err(RuntimeError::Proof("dynamic segment count mismatch".into()));
+    }
+    let block_cols = layout.total_bits / matrix_cycles;
+    if layout.segments.len() % matrix_cycles != 0 {
+        return Err(RuntimeError::Proof("dynamic segment layout shape".into()));
+    }
+    let segments_per_cycle = layout.segments.len() / matrix_cycles;
+    let rows = mixed_alu_branch_rows_from_trace(trace, claims.width)?;
+    let final_pc = trace.final_state.pc;
+    let original = DynamicMixedRow::build(claims.mask, claims.width)?;
+    for cycle in 0..matrix_cycles {
+        let (pc, mut input) = if cycle < rows.len() {
+            rows[cycle]
+        } else {
+            (
+                final_pc,
+                MixedAluBranchInput::Fetch {
+                    left: 0,
+                    right: 0,
+                    imm: 0,
+                    kind: crate::branch_row::BranchKind::Beq,
+                },
+            )
+        };
+        if cycle + 1 == rows.len() && final_pc == pc {
+            input = MixedAluBranchInput::Fetch {
+                left: 0,
+                right: 0,
+                imm: 0,
+                kind: crate::branch_row::BranchKind::Beq,
+            };
+        }
+        let source = original.witness_at(pc, &input)?;
+        let mut block = vec![false; block_cols];
+        for (from, to) in mapping.iter().enumerate() {
+            if source[from] {
+                block[*to] = true;
+            }
+        }
+        for local in 0..segments_per_cycle {
+            let segment_index = cycle * segments_per_cycle + local;
+            let segment = &layout.segments[segment_index];
+            let size_bits = segment.len.trailing_zeros() as usize;
+            if size_bits == 0 {
+                continue;
+            }
+            let local_start = segment.offset - cycle * block_cols;
+            let mut bits = block
+                .get(local_start..local_start + segment.len)
+                .ok_or_else(|| RuntimeError::Proof("dynamic segment slice".into()))?
+                .to_vec();
+            bits.resize(1usize << size_bits, false);
+            let expected = bits
+                .iter()
+                .enumerate()
+                .fold(F2_128::from(0u64), |sum, (index, bit)| {
+                    if !*bit {
+                        return sum;
+                    }
+                    let index_bits = (0..size_bits)
+                        .map(|bit| F2_128::from(((index >> bit) & 1) as u64))
+                        .collect::<Vec<_>>();
+                    sum + eq_bits(&ry[..size_bits], &index_bits)
+                });
+            if claims.proof.segments[segment_index].value != expected {
+                return Err(RuntimeError::Proof(format!(
+                    "dynamic segment {} does not match claim witness",
+                    segment.name
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Proof-only dynamic claim verification: authenticate the ClaimProof rows,
+/// rebuild the synthetic trace from them, and run the public segment router.
+pub fn verify_dynamic_claim_bundle<B: magnetar_proof::BitPcs + Sync>(
+    statement: &crate::Statement,
+    claim_proof: &crate::trace_claims::ClaimProof,
+    claims: &SelectedCpuClaims<B::Commitment, B::Opening>,
+    backend: &B,
+) -> Result<(), RuntimeError>
+where
+    B::Commitment: Sync,
+    B::Opening: Sync,
+{
+    if claim_proof.root != statement.trace_claim_root {
+        return Err(RuntimeError::Proof(
+            "claim proof root does not match the statement".into(),
+        ));
+    }
+    if claims.claim_root != [0u8; 32] && claims.claim_root != claim_proof.root {
+        return Err(RuntimeError::Proof(
+            "selected claim root does not match the claim proof".into(),
+        ));
+    }
+    let rows = claim_proof
+        .verify()
+        .ok_or_else(|| RuntimeError::Proof("claim proof opening mismatch".into()))?;
+    if rows.len() as u64 != statement.trace_len {
+        return Err(RuntimeError::Proof("claim count mismatch".into()));
+    }
+    let synthetic = crate::trace_claims::claims_to_trace(statement, &rows)?;
+    if statement.initial_state != synthetic.initial_state
+        || statement.final_state != synthetic.final_state
+        || statement.rom != synthetic.rom
+        || statement.initial_ram != synthetic.initial_ram
+    {
+        return Err(RuntimeError::Proof(
+            "claim-derived trace does not match the statement".into(),
+        ));
+    }
+    verify_selected_claim_consistency(claims, &rows)?;
+    verify_dynamic_segments_against_trace(claims, &synthetic, backend)
+}
+
 pub fn verify_dynamic_segmented_trace<B: magnetar_proof::BitPcs + Sync>(
     trace: &magnetar_spec::Trace,
     proof: &LockstepProof<B::Commitment, B::Opening>,
@@ -5867,6 +6004,12 @@ mod tests {
                 .map(crate::trace_claims::TraceClaim::from_row)
                 .collect::<Vec<_>>();
             verify_dynamic_pc_segments(&selected, &claim_rows, &backend).unwrap();
+            verify_dynamic_segments_against_trace(&selected, &trace, &backend).unwrap();
+            let mut bad_trace = trace.clone();
+            bad_trace.rows[0].rs1_val ^= 1;
+            assert!(
+                verify_dynamic_segments_against_trace(&selected, &bad_trace, &backend).is_err()
+            );
             let mut bad_rows = claim_rows;
             bad_rows[0].pc ^= 1;
             assert!(verify_dynamic_pc_segments(&selected, &bad_rows, &backend).is_err());
