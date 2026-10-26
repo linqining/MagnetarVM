@@ -2718,6 +2718,10 @@ pub fn prove_unified_trace_dynamic_native_profile(
             .as_ref()
             .filter(|witness| witness.is_32.iter().all(|bit| bit.value() == 0))
             .map(|witness| scope.spawn(|| crate::logup_shout::prove_logup_shout(witness)));
+        let packed = packed_witness
+            .as_ref()
+            .filter(|witness| witness.is_32.iter().any(|bit| bit.value() != 0))
+            .map(|witness| scope.spawn(|| crate::packed_shout::prove_packed_shout(witness)));
         let plan = crate::protocol::ProtocolPlan::unified();
         let mut context = crate::protocol::UnifiedProveContext::new_with_group(trace, width, None)?;
         let mut timings = Vec::new();
@@ -2761,6 +2765,13 @@ pub fn prove_unified_trace_dynamic_native_profile(
                 logup_shout
                     .join()
                     .map_err(|_| RuntimeError::Proof("logup Shout worker panicked".into()))??,
+            );
+        }
+        if let Some(packed) = packed {
+            proof.packed_shout = Some(
+                packed
+                    .join()
+                    .map_err(|_| RuntimeError::Proof("packed Shout worker panicked".into()))??,
             );
         }
         proof.selected_cpu = Some(

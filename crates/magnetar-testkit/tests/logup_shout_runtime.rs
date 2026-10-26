@@ -47,6 +47,14 @@ fn runtime_logup_shout_round_trips() {
         started.elapsed(),
         logup_shout_proof_size(&proof).unwrap()
     );
+    eprintln!(
+        "  logup={}B opening={}B reader_claims={}B links={}B rom_claims={}B",
+        bincode::serialize(&proof.logup).unwrap().len(),
+        bincode::serialize(&proof.opening).unwrap().len(),
+        bincode::serialize(&proof.reader_claims).unwrap().len(),
+        bincode::serialize(&proof.link_claims).unwrap().len(),
+        bincode::serialize(&proof.rom_claims).unwrap().len()
+    );
     let mut bad = proof;
     bad.reader_claims[0] = bad.reader_claims[0] + magnetar_constraint::F2_128::from(1u64);
     assert!(verify_logup_shout(&bad, &witness.rom).is_err());

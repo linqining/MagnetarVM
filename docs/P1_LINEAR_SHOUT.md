@@ -184,12 +184,13 @@ Current native benchmark (`native_unified_bench`, width 8):
 
 | rows | proof | prove | verify |
 |---:|---:|---:|---:|
-| 512 | 532,993 B | 2.52 s | 1.23 s |
-| 1024 | 751,809 B | 5.85 s | 2.32 s |
+| 512 | 425,513 B | 2.76 s | 1.15 s |
+| 1024 | 614,001 B | 5.54 s | 2.21 s |
 
-The prover is faster than the old packed path (about 3.7 s / 8.4 s at these
-sizes), but the proof is larger because the reader/position PCS opening is
-carried instead of the cheaper packed read proof. The next optimization is to
-batch/compress that opening; after that the remaining quadratic part is Twist.
+Logup component: 137,921 B at 512 rows and 164,369 B at 1024 rows. Tuning the
+reader/position PCS to `(100, 4, 16, 3)` cut the logup proof roughly in half.
+
+The dynamic native prover now uses logup Shout for word mode and falls back to
+packed Shout only for 32-bit/mixed traces. The remaining quadratic part is Twist.
 
 Full runtime suite: 316 passed. Runtime clippy: clean.

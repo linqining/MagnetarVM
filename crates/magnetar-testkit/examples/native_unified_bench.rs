@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use magnetar_executor::execute;
-use magnetar_runtime::{prove_unified_trace_auto, verify_unified_trace};
+use magnetar_runtime::{prove_unified_trace_auto, unified_proof_sizes, verify_unified_trace};
 use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 
 fn main() {
@@ -37,12 +37,17 @@ fn main() {
         let proof = prove_unified_trace_auto(&trace, 8).unwrap();
         let prove = started.elapsed();
         let bytes = bincode::serialize(&proof).unwrap().len();
+        let sizes = unified_proof_sizes(&proof).unwrap();
         let started = Instant::now();
         verify_unified_trace(&trace, &proof, 8).unwrap();
         let verify = started.elapsed();
         println!(
-            "adds={adds} rows={} proof={bytes}B prove={prove:?} verify={verify:?}",
-            trace.rows.len()
+            "adds={adds} rows={} proof={bytes}B logup={}B packed={}B selected={}B claim={}B prove={prove:?} verify={verify:?}",
+            trace.rows.len(),
+            sizes.logup_shout,
+            sizes.packed_shout,
+            sizes.selected_cpu,
+            sizes.claim_proof
         );
     }
 }
