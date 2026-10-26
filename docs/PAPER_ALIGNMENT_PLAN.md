@@ -12,9 +12,9 @@ This is a roadmap, not a claim that the implementation is aligned yet.
 |---:|---:|---:|---:|---:|
 | 16 | 92,528 | 0.184 s | 0.134 s | 87.2 |
 | 64 | 136,472 | 1.30 s | 0.837 s | 49.3 |
-| 512 | 339,352 | 4.12 s | 1.16 s | 124.2 |
-| 1024 | 520,400 | 9.16 s | 2.60 s | 111.8 |
-| 2048 | 832,136 | 35.79 s | 7.67 s | 57.2 |
+| 512 | 339,352 | 3.25 s | 1.18 s | 157.5 |
+| 1024 | 520,400 | 10.42 s | 2.62 s | 98.3 |
+| 2048 | 832,136 | 35.8–44.3 s | 7.7–10.1 s | 46–57 |
 
 512-row split:
 
@@ -408,3 +408,12 @@ access stage    13.9 s  -> 3.9 s
 
 The witness remains deterministic and the full suite passes. The gated
 `MAGNETAR_PROFILE_ACCESS` markers remain for profiling.
+
+
+## Product6 pair evaluation
+
+`prove_product6` previously folded all seven vectors for each of the four
+degree points. It now evaluates each adjacent pair directly at t=0..3, accumulates
+four partial sums, and parallelizes pair ranges. This removes the four full
+folded copies per round and keeps the same transcript/proof bytes. At 1024 rows
+the product6 stage fell from 5.72 s to 4.88 s; the 512-row prover measured 3.25 s.

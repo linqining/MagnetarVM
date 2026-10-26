@@ -542,42 +542,92 @@ where
     let mut round_polys = Vec::with_capacity(rounds);
 
     for round in 0..rounds {
-        let mut polynomial = vec![F::zero(); 4];
-        let evaluate = |t: F| {
-            let eq_t = fold_vector(&eq_values, t);
-            let a0_t = fold_vector(&a0_values, t);
-            let b0_t = fold_vector(&b0_values, t);
-            let c0_t = fold_vector(&c0_values, t);
-            let a1_t = fold_vector(&a1_values, t);
-            let b1_t = fold_vector(&b1_values, t);
-            let c1_t = fold_vector(&c1_values, t);
-            (0..eq_t.len()).fold(F::zero(), |sum, index| {
-                sum + eq_t[index]
-                    * (a0_t[index] * b0_t[index] - c0_t[index]
-                        + alpha * (a1_t[index] * b1_t[index] - c1_t[index]))
-            })
+        let pairs = eq_values.len() / 2;
+        let evaluate_pair = |index: usize| {
+            let left = index * 2;
+            let right = left + 1;
+            let eq0 = eq_values[left];
+            let eq1 = eq_values[right];
+            let a00 = a0_values[left];
+            let a01 = a0_values[right];
+            let b00 = b0_values[left];
+            let b01 = b0_values[right];
+            let c00 = c0_values[left];
+            let c01 = c0_values[right];
+            let a10 = a1_values[left];
+            let a11 = a1_values[right];
+            let b10 = b1_values[left];
+            let b11 = b1_values[right];
+            let c10 = c1_values[left];
+            let c11 = c1_values[right];
+            let mut values = [F::zero(); 4];
+            for (point, value) in values.iter_mut().enumerate() {
+                let t = F::from_u64(point as u64);
+                let one_plus = F::one() + t;
+                let eq = eq0 * one_plus + eq1 * t;
+                let a0 = a00 * one_plus + a01 * t;
+                let b0 = b00 * one_plus + b01 * t;
+                let c0 = c00 * one_plus + c01 * t;
+                let a1 = a10 * one_plus + a11 * t;
+                let b1 = b10 * one_plus + b11 * t;
+                let c1 = c10 * one_plus + c11 * t;
+                *value = eq * (a0 * b0 - c0 + alpha * (a1 * b1 - c1));
+            }
+            values
         };
-        let parallel = std::env::var("MAGNETAR_PRODUCT6_THREADS")
+        let workers = std::env::var("MAGNETAR_PRODUCT6_THREADS")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
-            .is_none_or(|threads| threads > 1);
-        if len >= 1024 && parallel {
-            std::thread::scope(|scope| {
-                let mut handles = Vec::with_capacity(4);
-                for t in 0..=3 {
-                    let evaluate = &evaluate;
-                    handles.push(scope.spawn(move || (t, evaluate(F::from_u64(t as u64)))));
+            .unwrap_or(4)
+            .max(1);
+        let mut polynomial = [F::zero(); 4];
+        if pairs >= 512 && workers > 1 {
+            let task_size = 4096usize;
+            let tasks = pairs.div_ceil(task_size);
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let partials = std::thread::scope(|scope| {
+                let mut handles = Vec::with_capacity(workers.min(tasks));
+                for _ in 0..workers.min(tasks) {
+                    let evaluate_pair = &evaluate_pair;
+                    let next = &next;
+                    handles.push(scope.spawn(move || {
+                        let mut partial = [F::zero(); 4];
+                        loop {
+                            let task = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if task >= tasks {
+                                break;
+                            }
+                            let start = task * task_size;
+                            let end = (start + task_size).min(pairs);
+                            for index in start..end {
+                                let values = evaluate_pair(index);
+                                for point in 0..4 {
+                                    partial[point] = partial[point] + values[point];
+                                }
+                            }
+                        }
+                        partial
+                    }));
                 }
+                let mut partials = [F::zero(); 4];
                 for handle in handles {
-                    let (t, value) = handle.join().expect("product6 worker");
-                    polynomial[t] = value;
+                    let partial = handle.join().expect("product6 worker");
+                    for point in 0..4 {
+                        partials[point] = partials[point] + partial[point];
+                    }
                 }
+                partials
             });
+            polynomial = partials;
         } else {
-            for (t, value) in polynomial.iter_mut().enumerate() {
-                *value = evaluate(F::from_u64(t as u64));
+            for index in 0..pairs {
+                let values = evaluate_pair(index);
+                for point in 0..4 {
+                    polynomial[point] = polynomial[point] + values[point];
+                }
             }
         }
+        let mut polynomial = polynomial.to_vec();
         let r = challenge(round, &polynomial);
         challenges.push(r);
         eq_values = fold_vector(&eq_values, r);
