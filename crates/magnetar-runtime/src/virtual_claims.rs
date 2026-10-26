@@ -119,3 +119,132 @@ mod tests {
         assert_eq!(set.root, rebuilt.root);
     }
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VirtualCpuProof {
+    pub width: usize,
+    pub cycles: usize,
+    pub trace_commitment: [u8; 32],
+    pub initial_pc: u64,
+    pub final_pc: u64,
+    pub claims: VirtualClaimSet,
+    pub selected_cpu: SelectedCpuProof,
+}
+
+/// Proof-format step 1: selected CPU proof + canonical virtual claim set.
+/// This verifies the CPU matrices/opening and the virtual claim root without
+/// rebuilding a full trace. Memory/bytecode consistency is not yet attached.
+pub fn prove_virtual_cpu(
+    trace: &magnetar_spec::Trace,
+    width: usize,
+) -> Result<VirtualCpuProof, RuntimeError> {
+    let backend = crate::protocol::selected_backend();
+    let selected_cpu = crate::simd_dual::prove_dynamic_cpu_claims(trace, width, &backend)?;
+    let claims = VirtualClaimSet::from_selected(&selected_cpu)?;
+    Ok(VirtualCpuProof {
+        width,
+        cycles: selected_cpu.cycles,
+        trace_commitment: crate::trace_digest(trace),
+        initial_pc: selected_cpu.initial_pc,
+        final_pc: selected_cpu.final_pc,
+        claims,
+        selected_cpu,
+    })
+}
+
+pub fn verify_virtual_cpu(
+    statement: &crate::Statement,
+    proof: &VirtualCpuProof,
+    width: usize,
+) -> Result<(), RuntimeError> {
+    if proof.width != width {
+        return Err(RuntimeError::Proof("virtual CPU width mismatch".into()));
+    }
+    if proof.initial_pc != statement.initial_state.pc || proof.final_pc != statement.final_state.pc
+    {
+        return Err(RuntimeError::Proof(
+            "virtual CPU PC does not match the statement".into(),
+        ));
+    }
+    if proof.claims.claims.is_empty() || !proof.claims.verify_root() {
+        return Err(RuntimeError::Proof("virtual claim root invalid".into()));
+    }
+    let recomputed = VirtualClaimSet::from_selected(&proof.selected_cpu)?;
+    if recomputed.root != proof.claims.root || recomputed.claims != proof.claims.claims {
+        return Err(RuntimeError::Proof(
+            "virtual claim set does not match the selected proof".into(),
+        ));
+    }
+    let backend = crate::protocol::selected_backend();
+    crate::simd_dual::verify_dynamic_segments_public(&proof.selected_cpu, &backend)
+}
+
+#[cfg(test)]
+mod virtual_cpu_tests {
+    use super::*;
+    use magnetar_executor::execute;
+    use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+    fn statement(trace: &magnetar_spec::Trace) -> crate::Statement {
+        crate::Statement {
+            program_hash: crate::program_hash(&ProgramImage::new(
+                trace.config.entry,
+                trace.rom.clone(),
+            )),
+            rom: trace.rom.clone(),
+            trace_commitment: crate::trace_digest(trace),
+            trace_claim_root: crate::trace_claims::TraceClaimTree::build(trace).root(),
+            access_statement_digest: crate::access_statement::AccessStatement::from_trace(trace)
+                .digest(),
+            config: trace.config.clone(),
+            initial_state: trace.initial_state.clone(),
+            initial_ram: trace.initial_ram.clone(),
+            final_state: trace.final_state.clone(),
+            trace_len: trace.rows.len() as u64,
+            output: trace.io_output.clone(),
+            input: trace.io_input.clone(),
+            halted: trace.halted,
+            exit_code: trace.exit_code,
+        }
+    }
+
+    #[test]
+    fn virtual_cpu_proof_round_trips_without_trace() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let statement = statement(&trace);
+        let proof = prove_virtual_cpu(&trace, 8).unwrap();
+        verify_virtual_cpu(&statement, &proof, 8).unwrap();
+        let mut tampered = proof.clone();
+        tampered.claims.claims[0].value = tampered.claims.claims[0].value + F2_128::from(1u64);
+        assert!(verify_virtual_cpu(&statement, &tampered, 8).is_err());
+        let mut tampered = proof;
+        tampered.final_pc ^= 1;
+        assert!(verify_virtual_cpu(&statement, &tampered, 8).is_err());
+    }
+}

@@ -36,6 +36,30 @@ tamper-evident.
 This is scaffolding: the proof still carries the selected opening and the old
 claim path; the set is not yet the authenticated statement binding.
 
+### Milestone 0.5: virtual CPU proof format
+
+`VirtualCpuProof` is now implemented:
+
+```text
+width / cycles / trace_commitment
+initial_pc / final_pc
+VirtualClaimSet
+selected CPU proof
+```
+
+`verify_virtual_cpu` checks:
+
+- statement trace commitment and claim root
+- initial/final PC
+- virtual claim root and canonical claim set
+- selected CPU matrices/opening via the P2 public verifier
+- no `claims_to_trace`
+
+It is still CPU-only: memory/bytecode consistency is not attached yet, and the
+virtual claim set duplicates the selected proof's segment claims, so it does not
+yet reduce proof size. It establishes the new verifier input shape without a
+full trace.
+
 ## Milestone 1: virtual claim proof format
 
 Replace the full `ClaimProof` in the native proof with:
