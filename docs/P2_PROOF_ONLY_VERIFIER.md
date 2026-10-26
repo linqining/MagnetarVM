@@ -59,3 +59,15 @@ keeps the selected proof within 32 bytes of its previous size
 
 The remaining P2 blocker is building the six CPU matrices from public
 statement/layout data instead of `synthetic` trace rows.
+
+## Progress: public dynamic verifier
+
+`SelectedCpuClaims` now serializes `mask` and `matrix_cycles` (and the claim
+root). A new `verify_dynamic_segments_public` reconstructs the layout and the six
+CPU matrices from those public fields, then verifies the lockstep proof without
+calling `mixed_alu_branch_rows_from_trace` or rebuilding witness bits/
+commitment. A tamper test confirms that modifying a proof segment value is
+rejected. Proof growth is 9 B (mask + matrix cycles) at 512/1024 rows.
+
+This is the matrix/layout half of P2. The remaining half is the segment-claim
+router that binds `proof.segments` values to authenticated row claims.

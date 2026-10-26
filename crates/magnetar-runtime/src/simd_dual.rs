@@ -4389,6 +4389,10 @@ pub struct SelectedCpuClaims<C: Clone + std::fmt::Debug, O: Clone + std::fmt::De
     pub op: SelectedOp,
     pub width: usize,
     pub cycles: usize,
+    #[serde(default)]
+    pub matrix_cycles: usize,
+    #[serde(default)]
+    pub mask: u8,
     pub initial_pc: u64,
     pub final_pc: u64,
     #[serde(
@@ -4508,6 +4512,8 @@ pub fn prove_selected_cpu_claims<B: magnetar_proof::BitPcs>(
         op,
         width,
         cycles,
+        matrix_cycles: cycles,
+        mask: 0,
         initial_pc,
         final_pc,
         layout,
@@ -4602,7 +4608,7 @@ pub fn prove_dynamic_cpu_claims<B: magnetar_proof::BitPcs>(
     width: usize,
     backend: &B,
 ) -> Result<SelectedCpuClaims<B::Commitment, B::Opening>, RuntimeError> {
-    let (proof, layout) = prove_dynamic_segmented_trace(trace, width, backend)?;
+    let (proof, layout, mask, cycles) = prove_dynamic_segmented_trace(trace, width, backend)?;
     let segments = selected_segment_claims(&layout, &proof)?;
     let claim_tree = crate::trace_claims::TraceClaimTree::build(trace);
     let claim_openings = (0..trace.rows.len())
@@ -4617,7 +4623,9 @@ pub fn prove_dynamic_cpu_claims<B: magnetar_proof::BitPcs>(
     Ok(SelectedCpuClaims {
         op: SelectedOp::Dynamic,
         width,
-        cycles: trace.rows.len().next_power_of_two().max(2).max(2),
+        cycles: trace.rows.len().next_power_of_two().max(2),
+        matrix_cycles: cycles,
+        mask,
         initial_pc: trace.rows[0].pc,
         final_pc: trace.final_state.pc,
         layout,
@@ -5281,7 +5289,15 @@ pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
     trace: &magnetar_spec::Trace,
     width: usize,
     backend: &B,
-) -> Result<LockstepBatch<B>, RuntimeError> {
+) -> Result<
+    (
+        LockstepProof<B::Commitment, B::Opening>,
+        magnetar_constraint::WitnessLayout,
+        u8,
+        usize,
+    ),
+    RuntimeError,
+> {
     use magnetar_proof::prove_lockstep_bits;
 
     let rows = mixed_alu_branch_rows_from_trace(trace, width)?;
@@ -5339,7 +5355,50 @@ pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
         &bits, &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], &layout, backend,
     )
     .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    Ok((proof, layout))
+    Ok((proof, layout, mask, cycles))
+}
+
+/// Verify a dynamic selected proof from its serialized-mask/layout metadata,
+/// without rebuilding a trace. Segment-to-claim routing is still performed by
+/// the caller; this checks the public CPU matrices, layout and PCS opening.
+pub fn verify_dynamic_segments_public<B: magnetar_proof::BitPcs + Sync>(
+    claims: &SelectedCpuClaims<B::Commitment, B::Opening>,
+    backend: &B,
+) -> Result<(), RuntimeError>
+where
+    B::Commitment: Sync,
+    B::Opening: Sync,
+{
+    use magnetar_proof::verify_lockstep_bits;
+
+    if claims.op != SelectedOp::Dynamic {
+        return Err(RuntimeError::Proof(
+            "public dynamic verifier requires a dynamic claim bundle".into(),
+        ));
+    }
+    let matrix_cycles = if claims.matrix_cycles == 0 {
+        claims.cycles
+    } else {
+        claims.matrix_cycles
+    };
+    let (row, _mapping, layout) = segmented_dynamic_row(claims.mask, claims.width, matrix_cycles)?;
+    let (_, s1, s2) = gated_shared_matrices(
+        &row,
+        matrix_cycles,
+        Some((claims.initial_pc, claims.final_pc)),
+    )?;
+    verify_lockstep_bits(
+        &s1[0],
+        &s1[1],
+        &s1[2],
+        &s2[0],
+        &s2[1],
+        &s2[2],
+        &layout,
+        &claims.proof,
+        backend,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))
 }
 
 pub fn verify_dynamic_segmented_trace<B: magnetar_proof::BitPcs + Sync>(
@@ -5698,11 +5757,31 @@ mod tests {
         ];
         for program in programs {
             let trace = execute(&program, config.clone()).unwrap();
-            let (proof, layout) = prove_dynamic_segmented_trace(&trace, 8, &backend).unwrap();
+            let (proof, layout, mask, cycles) =
+                prove_dynamic_segmented_trace(&trace, 8, &backend).unwrap();
             assert!(layout.segments.len() > 2);
             let claims = selected_segment_claims(&layout, &proof).unwrap();
             assert_eq!(claims.len(), layout.segments.len());
             verify_dynamic_segmented_trace(&trace, &proof, &layout, 8, &backend).unwrap();
+            let selected = SelectedCpuClaims {
+                op: SelectedOp::Dynamic,
+                width: 8,
+                cycles: trace.rows.len().next_power_of_two().max(2),
+                matrix_cycles: cycles,
+                mask,
+                initial_pc: trace.rows[0].pc,
+                final_pc: trace.final_state.pc,
+                layout: magnetar_constraint::WitnessLayout::default(),
+                segments: claims,
+                claim_root: [0u8; 32],
+                claim_openings: Vec::new(),
+                proof: proof.clone(),
+            };
+            verify_dynamic_segments_public(&selected, &backend).unwrap();
+            let mut tampered = selected;
+            tampered.proof.segments[0].value =
+                tampered.proof.segments[0].value + magnetar_constraint::F2_128::from(1u64);
+            assert!(verify_dynamic_segments_public(&tampered, &backend).is_err());
         }
     }
 
