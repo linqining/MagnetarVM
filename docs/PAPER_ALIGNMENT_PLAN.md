@@ -12,8 +12,8 @@ This is a roadmap, not a claim that the implementation is aligned yet.
 |---:|---:|---:|---:|---:|
 | 16 | 92,528 | 0.184 s | 0.134 s | 87.2 |
 | 64 | 136,472 | 1.30 s | 0.837 s | 49.3 |
-| 512 | 339,352 | 3.25 s | 1.18 s | 157.5 |
-| 1024 | 520,400 | 10.42 s | 2.62 s | 98.3 |
+| 512 | 339,352 | 3.25–4.10 s | 1.18–1.37 s | 125–158 |
+| 1024 | 520,400 | 10.37–10.63 s | 2.62–2.66 s | 98 |
 | 2048 | 832,136 | 35.8–44.3 s | 7.7–10.1 s | 46–57 |
 
 512-row split:
@@ -417,3 +417,12 @@ degree points. It now evaluates each adjacent pair directly at t=0..3, accumulat
 four partial sums, and parallelizes pair ranges. This removes the four full
 folded copies per round and keeps the same transcript/proof bytes. At 1024 rows
 the product6 stage fell from 5.72 s to 4.88 s; the 512-row prover measured 3.25 s.
+
+
+## Product2 pair evaluation
+
+`prove_product2` now uses the same direct adjacent-pair evaluation as product6:
+for each pair, evaluate the folded left/right values at t=0,1,2 and accumulate
+three partial sums. It also uses `one_plus = 1 - t` (the generic-field fold is
+`x0*(1-t) + x1*t`; the F2 specialization is unchanged). Proof bytes are
+unchanged and the full suite passes.

@@ -235,7 +235,7 @@ pub fn prove_product2<F, C>(
     mut challenge: C,
 ) -> Result<(SumcheckProof<F>, Vec<F>, F), ProofError>
 where
-    F: Field,
+    F: Field + Send + Sync,
     C: FnMut(usize, &[F]) -> F,
 {
     let len = left_values.len();
@@ -252,16 +252,77 @@ where
     let mut round_polys = Vec::with_capacity(rounds);
 
     for round in 0..rounds {
-        let mut polynomial = Vec::with_capacity(3);
-        for t in 0..=2 {
-            let t = F::from_u64(t as u64);
-            let left_t = fold_vector(&left_values, t);
-            let right_t = fold_vector(&right_values, t);
-            polynomial.push(
-                (0..left_t.len())
-                    .fold(F::zero(), |sum, index| sum + left_t[index] * right_t[index]),
-            );
+        let pairs = left_values.len() / 2;
+        let evaluate_pair = |index: usize| {
+            let left = index * 2;
+            let right = left + 1;
+            let l0 = left_values[left];
+            let l1 = left_values[right];
+            let r0 = right_values[left];
+            let r1 = right_values[right];
+            let mut values = [F::zero(); 3];
+            for (point, value) in values.iter_mut().enumerate() {
+                let t = F::from_u64(point as u64);
+                let one_plus = F::one() - t;
+                let l = l0 * one_plus + l1 * t;
+                let r = r0 * one_plus + r1 * t;
+                *value = l * r;
+            }
+            values
+        };
+        let workers = std::env::var("MAGNETAR_PRODUCT2_THREADS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(4)
+            .max(1);
+        let mut partial_polynomial = [F::zero(); 3];
+        if pairs >= 512 && workers > 1 {
+            let task_size = 4096usize;
+            let tasks = pairs.div_ceil(task_size);
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let partials = std::thread::scope(|scope| {
+                let mut handles = Vec::with_capacity(workers.min(tasks));
+                for _ in 0..workers.min(tasks) {
+                    let evaluate_pair = &evaluate_pair;
+                    let next = &next;
+                    handles.push(scope.spawn(move || {
+                        let mut partial = [F::zero(); 3];
+                        loop {
+                            let task = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if task >= tasks {
+                                break;
+                            }
+                            let start = task * task_size;
+                            let end = (start + task_size).min(pairs);
+                            for index in start..end {
+                                let values = evaluate_pair(index);
+                                for point in 0..3 {
+                                    partial[point] = partial[point] + values[point];
+                                }
+                            }
+                        }
+                        partial
+                    }));
+                }
+                let mut partials = [F::zero(); 3];
+                for handle in handles {
+                    let partial = handle.join().expect("product2 worker");
+                    for point in 0..3 {
+                        partials[point] = partials[point] + partial[point];
+                    }
+                }
+                partials
+            });
+            partial_polynomial = partials;
+        } else {
+            for index in 0..pairs {
+                let values = evaluate_pair(index);
+                for point in 0..3 {
+                    partial_polynomial[point] = partial_polynomial[point] + values[point];
+                }
+            }
         }
+        let polynomial = partial_polynomial.to_vec();
         let r = challenge(round, &polynomial);
         challenges.push(r);
         left_values = fold_vector(&left_values, r);
@@ -563,7 +624,7 @@ where
             let mut values = [F::zero(); 4];
             for (point, value) in values.iter_mut().enumerate() {
                 let t = F::from_u64(point as u64);
-                let one_plus = F::one() + t;
+                let one_plus = F::one() - t;
                 let eq = eq0 * one_plus + eq1 * t;
                 let a0 = a00 * one_plus + a01 * t;
                 let b0 = b00 * one_plus + b01 * t;
