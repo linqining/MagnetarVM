@@ -441,3 +441,13 @@ product2 1.19 s -> 1.00 s
 ```
 
 Proof bytes are unchanged.
+
+
+## Rejected: parallel left-value combination
+
+The six-way `left_values` combination in the selected inner proof was
+parallelized across contiguous chunks. On a loaded machine it measured
+11.04 s total versus the prior 8.43 s best; the stage breakdown shifted by more
+than the expected saving and the change was reverted. The remaining selected
+cost is row-combinations (~2.3 s), product6 (~2.2 s), product2 (~1.0 s), and
+the concurrent packed-Shout wall time.
