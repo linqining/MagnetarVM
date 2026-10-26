@@ -2590,7 +2590,7 @@ impl<'a> UnifiedVerifyContext<'a> {
             BinaryRouterWitness::from_trace_mode(trace, RouterMode::Shifts).ok();
         let store_router_witness =
             BinaryRouterWitness::from_trace_mode(trace, RouterMode::Stores).ok();
-        if proof.packed_shout.is_none() {
+        if proof.packed_shout.is_none() && proof.logup_shout.is_none() {
             match (&shout_witness, &proof.shout) {
                 (Some(_), None) | (None, Some(_)) => {
                     return Err(RuntimeError::Proof(

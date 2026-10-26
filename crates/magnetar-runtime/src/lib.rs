@@ -2526,6 +2526,65 @@ pub fn prove_unified_trace_profile(
     Ok((proof, timings))
 }
 
+pub fn logup_shout_router_link_claims(
+    proof: &UnifiedTraceProof,
+    logup: &crate::logup_shout::LogupShoutProof,
+) -> Result<Vec<(magnetar_pcs::P3MosaicPoint, Vec<F2_128>)>, RuntimeError> {
+    if logup.link_claims.len() != 12 {
+        return Err(RuntimeError::Proof("missing logup Shout link claims".into()));
+    }
+    let link = &logup.link_claims;
+    let width = link[..4].to_vec();
+    let mut code = F2_128::from(0u64);
+    for (bit, value) in link[4..].iter().enumerate() {
+        if value.value() == 1 {
+            code = code + F2_128::from(1u128 << bit);
+        }
+    }
+    let point = logup.link_point.clone();
+    let mut out = Vec::new();
+    if proof.commitment.tables.len() > proof.rom_index {
+        out.push((
+            magnetar_pcs::P3MosaicPoint {
+                table: proof.rom_index,
+                point: logup.rom_point.clone(),
+                columns: (0..logup.rom_claims.len()).collect(),
+                next_columns: Vec::new(),
+            },
+            logup.rom_claims.clone(),
+        ));
+    }
+    if let Some(index) = proof.shift_router_index {
+        let total = proof.commitment.tables[index].num_columns;
+        if total >= 10 {
+            out.push((
+                magnetar_pcs::P3MosaicPoint {
+                    table: index,
+                    point: point.clone(),
+                    columns: vec![total - 8],
+                    next_columns: Vec::new(),
+                },
+                vec![code],
+            ));
+        }
+    }
+    if let Some(index) = proof.store_router_index {
+        let total = proof.commitment.tables[index].num_columns;
+        if total >= 10 {
+            out.push((
+                magnetar_pcs::P3MosaicPoint {
+                    table: index,
+                    point,
+                    columns: (total - 7..total - 3).collect(),
+                    next_columns: Vec::new(),
+                },
+                width,
+            ));
+        }
+    }
+    Ok(out)
+}
+
 pub(crate) fn verify_unified_with_plan(
     trace: &Trace,
     proof: &UnifiedTraceProof,
@@ -2655,14 +2714,10 @@ pub fn prove_unified_trace_dynamic_native_profile(
     std::thread::scope(|scope| {
         let selected =
             scope.spawn(|| crate::simd_dual::prove_dynamic_cpu_claims(trace, width, &backend));
-        let packed = packed_witness
-            .as_ref()
-            .map(|witness| scope.spawn(|| crate::packed_shout::prove_packed_shout(witness)));
         let logup_shout = packed_witness
             .as_ref()
             .filter(|witness| witness.is_32.iter().all(|bit| bit.value() == 0))
             .map(|witness| scope.spawn(|| crate::logup_shout::prove_logup_shout(witness)));
-        let packed_started = std::time::Instant::now();
         let plan = crate::protocol::ProtocolPlan::unified();
         let mut context = crate::protocol::UnifiedProveContext::new_with_group(trace, width, None)?;
         let mut timings = Vec::new();
@@ -2707,17 +2762,6 @@ pub fn prove_unified_trace_dynamic_native_profile(
                     .join()
                     .map_err(|_| RuntimeError::Proof("logup Shout worker panicked".into()))??,
             );
-        }
-        if let Some(packed) = packed {
-            proof.packed_shout = Some(
-                packed
-                    .join()
-                    .map_err(|_| RuntimeError::Proof("packed Shout worker panicked".into()))??,
-            );
-            timings.push(StageTiming {
-                stage: "PackedShout(wall)".into(),
-                duration: packed_started.elapsed(),
-            });
         }
         proof.selected_cpu = Some(
             selected
@@ -3087,6 +3131,13 @@ pub fn verify_core_statement(
             proof.store_router_index,
             packed,
         )?;
+        for (point, link_values) in links {
+            points.push(point);
+            values.push(link_values);
+        }
+    }
+    if let Some(logup) = &proof.logup_shout {
+        let links = crate::logup_shout_router_link_claims(proof, logup)?;
         for (point, link_values) in links {
             points.push(point);
             values.push(link_values);

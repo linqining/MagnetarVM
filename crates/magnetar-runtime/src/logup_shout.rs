@@ -30,6 +30,10 @@ pub struct LogupShoutProof {
     pub cycles: usize,
     pub columns: usize,
     pub reader_claims: Vec<F2_128>,
+    pub link_claims: Vec<F2_128>,
+    pub rom_claims: Vec<F2_128>,
+    pub rom_point: Vec<F2_128>,
+    pub link_point: Vec<F2_128>,
     pub logup: LogupStarProof<B, B>,
     pub opening: P3MosaicOpening,
 }
@@ -109,7 +113,7 @@ pub fn prove_logup_shout(witness: &BinaryShoutWitness) -> Result<LogupShoutProof
     let position_values = positions(witness);
     let columns = table_columns.len();
     let pcs = P3BinaryPcs::new(100);
-    let mut reader_columns = (0..columns)
+    let reader_columns = (0..columns)
         .map(|column| {
             position_values
                 .iter()
@@ -117,14 +121,21 @@ pub fn prove_logup_shout(witness: &BinaryShoutWitness) -> Result<LogupShoutProof
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    reader_columns.push(
+    let link_columns = witness
+        .link_columns()
+        .into_iter()
+        .map(|column| column.iter().map(|value| to_b(*value)).collect::<Vec<B>>())
+        .collect::<Vec<_>>();
+    let mut committed_columns = reader_columns.clone();
+    committed_columns.extend(link_columns.iter().cloned());
+    committed_columns.push(
         position_values
             .iter()
             .map(|position| embed(*position))
             .collect(),
     );
     let table = P3MosaicTable {
-        columns: reader_columns
+        columns: committed_columns
             .iter()
             .map(|column| column.iter().map(|value| to_f2(*value)).collect())
             .collect::<Vec<Vec<F2_128>>>(),
@@ -136,10 +147,10 @@ pub fn prove_logup_shout(witness: &BinaryShoutWitness) -> Result<LogupShoutProof
         bincode::serialize(&commitment).map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let point = reader_point(&commitment_bytes, witness.cycle_bits);
     let claims = (0..columns)
-        .map(|column| {
-            let values = &reader_columns[column];
-            eval_mle(values, &point)
-        })
+        .map(|column| eval_mle(&reader_columns[column], &point))
+        .collect::<Vec<_>>();
+    let link_claims = (0..link_columns.len())
+        .map(|column| eval_mle(&link_columns[column], &point))
         .collect::<Vec<_>>();
     let readers = [Reader {
         point: &point,
@@ -163,6 +174,16 @@ pub fn prove_logup_shout(witness: &BinaryShoutWitness) -> Result<LogupShoutProof
     let mut prover_challenger = challenger();
     let (logup, output) =
         LogupStarProof::<B, B>::prove(&lookups, &table_witness, &mut prover_challenger);
+    let rom_point = output
+        .table_point
+        .iter()
+        .rev()
+        .map(|coordinate| to_f2(*coordinate))
+        .collect::<Vec<_>>();
+    let rom_claims = table_columns
+        .iter()
+        .map(|column| to_f2(eval_mle(column, &Point::new(output.table_point.as_slice().to_vec()))))
+        .collect::<Vec<_>>();
     let points = vec![
         P3MosaicPoint {
             table: 0,
@@ -171,7 +192,7 @@ pub fn prove_logup_shout(witness: &BinaryShoutWitness) -> Result<LogupShoutProof
                 .rev()
                 .map(|coordinate| to_f2(*coordinate))
                 .collect(),
-            columns: (0..columns).collect(),
+            columns: (0..columns + link_claims.len()).collect(),
             next_columns: Vec::new(),
         },
         P3MosaicPoint {
@@ -182,7 +203,7 @@ pub fn prove_logup_shout(witness: &BinaryShoutWitness) -> Result<LogupShoutProof
                 .rev()
                 .map(|coordinate| to_f2(*coordinate))
                 .collect(),
-            columns: vec![columns],
+            columns: vec![columns + link_claims.len()],
             next_columns: Vec::new(),
         },
     ];
@@ -195,6 +216,14 @@ pub fn prove_logup_shout(witness: &BinaryShoutWitness) -> Result<LogupShoutProof
         cycles: witness.cycles,
         columns,
         reader_claims: claims.iter().map(|claim| to_f2(*claim)).collect(),
+        link_claims: link_claims.iter().map(|claim| to_f2(*claim)).collect(),
+        rom_claims,
+        rom_point,
+        link_point: point
+            .iter()
+            .rev()
+            .map(|coordinate| to_f2(*coordinate))
+            .collect(),
         logup,
         opening,
     })
@@ -215,6 +244,10 @@ pub fn verify_logup_shout(
         || rom.len() != 1usize << proof.address_bits
         || rom.iter().any(|row| row.len() != proof.columns)
         || proof.reader_claims.len() != proof.columns
+        || proof.link_claims.len() != proof.columns
+        || proof.rom_claims.len() != proof.columns
+        || proof.link_point.len() != proof.cycle_bits
+        || proof.rom_point.len() != proof.address_bits
     {
         return Err(RuntimeError::Proof(
             "logup Shout statement shape mismatch".into(),
@@ -243,6 +276,23 @@ pub fn verify_logup_shout(
         .verify(&lookups, &mut challenger)
         .map_err(|error| RuntimeError::Proof(format!("logup Shout reduction: {error:?}")))?;
     let table_point = output.table_point.as_slice();
+    let expected_rom_point = output
+        .table_point
+        .iter()
+        .rev()
+        .map(|coordinate| to_f2(*coordinate))
+        .collect::<Vec<_>>();
+    if proof.rom_point != expected_rom_point {
+        return Err(RuntimeError::Proof("logup Shout ROM point mismatch".into()));
+    }
+    let expected_link_point = point
+        .iter()
+        .rev()
+        .map(|coordinate| to_f2(*coordinate))
+        .collect::<Vec<_>>();
+    if proof.link_point != expected_link_point {
+        return Err(RuntimeError::Proof("logup Shout link point mismatch".into()));
+    }
     for (column, claim) in output.tables[0].column_claims.iter().enumerate() {
         let values = rom
             .iter()
@@ -254,6 +304,11 @@ pub fn verify_logup_shout(
                 "public ROM table claim mismatch at column {column}"
             )));
         }
+        if direct != to_b(proof.rom_claims[column]) {
+            return Err(RuntimeError::Proof(format!(
+                "logup Shout ROM claim mismatch at column {column}"
+            )));
+        }
     }
     let points = vec![
         P3MosaicPoint {
@@ -263,7 +318,7 @@ pub fn verify_logup_shout(
                 .rev()
                 .map(|coordinate| to_f2(*coordinate))
                 .collect(),
-            columns: (0..proof.columns).collect(),
+            columns: (0..proof.columns * 2).collect(),
             next_columns: Vec::new(),
         },
         P3MosaicPoint {
@@ -274,12 +329,14 @@ pub fn verify_logup_shout(
                 .rev()
                 .map(|coordinate| to_f2(*coordinate))
                 .collect(),
-            columns: vec![proof.columns],
+            columns: vec![proof.columns * 2],
             next_columns: Vec::new(),
         },
     ];
+    let mut reader_values = claims.iter().map(|claim| to_f2(*claim)).collect::<Vec<_>>();
+    reader_values.extend(proof.link_claims.iter().copied());
     let values = vec![
-        claims.iter().map(|claim| to_f2(*claim)).collect::<Vec<_>>(),
+        reader_values,
         vec![to_f2(output.tables[0].position_claims[0])],
     ];
     if !pcs

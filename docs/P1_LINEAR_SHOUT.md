@@ -164,3 +164,32 @@ This is still redundant: the old packed Shout proof remains, so the native
 proof grew from 341 KB to 551 KB at 512 rows and from 520 KB to 770 KB at 1024
 rows. The next step is to replace the packed Shout claim/link path with the
 logup Shout claims instead of carrying both.
+
+
+## Native integration: packed Shout removed from the dynamic path
+
+`LogupShoutProof` now also carries:
+
+```text
+link_claims / link_point   # read metadata for shift/store routers
+rom_claims / rom_point     # public ROM column claims for the router
+```
+
+`logup_shout_router_link_claims` feeds the shift/store routers from these
+claims, so the dynamic native prover no longer emits `packed_shout` for
+word-mode traces. The verifier accepts a logup Shout in place of packed Shout
+when packed is absent.
+
+Current native benchmark (`native_unified_bench`, width 8):
+
+| rows | proof | prove | verify |
+|---:|---:|---:|---:|
+| 512 | 532,993 B | 2.52 s | 1.23 s |
+| 1024 | 751,809 B | 5.85 s | 2.32 s |
+
+The prover is faster than the old packed path (about 3.7 s / 8.4 s at these
+sizes), but the proof is larger because the reader/position PCS opening is
+carried instead of the cheaper packed read proof. The next optimization is to
+batch/compress that opening; after that the remaining quadratic part is Twist.
+
+Full runtime suite: 316 passed. Runtime clippy: clean.
