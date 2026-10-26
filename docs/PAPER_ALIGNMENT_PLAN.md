@@ -12,8 +12,8 @@ This is a roadmap, not a claim that the implementation is aligned yet.
 |---:|---:|---:|---:|---:|
 | 16 | 92,528 | 0.184 s | 0.134 s | 87.2 |
 | 64 | 136,472 | 1.30 s | 0.837 s | 49.3 |
-| 512 | 340,472 | 4.77 s | 1.44 s | 107.3 |
-| 1024 | 521,520 | 15.32 s | 2.67 s | 66.9 |
+| 512 | 339,352 | 4.12 s | 1.16 s | 124.2 |
+| 1024 | 520,400 | 9.16 s | 2.60 s | 111.8 |
 | 2048 | 833,256 | 59.30 s | 5.97 s | 34.5 |
 
 512-row split:
@@ -387,16 +387,24 @@ The bits=12 and bits>=4 configurations were left unchanged. The ring-switch
 profile markers are available under `MAGNETAR_PROFILE_RING`.
 
 
-## Access bottleneck: register Twist
+## Access optimization: compact register phases
 
-At 1024 rows, `prove_trace_access_shared` breaks down as:
+At 1024 rows the register Twist proof originally dominated access:
 
 ```text
 RAM claims       4.5 ms
 register claims 13.78 s
 ```
 
-The RAM side is negligible for this workload; the register Twist proof is the
-access bottleneck. Register witnesses double the cycle count (two phases per
-row), so the history sum-check is over `(2 * rows)^2` pairs. The gated
-`MAGNETAR_PROFILE_ACCESS` markers remain in the code for future profiling.
+Register witnesses used two phases for every row. The builder now omits x0
+reads, merges a read and a write into one phase when possible, and merges the
+two reads when they address the same register. A write-only phase reads x0 as a
+dummy. At 1024 rows:
+
+```text
+register claims 13.78 s -> 3.90 s
+access stage    13.9 s  -> 3.9 s
+```
+
+The witness remains deterministic and the full suite passes. The gated
+`MAGNETAR_PROFILE_ACCESS` markers remain for profiling.

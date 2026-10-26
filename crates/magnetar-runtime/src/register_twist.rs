@@ -39,29 +39,57 @@ pub fn register_twist_witness(trace: &Trace) -> Result<BinaryTwistWitness, Proof
         let rs2 = usize::from(row.instruction.rs2) & (REGISTER_COUNT - 1);
         let rd = row.rd.map(|index| index & (REGISTER_COUNT - 1));
 
-        // Phase 1: read rs1, no write.
-        value.push(registers.iter().map(|word| F2_128::from(*word)).collect());
-        read_address.push(one_hot(rs1));
-        write_address.push(vec![F2_128::from(0u64); REGISTER_COUNT]);
-        increment.push(F2_128::from(0u64));
-        read_value.push(F2_128::from(registers[rs1]));
-        write_value.push(F2_128::from(0u64));
+        let mut reads = Vec::with_capacity(2);
+        if rs1 != 0 {
+            reads.push(rs1);
+        }
+        if rs2 != 0 && rs2 != rs1 {
+            reads.push(rs2);
+        }
+        let write = rd.filter(|index| *index != 0);
 
-        // Phase 2: read rs2, then write rd.
-        value.push(registers.iter().map(|word| F2_128::from(*word)).collect());
-        read_address.push(one_hot(rs2));
-        read_value.push(F2_128::from(registers[rs2]));
-        if let Some(rd) = rd.filter(|index| *index != 0) {
-            let old = registers[rd];
-            let new = row.rd_val;
-            write_address.push(one_hot(rd));
-            increment.push(F2_128::from(old ^ new));
-            write_value.push(F2_128::from(new));
-            registers[rd] = new;
-        } else {
-            write_address.push(vec![F2_128::from(0u64); REGISTER_COUNT]);
-            increment.push(F2_128::from(0u64));
-            write_value.push(F2_128::from(0u64));
+        let mut push_phase = |read: Option<usize>, write: Option<usize>| {
+            value.push(registers.iter().map(|word| F2_128::from(*word)).collect());
+            let mut read_one_hot = vec![F2_128::from(0u64); REGISTER_COUNT];
+            let mut write_one_hot = vec![F2_128::from(0u64); REGISTER_COUNT];
+            let mut read_scalar = F2_128::from(0u64);
+            let mut write_scalar = F2_128::from(0u64);
+            let mut increment_scalar = F2_128::from(0u64);
+            if let Some(read) = read {
+                read_one_hot[read] = F2_128::from(1u64);
+                read_scalar = F2_128::from(registers[read]);
+            }
+            if let Some(write) = write {
+                let old = registers[write];
+                let new = row.rd_val;
+                write_one_hot[write] = F2_128::from(1u64);
+                increment_scalar = F2_128::from(old ^ new);
+                write_scalar = F2_128::from(new);
+                registers[write] = new;
+            }
+            read_address.push(read_one_hot);
+            write_address.push(write_one_hot);
+            increment.push(increment_scalar);
+            read_value.push(read_scalar);
+            write_value.push(write_scalar);
+        };
+
+        match (reads.len(), write) {
+            (2, Some(write)) => {
+                push_phase(Some(reads[0]), None);
+                push_phase(Some(reads[1]), Some(write));
+            }
+            (2, None) => {
+                push_phase(Some(reads[0]), None);
+                push_phase(Some(reads[1]), None);
+            }
+            (1, write) => push_phase(Some(reads[0]), write),
+            (0, write) => {
+                if write.is_some() {
+                    push_phase(Some(0), write);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -126,23 +154,17 @@ mod tests {
     }
 
     #[test]
-    fn register_twist_two_phase_shape() {
+    fn register_twist_compact_shape() {
         let trace = trace();
         let witness = register_twist_witness(&trace).unwrap();
-        for (row_index, row) in trace.rows.iter().enumerate() {
-            let rs1 = usize::from(row.instruction.rs1) & (REGISTER_COUNT - 1);
-            let rs2 = usize::from(row.instruction.rs2) & (REGISTER_COUNT - 1);
-            let first = 2 * row_index;
-            assert_eq!(witness.read_address[first][rs1], F2_128::from(1u64));
-            assert_eq!(
-                witness.write_address[first],
-                vec![F2_128::from(0u64); REGISTER_COUNT]
-            );
-            assert_eq!(witness.read_address[first + 1][rs2], F2_128::from(1u64));
-            if let Some(rd) = row.rd.filter(|index| *index != 0) {
-                assert_eq!(witness.write_address[first + 1][rd], F2_128::from(1u64));
-                assert_eq!(witness.write_value[first + 1], F2_128::from(row.rd_val));
-            }
+        assert!(witness.cycles > 0);
+        assert!(witness.cycles <= trace.rows.len() * 2);
+        assert_eq!(
+            witness.final_value[3].value(),
+            u128::from(trace.final_state.reg(3))
+        );
+        for address in &witness.read_address {
+            assert_eq!(address.iter().filter(|value| value.value() == 1).count(), 1);
         }
     }
 
@@ -150,7 +172,7 @@ mod tests {
     fn register_twist_witness_proves() {
         let trace = trace();
         let witness = register_twist_witness(&trace).unwrap();
-        assert_eq!(witness.cycles, trace.rows.len() * 2);
+        assert!(witness.cycles <= trace.rows.len() * 2);
         assert_eq!(
             witness.final_value[3].value(),
             u128::from(trace.final_state.reg(3))
