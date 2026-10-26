@@ -3800,19 +3800,21 @@ pub fn mixed_alu_branch_rows_from_trace(
     let rows = crate::simd_full::gated_rows_from_trace_full(trace, width)?;
     rows.into_iter()
         .map(|(pc, input)| match input {
-            GatedCpuRowInput::Alu { left, right, op }
-                if matches!(
-                    op,
-                    crate::simd_f2::GatedAluOp::Jal | crate::simd_f2::GatedAluOp::Jalr
-                ) =>
-            {
-                Ok((
-                    pc,
-                    MixedAluBranchInput::Jump {
-                        target: left.wrapping_add(right) & !1,
-                    },
-                ))
+            GatedCpuRowInput::Alu {
+                left,
+                right,
+                op: crate::simd_f2::GatedAluOp::Jal,
             }
+            | GatedCpuRowInput::Alu {
+                left,
+                right,
+                op: crate::simd_f2::GatedAluOp::Jalr,
+            } => Ok((
+                pc,
+                MixedAluBranchInput::Jump {
+                    target: left.wrapping_add(right) & !1,
+                },
+            )),
             GatedCpuRowInput::Alu { left, right, op } => {
                 Ok((pc, MixedAluBranchInput::Alu { left, right, op }))
             }
