@@ -52,3 +52,12 @@ router; the access/Shout proofs are gone but the router is O(rows * columns).
 to the largest power-of-two prefix. That silently dropped trailing syscall rows
 and caused the selected sumcheck mismatch. The dynamic path now calls
 `gated_rows_from_trace_full`; all rows are covered and the IO test passes.
+
+
+## Remaining blocker: compiled guest
+
+A `claim_native` round-trip on the checked-in `hello.elf` still fails inside the
+selected dynamic prover (`sumcheck claim mismatch`) even after the full-row fix;
+the simple `Lui/Addi/Sb/SYS_WRITE/SYS_EXIT` program passes. The compiled guest
+uses a richer instruction mix, so the dynamic row/component mask coverage is
+still incomplete. The integration test was removed rather than left failing.
