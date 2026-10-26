@@ -452,6 +452,7 @@ impl ProofBundle {
             width: self.width,
             commitment: self.commitment,
             packed_shout: self.packed_shout,
+            logup_shout: None,
             cpu,
             shout: None,
             shift_router,
@@ -2527,6 +2528,7 @@ impl<'a> UnifiedProveContext<'a> {
                 .clone()
                 .ok_or_else(|| RuntimeError::Proof("missing CPU commitment".into()))?,
             packed_shout,
+            logup_shout: None,
             access: self
                 .access
                 .ok_or_else(|| RuntimeError::Proof("missing access proof".into()))?,

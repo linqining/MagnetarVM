@@ -20,6 +20,7 @@ pub mod binary_twist;
 pub mod binary_twist_address;
 pub mod branch_row;
 pub mod claim_native;
+pub mod logup_shout;
 pub mod cpu_shape;
 pub mod div_row;
 pub mod gated_aux;
@@ -1183,6 +1184,8 @@ pub struct UnifiedTraceProof {
     pub width: usize,
     pub commitment: P3MosaicCommitment,
     pub packed_shout: Option<crate::packed_shout::PackedShoutProof>,
+    #[serde(default)]
+    pub logup_shout: Option<crate::logup_shout::LogupShoutProof>,
 }
 
 pub(crate) struct GatedProveInput {
@@ -2540,6 +2543,11 @@ pub(crate) fn verify_unified_with_plan_impl(
     verify_selected: bool,
 ) -> Result<(), RuntimeError> {
     let profile = std::env::var_os("MAGNETAR_PROFILE_VERIFY").is_some();
+    if let Some(logup_shout) = &proof.logup_shout {
+        let witness = crate::binary_shout::BinaryShoutWitness::from_trace(trace)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        crate::logup_shout::verify_logup_shout(logup_shout, &witness.rom)?;
+    }
     let mut context = crate::protocol::UnifiedVerifyContext::new(trace, proof, width)?;
     for stage in plan.execution() {
         let started = std::time::Instant::now();
@@ -2650,6 +2658,10 @@ pub fn prove_unified_trace_dynamic_native_profile(
         let packed = packed_witness
             .as_ref()
             .map(|witness| scope.spawn(|| crate::packed_shout::prove_packed_shout(witness)));
+        let logup_shout = packed_witness
+            .as_ref()
+            .filter(|witness| witness.is_32.iter().all(|bit| bit.value() == 0))
+            .map(|witness| scope.spawn(|| crate::logup_shout::prove_logup_shout(witness)));
         let packed_started = std::time::Instant::now();
         let plan = crate::protocol::ProtocolPlan::unified();
         let mut context = crate::protocol::UnifiedProveContext::new_with_group(trace, width, None)?;
@@ -2689,6 +2701,13 @@ pub fn prove_unified_trace_dynamic_native_profile(
         proof.shout_index = None;
         proof.shift_router_index = None;
         proof.store_router_index = None;
+        if let Some(logup_shout) = logup_shout {
+            proof.logup_shout = Some(
+                logup_shout
+                    .join()
+                    .map_err(|_| RuntimeError::Proof("logup Shout worker panicked".into()))??,
+            );
+        }
         if let Some(packed) = packed {
             proof.packed_shout = Some(
                 packed
@@ -3421,6 +3440,7 @@ pub struct UnifiedProofSizes {
     pub shape: usize,
     pub shout: usize,
     pub packed_shout: usize,
+    pub logup_shout: usize,
     pub shift_router: usize,
     pub store_router: usize,
     pub trace_claims: usize,
@@ -3446,6 +3466,7 @@ impl UnifiedProofSizes {
                 + self.shape
                 + self.shout
                 + self.packed_shout
+                + self.logup_shout
                 + self.shift_router
                 + self.store_router
                 + self.trace_claims
@@ -3476,6 +3497,7 @@ pub fn unified_proof_sizes(proof: &UnifiedTraceProof) -> Result<UnifiedProofSize
         shape: size(bincode::serialize(&proof.shape))?,
         shout: size(bincode::serialize(&proof.shout))?,
         packed_shout: size(bincode::serialize(&proof.packed_shout))?,
+        logup_shout: size(bincode::serialize(&proof.logup_shout))?,
         shift_router: size(bincode::serialize(&proof.shift_router))?,
         store_router: size(bincode::serialize(&proof.store_router))?,
         trace_claims: size(bincode::serialize(&proof.trace_claims))?,
