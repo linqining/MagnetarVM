@@ -206,7 +206,11 @@ position = word_or_halfword_index + is_32
 
 For the mixed ROM table this is the cell that holds the instruction's
 metadata (`high` in `BinaryShoutWitness::from_trace`). Word mode is the special
-case where `is_32 = 0`. The native dynamic prover now emits logup Shout for both
-word and mixed traces; packed Shout is no longer needed in that path.
+case where `is_32 = 0`. The standalone logup Shout component supports mixed traces, and
+`logup_shout_mixed` verifies a compressed trace plus a 32-bit row. The selected
+dynamic CPU prover still lacks compressed PC rows, so `prove_unified_trace_auto`
+falls back to the reference proof for any trace containing a 16-bit row rather
+than producing a broken dynamic proof. Removing that fallback requires
+compressed-PC support in the selected dynamic layout.
 
 Full runtime suite after the change: 316 passed.
