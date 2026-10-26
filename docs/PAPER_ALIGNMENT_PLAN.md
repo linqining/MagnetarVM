@@ -12,8 +12,8 @@ This is a roadmap, not a claim that the implementation is aligned yet.
 |---:|---:|---:|---:|---:|
 | 16 | 92,528 | 0.184 s | 0.134 s | 87.2 |
 | 64 | 136,472 | 1.30 s | 0.837 s | 49.3 |
-| 512 | 340,920 | 8.50 s | 5.63 s | 60.3 |
-| 1024 | 516,976 | 30.22 s | 10.92 s | 33.9 |
+| 512 | 340,920 | 6.09 s | 6.49 s | 84.1 |
+| 1024 | 516,976 | 22.13 s | 11.29 s | 46.3 |
 
 512-row split:
 
@@ -128,6 +128,11 @@ PackedOpen    107.1 ms
 The Shout claim prover materializes `cells × cycles` factors and folds them for
 every degree point of every round. With `cells = next_pow2(2 * ROM words)` and
 `cycles = next_pow2(rows)`, this is quadratic in trace length.
+
+The native prover now runs the selected-CPU proof concurrently with the
+context/packed-Shout work. At 1024 rows this overlaps roughly 8 s of selected CPU
+against the Shout/access stages, taking the prover from 30.2 s to 22.1 s. Proof
+bytes are unchanged and the full determinism suite still passes.
 
 All-32-bit traces now use a word-granularity Shout table (`cells =
 next_pow2(ROM words)`), halving the cell dimension. At 512 rows ShoutClaims drops
