@@ -16,10 +16,10 @@ proofs, replacing them with linear checks over the authenticated rows.
 
 ## What it does not yet handle
 
-- Syscall write/read/exit binding is implemented directly, but the store-heavy
-  test program that exercises `SYS_WRITE` failed inside the selected dynamic
-  prover with a sumcheck claim mismatch. Until that selected-prover store path
-  is fixed, claim-native should be treated as tested only for non-IO workloads.
+- Syscall write/read/exit binding is implemented directly. The selected dynamic
+  prover now uses all trace rows instead of truncating to a power-of-two prefix;
+  the `Lui/Addi/Sb + SYS_WRITE + SYS_EXIT` program proves and verifies output
+  `"H"`.
 - The paper's BinaryShout/BinaryTwist semantics; this is a native claim-layer
   path, not paper parity.
 - A third-party audit.
@@ -46,10 +46,9 @@ The 2048 verifier still rebuilds per-cycle component sources in the segment
 router; the access/Shout proofs are gone but the router is O(rows * columns).
 
 
-## Attempted selected-prover syscall row fix
+## Selected-prover row-truncation fix
 
-The selected dynamic prover models a syscall row as an ALU add returning
-`rd_val` with PC+4. The minimal `Lui/Addi/Sb/Ecall` program proves, but adding a
-real `SYS_WRITE`/`SYS_EXIT` sequence still fails inside the selected proof with
-`sumcheck claim mismatch`. The attempted gated-row change was reverted. This is
-the concrete remaining blocker for claim-native IO coverage.
+`mixed_alu_branch_rows_from_trace` used `gated_rows_from_trace`, which truncates
+to the largest power-of-two prefix. That silently dropped trailing syscall rows
+and caused the selected sumcheck mismatch. The dynamic path now calls
+`gated_rows_from_trace_full`; all rows are covered and the IO test passes.

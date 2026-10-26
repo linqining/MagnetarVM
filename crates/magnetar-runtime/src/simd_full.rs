@@ -487,6 +487,14 @@ pub fn gated_rows_from_trace(
     gated_rows_from_trace_impl(trace, width, true)
 }
 
+/// All trace rows, without truncating to the largest power-of-two prefix.
+pub(crate) fn gated_rows_from_trace_full(
+    trace: &Trace,
+    width: usize,
+) -> Result<Vec<(u64, crate::simd_f2::GatedCpuRowInput)>, RuntimeError> {
+    gated_rows_from_trace_impl(trace, width, false)
+}
+
 /// Full gated row batch padded to the next power of two with Nop ALU rows.
 pub fn gated_rows_from_trace_padded(
     trace: &Trace,

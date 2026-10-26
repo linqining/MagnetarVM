@@ -375,4 +375,66 @@ mod tests {
         tampered.claim_proof.openings[0].claim.rd_value ^= 1;
         assert!(verify_claim_native(&statement, &tampered, 8).is_err());
     }
+    #[test]
+    fn native_claim_path_binds_write_syscall_output() {
+        let addi = |rd, rs1, imm| {
+            Instruction {
+                op: Op::Addi,
+                rd,
+                rs1,
+                rs2: 0,
+                imm,
+                shamt: 0,
+            }
+            .encode()
+        };
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Lui,
+                    rd: 5,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x1000_0000,
+                    shamt: 0,
+                }
+                .encode(),
+                addi(6, 0, 72),
+                Instruction {
+                    op: Op::Sb,
+                    rd: 0,
+                    rs1: 5,
+                    rs2: 6,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                addi(10, 0, 1),
+                addi(11, 5, 0),
+                addi(12, 0, 1),
+                addi(17, 0, magnetar_spec::syscall::SYS_WRITE as i64),
+                Instruction::new(Op::Ecall).encode(),
+                addi(10, 0, 0),
+                addi(17, 0, magnetar_spec::syscall::SYS_EXIT as i64),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        assert_eq!(trace.io_output, b"H");
+        let statement = statement(&trace);
+        let proof = prove_claim_native(&trace, 8).unwrap();
+        verify_claim_native(&statement, &proof, 8).unwrap();
+    }
 }

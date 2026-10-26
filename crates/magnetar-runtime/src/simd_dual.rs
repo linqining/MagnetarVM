@@ -3790,7 +3790,7 @@ pub fn mixed_alu_branch_rows_from_trace(
 ) -> Result<Vec<(u64, MixedAluBranchInput)>, RuntimeError> {
     use crate::simd_f2::GatedCpuRowInput;
 
-    let rows = crate::simd_full::gated_rows_from_trace(trace, width)?;
+    let rows = crate::simd_full::gated_rows_from_trace_full(trace, width)?;
     rows.into_iter()
         .map(|(pc, input)| match input {
             GatedCpuRowInput::Alu { left, right, op } => {
@@ -6687,7 +6687,7 @@ mod tests {
         let mem_trace = execute(&mem_program, config).unwrap();
         assert_eq!(
             mixed_trace_component_mask(&mem_trace, 8).unwrap(),
-            MIXED_ALU | MIXED_MEMORY
+            MIXED_ALU | MIXED_MEMORY | MIXED_BRANCH
         );
     }
 
