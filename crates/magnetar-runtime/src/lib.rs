@@ -2528,8 +2528,10 @@ pub(crate) fn verify_unified_with_plan_impl(
     plan: &crate::protocol::ProtocolPlan,
     verify_selected: bool,
 ) -> Result<(), RuntimeError> {
+    let profile = std::env::var_os("MAGNETAR_PROFILE_VERIFY").is_some();
     let mut context = crate::protocol::UnifiedVerifyContext::new(trace, proof, width)?;
     for stage in plan.execution() {
+        let started = std::time::Instant::now();
         match stage {
             crate::protocol::ExecutionStage::Commit => {}
             crate::protocol::ExecutionStage::Access => context.verify_access()?,
@@ -2549,6 +2551,9 @@ pub(crate) fn verify_unified_with_plan_impl(
                 }
             }
             crate::protocol::ExecutionStage::Opening => context.verify_opening()?,
+        }
+        if profile {
+            eprintln!("verify stage {stage:?}: {:?}", started.elapsed());
         }
     }
     if verify_selected {
@@ -3316,8 +3321,15 @@ pub fn verify_native_unified(
                 Ok(())
             })
         });
-        let unified = scope
-            .spawn(|| crate::protocol::Orchestrator::default().verify(&synthetic, proof, width));
+        let unified = scope.spawn(|| {
+            crate::verify_unified_with_plan_impl(
+                &synthetic,
+                proof,
+                width,
+                &crate::protocol::ProtocolPlan::unified(),
+                false,
+            )
+        });
         if let Some(selected) = selected {
             selected
                 .join()

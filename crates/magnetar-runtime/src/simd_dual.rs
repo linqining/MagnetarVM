@@ -4623,11 +4623,15 @@ pub fn prove_dynamic_cpu_claims<B: magnetar_proof::BitPcs>(
     })
 }
 
-pub fn verify_dynamic_cpu_claims<B: magnetar_proof::BitPcs>(
+pub fn verify_dynamic_cpu_claims<B: magnetar_proof::BitPcs + Sync>(
     trace: &magnetar_spec::Trace,
     claims: &SelectedCpuClaims<B::Commitment, B::Opening>,
     backend: &B,
-) -> Result<(), RuntimeError> {
+) -> Result<(), RuntimeError>
+where
+    B::Commitment: Sync,
+    B::Opening: Sync,
+{
     if claims.op != SelectedOp::Dynamic {
         return Err(RuntimeError::Proof(
             "not a dynamic selected claim bundle".into(),
@@ -5333,13 +5337,17 @@ pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
     Ok((proof, layout))
 }
 
-pub fn verify_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
+pub fn verify_dynamic_segmented_trace<B: magnetar_proof::BitPcs + Sync>(
     trace: &magnetar_spec::Trace,
     proof: &LockstepProof<B::Commitment, B::Opening>,
     _layout: &magnetar_constraint::WitnessLayout,
     width: usize,
     backend: &B,
-) -> Result<(), RuntimeError> {
+) -> Result<(), RuntimeError>
+where
+    B::Commitment: Sync,
+    B::Opening: Sync,
+{
     use magnetar_proof::verify_lockstep_bits;
 
     let rows = mixed_alu_branch_rows_from_trace(trace, width)?;
@@ -5356,59 +5364,66 @@ pub fn verify_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
     let original = DynamicMixedRow::build(mask, width)?;
     let (row, mapping, expected_layout) = segmented_dynamic_row(mask, width, cycles)?;
     let (base_cols, s1, s2) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
-    let mut bits = Vec::with_capacity(cycles * base_cols);
-    for index in 0..cycles {
-        let (pc, mut input) = if index < rows.len() {
-            rows[index]
-        } else {
-            (
-                final_pc,
-                MixedAluBranchInput::Fetch {
+    std::thread::scope(|scope| {
+        let verify = scope.spawn(|| {
+            verify_lockstep_bits(
+                &s1[0],
+                &s1[1],
+                &s1[2],
+                &s2[0],
+                &s2[1],
+                &s2[2],
+                &expected_layout,
+                proof,
+                backend,
+            )
+            .map_err(|error| RuntimeError::Proof(error.to_string()))
+        });
+        let mut bits = Vec::with_capacity(cycles * base_cols);
+        for index in 0..cycles {
+            let (pc, mut input) = if index < rows.len() {
+                rows[index]
+            } else {
+                (
+                    final_pc,
+                    MixedAluBranchInput::Fetch {
+                        left: 0,
+                        right: 0,
+                        imm: 0,
+                        kind: crate::branch_row::BranchKind::Beq,
+                    },
+                )
+            };
+            if index + 1 == rows.len() && final_pc == pc {
+                input = MixedAluBranchInput::Fetch {
                     left: 0,
                     right: 0,
                     imm: 0,
                     kind: crate::branch_row::BranchKind::Beq,
-                },
-            )
-        };
-        if index + 1 == rows.len() && final_pc == pc {
-            input = MixedAluBranchInput::Fetch {
-                left: 0,
-                right: 0,
-                imm: 0,
-                kind: crate::branch_row::BranchKind::Beq,
-            };
-        }
-        let source = original.witness_at(pc, &input)?;
-        let mut block = vec![false; base_cols];
-        for (from, to) in mapping.iter().enumerate() {
-            if source[from] {
-                block[*to] = true;
+                };
             }
+            let source = original.witness_at(pc, &input)?;
+            let mut block = vec![false; base_cols];
+            for (from, to) in mapping.iter().enumerate() {
+                if source[from] {
+                    block[*to] = true;
+                }
+            }
+            bits.extend(block);
         }
-        bits.extend(block);
-    }
-    let expected = backend
-        .commit(&bits)
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    if backend.commitment_bytes(&expected) != backend.commitment_bytes(&proof.commitment) {
-        return Err(RuntimeError::Proof(
-            "dynamic segmented witness does not match the proof commitment".into(),
-        ));
-    }
-    verify_lockstep_bits(
-        &s1[0],
-        &s1[1],
-        &s1[2],
-        &s2[0],
-        &s2[1],
-        &s2[2],
-        &expected_layout,
-        proof,
-        backend,
-    )
-    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    Ok(())
+        let expected = backend
+            .commit(&bits)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        verify
+            .join()
+            .map_err(|_| RuntimeError::Proof("lockstep verifier panicked".into()))??;
+        if backend.commitment_bytes(&expected) != backend.commitment_bytes(&proof.commitment) {
+            return Err(RuntimeError::Proof(
+                "dynamic segmented witness does not match the proof commitment".into(),
+            ));
+        }
+        Ok(())
+    })
 }
 
 pub fn prove_gated_dual_batch_bits<B: magnetar_proof::BitPcs>(
