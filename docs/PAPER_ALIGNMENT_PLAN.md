@@ -12,8 +12,8 @@ This is a roadmap, not a claim that the implementation is aligned yet.
 |---:|---:|---:|---:|---:|
 | 16 | 92,528 | 0.184 s | 0.134 s | 87.2 |
 | 64 | 136,472 | 1.30 s | 0.837 s | 49.3 |
-| 512 | 340,920 | 3.6–6.1 s | 4.55 s | 85–141 |
-| 1024 | 516,976 | 17.1–21.8 s | 10.69 s | 47–60 |
+| 512 | 340,920 | 3.6–5.2 s | 1.52 s | 99–141 |
+| 1024 | 516,976 | 17.1–21.7 s | 2.76 s | 47–60 |
 
 512-row split:
 
@@ -141,8 +141,9 @@ selected-CPU proof and the orchestrator proof concurrently. The orchestrator
 path skips the selected-CPU check, which the dedicated verifier already ran.
 Claim-proof verification is not repeated either. Inside the selected verifier,
 the lockstep proof check now runs concurrently with rebuilding the segmented
-witness bits and recomputing their commitment. Verification is 4.55 s at 512
-rows and 10.69 s at 1024 rows. Prover measurements still vary by 10–20%, so the
+witness bits and recomputing their commitment. The six `eval_mle` calls in the lockstep verifier are now evaluated
+concurrently, which removed the verifier's dominant cost. Verification is 1.52 s
+at 512 rows and 2.76 s at 1024 rows. Prover measurements still vary by 10–20%, so the
 prover column is a range.
 
 All-32-bit traces now use a word-granularity Shout table (`cells =

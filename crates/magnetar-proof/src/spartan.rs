@@ -80,6 +80,45 @@ impl SpartanMatrix for SparseMatrix {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
+fn eval_mles_parallel(
+    a0: &dyn SpartanMatrix,
+    b0: &dyn SpartanMatrix,
+    c0: &dyn SpartanMatrix,
+    a1: &dyn SpartanMatrix,
+    b1: &dyn SpartanMatrix,
+    c1: &dyn SpartanMatrix,
+    rx: &[F2_128],
+    ry: &[F2_128],
+) -> Result<[F2_128; 6], SpartanError> {
+    if a0.rows() < 4096 {
+        return Ok([
+            a0.eval_mle(rx, ry)?,
+            b0.eval_mle(rx, ry)?,
+            c0.eval_mle(rx, ry)?,
+            a1.eval_mle(rx, ry)?,
+            b1.eval_mle(rx, ry)?,
+            c1.eval_mle(rx, ry)?,
+        ]);
+    }
+    std::thread::scope(|scope| {
+        let a0h = scope.spawn(|| a0.eval_mle(rx, ry));
+        let b0h = scope.spawn(|| b0.eval_mle(rx, ry));
+        let c0h = scope.spawn(|| c0.eval_mle(rx, ry));
+        let a1h = scope.spawn(|| a1.eval_mle(rx, ry));
+        let b1h = scope.spawn(|| b1.eval_mle(rx, ry));
+        let c1h = scope.spawn(|| c1.eval_mle(rx, ry));
+        Ok([
+            a0h.join().expect("eval-mle worker")?,
+            b0h.join().expect("eval-mle worker")?,
+            c0h.join().expect("eval-mle worker")?,
+            a1h.join().expect("eval-mle worker")?,
+            b1h.join().expect("eval-mle worker")?,
+            c1h.join().expect("eval-mle worker")?,
+        ])
+    })
+}
+
 fn row_combinations_parallel(
     a0: &dyn SpartanMatrix,
     b0: &dyn SpartanMatrix,
@@ -1853,12 +1892,8 @@ pub fn verify_lockstep_bits_with_replacements_point<B: BitPcs>(
         }
         reconstruct_segment_claim(layout, &claims, &ry)?
     };
-    let a0_at = a0.eval_mle(&rx, &ry)?;
-    let b0_at = b0.eval_mle(&rx, &ry)?;
-    let c0_at = c0.eval_mle(&rx, &ry)?;
-    let a1_at = a1.eval_mle(&rx, &ry)?;
-    let b1_at = b1.eval_mle(&rx, &ry)?;
-    let c1_at = c1.eval_mle(&rx, &ry)?;
+    let [a0_at, b0_at, c0_at, a1_at, b1_at, c1_at] =
+        eval_mles_parallel(a0, b0, c0, a1, b1, c1, &rx, &ry)?;
     let expected_inner =
         (a0_at + r0 * b0_at + r0 * r0 * c0_at + alpha * (a1_at + r1 * b1_at + r1 * r1 * c1_at))
             * vw;

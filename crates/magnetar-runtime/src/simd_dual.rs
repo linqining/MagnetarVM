@@ -5364,9 +5364,11 @@ where
     let original = DynamicMixedRow::build(mask, width)?;
     let (row, mapping, expected_layout) = segmented_dynamic_row(mask, width, cycles)?;
     let (base_cols, s1, s2) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
+    let profile = std::env::var_os("MAGNETAR_PROFILE_VERIFY").is_some();
     std::thread::scope(|scope| {
         let verify = scope.spawn(|| {
-            verify_lockstep_bits(
+            let started = std::time::Instant::now();
+            let result = verify_lockstep_bits(
                 &s1[0],
                 &s1[1],
                 &s1[2],
@@ -5377,8 +5379,13 @@ where
                 proof,
                 backend,
             )
-            .map_err(|error| RuntimeError::Proof(error.to_string()))
+            .map_err(|error| RuntimeError::Proof(error.to_string()));
+            if profile {
+                eprintln!("selected verify lockstep: {:?}", started.elapsed());
+            }
+            result
         });
+        let bits_started = std::time::Instant::now();
         let mut bits = Vec::with_capacity(cycles * base_cols);
         for index in 0..cycles {
             let (pc, mut input) = if index < rows.len() {
@@ -5411,9 +5418,16 @@ where
             }
             bits.extend(block);
         }
+        if profile {
+            eprintln!("selected verify bits: {:?}", bits_started.elapsed());
+        }
+        let commit_started = std::time::Instant::now();
         let expected = backend
             .commit(&bits)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        if profile {
+            eprintln!("selected verify commit: {:?}", commit_started.elapsed());
+        }
         verify
             .join()
             .map_err(|_| RuntimeError::Proof("lockstep verifier panicked".into()))??;
