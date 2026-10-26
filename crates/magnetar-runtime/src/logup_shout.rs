@@ -6,7 +6,7 @@
 //! one mosaic PCS opening discharges the reader and position claims.
 
 use magnetar_constraint::F2_128;
-use magnetar_pcs::{P3BinaryPcs, P3MosaicOpening, P3MosaicPoint, P3MosaicTable};
+use magnetar_pcs::{P3BatchOpening, P3BatchPoint, P3BinaryPcs};
 use magnetar_transcript::Sha256Transcript;
 use p3_binary_field::{BinaryChallenger, BinaryField128, TowerLevel};
 use p3_challenger::HashChallenger;
@@ -35,7 +35,7 @@ pub struct LogupShoutProof {
     pub rom_point: Vec<F2_128>,
     pub link_point: Vec<F2_128>,
     pub logup: LogupStarProof<B, B>,
-    pub opening: P3MosaicOpening,
+    pub opening: P3BatchOpening,
 }
 
 fn challenger() -> Challenger {
@@ -135,14 +135,12 @@ pub fn prove_logup_shout(witness: &BinaryShoutWitness) -> Result<LogupShoutProof
             .map(|position| embed(*position))
             .collect(),
     );
-    let table = P3MosaicTable {
-        columns: committed_columns
-            .iter()
-            .map(|column| column.iter().map(|value| to_f2(*value)).collect())
-            .collect::<Vec<Vec<F2_128>>>(),
-    };
+    let columns_f2 = committed_columns
+        .iter()
+        .map(|column| column.iter().map(|value| to_f2(*value)).collect::<Vec<F2_128>>())
+        .collect::<Vec<_>>();
     let commitment = pcs
-        .commit_mosaic(std::slice::from_ref(&table))
+        .commit_batch(&columns_f2)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let commitment_bytes =
         bincode::serialize(&commitment).map_err(|error| RuntimeError::Proof(error.to_string()))?;
@@ -186,18 +184,15 @@ pub fn prove_logup_shout(witness: &BinaryShoutWitness) -> Result<LogupShoutProof
         .map(|column| to_f2(eval_mle(column, &Point::new(output.table_point.as_slice().to_vec()))))
         .collect::<Vec<_>>();
     let points = vec![
-        P3MosaicPoint {
-            table: 0,
+        P3BatchPoint {
             point: point
                 .iter()
                 .rev()
                 .map(|coordinate| to_f2(*coordinate))
                 .collect(),
             columns: (0..columns + link_claims.len()).collect(),
-            next_columns: Vec::new(),
         },
-        P3MosaicPoint {
-            table: 0,
+        P3BatchPoint {
             point: output
                 .position_point
                 .iter()
@@ -205,11 +200,10 @@ pub fn prove_logup_shout(witness: &BinaryShoutWitness) -> Result<LogupShoutProof
                 .map(|coordinate| to_f2(*coordinate))
                 .collect(),
             columns: vec![columns + link_claims.len()],
-            next_columns: Vec::new(),
         },
     ];
     let opening = pcs
-        .open_mosaic(std::slice::from_ref(&table), &points)
+        .open_batch(&columns_f2, &points)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     Ok(LogupShoutProof {
         address_bits: witness.address_bits,
@@ -312,18 +306,15 @@ pub fn verify_logup_shout(
         }
     }
     let points = vec![
-        P3MosaicPoint {
-            table: 0,
+        P3BatchPoint {
             point: point
                 .iter()
                 .rev()
                 .map(|coordinate| to_f2(*coordinate))
                 .collect(),
             columns: (0..proof.columns * 2).collect(),
-            next_columns: Vec::new(),
         },
-        P3MosaicPoint {
-            table: 0,
+        P3BatchPoint {
             point: output
                 .position_point
                 .iter()
@@ -331,7 +322,6 @@ pub fn verify_logup_shout(
                 .map(|coordinate| to_f2(*coordinate))
                 .collect(),
             columns: vec![proof.columns * 2],
-            next_columns: Vec::new(),
         },
     ];
     let mut reader_values = claims.iter().map(|claim| to_f2(*claim)).collect::<Vec<_>>();
@@ -341,7 +331,7 @@ pub fn verify_logup_shout(
         vec![to_f2(output.tables[0].position_claims[0])],
     ];
     if !pcs
-        .verify_mosaic(&proof.opening, &points, &values)
+        .verify_batch(&proof.opening, &points, &values)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?
     {
         return Err(RuntimeError::Proof("logup Shout PCS opening rejected".into()));

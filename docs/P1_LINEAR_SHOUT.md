@@ -190,8 +190,22 @@ Current native benchmark (`native_unified_bench`, width 8):
 Logup component: 137,921 B at 512 rows and 164,369 B at 1024 rows. Tuning the
 reader/position PCS to `(100, 4, 16, 3)` cut the logup proof roughly in half.
 
-The dynamic native prover now uses logup Shout for word mode and falls back to
-packed Shout only for 32-bit/mixed traces. The remaining quadratic part is Twist.
+The reader/position commitments now use one batched P3 opening instead of a
+mosaic opening. At 8192 rows the logup opening drops from about 373 KB (mosaic,
+testkit measurement) to 198 KB; native proof sizes at 512/1024 rows are
+essentially unchanged, but the prover is slightly faster.
+
+Updated native benchmark:
+
+| rows | proof | prove | verify |
+|---:|---:|---:|---:|
+| 512 | 425,729 B | 2.31 s | 1.16 s |
+| 1024 | 614,537 B | 5.42 s | 2.16 s |
+| 2048 | 950,705 B | 14.57 s | 4.73 s |
+
+The dynamic native prover uses logup Shout for word mode; the reference
+fallback covers compressed/mixed traces until the selected layout supports
+compressed PC rows. The remaining quadratic part is Twist.
 
 Full runtime suite: 316 passed. Runtime clippy: clean.
 
