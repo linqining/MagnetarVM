@@ -141,3 +141,26 @@ This is a sound reduction, but not yet a complete Shout proof: the table,
 reader-value and position columns are still trusted inputs, not bound by a PCS.
 The next milestone is to commit those columns and discharge the logup* output
 claims through P3 openings.
+
+
+## Runtime component and native field
+
+`magnetar-runtime/src/logup_shout.rs` now exposes:
+
+```text
+LogupShoutProof
+prove_logup_shout(witness)
+verify_logup_shout(proof, rom)
+```
+
+The verifier derives the reader point from the committed reader/position table,
+runs the logup* verification, checks the output table claims against the public
+ROM, and discharges reader/position claims with one mosaic opening.
+
+`UnifiedTraceProof.logup_shout` is optional and the native dynamic prover fills
+it for word-mode traces; the verifier checks it when present.
+
+This is still redundant: the old packed Shout proof remains, so the native
+proof grew from 341 KB to 551 KB at 512 rows and from 520 KB to 770 KB at 1024
+rows. The next step is to replace the packed Shout claim/link path with the
+logup Shout claims instead of carrying both.
