@@ -80,7 +80,6 @@ impl SpartanMatrix for SparseMatrix {
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn eval_mles_parallel(
     a0: &dyn SpartanMatrix,
     b0: &dyn SpartanMatrix,
