@@ -340,3 +340,22 @@ was reverted. Global `MAGNETAR_SUMCHECK_THREADS=4` was similar (4.28–4.52 s at
 evaluations. With one worker, 512 rows measured 4.09 s and 1024 rows 19.64 s;
 with the default four workers they measured 3.89 s and 18.35 s. The default is
 still four.
+
+
+## Scale probe: 2048 and 4096 rows
+
+| rows | proof | prove | verify | cycles/s |
+|---:|---:|---:|---:|---:|
+| 2048 | 833,064 B | 72.63 s | 4.59 s | 28.2 |
+| 4096 | 1,432,880 B | 680.62 s | 19.25 s | 6.0 |
+
+Doubling from 1024 to 2048 is roughly linear (18.4 s -> 72.6 s, 3.96x), but
+doubling again to 4096 is 9.4x (72.6 s -> 680.6 s). At 4096 the Shout/Twist
+factor sets exhaust the 8 GiB per-worker budget, so the degree-point parallelism
+collapses toward one worker; the quadratic `cells x cycles` materialization and
+the selected segments dominate. Raising `MAGNETAR_SUMCHECK_MEMORY_GB` to 32 made
+2048 slower (99.0 s vs 72.6 s), so simply allowing more memory is not a fix.
+
+This is the clearest evidence that the next real step is a linear/sparse Shout
+sum-check, not more constant-factor tuning. The proof also grows past the paper's
+598 KiB budget at 2048 rows (833 KiB) and reaches 1.43 MiB at 4096.
