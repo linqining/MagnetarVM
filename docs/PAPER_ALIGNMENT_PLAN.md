@@ -12,8 +12,8 @@ This is a roadmap, not a claim that the implementation is aligned yet.
 |---:|---:|---:|---:|---:|
 | 16 | 92,528 | 0.184 s | 0.134 s | 87.2 |
 | 64 | 136,472 | 1.30 s | 0.837 s | 49.3 |
-| 512 | 340,920 | 3.6–5.2 s | 1.52 s | 99–141 |
-| 1024 | 516,976 | 17.1–21.7 s | 2.76 s | 47–60 |
+| 512 | 340,920 | 3.6–5.2 s | 1.16–1.52 s | 99–141 |
+| 1024 | 516,976 | 17.1–21.7 s | 2.50–2.76 s | 47–60 |
 
 512-row split:
 
@@ -321,3 +321,14 @@ the final `transpose128` maps a scalar multiple of `e_0` to a bit-linear
 functional of the scalar, not to field multiplication. A scalar recurrence plus
 a byte table did not match the vector implementation and was reverted. Any
 optimization here must preserve the transpose basis map exactly.
+
+
+## Rejected: capping packed-Shout sumcheck threads
+
+With three independent proof tasks running concurrently, the packed-Shout worker
+was slowed by CPU contention. A thread-local two-worker cap for the packed-Shout
+sumcheck was tried. It measured 4.68 s (512) and 19.27 s (1024), versus the
+uncapped 4.75 s and 18.55 s, so it was noise-level at 512 and worse at 1024 and
+was reverted. Global `MAGNETAR_SUMCHECK_THREADS=4` was similar (4.28–4.52 s at
+512, 18.47 s at 1024); the default remains available_parallelism with the
+8 GiB memory cap.
