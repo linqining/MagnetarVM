@@ -138,19 +138,17 @@ fn check_claim_semantics(
                 "claim instruction does not match ROM".into(),
             ));
         }
-        if claim.rs1_present {
-            if usize::from(claim.rs1) >= registers.len()
-                || registers[usize::from(claim.rs1)] != claim.rs1_value
-            {
-                return Err(RuntimeError::Proof("claim rs1 value mismatch".into()));
-            }
+        if claim.rs1_present
+            && (usize::from(claim.rs1) >= registers.len()
+                || registers[usize::from(claim.rs1)] != claim.rs1_value)
+        {
+            return Err(RuntimeError::Proof("claim rs1 value mismatch".into()));
         }
-        if claim.rs2_present {
-            if usize::from(claim.rs2) >= registers.len()
-                || registers[usize::from(claim.rs2)] != claim.rs2_value
-            {
-                return Err(RuntimeError::Proof("claim rs2 value mismatch".into()));
-            }
+        if claim.rs2_present
+            && (usize::from(claim.rs2) >= registers.len()
+                || registers[usize::from(claim.rs2)] != claim.rs2_value)
+        {
+            return Err(RuntimeError::Proof("claim rs2 value mismatch".into()));
         }
         if claim.rd_present {
             let rd = usize::from(claim.rd);
