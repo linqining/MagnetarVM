@@ -15,7 +15,7 @@ The native proof-only path now has an authenticated TraceClaim/ClaimProof layer,
 | 512 | 341,448 B | 3.7–5.1 s | 1.0–3.2 s | 101–138 |
 | 1024 | 520,400 B | 8.4–16.1 s | 2.3–7.6 s | 64–122 |
 
-For comparison, the paper reports 2^22 in 547 ms with 7.7M cycles/s. This implementation is still roughly 6e4x behind on throughput; the remaining hard gaps are linear/sparse BinaryShout and BinaryTwist and recursion/verifier-in-the-VM.
+For comparison, the paper reports 2^22 in 547 ms with 7.7M cycles/s. The word-mode native path now uses P3 logup* Shout: 4096 rows prove in 47.7 s with a 1.58 MB proof, down from the quadratic-Shout baseline. Remaining hard gaps are BinaryTwist, mixed/compressed native selected-CPU support, the O(rows) claim layer, and recursion/verifier-in-the-VM.
 
 Implemented:
 
