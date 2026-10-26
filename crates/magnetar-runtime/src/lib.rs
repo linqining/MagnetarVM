@@ -19,6 +19,7 @@ pub mod binary_shout;
 pub mod binary_twist;
 pub mod binary_twist_address;
 pub mod branch_row;
+pub mod claim_native;
 pub mod cpu_shape;
 pub mod div_row;
 pub mod gated_aux;
