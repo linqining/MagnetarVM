@@ -112,10 +112,6 @@ fn logup_star_shout_reads_word_mode_rom() {
     let started = std::time::Instant::now();
     let pcs = P3BinaryPcs::new(100);
     let to_f2 = |value: F| F2_128::new(value.to_repr());
-    let table_f2 = table_columns
-        .iter()
-        .map(|column| column.iter().map(|value| to_f2(*value)).collect::<Vec<_>>())
-        .collect::<Vec<_>>();
     let reader_f2 = reader_columns
         .iter()
         .map(|column| column.iter().map(|value| to_f2(*value)).collect::<Vec<_>>())
@@ -186,11 +182,6 @@ fn logup_star_shout_reads_word_mode_rom() {
 
     // Discharge logup* claims with one batched mosaic opening.
     let table_point = output.table_point.as_slice();
-    let table_point_f2 = table_point
-        .iter()
-        .rev()
-        .map(|coordinate| to_f2(*coordinate))
-        .collect::<Vec<_>>();
     let reader_point_f2 = point_f2.clone();
     let position_point_f2 = verified
         .position_point
