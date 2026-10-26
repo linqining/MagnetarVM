@@ -87,8 +87,13 @@ P2 router.
 ## Milestone 3: linear BinaryShout
 
 Replace `cells x cycles` read sum-check with a lookup argument over a committed
-bytecode table and committed read values; verifier should evaluate the public
-table at the random point (or run a polylog sum-check over table indices).
+bytecode table and committed read values.
+
+Status: blocked on the protocol design. A pointwise random-point identity was
+prototyped and rejected because the MLE of a product of address-bit functions
+is not the product of their MLEs; it failed `hello.elf`. The correct argument
+needs logUp/multiplicity, sparse one-hot committed columns, or the paper's
+table-lookup sum-check. See `docs/LINEAR_SHOUT_POSTMORTEM.md`.
 
 ## Milestone 4: linear BinaryTwist
 
