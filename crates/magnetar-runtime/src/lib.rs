@@ -2690,12 +2690,6 @@ pub fn prove_unified_trace_auto(
     trace: &Trace,
     width: usize,
 ) -> Result<UnifiedTraceProof, RuntimeError> {
-    // The selected dynamic CPU prover currently covers only 32-bit rows.
-    // Mixed/compressed traces use the reference proof path until the selected
-    // layout gains compressed PC handling.
-    if trace.rows.iter().any(|row| row.instruction_len != 4) {
-        return prove_unified_trace(trace, width);
-    }
     match crate::simd_dual::mixed_trace_component_mask(trace, width) {
         Ok(_) => prove_unified_trace_dynamic_native(trace, width),
         Err(_) => prove_unified_trace(trace, width),

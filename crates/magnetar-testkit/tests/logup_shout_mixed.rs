@@ -20,6 +20,16 @@ fn logup_shout_and_native_handle_compressed_trace() {
         max_cycles: 100,
     };
     let trace = execute(&program, config).unwrap();
+    for row in &trace.rows {
+        eprintln!(
+            "row pc={:#x} next={:#x} len={} op={:?}",
+            row.pc, row.next_pc, row.instruction_len, row.instruction.op
+        );
+    }
+    eprintln!(
+        "final pc={:#x} halted={}",
+        trace.final_state.pc, trace.halted
+    );
     let witness = BinaryShoutWitness::from_trace(&trace).unwrap();
     assert!(witness.is_32.iter().any(|bit| bit.value() != 0));
     let proof = prove_logup_shout(&witness).unwrap();
@@ -27,6 +37,16 @@ fn logup_shout_and_native_handle_compressed_trace() {
 
     // Native selected CPU still lacks compressed PC rows; auto must fall back
     // to the reference proof and verify.
+    let dynamic = magnetar_runtime::prove_unified_trace_dynamic_native(&trace, 8);
+    eprintln!(
+        "dynamic compressed result: {:?}",
+        dynamic.as_ref().map(|_| ())
+    );
+    let dynamic = magnetar_runtime::prove_unified_trace_dynamic_native(&trace, 8);
+    eprintln!(
+        "dynamic compressed result: {:?}",
+        dynamic.as_ref().map(|_| ())
+    );
     let started = std::time::Instant::now();
     let native = prove_unified_trace_auto(&trace, 8).unwrap();
     let prove = started.elapsed();
@@ -38,3 +58,4 @@ fn logup_shout_and_native_handle_compressed_trace() {
         started.elapsed()
     );
 }
+

@@ -3791,6 +3791,43 @@ pub fn mixed_trace_component_mask(
     ))
 }
 
+fn branch_taken(input: &MixedAluBranchInput) -> bool {
+    let MixedAluBranchInput::Fetch {
+        left,
+        right,
+        kind,
+        ..
+    } = input
+    else {
+        return false;
+    };
+    match kind {
+        crate::branch_row::BranchKind::Beq => left == right,
+        crate::branch_row::BranchKind::Bne => left != right,
+        crate::branch_row::BranchKind::Blt => (*left as i64) < (*right as i64),
+        crate::branch_row::BranchKind::Bge => (*left as i64) >= (*right as i64),
+        crate::branch_row::BranchKind::Bltu => left < right,
+        crate::branch_row::BranchKind::Bgeu => left >= right,
+    }
+}
+
+pub(crate) fn row_pc_correction(
+    row: Option<&magnetar_spec::TraceRow>,
+    input: &MixedAluBranchInput,
+) -> bool {
+    let Some(row) = row else {
+        return false;
+    };
+    if row.instruction_len != 2 {
+        return false;
+    }
+    match input {
+        MixedAluBranchInput::Jump { .. } => false,
+        MixedAluBranchInput::Fetch { .. } => !branch_taken(input),
+        _ => true,
+    }
+}
+
 pub fn mixed_alu_branch_rows_from_trace(
     trace: &magnetar_spec::Trace,
     width: usize,
@@ -4104,7 +4141,12 @@ impl SmallAluBranchRow {
         }
     }
 
-    fn witness_at(&self, pc: u64, input: &MixedAluBranchInput) -> Result<Vec<bool>, RuntimeError> {
+    fn witness_at(
+        &self,
+        pc: u64,
+        input: &MixedAluBranchInput,
+        _pc_correction: bool,
+    ) -> Result<Vec<bool>, RuntimeError> {
         let (left, right, op) = match input {
             MixedAluBranchInput::Alu { left, right, op } => (*left, *right, *op),
             _ => (0, 0, crate::simd_f2::GatedAluOp::Add),
@@ -4227,7 +4269,7 @@ fn small_trace_bits(
                 kind: crate::branch_row::BranchKind::Beq,
             };
         }
-        let mut instance = row.witness_at(pc, &input)?;
+        let mut instance = row.witness_at(pc, &input, false)?;
         instance.resize(base_cols, false);
         bits.extend(instance);
     }
@@ -5020,6 +5062,10 @@ struct DynamicMixedRow {
     offsets: Vec<usize>,
     pc: Vec<magnetar_constraint::VarId>,
     next_pc: Vec<magnetar_constraint::VarId>,
+    raw_next: Vec<magnetar_constraint::VarId>,
+    pc_correction: magnetar_constraint::VarId,
+    pc_step_add: crate::simd_f2::GatedBitAdder,
+    pc_step_offset: usize,
     selectors: Vec<magnetar_constraint::VarId>,
     ands: Vec<Vec<magnetar_constraint::VarId>>,
     one: magnetar_constraint::VarId,
@@ -5068,6 +5114,13 @@ impl DynamicMixedRow {
                 relation.add(BitRow::new(shift(&row.a), shift(&row.b), shift(&row.c)));
             }
         }
+        let pc_step_add = crate::simd_f2::GatedBitAdder::new(width);
+        let pc_step_offset = relation.num_vars;
+        relation.num_vars += pc_step_add.relation.num_vars;
+        for row in &pc_step_add.relation.rows {
+            let shift = |vars: &[VarId]| vars.iter().map(|v| *v + pc_step_offset).collect::<Vec<_>>();
+            relation.add(BitRow::new(shift(&row.a), shift(&row.b), shift(&row.c)));
+        }
         let take = |relation: &mut BitRelation, n: usize| {
             let start = relation.num_vars;
             relation.num_vars += n;
@@ -5075,6 +5128,8 @@ impl DynamicMixedRow {
         };
         let pc = take(&mut relation, width);
         let next_pc = take(&mut relation, width);
+        let raw_next = take(&mut relation, width);
+        let pc_correction = take(&mut relation, 1)[0];
         let selectors = take(&mut relation, components.len());
         let mut ands = Vec::with_capacity(components.len());
         for _ in 0..components.len() {
@@ -5087,6 +5142,11 @@ impl DynamicMixedRow {
                 vec![next_pc[bit]],
                 vec![next_pc[bit]],
                 vec![next_pc[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![raw_next[bit]],
+                vec![raw_next[bit]],
+                vec![raw_next[bit]],
             ));
             let mut next_terms = Vec::with_capacity(components.len());
             for (index, component) in components.iter().enumerate() {
@@ -5102,8 +5162,40 @@ impl DynamicMixedRow {
                 ));
                 next_terms.push(ands[index][bit]);
             }
-            relation.add(BitRow::new(vec![next_pc[bit]], vec![one], next_terms));
+            relation.add(BitRow::new(vec![raw_next[bit]], vec![one], next_terms));
         }
+        // raw_next = next_pc + 2 * pc_correction:
+        // next_pc is corrected by 2 for compressed rows.
+        for bit in 0..width {
+            relation.add(BitRow::new(
+                vec![next_pc[bit]],
+                vec![one],
+                vec![pc_step_offset as VarId + pc_step_add.a[bit]],
+            ));
+            relation.add(BitRow::new(
+                vec![raw_next[bit]],
+                vec![one],
+                vec![pc_step_offset as VarId + pc_step_add.out[bit]],
+            ));
+            if bit == 1 {
+                relation.add(BitRow::new(
+                    vec![pc_correction],
+                    vec![one],
+                    vec![pc_step_offset as VarId + pc_step_add.b[bit]],
+                ));
+            } else {
+                relation.add(BitRow::new(
+                    vec![pc_step_offset as VarId + pc_step_add.b[bit]],
+                    vec![one],
+                    Vec::new(),
+                ));
+            }
+        }
+        relation.add(BitRow::new(
+            vec![pc_step_offset as VarId + pc_step_add.gate],
+            vec![one],
+            vec![one],
+        ));
         for selector in &selectors {
             relation.add(BitRow::new(
                 vec![*selector],
@@ -5118,6 +5210,10 @@ impl DynamicMixedRow {
             offsets,
             pc,
             next_pc,
+            raw_next,
+            pc_correction,
+            pc_step_add,
+            pc_step_offset,
             selectors,
             ands,
             one,
@@ -5125,7 +5221,12 @@ impl DynamicMixedRow {
         })
     }
 
-    fn witness_at(&self, pc: u64, input: &MixedAluBranchInput) -> Result<Vec<bool>, RuntimeError> {
+    fn witness_at(
+        &self,
+        pc: u64,
+        input: &MixedAluBranchInput,
+        pc_correction: bool,
+    ) -> Result<Vec<bool>, RuntimeError> {
         let mut bits = Vec::new();
         for component in &self.components {
             let mut instance = component.witness(pc, input)?;
@@ -5156,7 +5257,25 @@ impl DynamicMixedRow {
                 bits[self.ands[index][bit]] = bits[self.selectors[index]] && value;
                 next_value ^= bits[self.ands[index][bit]];
             }
-            bits[self.next_pc[bit]] = next_value;
+            bits[self.raw_next[bit]] = next_value;
+        }
+        bits[self.pc_correction] = pc_correction;
+        let raw = (0..self.width).fold(0u64, |value, bit| {
+            if bits[self.raw_next[bit]] {
+                value | (1 << bit)
+            } else {
+                value
+            }
+        });
+        let next = raw.wrapping_sub(if pc_correction { 2 } else { 0 });
+        for bit in 0..self.width {
+            bits[self.next_pc[bit]] = ((next >> bit) & 1) == 1;
+        }
+        let addition = self
+            .pc_step_add
+            .witness(next, if pc_correction { 2 } else { 0 }, true);
+        for (local, value) in addition.into_iter().enumerate() {
+            bits[self.pc_step_offset + local] = value;
         }
         Ok(bits)
     }
@@ -5216,7 +5335,7 @@ fn dynamic_trace_bits(
                 kind: crate::branch_row::BranchKind::Beq,
             };
         }
-        let mut instance = row.witness_at(pc, &input)?;
+        let mut instance = row.witness_at(pc, &input, false)?;
         instance.resize(base_cols, false);
         bits.extend(instance);
     }
@@ -5351,6 +5470,13 @@ fn segmented_dynamic_row(
         };
         blocks.push((format!("component{index}"), start, size, owner));
     }
+    let step_len = original.pc_step_add.relation.num_vars;
+    let step_size = step_len.next_power_of_two();
+    let step_start = place(step_size);
+    for local in 0..step_len {
+        mapping[original.pc_step_offset + local] = step_start + local;
+    }
+    blocks.push(("pc_step".into(), step_start, step_size, SegmentOwner::Cpu));
     let pc_size = (2 * width).next_power_of_two();
     let pc_start = place(pc_size);
     for bit in 0..width {
@@ -5358,7 +5484,10 @@ fn segmented_dynamic_row(
         mapping[original.next_pc[bit]] = pc_start + width + bit;
     }
     blocks.push(("pc".into(), pc_start, pc_size, SegmentOwner::Pcs));
-    let mux_len = original.selectors.len() + original.ands.iter().map(Vec::len).sum::<usize>();
+    let mux_len = original.selectors.len()
+        + original.ands.iter().map(Vec::len).sum::<usize>()
+        + width
+        + 1;
     let mux_size = mux_len.next_power_of_two();
     let mux_start = place(mux_size);
     let mut local = 0usize;
@@ -5372,6 +5501,12 @@ fn segmented_dynamic_row(
             local += 1;
         }
     }
+    for var in &original.raw_next {
+        mapping[*var] = mux_start + local;
+        local += 1;
+    }
+    mapping[original.pc_correction] = mux_start + local;
+    let _ = local;
     blocks.push(("mux".into(), mux_start, mux_size, SegmentOwner::Cpu));
     let block_cols = cursor.next_power_of_two();
     let mut padding_index = 0usize;
@@ -5493,14 +5628,44 @@ pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
                 kind: crate::branch_row::BranchKind::Beq,
             };
         }
-        let source = original.witness_at(pc, &input)?;
+        let correction = row_pc_correction(trace.rows.get(index), &input);
+        let source = original.witness_at(pc, &input, correction)?;
         let mut block = vec![false; base_cols];
         for (from, to) in mapping.iter().enumerate() {
             if source[from] {
                 block[*to] = true;
             }
         }
+        if !row.relation.check(&block) {
+            return Err(RuntimeError::Proof(format!("dynamic row {index} relation fail")));
+        }
         bits.extend(block);
+    }
+    for instance in 0..cycles.saturating_sub(1) {
+        for bit in 0..width {
+            let from = bits[instance * base_cols + row.next_pc()[bit]];
+            let to = bits[(instance + 1) * base_cols + row.pc()[bit]];
+            if from != to {
+                return Err(RuntimeError::Proof(format!(
+                    "dynamic row {instance} pc chain fail at bit {bit} from={from} to={to} pcvar={} nextvar={} base={base_cols}",
+                    row.pc()[bit], row.next_pc()[bit]
+                )));
+            }
+        }
+    }
+    for (instance, pc) in [(0usize, initial_pc), (cycles - 1, final_pc)] {
+        for bit in 0..width {
+            let observed = if instance == 0 {
+                bits[instance * base_cols + row.pc()[bit]]
+            } else {
+                bits[instance * base_cols + row.next_pc()[bit]]
+            };
+            if observed != ((pc >> bit) & 1 == 1) {
+                return Err(RuntimeError::Proof(format!(
+                    "dynamic statement pc fail at bit {bit}"
+                )));
+            }
+        }
     }
     let proof = prove_lockstep_bits(
         &bits, &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], &layout, backend,
@@ -5688,7 +5853,8 @@ where
                 kind: crate::branch_row::BranchKind::Beq,
             };
         }
-        let source = original.witness_at(pc, &input)?;
+        let correction = row_pc_correction(trace.rows.get(cycle), &input);
+        let source = original.witness_at(pc, &input, correction)?;
         let mut block = vec![false; block_cols];
         for (from, to) in mapping.iter().enumerate() {
             if source[from] {
@@ -5886,7 +6052,8 @@ where
                     kind: crate::branch_row::BranchKind::Beq,
                 };
             }
-            let source = original.witness_at(pc, &input)?;
+            let correction = row_pc_correction(trace.rows.get(index), &input);
+            let source = original.witness_at(pc, &input, correction)?;
             let mut block = vec![false; base_cols];
             for (from, to) in mapping.iter().enumerate() {
                 if source[from] {
@@ -6885,6 +7052,86 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_compressed_witness_satisfies_relation() {
+        use magnetar_executor::execute;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+        let trace = execute(
+            &ProgramImage::new(
+                0x1000,
+                vec![0x008d_4095, Instruction::new(Op::Ecall).encode()],
+            ),
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let rows = mixed_alu_branch_rows_from_trace(&trace, 8).unwrap();
+        let mask = mixed_rows_component_mask(&rows);
+        let original = DynamicMixedRow::build(mask, 8).unwrap();
+        let cycles = rows.len().next_power_of_two().max(2);
+        let final_pc = trace.final_state.pc;
+        for cycle in 0..cycles {
+            let (pc, mut input) = if cycle < rows.len() {
+                rows[cycle]
+            } else {
+                (
+                    final_pc,
+                    MixedAluBranchInput::Fetch {
+                        left: 0,
+                        right: 0,
+                        imm: 0,
+                        kind: crate::branch_row::BranchKind::Beq,
+                    },
+                )
+            };
+            if cycle + 1 == rows.len() && final_pc == pc {
+                input = MixedAluBranchInput::Fetch {
+                    left: 0,
+                    right: 0,
+                    imm: 0,
+                    kind: crate::branch_row::BranchKind::Beq,
+                };
+            }
+            let correction = row_pc_correction(trace.rows.get(cycle), &input);
+            let bits = original.witness_at(pc, &input, correction).unwrap();
+            if !original.relation.check(&bits) {
+                let parity = |terms: &[usize]| {
+                    terms.iter().filter(|term| bits[**term]).count() % 2 == 1
+                };
+                for (index, row) in original.relation.rows.iter().enumerate() {
+                    let a = parity(&row.a);
+                    let b = parity(&row.b);
+                    let c = parity(&row.c);
+                    if (a && b) != c {
+                        eprintln!(
+                            "row {index} a={:?} b={:?} c={:?} pc={pc:#x} corr={correction}",
+                            row.a, row.b, row.c
+                        );
+                        eprintln!(
+                            "num_vars={} pc={:?} next={:?} raw={:?} corr_var={:?}",
+                            original.relation.num_vars,
+                            original.pc,
+                            original.next_pc,
+                            original.raw_next,
+                            original.pc_correction
+                        );
+                        break;
+                    }
+                }
+                panic!(
+                    "compressed row {cycle} correction={correction} pc={pc:#x} input_kind={}",
+                    input.kind()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn dynamic_jump_witness_satisfies_relation() {
         use magnetar_executor::execute;
         use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
@@ -6927,7 +7174,7 @@ mod tests {
         let mask = mixed_rows_component_mask(&rows);
         let original = DynamicMixedRow::build(mask, 8).unwrap();
         for (pc, input) in rows {
-            let bits = original.witness_at(pc, &input).unwrap();
+            let bits = original.witness_at(pc, &input, false).unwrap();
             if !original.relation.check(&bits) {
                 let parity =
                     |terms: &[usize]| terms.iter().filter(|term| bits[**term]).count() % 2 == 1;

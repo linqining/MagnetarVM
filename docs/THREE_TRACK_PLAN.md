@@ -99,6 +99,32 @@ after Shout and Twist are both virtual.
 See `docs/P1_LINEAR_SHOUT.md`, `docs/P2_PROOF_ONLY_VERIFIER.md`, and
 `docs/VIRTUAL_CLAIM_REWRITE.md`. Current runtime suite: 316 passing.
 
+## Track 3 implemented (first slice)
+
+The dynamic selected row now has a `pc_correction` bit and a raw-next/step
+adder relation:
+
+```text
+raw_next = next_pc + 2 * pc_correction
+```
+
+Compressed sequential rows (ALU, memory, not-taken branch) set the bit; taken
+branches and jumps do not. `mixed_alu_branch_rows_from_trace` keeps the
+instruction length out of the component inputs; the prover/verifier derive the
+correction from the trace row, and the claim layer exposes `instruction_len`.
+
+`prove_unified_trace_auto` no longer falls back for compressed rows; the
+compressed test now produces a dynamic proof with logup Shout.
+
+Baseline replacement:
+
+```text
+old reference fallback: 117,730 B / 8.35 s prove / 96.4 ms verify
+new dynamic native:     103,067 B / 96.8 ms prove / 49.4 ms verify
+```
+
+Full runtime suite after the change: 317 passed; clippy clean.
+
 ## Track 3 baseline
 
 `logup_shout_mixed` on the tiny compressed + 32-bit program:
