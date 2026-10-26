@@ -560,7 +560,7 @@ where
         let parallel = std::env::var("MAGNETAR_PRODUCT6_THREADS")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
-            .map_or(true, |threads| threads > 1);
+            .is_none_or(|threads| threads > 1);
         if len >= 1024 && parallel {
             std::thread::scope(|scope| {
                 let mut handles = Vec::with_capacity(4);
