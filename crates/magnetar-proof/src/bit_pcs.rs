@@ -834,7 +834,12 @@ impl<P: Pcs> BitPcs for RingSwitchPackedBitPcs<P> {
     fn open(&self, bits: &[bool], point: &[F2_128]) -> Result<(F2_128, Self::Opening), ProofError> {
         use magnetar_transcript::Sha256Transcript;
 
+        let profile = std::env::var_os("MAGNETAR_PROFILE_RING").is_some();
+        let started = std::time::Instant::now();
         let packed = Self::pack(bits)?;
+        if profile {
+            eprintln!("ring pack: {:?}", started.elapsed());
+        }
         let high_bits = point.len() - 7;
         if high_bits == 0 || packed.len() != 1 << high_bits {
             return Err(ProofError::Pcs("ring-switch point size mismatch".into()));
@@ -883,6 +888,10 @@ impl<P: Pcs> BitPcs for RingSwitchPackedBitPcs<P> {
                 })
                 .collect::<Vec<_>>()
         };
+        if profile {
+            eprintln!("ring eval: {:?}", started.elapsed());
+        }
+        let product_started = std::time::Instant::now();
         let (sumcheck, ry, _) =
             crate::prove_product2(packed.clone(), a_values, |round, values| {
                 Self::sumcheck_challenge(&mut transcript, round, values)
@@ -892,8 +901,15 @@ impl<P: Pcs> BitPcs for RingSwitchPackedBitPcs<P> {
                 "ring-switch sumcheck claim mismatch".into(),
             ));
         }
+        if profile {
+            eprintln!("ring product2: {:?}", product_started.elapsed());
+        }
+        let open_started = std::time::Instant::now();
         let packed_value = Self::evaluate(&packed, &ry);
         let pcs_opening = self.pcs.open(&packed, &ry)?;
+        if profile {
+            eprintln!("ring p3 open: {:?}", open_started.elapsed());
+        }
         Ok((
             claim,
             RingSwitchOpening {

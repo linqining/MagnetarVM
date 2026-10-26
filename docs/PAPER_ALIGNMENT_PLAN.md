@@ -12,8 +12,8 @@ This is a roadmap, not a claim that the implementation is aligned yet.
 |---:|---:|---:|---:|---:|
 | 16 | 92,528 | 0.184 s | 0.134 s | 87.2 |
 | 64 | 136,472 | 1.30 s | 0.837 s | 49.3 |
-| 512 | 340,472 | 4.43 s | 1.27 s | 115.6 |
-| 1024 | 516,912 | 15.70 s | 3.15 s | 65.2 |
+| 512 | 340,472 | 4.77 s | 1.44 s | 107.3 |
+| 1024 | 521,520 | 15.32 s | 2.67 s | 66.9 |
 | 2048 | 833,256 | 59.30 s | 5.97 s | 34.5 |
 
 512-row split:
@@ -374,3 +374,14 @@ round.
 For halfword-only reads the address1/is32 factors are also omitted from the
 read sum-check entirely (the prover still includes their folded evaluations in
 the linking claim). At 2048 rows this reduced the prover from 72.6 s to 59.3 s.
+
+
+## P3SharedPcs bits=9 parameter fix
+
+`P3SharedPcs::pcs_for(9)` used `(security=100, rate=3, pow=24, fold=2)`.
+At 1024 rows the packed-Shout ring-switch open spent 13.1 s inside that P3
+opening. Changing only the bits=9 configuration to
+`(100, rate=3, pow=16, fold=2)` drops the same opening to 39 ms:
+62,329 B -> 66,713 B packed proof, and total 1024-row proof 516,912 -> 521,520 B.
+The bits=12 and bits>=4 configurations were left unchanged. The ring-switch
+profile markers are available under `MAGNETAR_PROFILE_RING`.
