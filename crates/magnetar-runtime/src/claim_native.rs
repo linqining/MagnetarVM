@@ -51,11 +51,6 @@ pub fn verify_claim_native(
             "trace commitment does not match the public statement".into(),
         ));
     }
-    if !statement.output.is_empty() || !statement.input.is_empty() {
-        return Err(RuntimeError::Proof(
-            "claim-native fast path does not yet bind syscall IO".into(),
-        ));
-    }
     let rows = proof
         .claim_proof
         .verify()
@@ -100,6 +95,9 @@ fn check_claim_semantics(
 ) -> Result<(), RuntimeError> {
     let mut registers = statement.initial_state.regs;
     let mut ram = statement.initial_ram.clone();
+    let mut output = Vec::new();
+    let mut consumed_input = Vec::new();
+    let mut input_cursor = 0usize;
     for (row_index, claim) in rows.iter().enumerate() {
         if claim.instruction_len != 2 && claim.instruction_len != 4 {
             return Err(RuntimeError::Proof(
@@ -163,6 +161,102 @@ fn check_claim_semantics(
                 registers[rd] = claim.rd_value;
             }
         }
+        if let Some(syscall) = claim.syscall {
+            let number = syscall.number;
+            let a0 = syscall.args[0];
+            let a1 = syscall.args[1];
+            let a2 = syscall.args[2];
+            if number == magnetar_spec::syscall::SYS_WRITE {
+                if a0 != 1 && a0 != 2 {
+                    return Err(RuntimeError::Proof("syscall write fd invalid".into()));
+                }
+                let length = usize::try_from(a2)
+                    .map_err(|_| RuntimeError::Proof("syscall write length".into()))?;
+                let offset = usize::try_from(
+                    a1.checked_sub(statement.config.ram_base)
+                        .ok_or_else(|| RuntimeError::Proof("syscall write below RAM".into()))?,
+                )
+                .map_err(|_| RuntimeError::Proof("syscall write address".into()))?;
+                let bytes = ram
+                    .get(
+                        offset..offset.checked_add(length).ok_or_else(|| {
+                            RuntimeError::Proof("syscall write length overflow".into())
+                        })?,
+                    )
+                    .ok_or_else(|| RuntimeError::Proof("syscall write outside RAM".into()))?;
+                output.extend_from_slice(bytes);
+            } else if number == magnetar_spec::syscall::SYS_READ {
+                if a0 != 0 {
+                    return Err(RuntimeError::Proof("syscall read fd invalid".into()));
+                }
+                let length = usize::try_from(a2)
+                    .map_err(|_| RuntimeError::Proof("syscall read length".into()))?;
+                let available = statement.input.len().saturating_sub(input_cursor);
+                let count = available.min(length);
+                if count > 0 {
+                    let offset = usize::try_from(
+                        a1.checked_sub(statement.config.ram_base)
+                            .ok_or_else(|| RuntimeError::Proof("syscall read below RAM".into()))?,
+                    )
+                    .map_err(|_| RuntimeError::Proof("syscall read address".into()))?;
+                    if offset.checked_add(count).is_none_or(|end| end > ram.len()) {
+                        return Err(RuntimeError::Proof("syscall read outside RAM".into()));
+                    }
+                    let chunk = &statement.input[input_cursor..input_cursor + count];
+                    let mut expected_word = a1 & !7;
+                    let last_byte = a1 + count as u64 - 1;
+                    loop {
+                        let word_offset = usize::try_from(
+                            expected_word
+                                .checked_sub(statement.config.ram_base)
+                                .ok_or_else(|| {
+                                    RuntimeError::Proof("syscall read word below RAM".into())
+                                })?,
+                        )
+                        .map_err(|_| RuntimeError::Proof("syscall read word".into()))?;
+                        let mut word_bytes = ram
+                            .get(word_offset..word_offset + 8)
+                            .ok_or_else(|| {
+                                RuntimeError::Proof("syscall read word outside RAM".into())
+                            })?
+                            .to_vec();
+                        let copy_start = usize::try_from(a1.saturating_sub(expected_word))
+                            .map_err(|_| RuntimeError::Proof("syscall read copy".into()))?;
+                        let copy_len = chunk.len().min(8usize.saturating_sub(copy_start)).min(
+                            usize::try_from(last_byte.saturating_sub(expected_word) + 1)
+                                .unwrap_or(8),
+                        );
+                        word_bytes[copy_start..copy_start + copy_len]
+                            .copy_from_slice(&chunk[..copy_len]);
+                        let expected = u64::from_le_bytes(
+                            word_bytes.as_slice().try_into().expect("eight bytes"),
+                        );
+                        let event = claim
+                            .memory
+                            .iter()
+                            .find(|event| event.is_write && event.addr == expected_word)
+                            .ok_or_else(|| {
+                                RuntimeError::Proof("syscall read missing memory write".into())
+                            })?;
+                        if event.width != 8 || event.value != expected {
+                            return Err(RuntimeError::Proof(
+                                "syscall read memory write mismatch".into(),
+                            ));
+                        }
+                        if expected_word >= last_byte & !7 {
+                            break;
+                        }
+                        expected_word = expected_word.wrapping_add(8);
+                    }
+                    consumed_input.extend_from_slice(chunk);
+                    input_cursor += count;
+                }
+            } else if number == magnetar_spec::syscall::SYS_EXIT || number == 0 {
+                if statement.exit_code != Some(a0) {
+                    return Err(RuntimeError::Proof("syscall exit code mismatch".into()));
+                }
+            }
+        }
         for event in &claim.memory {
             if event.cycle != row_index as u64 {
                 return Err(RuntimeError::Proof("claim memory cycle mismatch".into()));
@@ -199,6 +293,12 @@ fn check_claim_semantics(
         return Err(RuntimeError::Proof(
             "claim register file does not reach final state".into(),
         ));
+    }
+    if output != statement.output {
+        return Err(RuntimeError::Proof("syscall write output mismatch".into()));
+    }
+    if statement.input.get(..consumed_input.len()) != Some(consumed_input.as_slice()) {
+        return Err(RuntimeError::Proof("syscall read input mismatch".into()));
     }
     Ok(())
 }
