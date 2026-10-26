@@ -557,7 +557,11 @@ where
                         + alpha * (a1_t[index] * b1_t[index] - c1_t[index]))
             })
         };
-        if len >= 1024 {
+        let parallel = std::env::var("MAGNETAR_PRODUCT6_THREADS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .map_or(true, |threads| threads > 1);
+        if len >= 1024 && parallel {
             std::thread::scope(|scope| {
                 let mut handles = Vec::with_capacity(4);
                 for t in 0..=3 {

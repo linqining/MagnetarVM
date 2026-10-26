@@ -12,8 +12,8 @@ This is a roadmap, not a claim that the implementation is aligned yet.
 |---:|---:|---:|---:|---:|
 | 16 | 92,528 | 0.184 s | 0.134 s | 87.2 |
 | 64 | 136,472 | 1.30 s | 0.837 s | 49.3 |
-| 512 | 340,920 | 3.6–5.2 s | 1.16–1.52 s | 99–141 |
-| 1024 | 516,976 | 17.1–21.7 s | 2.50–2.76 s | 47–60 |
+| 512 | 340,920 | 3.9–5.2 s | 1.16–1.52 s | 99–132 |
+| 1024 | 516,976 | 18.4–21.7 s | 2.29–2.76 s | 56–60 |
 
 512-row split:
 
@@ -332,3 +332,11 @@ uncapped 4.75 s and 18.55 s, so it was noise-level at 512 and worse at 1024 and
 was reverted. Global `MAGNETAR_SUMCHECK_THREADS=4` was similar (4.28–4.52 s at
 512, 18.47 s at 1024); the default remains available_parallelism with the
 8 GiB memory cap.
+
+
+## Product6 thread knob
+
+`MAGNETAR_PRODUCT6_THREADS` now controls the four product6 degree-point
+evaluations. With one worker, 512 rows measured 4.09 s and 1024 rows 19.64 s;
+with the default four workers they measured 3.89 s and 18.35 s. The default is
+still four.
