@@ -10,10 +10,10 @@ This is a roadmap, not a claim that the implementation is aligned yet.
 
 | rows | bytes | prove | verify | cycles/s |
 |---:|---:|---:|---:|---:|
-| 16 | 92,528 | 0.347 s | 0.162 s | 46.2 |
-| 64 | 136,472 | 1.957 s | 0.502 s | 32.7 |
-| 512 | 348,368 | 8.76 s | 5.98 s | 58.5 |
-| 1024 | 516,792 | 45.16 s | 12.87 s | 22.7 |
+| 16 | 92,528 | 0.189 s | 0.187 s | 84.4 |
+| 64 | 136,472 | 0.989 s | 0.435 s | 64.7 |
+| 512 | 348,368 | 7.67 s | 6.37 s | 66.8 |
+| 1024 | 516,792 | 40.26 s | 12.78 s | 25.4 |
 
 512-row split:
 
@@ -159,6 +159,11 @@ segment claims         21 ms
 claims               2.50 s
 open                 1.57 s
 SelectedCpu stage    4.16 s
+
+Ring-switch `a_values` now uses a scalar prefix tree plus a 16x256 byte table
+for the transpose dot product when the packed table has at least 64 entries.
+Proof bytes are unchanged. This cuts the 16/64/512/1024-row prover to the
+numbers in the table above.
 ```
 ```
 

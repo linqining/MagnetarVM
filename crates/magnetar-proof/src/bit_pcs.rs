@@ -197,6 +197,31 @@ mod tests {
     }
 
     #[test]
+    fn eval_rs_eq_table_matches_pointwise() {
+        let row_batch = RingSwitchPackedBitPcs::<TestPcs>::eq_vector(&[
+            F2_128::from(3u64),
+            F2_128::from(5u64),
+            F2_128::from(7u64),
+            F2_128::from(3u64),
+            F2_128::from(5u64),
+            F2_128::from(7u64),
+            F2_128::from(3u64),
+        ]);
+        let z = vec![F2_128::from(6u64), F2_128::from(9u64), F2_128::from(11u64)];
+        let table = RingSwitchPackedBitPcs::<TestPcs>::eval_rs_eq_table(&z, &row_batch);
+        for (index, value) in table.iter().enumerate() {
+            let query = (0..z.len())
+                .map(|bit| F2_128::from(((index >> bit) & 1) as u64))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                *value,
+                RingSwitchPackedBitPcs::<TestPcs>::eval_rs_eq(&z, &query, &row_batch),
+                "index {index}"
+            );
+        }
+    }
+
+    #[test]
     fn ring_switch_matches_direct_for_multi_field() {
         let bits = (0..256).map(|index| index % 11 == 0).collect::<Vec<_>>();
         let point = (0..8)
@@ -712,6 +737,42 @@ impl<P: Pcs> RingSwitchPackedBitPcs<P> {
             })
     }
 
+    fn eval_rs_eq_table(z_vals: &[F2_128], row_batch: &[F2_128]) -> Vec<F2_128> {
+        let mut scalars = vec![F2_128::from(1u64); 1usize << z_vals.len()];
+        for (bit, vertical) in z_vals.iter().enumerate() {
+            let len = 1usize << bit;
+            for index in 0..len {
+                let value = scalars[index];
+                scalars[index] = value * (F2_128::from(1u64) + *vertical);
+                scalars[len + index] = value * *vertical;
+            }
+        }
+        let mut byte_table = [[F2_128::from(0u64); 256]; 16];
+        for (byte, table) in byte_table.iter_mut().enumerate() {
+            for (mask, value) in table.iter_mut().enumerate() {
+                let mut sum = F2_128::from(0u64);
+                for bit in 0..8 {
+                    if (mask >> bit) & 1 == 1 {
+                        sum = sum + row_batch[byte * 8 + bit];
+                    }
+                }
+                *value = sum;
+            }
+        }
+        scalars
+            .into_iter()
+            .map(|scalar| {
+                let bytes = scalar.value().to_le_bytes();
+                bytes
+                    .iter()
+                    .enumerate()
+                    .fold(F2_128::from(0u64), |sum, (byte, value)| {
+                        sum + byte_table[byte][usize::from(*value)]
+                    })
+            })
+            .collect()
+    }
+
     fn eq_vector(point: &[F2_128]) -> Vec<F2_128> {
         (0..1usize << point.len())
             .map(|index| {
@@ -810,14 +871,18 @@ impl<P: Pcs> BitPcs for RingSwitchPackedBitPcs<P> {
             .iter()
             .zip(&eq_double)
             .fold(F2_128::from(0u64), |sum, (a, b)| sum + *a * *b);
-        let a_values = (0..1usize << high_bits)
-            .map(|index| {
-                let query = (0..high_bits)
-                    .map(|bit| F2_128::from(((index >> bit) & 1) as u64))
-                    .collect::<Vec<_>>();
-                Self::eval_rs_eq(suffix, &query, &eq_double)
-            })
-            .collect::<Vec<_>>();
+        let a_values = if (1usize << high_bits) >= 64 {
+            Self::eval_rs_eq_table(suffix, &eq_double)
+        } else {
+            (0..1usize << high_bits)
+                .map(|index| {
+                    let query = (0..high_bits)
+                        .map(|bit| F2_128::from(((index >> bit) & 1) as u64))
+                        .collect::<Vec<_>>();
+                    Self::eval_rs_eq(suffix, &query, &eq_double)
+                })
+                .collect::<Vec<_>>()
+        };
         let (sumcheck, ry, _) =
             crate::prove_product2(packed.clone(), a_values, |round, values| {
                 Self::sumcheck_challenge(&mut transcript, round, values)
