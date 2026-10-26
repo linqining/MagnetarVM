@@ -10,10 +10,10 @@ This is a roadmap, not a claim that the implementation is aligned yet.
 
 | rows | bytes | prove | verify | cycles/s |
 |---:|---:|---:|---:|---:|
-| 16 | 92,528 | 0.189 s | 0.187 s | 84.4 |
-| 64 | 136,472 | 0.989 s | 0.435 s | 64.7 |
-| 512 | 348,368 | 7.67 s | 6.37 s | 66.8 |
-| 1024 | 516,792 | 40.26 s | 12.78 s | 25.4 |
+| 16 | 92,528 | 0.184 s | 0.134 s | 87.2 |
+| 64 | 136,472 | 1.30 s | 0.837 s | 49.3 |
+| 512 | 348,368 | 6.76 s | 6.24 s | 75.7 |
+| 1024 | 516,792 | 42.53 s | 12.82 s | 24.1 |
 
 512-row split:
 
@@ -160,10 +160,13 @@ claims               2.50 s
 open                 1.57 s
 SelectedCpu stage    4.16 s
 
+Run-to-run prover times vary by roughly 10-20% on this laptop after sustained
+runs, so the table below is a point measurement, not a tight benchmark bound.
+
 Ring-switch `a_values` now uses a scalar prefix tree plus a 16x256 byte table
 for the transpose dot product when the packed table has at least 64 entries.
-Proof bytes are unchanged. This cuts the 16/64/512/1024-row prover to the
-numbers in the table above.
+Proof bytes are unchanged. The Spartan row-combination/eval row selector is built by tensor doubling as
+well. These cut the 16/64/512/1024-row prover to the numbers in the table above.
 ```
 ```
 

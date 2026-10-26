@@ -167,9 +167,7 @@ impl SparseMatrix {
         if row_point.len() != row_bits {
             return Err(SpartanError::Dimensions);
         }
-        let row_eq: Vec<F2_128> = (0..self.rows.len())
-            .map(|index| eq(row_point, &bits(index, row_bits)))
-            .collect();
+        let row_eq = eq_vector_tensor(row_point);
         let mut result = vec![F2_128::from(0u64); self.cols];
         for (row_index, row) in self.rows.iter().enumerate() {
             for (col_index, coefficient) in row {
@@ -189,12 +187,8 @@ impl SparseMatrix {
         if row_point.len() != row_bits || col_point.len() != col_bits {
             return Err(SpartanError::Dimensions);
         }
-        let row_eq: Vec<F2_128> = (0..self.rows.len())
-            .map(|index| eq(row_point, &bits(index, row_bits)))
-            .collect();
-        let col_eq: Vec<F2_128> = (0..self.cols)
-            .map(|index| eq(col_point, &bits(index, col_bits)))
-            .collect();
+        let row_eq = eq_vector_tensor(row_point);
+        let col_eq = eq_vector_tensor(col_point);
         let mut sum = F2_128::from(0u64);
         for (row_index, row) in self.rows.iter().enumerate() {
             for (col_index, coefficient) in row {
