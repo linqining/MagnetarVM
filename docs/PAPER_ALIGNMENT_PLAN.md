@@ -12,8 +12,8 @@ This is a roadmap, not a claim that the implementation is aligned yet.
 |---:|---:|---:|---:|---:|
 | 16 | 92,528 | 0.184 s | 0.134 s | 87.2 |
 | 64 | 136,472 | 1.30 s | 0.837 s | 49.3 |
-| 512 | 340,920 | 3.9–5.2 s | 1.16–1.52 s | 99–132 |
-| 1024 | 516,976 | 18.4–21.7 s | 2.29–2.76 s | 56–60 |
+| 512 | 340,472 | 3.9–5.2 s | 1.16–1.52 s | 99–132 |
+| 1024 | 516,912 | 18.4–21.7 s | 2.29–2.76 s | 56–60 |
 
 512-row split:
 
@@ -359,3 +359,13 @@ the selected segments dominate. Raising `MAGNETAR_SUMCHECK_MEMORY_GB` to 32 made
 This is the clearest evidence that the next real step is a linear/sparse Shout
 sum-check, not more constant-factor tuning. The proof also grows past the paper's
 598 KiB budget at 2048 rows (833 KiB) and reaches 1.43 MiB at 4096.
+
+
+## Shout degree bound for halfword-only reads
+
+When no trace row is 32-bit (`is_32` is identically zero), the high-halfword term
+in the read sum-check is zero. The prover now uses degree `a + 2` for the cycle
+rounds instead of `a + 4`; the verifier derives the bound from the proof rounds.
+Mixed 32-bit/16-bit traces retain `a + 4`. This shrinks packed Shout by about
+450 B (51,418 -> 50,970 at 512 rows) and removes two evaluation points per cycle
+round.

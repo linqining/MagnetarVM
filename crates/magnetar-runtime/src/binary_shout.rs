@@ -584,7 +584,12 @@ pub(crate) fn prove_binary_shout_claims(
             }
         }
     }
-    let mut degrees = vec![a + 4; terms.trailing_zeros() as usize];
+    let read_degree = if witness.is_32.iter().any(|value| value.value() != 0) {
+        a + 4
+    } else {
+        a + 2
+    };
+    let mut degrees = vec![read_degree; terms.trailing_zeros() as usize];
     for degree in degrees.iter_mut().skip(n) {
         *degree = 2;
     }
