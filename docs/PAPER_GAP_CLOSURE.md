@@ -89,3 +89,30 @@ BinarySpartan, field SIMD, and a tuned MosaicPCS/Ligerito stack. Phase P1 and P2
 are the levers that can make performance better; P3 and P4 mostly trade prover
 time/proof size for recursion and privacy. Small traces may regress after each
 algorithmic rewrite until parameters are retuned.
+
+
+## Experiment: claim-native fast path
+
+A native-only prototype kept the authenticated ClaimProof and the dynamic
+selected-CPU proof and replaced Access/Shout with direct ROM/register/RAM checks
+over the authenticated claims. At 1024 rows it measured:
+
+```text
+proof   409,277 B
+prove   9.69 s
+verify  3.30 s
+```
+
+vs the paper-path native proof at the same load:
+
+```text
+proof   520,400 B
+prove   18.19 s
+verify  5.28 s
+```
+
+It is faster and smaller, but it is not paper-aligned, and the direct memory
+check had not been validated against signed loads, AMO sequences, and syscall
+side effects. It was therefore removed rather than shipped as an alternate
+verifier. It remains a possible native optimization once the direct semantic
+checks are fully audited.
