@@ -98,3 +98,22 @@ workloads through claim-native prove/verify, including RAM, mixed memory,
 AMO, shifts, clock syscall and loops. The only failure was the `alu` workload
 writing `x0`; the verifier now ignores `rd = 0` writes, matching executor
 semantics.
+
+
+## Scale measurements
+
+`ROWS=N cargo run --release -p magnetar-testkit --example claim_native_bench`
+
+| rows | proof | prove | verify | cycles/s |
+|---:|---:|---:|---:|---:|
+| 1024 | 409,318 B | 7.18 s | 2.94 s | 142.6 |
+| 2048 | 680,214 B | 16.72 s | 10.87 s | 122.5 |
+| 4096 | 1,214,734 B | 27.49 s | 10.40 s | 149.0 |
+| 8192 | 2,267,398 B | 58.56 s | 29.81 s | 139.9 |
+
+For comparison, the paper-path native prover at 4096 rows previously measured
+680.6 s / 1.43 MB / 6 cycles/s. The claim-native path is roughly 24x faster
+there, but it is not the paper's BinaryShout/BinaryTwist protocol and its proof
+is larger.
+
+Determinism: 120 concurrent proof runs, 0 failures.
