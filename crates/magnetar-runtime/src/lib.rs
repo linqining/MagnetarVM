@@ -2615,9 +2615,14 @@ pub fn prove_unified_trace_dynamic_native_profile(
 ) -> Result<(UnifiedTraceProof, Vec<StageTiming>), RuntimeError> {
     let selected_started = std::time::Instant::now();
     let backend = crate::protocol::selected_backend();
+    let packed_witness = crate::binary_shout::BinaryShoutWitness::from_trace(trace).ok();
     std::thread::scope(|scope| {
         let selected =
             scope.spawn(|| crate::simd_dual::prove_dynamic_cpu_claims(trace, width, &backend));
+        let packed = packed_witness
+            .as_ref()
+            .map(|witness| scope.spawn(|| crate::packed_shout::prove_packed_shout(witness)));
+        let packed_started = std::time::Instant::now();
         let plan = crate::protocol::ProtocolPlan::unified();
         let mut context = crate::protocol::UnifiedProveContext::new_with_group(trace, width, None)?;
         let mut timings = Vec::new();
@@ -2656,14 +2661,17 @@ pub fn prove_unified_trace_dynamic_native_profile(
         proof.shout_index = None;
         proof.shift_router_index = None;
         proof.store_router_index = None;
-        let started = std::time::Instant::now();
-        if let Ok(witness) = crate::binary_shout::BinaryShoutWitness::from_trace(trace) {
-            proof.packed_shout = Some(crate::packed_shout::prove_packed_shout(&witness)?);
+        if let Some(packed) = packed {
+            proof.packed_shout = Some(
+                packed
+                    .join()
+                    .map_err(|_| RuntimeError::Proof("packed Shout worker panicked".into()))??,
+            );
+            timings.push(StageTiming {
+                stage: "PackedShout(wall)".into(),
+                duration: packed_started.elapsed(),
+            });
         }
-        timings.push(StageTiming {
-            stage: "PackedShout".into(),
-            duration: started.elapsed(),
-        });
         proof.selected_cpu = Some(
             selected
                 .join()
