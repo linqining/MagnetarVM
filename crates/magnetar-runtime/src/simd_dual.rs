@@ -5368,7 +5368,18 @@ where
     B::Commitment: Sync,
     B::Opening: Sync,
 {
-    use magnetar_proof::verify_lockstep_bits;
+    verify_dynamic_segments_public_point(claims, backend).map(|_| ())
+}
+
+pub fn verify_dynamic_segments_public_point<B: magnetar_proof::BitPcs + Sync>(
+    claims: &SelectedCpuClaims<B::Commitment, B::Opening>,
+    backend: &B,
+) -> Result<Vec<F2_128>, RuntimeError>
+where
+    B::Commitment: Sync,
+    B::Opening: Sync,
+{
+    use magnetar_proof::verify_lockstep_bits_with_replacements_point;
 
     if claims.op != SelectedOp::Dynamic {
         return Err(RuntimeError::Proof(
@@ -5386,7 +5397,7 @@ where
         matrix_cycles,
         Some((claims.initial_pc, claims.final_pc)),
     )?;
-    verify_lockstep_bits(
+    verify_lockstep_bits_with_replacements_point(
         &s1[0],
         &s1[1],
         &s1[2],
@@ -5396,8 +5407,81 @@ where
         &layout,
         &claims.proof,
         backend,
+        &[],
     )
     .map_err(|error| RuntimeError::Proof(error.to_string()))
+}
+
+fn eq_bits(point: &[F2_128], bits: &[F2_128]) -> F2_128 {
+    point
+        .iter()
+        .zip(bits)
+        .fold(F2_128::from(1u64), |value, (r, bit)| {
+            value * (F2_128::from(1u64) + *r + *bit)
+        })
+}
+
+/// Route the `pc{cycle}` segment claims back to authenticated claim rows.
+/// This binds the proof's PC/next-PC virtual segments to ClaimProof rows.
+pub fn verify_dynamic_pc_segments<B: magnetar_proof::BitPcs + Sync>(
+    claims: &SelectedCpuClaims<B::Commitment, B::Opening>,
+    rows: &[crate::trace_claims::TraceClaim],
+    backend: &B,
+) -> Result<(), RuntimeError>
+where
+    B::Commitment: Sync,
+    B::Opening: Sync,
+{
+    let matrix_cycles = if claims.matrix_cycles == 0 {
+        claims.cycles
+    } else {
+        claims.matrix_cycles
+    };
+    let (_, _, layout) = segmented_dynamic_row(claims.mask, claims.width, matrix_cycles)?;
+    let ry = verify_dynamic_segments_public_point(claims, backend)?;
+    if claims.proof.segments.len() != layout.segments.len() {
+        return Err(RuntimeError::Proof("dynamic segment count mismatch".into()));
+    }
+    for (segment, value) in layout.segments.iter().zip(&claims.proof.segments) {
+        let Some(cycle) = segment
+            .name
+            .strip_prefix("pc")
+            .and_then(|rest| rest.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        if cycle >= rows.len() {
+            continue;
+        }
+        let size_bits = segment.len.trailing_zeros() as usize;
+        if size_bits == 0 || size_bits > ry.len() {
+            return Err(RuntimeError::Proof("invalid pc segment size".into()));
+        }
+        let row = &rows[cycle];
+        let mut bits = Vec::with_capacity(1usize << size_bits);
+        for bit in 0..claims.width {
+            bits.push(F2_128::from(((row.pc >> bit) & 1) as u64));
+        }
+        for bit in 0..claims.width {
+            bits.push(F2_128::from(((row.next_pc >> bit) & 1) as u64));
+        }
+        bits.resize(1usize << size_bits, F2_128::from(0u64));
+        let expected = bits
+            .iter()
+            .enumerate()
+            .fold(F2_128::from(0u64), |sum, (index, bit)| {
+                let index_bits = (0..size_bits)
+                    .map(|bit| F2_128::from(((index >> bit) & 1) as u64))
+                    .collect::<Vec<_>>();
+                sum + *bit * eq_bits(&ry[..size_bits], &index_bits)
+            });
+        if value.value != expected {
+            return Err(RuntimeError::Proof(
+                "dynamic pc segment does not match claim rows".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub fn verify_dynamic_segmented_trace<B: magnetar_proof::BitPcs + Sync>(
@@ -5777,6 +5861,15 @@ mod tests {
                 proof: proof.clone(),
             };
             verify_dynamic_segments_public(&selected, &backend).unwrap();
+            let claim_rows = trace
+                .rows
+                .iter()
+                .map(crate::trace_claims::TraceClaim::from_row)
+                .collect::<Vec<_>>();
+            verify_dynamic_pc_segments(&selected, &claim_rows, &backend).unwrap();
+            let mut bad_rows = claim_rows;
+            bad_rows[0].pc ^= 1;
+            assert!(verify_dynamic_pc_segments(&selected, &bad_rows, &backend).is_err());
             let mut tampered = selected;
             tampered.proof.segments[0].value =
                 tampered.proof.segments[0].value + magnetar_constraint::F2_128::from(1u64);

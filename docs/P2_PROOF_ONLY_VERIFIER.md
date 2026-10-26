@@ -71,3 +71,14 @@ rejected. Proof growth is 9 B (mask + matrix cycles) at 512/1024 rows.
 
 This is the matrix/layout half of P2. The remaining half is the segment-claim
 router that binds `proof.segments` values to authenticated row claims.
+
+## Progress: PC segment router
+
+`verify_dynamic_pc_segments` calls the public verifier, obtains its `ry` point,
+and compares every `pc{cycle}` proof segment against the MLE of the
+authenticated claim row's `pc`/`next_pc` bits at the local segment point. A
+tampered claim PC is rejected. This binds the PC/next-PC virtual segments to the
+ClaimProof rows without rebuilding the witness.
+
+Remaining router fields: instruction/selector (`mux`) and register/memory
+component segments.
