@@ -4822,7 +4822,7 @@ impl PcComponent for JumpPcRow {
     }
 }
 
-trait PcComponent {
+trait PcComponent: Sync {
     fn kind(&self) -> u8;
     fn relation(&self) -> &BitRelation;
     fn pc(&self) -> &[magnetar_constraint::VarId];
@@ -5666,7 +5666,7 @@ where
     let rows = mixed_alu_branch_rows_from_trace(trace, claims.width)?;
     let final_pc = trace.final_state.pc;
     let original = DynamicMixedRow::build(claims.mask, claims.width)?;
-    for cycle in 0..matrix_cycles {
+    let check_cycle = |cycle: usize| -> Result<(), RuntimeError> {
         let (pc, mut input) = if cycle < rows.len() {
             rows[cycle]
         } else {
@@ -5727,8 +5727,37 @@ where
                 )));
             }
         }
+        Ok(())
+    };
+    let workers = std::thread::available_parallelism()
+        .map(|count| count.get().min(8))
+        .unwrap_or(1)
+        .max(1);
+    if matrix_cycles >= 1024 && workers > 1 {
+        std::thread::scope(|scope| {
+            let chunk = matrix_cycles.div_ceil(workers);
+            let mut handles = Vec::with_capacity(workers);
+            for start in (0..matrix_cycles).step_by(chunk) {
+                let end = (start + chunk).min(matrix_cycles);
+                let check_cycle = &check_cycle;
+                handles.push(scope.spawn(move || {
+                    for cycle in start..end {
+                        check_cycle(cycle)?;
+                    }
+                    Ok::<(), RuntimeError>(())
+                }));
+            }
+            for handle in handles {
+                handle.join().expect("segment router worker")?;
+            }
+            Ok(())
+        })
+    } else {
+        for cycle in 0..matrix_cycles {
+            check_cycle(cycle)?;
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 /// Proof-only dynamic claim verification: authenticate the ClaimProof rows,

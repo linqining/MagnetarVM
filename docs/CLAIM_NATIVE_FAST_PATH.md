@@ -109,7 +109,7 @@ semantics.
 | 1024 | 409,318 B | 7.18 s | 2.94 s | 142.6 |
 | 2048 | 680,214 B | 16.72 s | 10.87 s | 122.5 |
 | 4096 | 1,214,734 B | 27.49 s | 10.40 s | 149.0 |
-| 8192 | 2,267,398 B | 58.56 s | 29.81 s | 139.9 |
+| 8192 | 2,267,398 B | 63.81 s | 23.40 s | 128.4 |
 | 16384 | 4,349,654 B | 148.48 s | 53.41 s | 110.4 |
 
 For comparison, the paper-path native prover at 4096 rows previously measured
@@ -118,3 +118,9 @@ there, but it is not the paper's BinaryShout/BinaryTwist protocol and its proof
 is larger.
 
 Determinism: 120 concurrent proof runs, 0 failures.
+
+
+The P2 segment router now checks cycle ranges in parallel when `cycles >= 1024`
+(up to eight workers). At 8192 rows the verifier dropped from 29.8 s to 23.4 s.
+A 16384-row run during sustained host load measured 228 s prove / 315 s verify
+and is not representative.
