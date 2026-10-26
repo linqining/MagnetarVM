@@ -44,3 +44,12 @@ verify  10.87 s
 
 The 2048 verifier still rebuilds per-cycle component sources in the segment
 router; the access/Shout proofs are gone but the router is O(rows * columns).
+
+
+## Attempted selected-prover syscall row fix
+
+The selected dynamic prover models a syscall row as an ALU add returning
+`rd_val` with PC+4. The minimal `Lui/Addi/Sb/Ecall` program proves, but adding a
+real `SYS_WRITE`/`SYS_EXIT` sequence still fails inside the selected proof with
+`sumcheck claim mismatch`. The attempted gated-row change was reverted. This is
+the concrete remaining blocker for claim-native IO coverage.
