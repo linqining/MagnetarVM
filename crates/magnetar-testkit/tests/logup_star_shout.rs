@@ -126,14 +126,10 @@ fn logup_star_shout_reads_word_mode_rom() {
         .collect::<Vec<_>>();
     let mut reader_table_columns = reader_f2.clone();
     reader_table_columns.push(positions_f2.clone());
-    let tables = vec![
-        P3MosaicTable {
-            columns: table_f2.clone(),
-        },
-        P3MosaicTable {
-            columns: reader_table_columns,
-        },
-    ];
+    // The ROM table is public, so only the reader/position columns are committed.
+    let tables = vec![P3MosaicTable {
+        columns: reader_table_columns,
+    }];
     let commitment = pcs.commit_mosaic(&tables).unwrap();
     let commitment_bytes = bincode::serialize(&commitment).unwrap();
 
@@ -205,32 +201,25 @@ fn logup_star_shout_reads_word_mode_rom() {
     let points = vec![
         P3MosaicPoint {
             table: 0,
-            point: table_point_f2,
-            columns: (0..table_f2.len()).collect(),
-            next_columns: Vec::new(),
-        },
-        P3MosaicPoint {
-            table: 1,
             point: reader_point_f2,
             columns: (0..reader_f2.len()).collect(),
             next_columns: Vec::new(),
         },
         P3MosaicPoint {
-            table: 1,
+            table: 0,
             point: position_point_f2,
             columns: vec![reader_f2.len()],
             next_columns: Vec::new(),
         },
     ];
     let values = vec![
-        verified.tables[0]
-            .column_claims
-            .iter()
-            .map(|claim| to_f2(*claim))
-            .collect::<Vec<_>>(),
         claims.iter().map(|claim| to_f2(*claim)).collect::<Vec<_>>(),
         vec![to_f2(verified.tables[0].position_claims[0])],
     ];
+    for (column, claim) in verified.tables[0].column_claims.iter().enumerate() {
+        let direct = eval_mle(&table_columns[column], &Point::new(table_point.to_vec()));
+        assert_eq!(direct, *claim, "table column {column}");
+    }
     let opening = pcs.open_mosaic(&tables, &points).unwrap();
     assert!(pcs.verify_mosaic(&opening, &points, &values).unwrap());
 
