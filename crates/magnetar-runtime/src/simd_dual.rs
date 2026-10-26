@@ -4398,7 +4398,7 @@ pub struct SelectedCpuClaims<C: Clone + std::fmt::Debug, O: Clone + std::fmt::De
     pub layout: magnetar_constraint::WitnessLayout,
     #[serde(skip)]
     pub segments: Vec<SelectedSegmentClaim>,
-    #[serde(skip)]
+    #[serde(default)]
     pub claim_root: [u8; 32],
     #[serde(skip)]
     pub claim_openings: Vec<crate::trace_claims::TraceClaimOpening>,
@@ -4524,7 +4524,12 @@ pub fn verify_selected_cpu_claims<B: magnetar_proof::BitPcs>(
 ) -> Result<(), RuntimeError> {
     if !claims.segments.is_empty() {
         let expected = selected_segment_claims(&claims.layout, &claims.proof)?;
-        if expected != claims.segments {
+        let matches = expected.len() == claims.segments.len()
+            && expected
+                .iter()
+                .zip(&claims.segments)
+                .all(|(left, right)| left.owner == right.owner && left.value == right.value);
+        if !matches {
             return Err(RuntimeError::Proof(
                 "selected CPU claim segments do not match the proof".into(),
             ));

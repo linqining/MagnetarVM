@@ -48,3 +48,14 @@ Proof-only verification therefore needs a canonical segment layout encoding,
 not just removing `#[serde(skip)]`.
 
 The experiment was reverted. This confirms P2 requires a proof-format redesign.
+
+## Progress: serialized claim root
+
+`SelectedCpuClaims::claim_root` is now serialized (32 B). Segment claims still
+need not be serialized: they are derivable from the committed `proof.segments`
+and the compact layout, and verifier comparison ignores segment names. This
+keeps the selected proof within 32 bytes of its previous size
+(1024 rows: 298,541 -> 298,573 B).
+
+The remaining P2 blocker is building the six CPU matrices from public
+statement/layout data instead of `synthetic` trace rows.
