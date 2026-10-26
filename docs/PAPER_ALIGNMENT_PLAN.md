@@ -14,7 +14,7 @@ This is a roadmap, not a claim that the implementation is aligned yet.
 | 64 | 136,472 | 1.30 s | 0.837 s | 49.3 |
 | 512 | 339,352 | 4.12 s | 1.16 s | 124.2 |
 | 1024 | 520,400 | 9.16 s | 2.60 s | 111.8 |
-| 2048 | 833,256 | 59.30 s | 5.97 s | 34.5 |
+| 2048 | 832,136 | 35.79 s | 7.67 s | 57.2 |
 
 512-row split:
 
