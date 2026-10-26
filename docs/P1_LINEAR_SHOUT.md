@@ -122,6 +122,7 @@ PCS-bound measurements:
 |---:|---:|---:|---:|
 | 1024 | 24.5 ms | 110.1 ms | 20,520 B |
 | 8192 | 165.7 ms | 430.6 ms | 137,272 B |
+| 65536 | 1.33 s | 2.87 s | 1,057,272 B |
 
 The current verifier opens every committed column separately, which dominates
 its time; batching those openings is the next optimization. The prover is still
