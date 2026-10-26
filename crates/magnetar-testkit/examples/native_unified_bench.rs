@@ -51,12 +51,13 @@ fn main() {
         verify_unified_trace(&trace, &proof, 8).unwrap();
         let verify = started.elapsed();
         println!(
-            "adds={adds} rows={} proof={bytes}B logup={}B packed={}B selected={}B claim={}B prove={prove:?} verify={verify:?}",
+            "adds={adds} rows={} proof={bytes}B access={}B logup={}B selected={}B claim={}B amo={}B prove={prove:?} verify={verify:?}",
             trace.rows.len(),
+            sizes.access,
             sizes.logup_shout,
-            sizes.packed_shout,
             sizes.selected_cpu,
-            sizes.claim_proof
+            sizes.claim_proof,
+            sizes.amo
         );
     }
 }

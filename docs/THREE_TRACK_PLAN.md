@@ -143,3 +143,21 @@ native auto fallback verify: 96.4 ms
 
 The fallback is many times slower than the dynamic word path for such a tiny
 trace, which is the concrete reason to finish compressed-PC support.
+
+
+## Reprioritization evidence (round 103)
+
+Native proof-size breakdown at 1024/4096 rows:
+
+```text
+access (Twist)   15,306 / 17,546 B
+logup Shout     164,905 / 248,657 B
+selected CPU    296,470 / 771,102 B
+claim layer     110,666 / 442,442 B
+```
+
+BinaryTwist is now a small fraction of the native proof; the dominant costs are
+the selected CPU proof and the O(rows) claim layer. Track 2 is still required
+for paper semantics, but it is not the largest performance lever. The next
+high-impact work is Track 1 (virtual claims / selected CPU proof), with Track 2
+implemented before removing the claim compatibility path.
