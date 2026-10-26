@@ -3266,8 +3266,18 @@ pub fn verify_native_unified(
     proof: &UnifiedTraceProof,
     width: usize,
 ) -> Result<(), RuntimeError> {
-    let _outputs = verify_native_claim_layer(statement, proof)?;
     let claims = verify_unified_claim_proof(proof)?;
+    let access = crate::access_statement::AccessStatement::from_claims(
+        statement.config.clone(),
+        statement.initial_ram.clone(),
+        statement.initial_state.clone(),
+        &claims,
+    );
+    if access.digest() != statement.access_statement_digest {
+        return Err(RuntimeError::Proof(
+            "claim access statement mismatch".into(),
+        ));
+    }
     let synthetic = crate::trace_claims::claims_to_trace(statement, &claims)?;
     if statement.trace_len != synthetic.rows.len() as u64
         || statement.initial_state != synthetic.initial_state
@@ -3279,7 +3289,32 @@ pub fn verify_native_unified(
             "claim-derived trace does not match the statement".into(),
         ));
     }
-    verify_unified_trace(&synthetic, proof, width)
+    std::thread::scope(|scope| {
+        let selected = proof.selected_cpu.as_ref().map(|selected| {
+            let claims = &claims;
+            let synthetic = &synthetic;
+            scope.spawn(move || -> Result<(), RuntimeError> {
+                crate::simd_dual::verify_selected_claim_consistency(selected, claims)?;
+                let backend = crate::protocol::selected_backend();
+                if selected.op == crate::simd_dual::SelectedOp::Dynamic {
+                    crate::simd_dual::verify_dynamic_cpu_claims(synthetic, selected, &backend)?;
+                } else {
+                    crate::simd_dual::verify_selected_cpu_claims(selected, &backend)?;
+                }
+                Ok(())
+            })
+        });
+        let unified = scope
+            .spawn(|| crate::protocol::Orchestrator::default().verify(&synthetic, proof, width));
+        if let Some(selected) = selected {
+            selected
+                .join()
+                .map_err(|_| RuntimeError::Proof("selected verifier panicked".into()))??;
+        }
+        unified
+            .join()
+            .map_err(|_| RuntimeError::Proof("unified verifier panicked".into()))?
+    })
 }
 
 pub fn verify_unified_trace_statement(

@@ -12,8 +12,8 @@ This is a roadmap, not a claim that the implementation is aligned yet.
 |---:|---:|---:|---:|---:|
 | 16 | 92,528 | 0.184 s | 0.134 s | 87.2 |
 | 64 | 136,472 | 1.30 s | 0.837 s | 49.3 |
-| 512 | 340,920 | 4.57 s | 6.51 s | 112.0 |
-| 1024 | 516,976 | 17.96 s | 12.61 s | 57.0 |
+| 512 | 340,920 | 4.63 s | 5.74 s | 110.5 |
+| 1024 | 516,976 | 18.81 s | 12.26 s | 54.4 |
 
 512-row split:
 
@@ -135,6 +135,13 @@ selected CPU and packed Shout stages against access/shout, taking the prover
 from 30.2 s to 18.0 s (4.6 s at 512 rows). Proof bytes are unchanged and the full
 determinism suite still passes. Stage timings for the overlapped stages are wall
 times, so they do not sum to the total.
+
+`verify_native_unified` now authenticates claims once, then verifies the
+selected-CPU proof and the orchestrator proof concurrently. It also calls the
+orchestrator directly instead of repeating the claim proof verification that
+the native verifier already performed. At 512 rows verification drops from
+6.5 s to 5.7 s; at 1024 rows it is still about 12 s and is now the larger side
+of the proof pipeline.
 
 All-32-bit traces now use a word-granularity Shout table (`cells =
 next_pow2(ROM words)`), halving the cell dimension. At 512 rows ShoutClaims drops
