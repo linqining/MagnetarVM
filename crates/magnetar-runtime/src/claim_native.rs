@@ -153,11 +153,7 @@ fn check_claim_semantics(
             if rd >= registers.len() {
                 return Err(RuntimeError::Proof("claim rd out of range".into()));
             }
-            if rd == 0 {
-                if claim.rd_value != 0 {
-                    return Err(RuntimeError::Proof("x0 write is nonzero".into()));
-                }
-            } else {
+            if rd != 0 {
                 registers[rd] = claim.rd_value;
             }
         }

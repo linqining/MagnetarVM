@@ -89,3 +89,12 @@ still participated in the global PC-mux relation; inactive rows now keep the
 adder gate high and set `pc` to the global row PC. `Jal`/`Jalr` map to
 `MIXED_JUMP`. The checked-in `hello.elf` proves and verifies through
 claim-native with `SYS_WRITE` output.
+
+
+## Workload coverage
+
+`MODE=claim cargo run --example workload_suite` now runs all 15 representative
+workloads through claim-native prove/verify, including RAM, mixed memory,
+AMO, shifts, clock syscall and loops. The only failure was the `alu` workload
+writing `x0`; the verifier now ignores `rd = 0` writes, matching executor
+semantics.

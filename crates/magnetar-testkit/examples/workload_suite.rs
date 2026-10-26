@@ -6,7 +6,12 @@
 use std::time::Instant;
 
 use magnetar_executor::execute;
-use magnetar_runtime::{prove_unified_trace, unified_proof_sizes, verify_unified_proof};
+use magnetar_runtime::claim_native::{prove_claim_native, verify_claim_native};
+use magnetar_runtime::{
+    access_statement::AccessStatement, program_hash, prove_unified_trace,
+    trace_claims::TraceClaimTree, trace_digest, unified_proof_sizes, verify_unified_proof,
+    Statement,
+};
 use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 
 fn config() -> MachineConfig {
@@ -36,6 +41,25 @@ fn program(body: Vec<u32>) -> ProgramImage {
     let mut rom = body;
     rom.push(Instruction::new(Op::Ecall).encode());
     ProgramImage::new(0x1000, rom)
+}
+
+fn statement(trace: &magnetar_spec::Trace, image: &ProgramImage) -> Statement {
+    Statement {
+        program_hash: program_hash(image),
+        rom: trace.rom.clone(),
+        trace_commitment: trace_digest(trace),
+        trace_claim_root: TraceClaimTree::build(trace).root(),
+        access_statement_digest: AccessStatement::from_trace(trace).digest(),
+        config: trace.config.clone(),
+        initial_state: trace.initial_state.clone(),
+        initial_ram: trace.initial_ram.clone(),
+        final_state: trace.final_state.clone(),
+        trace_len: trace.rows.len() as u64,
+        output: trace.io_output.clone(),
+        input: trace.io_input.clone(),
+        halted: trace.halted,
+        exit_code: trace.exit_code,
+    }
 }
 
 fn workloads() -> Vec<(&'static str, ProgramImage)> {
@@ -531,11 +555,26 @@ fn workloads() -> Vec<(&'static str, ProgramImage)> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(" workload     rows  bytes   prove_ms  verify_ms");
     let only = std::env::var("WORKLOAD").ok();
+    let claim_native = std::env::var("MODE").ok().as_deref() == Some("claim");
     for (name, program) in workloads() {
         if only.as_deref().is_some_and(|only| only != name) {
             continue;
         }
         let trace = execute(&program, config())?;
+        if claim_native {
+            let started = Instant::now();
+            let proof = prove_claim_native(&trace, 16)?;
+            let prove_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let started = Instant::now();
+            verify_claim_native(&statement(&trace, &program), &proof, 16)?;
+            let verify_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let bytes = bincode::serialize(&proof)?.len();
+            println!(
+                " {name:<12} {:>4}  {bytes:>6}  {prove_ms:>8.1}  {verify_ms:>9.1}",
+                trace.rows.len()
+            );
+            continue;
+        }
         let started = Instant::now();
         let proof = prove_unified_trace(&trace, 16)?;
         let prove_ms = started.elapsed().as_secs_f64() * 1000.0;
