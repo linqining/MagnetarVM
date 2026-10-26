@@ -202,6 +202,7 @@ Updated native benchmark:
 | 512 | 425,729 B | 2.31 s | 1.16 s |
 | 1024 | 614,537 B | 5.42 s | 2.16 s |
 | 2048 | 950,705 B | 14.57 s | 4.73 s |
+| 8192 | 2,833,745 B | 512.12 s | 16.54 s |
 
 The dynamic native prover uses logup Shout for word mode; the reference
 fallback covers compressed/mixed traces until the selected layout supports
@@ -241,7 +242,10 @@ Full runtime suite after the change: 316 passed.
 | 2048 | 951,769 B | 15.58 s | 4.87 s | 198,249 B | 461,350 B | 221,258 B |
 | 4096 | 1,583,937 B | 47.75 s | 12.21 s | 245,881 B | 770,302 B | 442,442 B |
 
-The prover is now dominated by the selected CPU proof and the O(rows) claim
-layer, not by Shout. Claim-native remains faster at 4096 rows (27.5 s /
+At 8192 rows the native path is dominated by the selected CPU proof
+(1,382,358 B) and the O(rows) claim layer (884,810 B); the logup Shout is only
+333,617 B. Native prove time grows superlinearly (47.75 s at 4096 -> 512.12 s
+at 8192), while claim-native does 8192 rows in 58.56 s. Shout is no longer the
+bottleneck. Claim-native remains faster at 4096 rows (27.5 s /
 1.21 MB / 149 cycles/s), because it replaces Access/Twist with direct claim
 checks.
