@@ -136,3 +136,21 @@ Final scale points:
 At 2^16 the paper reports 35 ms / 8 ms / 1.9M cycles/s / 380 KiB. Claim-native
 is therefore about 1.2e4x slower on throughput and 44x larger on proof size at
 the same row count.
+
+
+## Proof-size breakdown
+
+At 4096 rows the claim-native proof splits as:
+
+```text
+total    1,214,734 B
+claim      442,441 B
+selected   772,221 B
+```
+
+Both parts are linear in row count. At 2^16 the total is 16.8 MB, versus the
+paper's 380 KiB at the same row count. The claim proof must carry every
+authenticated row claim; the selected proof carries the lockstep opening. The
+paper avoids both by reducing to virtual segment claims in BinarySpartan. This
+means claim-native cannot reach paper proof size without replacing the
+full-trace claim layer, not by serialization tweaks.

@@ -64,10 +64,14 @@ fn main() {
     verify_claim_native(&statement, &proof, 8).unwrap();
     let verify = started.elapsed();
     let bytes = bincode::serialize(&proof).unwrap().len();
+    let claim_bytes = bincode::serialize(&proof.claim_proof).unwrap().len();
+    let selected_bytes = bincode::serialize(&proof.selected_cpu).unwrap().len();
     println!(
-        "rows={} proof={} prove={:?} verify={:?} cycles_per_s={:.2}",
+        "rows={} proof={} claim={} selected={} prove={:?} verify={:?} cycles_per_s={:.2}",
         trace.rows.len(),
         bytes,
+        claim_bytes,
+        selected_bytes,
         prove,
         verify,
         trace.rows.len() as f64 / prove.as_secs_f64()
