@@ -12,8 +12,8 @@ The native proof-only path now has an authenticated TraceClaim/ClaimProof layer,
 
 | rows | proof | prove | verify | cycles/s |
 |---:|---:|---:|---:|---:|
-| 512 | 339,352 B | 3.72 s | 1.05 s | 137.7 |
-| 1024 | 520,400 B | 8.43 s | 2.31 s | 121.5 |
+| 512 | 341,448 B | 3.7–5.1 s | 1.0–3.2 s | 101–138 |
+| 1024 | 520,400 B | 8.4–16.1 s | 2.3–7.6 s | 64–122 |
 
 For comparison, the paper reports 2^22 in 547 ms with 7.7M cycles/s. This implementation is still roughly 6e4x behind on throughput; the remaining hard gaps are linear/sparse BinaryShout and BinaryTwist and recursion/verifier-in-the-VM.
 

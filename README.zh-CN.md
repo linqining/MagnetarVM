@@ -12,8 +12,8 @@ native proof-only 路径现在包含经认证的 TraceClaim/ClaimProof 层、dyn
 
 | rows | proof | prove | verify | cycles/s |
 |---:|---:|---:|---:|---:|
-| 512 | 339,352 B | 3.72 s | 1.05 s | 137.7 |
-| 1024 | 520,400 B | 8.43 s | 2.31 s | 121.5 |
+| 512 | 341,448 B | 3.7–5.1 s | 1.0–3.2 s | 101–138 |
+| 1024 | 520,400 B | 8.4–16.1 s | 2.3–7.6 s | 64–122 |
 
 论文 2^22 为 547 ms、7.7M cycles/s；当前吞吐仍差约 6e4 倍。剩余硬缺口是 linear/sparse BinaryShout、BinaryTwist 以及 recursion/verifier-in-the-VM。
 

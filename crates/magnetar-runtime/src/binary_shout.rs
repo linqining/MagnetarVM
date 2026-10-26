@@ -566,15 +566,17 @@ pub(crate) fn prove_binary_shout_claims(
     transcript.absorb("claimed", &claimed.value().to_le_bytes());
     let terms = witness.cells * cycles;
     let has_32 = witness.is_32.iter().any(|value| value.value() != 0);
-    let rom_offset = if has_32 { 3 } else { 2 };
-    let low_offset = rom_offset + columns;
-    let factor_count = if has_32 {
-        2 * a + 3 + columns
+    let (factor_count, g_offset, rom0_offset, low_offset) = if has_32 {
+        (2 * a + 5, 3, 4, 5)
     } else {
-        a + 3 + columns
+        (a + 3, 2, 0, 3)
     };
     let mut factors = vec![vec![F2_128::from(0u64); terms]; factor_count];
     for cell in 0..witness.cells {
+        let mut combined = F2_128::from(0u64);
+        for (column, gamma) in gammas.iter().enumerate() {
+            combined = combined + *gamma * witness.rom[cell][column];
+        }
         for cycle in 0..cycles {
             let index = cell * cycles + cycle;
             factors[0][index] = eq_j[cycle];
@@ -582,8 +584,9 @@ pub(crate) fn prove_binary_shout_claims(
             if has_32 {
                 factors[2][index] = witness.is_32[cycle];
             }
-            for column in 0..columns {
-                factors[rom_offset + column][index] = witness.rom[cell][column];
+            factors[g_offset][index] = combined;
+            if has_32 {
+                factors[rom0_offset][index] = witness.rom[cell][0];
             }
             for bit in 0..a {
                 let k = F2_128::from(((cell >> bit) & 1) as u64);
@@ -607,22 +610,21 @@ pub(crate) fn prove_binary_shout_claims(
             for bit in 0..a {
                 low = low * folded[low_offset + bit][index];
             }
-            let word = if has_32 {
+            let value = if has_32 {
                 let mut high = F2_128::from(1u64);
                 for bit in 0..a {
                     high = high * folded[low_offset + a + bit][index];
                 }
-                gammas[0]
-                    * folded[rom_offset][index]
-                    * (low + folded[2][index] * high * F2_128::from(HIGH_SCALE))
+                low * folded[g_offset][index]
+                    + folded[2][index]
+                        * high
+                        * F2_128::from(HIGH_SCALE)
+                        * gammas[0]
+                        * folded[rom0_offset][index]
             } else {
-                gammas[0] * folded[rom_offset][index] * low
+                low * folded[g_offset][index]
             };
-            let mut metadata = F2_128::from(0u64);
-            for column in 1..columns {
-                metadata = metadata + gammas[column] * low * folded[rom_offset + column][index];
-            }
-            sum + folded[0][index] * folded[1][index] * (word + metadata)
+            sum + folded[0][index] * folded[1][index] * value
         })
     })?;
     let r_j = &challenges[..n];

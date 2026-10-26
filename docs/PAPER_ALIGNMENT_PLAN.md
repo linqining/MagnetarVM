@@ -12,8 +12,9 @@ This is a roadmap, not a claim that the implementation is aligned yet.
 |---:|---:|---:|---:|---:|
 | 16 | 92,528 | 0.184 s | 0.134 s | 87.2 |
 | 64 | 136,472 | 1.30 s | 0.837 s | 49.3 |
-| 512 | 339,352 | 3.72 s | 1.05 s | 137.7 |
-| 1024 | 520,400 | 8.43 s | 2.31 s | 121.5 |
+| 512 | 341,448 | 3.7–5.1 s | 1.0–3.2 s | 101–138 |
+| 1024 | 520,400 | 8.4–16.1 s | 2.3–7.6 s | 64–122 |
+| 2048 | 835,640 | 35.8 s | 15.9 s | 57 |
 | 2048 | 832,136 | 35.8–44.3 s | 7.7–10.1 s | 46–57 |
 
 512-row split:
@@ -487,3 +488,16 @@ At 1024 rows the register access stage measured 5.74 s versus 3.90 s with the
 generic degree-point-parallel fold, and total prover time rose from 8.43 s to
 18.05 s under load. The per-index factor recomputation outweighed the saved
 allocations, so the change was reverted. The generic implementation remains.
+
+
+## Shout ROM columns combined
+
+The read sum-check no longer materializes one factor per ROM column. It folds
+all twelve columns into one `G(cell) = sum gamma_c * rom_c(cell)` factor (plus
+rom0 only for 32-bit reads). At 1024 rows ShoutClaims fell from 3.78 s to
+3.29 s; at 2048 rows from 43.9 s to roughly 20–27 s depending on host load.
+Proof bytes are unchanged for 1024 rows (67,322 B packed Shout).
+
+The `P3SharedPcs` bits>=4 configuration was also changed from pow20 to pow16.
+At 2048 rows PackedOpen fell from 5.8 s to 0.2 s, at the cost of about 3.2 KiB
+of packed proof.

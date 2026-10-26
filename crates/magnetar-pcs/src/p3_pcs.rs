@@ -833,7 +833,7 @@ impl P3SharedPcs {
         } else if bits == 12 {
             P3BinaryPcs::with_params(100, 3, 21, 2)
         } else if bits >= 4 {
-            P3BinaryPcs::with_params(100, 4, 20, 3)
+            P3BinaryPcs::with_params(100, 4, 16, 3)
         } else {
             P3BinaryPcs::new(100)
         }
