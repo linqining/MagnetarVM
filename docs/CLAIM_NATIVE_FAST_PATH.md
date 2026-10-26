@@ -19,7 +19,7 @@ proofs, replacing them with linear checks over the authenticated rows.
 - Syscall write/read/exit binding is implemented directly. The selected dynamic
   prover now uses all trace rows instead of truncating to a power-of-two prefix;
   the `Lui/Addi/Sb + SYS_WRITE + SYS_EXIT` program proves and verifies output
-  `"H"`.
+  `"H"`, and the checked-in `hello.elf` now round-trips through claim-native.
 - The paper's BinaryShout/BinaryTwist semantics; this is a native claim-layer
   path, not paper parity.
 - A third-party audit.
@@ -54,13 +54,10 @@ and caused the selected sumcheck mismatch. The dynamic path now calls
 `gated_rows_from_trace_full`; all rows are covered and the IO test passes.
 
 
-## Remaining blocker: compiled guest
+## Remaining blockers
 
-A `claim_native` round-trip on the checked-in `hello.elf` still fails inside the
-selected dynamic prover (`sumcheck claim mismatch`) even after the full-row fix;
-the simple `Lui/Addi/Sb/SYS_WRITE/SYS_EXIT` program passes. The compiled guest
-uses a richer instruction mix, so the dynamic row/component mask coverage is
-still incomplete. The integration test was removed rather than left failing.
+- The paper-path BinaryShout/BinaryTwist linearization is still separate work.
+- Third-party audit is not performed.
 
 
 ## Compiled-guest failure narrowed to jumps
@@ -78,18 +75,17 @@ A dedicated jump component that binds both `rd = pc + len` and an arbitrary
 `next_pc` is required before hello guest or compiled-guest coverage can pass.
 
 
-## JumpPcRow prototype: not yet correct
+## JumpPcRow: fixed
 
-A `JumpPcRow` component was prototyped with:
+`hello.elf` exposed the missing jump path. `JumpPcRow` now binds:
 
 ```text
 pc + 4 = link
 next_pc = target
-target bits free and bound to next_pc
 ```
 
-It removed the "jump component received a non-jump row" error, but both
-`Jal` and `Jalr` dynamic proofs still fail with a selected sumcheck mismatch.
-The prototype was reverted. The remaining issue is inside the JUMP component
-relation or its integration with the dynamic PC mux; it needs bit-level relation
-debugging before hello.elf can be covered.
+The inactive-row bug was that the adder gate was driven low while the component
+still participated in the global PC-mux relation; inactive rows now keep the
+adder gate high and set `pc` to the global row PC. `Jal`/`Jalr` map to
+`MIXED_JUMP`. The checked-in `hello.elf` proves and verifies through
+claim-native with `SYS_WRITE` output.
