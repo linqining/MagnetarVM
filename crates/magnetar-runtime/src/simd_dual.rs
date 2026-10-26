@@ -5802,6 +5802,18 @@ where
     verify_dynamic_segments_against_trace(claims, &synthetic, backend)
 }
 
+pub fn selected_layout_from_claims<C: Clone + std::fmt::Debug, O: Clone + std::fmt::Debug>(
+    claims: &SelectedCpuClaims<C, O>,
+) -> Result<magnetar_constraint::WitnessLayout, RuntimeError> {
+    let matrix_cycles = if claims.matrix_cycles == 0 {
+        claims.cycles
+    } else {
+        claims.matrix_cycles
+    };
+    let (_, _, layout) = segmented_dynamic_row(claims.mask, claims.width, matrix_cycles)?;
+    Ok(layout)
+}
+
 pub fn verify_dynamic_segmented_trace<B: magnetar_proof::BitPcs + Sync>(
     trace: &magnetar_spec::Trace,
     proof: &LockstepProof<B::Commitment, B::Opening>,

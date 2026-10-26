@@ -1,0 +1,91 @@
+# Virtual Claim Rewrite (Paper-Alignment Workstream)
+
+This is the selected multi-week workstream: replace the full-trace
+`ClaimProof` with BinarySpartan virtual segment claims, then add linear
+BinaryShout/BinaryTwist. The full-trace claim path remains available while the
+new format is built.
+
+## Why the rewrite
+
+Claim-native proof size is O(rows):
+
+```text
+4096 rows: total 1,214,734 B (claim 442,441 + selected 772,221)
+2^16 rows: total 16.78 MB
+```
+
+The paper's 2^16 proof is 380 KiB because the CPU proof exposes virtual
+segment claims, not every row. The rewrite must change the proof format and the
+verifier inputs, not just the serialization.
+
+## Milestone 0: canonical virtual claim set
+
+Implemented in `magnetar-runtime/src/virtual_claims.rs`:
+
+```text
+VirtualClaim      { owner, value }
+VirtualClaimSet   { claims, root }
+```
+
+`VirtualClaimSet::from_selected` reconstructs the selected layout from the
+public mask/matrix-cycles fields, reads the lockstep segment claims, and hashes
+them in a canonical order (layout order, owner tag + value). The root is
+independent of trace rebuilding and is tested to be deterministic and
+tamper-evident.
+
+This is scaffolding: the proof still carries the selected opening and the old
+claim path; the set is not yet the authenticated statement binding.
+
+## Milestone 1: virtual claim proof format
+
+Replace the full `ClaimProof` in the native proof with:
+
+```text
+- statement root for the virtual claim set
+- selected CPU proof (P2 public verifier)
+- virtual claim set commitment
+- (later) BinaryShout / BinaryTwist claims
+```
+
+The verifier must stop calling `claims_to_trace` for CPU verification. Claim
+routing becomes:
+
+```text
+selected segment claim -> owner/value -> virtual claim root
+```
+
+## Milestone 2: BinarySpartan CPU claims
+
+Move the dynamic CPU witness to the paper's uniform SIMD relations and expose
+only virtual segment claims. This removes the need to rebuild row sources in the
+P2 router.
+
+## Milestone 3: linear BinaryShout
+
+Replace `cells x cycles` read sum-check with a lookup argument over a committed
+bytecode table and committed read values; verifier should evaluate the public
+table at the random point (or run a polylog sum-check over table indices).
+
+## Milestone 4: linear BinaryTwist
+
+Replace `cycles^2` register/RAM history with a sorted/permutation access
+argument and terminal PCS openings.
+
+## Milestone 5: proof-size and scale
+
+Target:
+
+```text
+2^16: prove near paper 35 ms, proof near 380 KiB
+2^22: prove near paper 547 ms, proof near 598 KiB
+```
+
+Only after milestones 1-4 should the old full-trace claim path be removed.
+
+## Risks
+
+- Proof-format breakage and determinism regressions.
+- Soundness of the claim router and statement root change.
+- P3/MosaicPCS opening canonicalization.
+- Large-scale memory and parallel scheduling.
+- Recursion/ZK/FP/AMO/unaligned parity remains separate.

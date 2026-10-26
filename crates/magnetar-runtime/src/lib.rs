@@ -49,6 +49,7 @@ pub mod simd_memory;
 pub mod trace_claims;
 pub mod trace_commitment;
 pub mod unified_gated;
+pub mod virtual_claims;
 pub mod word_div_row;
 
 use crate::binary_router::{
