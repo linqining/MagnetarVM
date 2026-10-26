@@ -110,6 +110,7 @@ semantics.
 | 2048 | 680,214 B | 16.72 s | 10.87 s | 122.5 |
 | 4096 | 1,214,734 B | 27.49 s | 10.40 s | 149.0 |
 | 8192 | 2,267,398 B | 58.56 s | 29.81 s | 139.9 |
+| 16384 | 4,349,654 B | 148.48 s | 53.41 s | 110.4 |
 
 For comparison, the paper-path native prover at 4096 rows previously measured
 680.6 s / 1.43 MB / 6 cycles/s. The claim-native path is roughly 24x faster
