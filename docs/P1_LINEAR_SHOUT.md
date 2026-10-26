@@ -116,13 +116,17 @@ position column with `P3BinaryPcs`, opens them at the logup* points, and checks
 every claim. The reader point is drawn after all commitments. Tampering a
 reader claim is rejected.
 
-PCS-bound measurements:
+PCS-bound measurements with one batched mosaic commitment:
 
-| rows | prove | verify | logup proof |
-|---:|---:|---:|---:|
-| 1024 | 24.5 ms | 110.1 ms | 20,520 B |
-| 8192 | 165.7 ms | 430.6 ms | 137,272 B |
-| 65536 | 1.33 s | 2.87 s | 1,057,272 B |
+| rows | prove | verify | logup proof | mosaic opening |
+|---:|---:|---:|---:|---:|
+| 1024 | 28.3 ms | 57.4 ms | 20,520 B | 279,248 B |
+| 8192 | 211.3 ms | 420.4 ms | 137,272 B | 434,872 B |
+| 65536 | 1.74 s | 3.41 s | 1,057,272 B | 646,560 B |
+
+The mosaic opening is currently the dominant proof component and verifier cost;
+batching all 25 same-arity columns (when table and cycle rows match) is the next
+size/verify optimization.
 
 The current verifier opens every committed column separately, which dominates
 its time; batching those openings is the next optimization. The prover is still

@@ -1,6 +1,6 @@
 use magnetar_constraint::F2_128;
 use magnetar_executor::execute;
-use magnetar_pcs::P3BinaryPcs;
+use magnetar_pcs::{P3BinaryPcs, P3MosaicPoint, P3MosaicTable};
 use magnetar_proof::Pcs;
 use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 use magnetar_transcript::Sha256Transcript;
@@ -111,7 +111,6 @@ fn logup_star_shout_reads_word_mode_rom() {
         .collect::<Vec<_>>();
 
     let started = std::time::Instant::now();
-    // Commit table, reader and position columns with the binary P3 PCS.
     let pcs = P3BinaryPcs::new(100);
     let to_f2 = |value: F| F2_128::new(value.to_repr());
     let table_f2 = table_columns
@@ -126,25 +125,22 @@ fn logup_star_shout_reads_word_mode_rom() {
         .iter()
         .map(|position| to_f2(embed(*position)))
         .collect::<Vec<_>>();
-    let table_commitments = table_f2
-        .iter()
-        .map(|column| pcs.commit(column).unwrap())
-        .collect::<Vec<_>>();
-    let reader_commitments = reader_f2
-        .iter()
-        .map(|column| pcs.commit(column).unwrap())
-        .collect::<Vec<_>>();
-    let position_commitment = pcs.commit(&positions_f2).unwrap();
+    let mut reader_table_columns = reader_f2.clone();
+    reader_table_columns.push(positions_f2.clone());
+    let tables = vec![
+        P3MosaicTable {
+            columns: table_f2.clone(),
+        },
+        P3MosaicTable {
+            columns: reader_table_columns,
+        },
+    ];
+    let commitment = pcs.commit_mosaic(&tables).unwrap();
+    let commitment_bytes = bincode::serialize(&commitment).unwrap();
 
-    // Reader point is drawn after every commitment.
+    // Reader point is drawn after the commitment.
     let mut transcript = Sha256Transcript::new("magnetar-logup-shout-reader-point");
-    for commitment in table_commitments
-        .iter()
-        .chain(&reader_commitments)
-        .chain(core::iter::once(&position_commitment))
-    {
-        transcript.absorb("commitment", &pcs.commitment_bytes(commitment));
-    }
+    transcript.absorb("commitment", &commitment_bytes);
     let point = Point::new(
         (0..witness.cycle_bits)
             .map(|_| {
@@ -192,49 +188,57 @@ fn logup_star_shout_reads_word_mode_rom() {
         bincode::serialize(&proof).unwrap().len()
     );
     let verify_started = std::time::Instant::now();
-    // The logup* claims are discharged against the committed columns.
+
+    // Discharge logup* claims with one batched mosaic opening.
     let table_point = output.table_point.as_slice();
     let table_point_f2 = table_point
         .iter()
         .rev()
         .map(|coordinate| to_f2(*coordinate))
         .collect::<Vec<_>>();
-    let table_output = &verified.tables[0];
-    for (column, (commitment, claim)) in table_commitments
-        .iter()
-        .zip(table_output.column_claims.iter())
-        .enumerate()
-    {
-        let opening = pcs.open(&table_f2[column], &table_point_f2).unwrap();
-        assert!(pcs
-            .verify(commitment, &table_point_f2, to_f2(*claim), &opening)
-            .unwrap());
-    }
+    let reader_point_f2 = point_f2.clone();
     let position_point_f2 = verified
         .position_point
         .iter()
         .rev()
         .map(|coordinate| to_f2(*coordinate))
         .collect::<Vec<_>>();
-    let position_opening = pcs.open(&positions_f2, &position_point_f2).unwrap();
-    assert!(pcs
-        .verify(
-            &position_commitment,
-            &position_point_f2,
-            to_f2(verified.tables[0].position_claims[0]),
-            &position_opening
-        )
-        .unwrap());
-    for (column, (commitment, claim)) in reader_commitments.iter().zip(claims.iter()).enumerate() {
-        let opening = pcs.open(&reader_f2[column], &point_f2).unwrap();
-        assert!(pcs
-            .verify(commitment, &point_f2, to_f2(*claim), &opening)
-            .unwrap());
-    }
+    let points = vec![
+        P3MosaicPoint {
+            table: 0,
+            point: table_point_f2,
+            columns: (0..table_f2.len()).collect(),
+            next_columns: Vec::new(),
+        },
+        P3MosaicPoint {
+            table: 1,
+            point: reader_point_f2,
+            columns: (0..reader_f2.len()).collect(),
+            next_columns: Vec::new(),
+        },
+        P3MosaicPoint {
+            table: 1,
+            point: position_point_f2,
+            columns: vec![reader_f2.len()],
+            next_columns: Vec::new(),
+        },
+    ];
+    let values = vec![
+        verified.tables[0]
+            .column_claims
+            .iter()
+            .map(|claim| to_f2(*claim))
+            .collect::<Vec<_>>(),
+        claims.iter().map(|claim| to_f2(*claim)).collect::<Vec<_>>(),
+        vec![to_f2(verified.tables[0].position_claims[0])],
+    ];
+    let opening = pcs.open_mosaic(&tables, &points).unwrap();
+    assert!(pcs.verify_mosaic(&opening, &points, &values).unwrap());
 
     eprintln!(
-        "logup* Shout verify={:?} open_verify_done",
-        verify_started.elapsed()
+        "logup* Shout verify={:?} mosaic_opening={}B",
+        verify_started.elapsed(),
+        bincode::serialize(&opening).unwrap().len()
     );
 
     // A tampered reader claim must be rejected by the reduction.
