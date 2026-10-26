@@ -95,3 +95,17 @@ the selected proof: it authenticates the claims, rebuilds the synthetic trace
 from them, checks PC consistency, and runs the full segment router. No external
 trace is required. The dynamic test rejects a tampered `rs1_val` and a tampered
 proof segment.
+
+## P2 status
+
+The dynamic selected verifier is now proof-only:
+
+- public mask/matrix-cycles metadata
+- public matrix and layout reconstruction
+- complete segment router (component / pc / mux / padding)
+- `verify_dynamic_claim_bundle` works from result, ClaimProof and selected proof
+  only
+
+The full runtime suite (312 tests) and the workload suite pass, including
+`clock`, `memory`, `mixedmem`, `memcopy`, `amo` and `mem-loop` workloads after
+the power-of-two row-truncation fix in the selected prover.
