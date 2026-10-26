@@ -1,7 +1,6 @@
 use magnetar_constraint::F2_128;
 use magnetar_executor::execute;
 use magnetar_pcs::{P3BinaryPcs, P3MosaicPoint, P3MosaicTable};
-use magnetar_proof::Pcs;
 use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 use magnetar_transcript::Sha256Transcript;
 use p3_binary_field::{BinaryChallenger, BinaryField128, TowerLevel};
