@@ -194,3 +194,19 @@ The dynamic native prover now uses logup Shout for word mode and falls back to
 packed Shout only for 32-bit/mixed traces. The remaining quadratic part is Twist.
 
 Full runtime suite: 316 passed. Runtime clippy: clean.
+
+
+## 32-bit / mixed mode
+
+The logup Shout position is now:
+
+```text
+position = word_or_halfword_index + is_32
+```
+
+For the mixed ROM table this is the cell that holds the instruction's
+metadata (`high` in `BinaryShoutWitness::from_trace`). Word mode is the special
+case where `is_32 = 0`. The native dynamic prover now emits logup Shout for both
+word and mixed traces; packed Shout is no longer needed in that path.
+
+Full runtime suite after the change: 316 passed.

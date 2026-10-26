@@ -86,31 +86,32 @@ fn table_columns_from_witness(witness: &BinaryShoutWitness) -> Vec<Vec<B>> {
         .collect()
 }
 
-fn positions(witness: &BinaryShoutWitness) -> Vec<usize> {
+fn positions(witness: &BinaryShoutWitness) -> Result<Vec<usize>, RuntimeError> {
     (0..witness.cycles)
         .map(|cycle| {
             if witness.valid[cycle].value() == 0 {
-                return 0;
+                return Ok(0);
             }
-            (0..witness.address_bits).fold(0usize, |address, bit| {
+            let mut index = 0usize;
+            for bit in 0..witness.address_bits {
                 if witness.address0[bit][cycle].value() != 0 {
-                    address | (1 << bit)
-                } else {
-                    address
+                    index |= 1 << bit;
                 }
-            })
+            }
+            let position = index + usize::from(witness.is_32[cycle].value() != 0);
+            if position >= witness.cells {
+                return Err(RuntimeError::Proof(
+                    "logup Shout position outside ROM table".into(),
+                ));
+            }
+            Ok(position)
         })
         .collect()
 }
 
 pub fn prove_logup_shout(witness: &BinaryShoutWitness) -> Result<LogupShoutProof, RuntimeError> {
-    if witness.is_32.iter().any(|bit| bit.value() != 0) {
-        return Err(RuntimeError::Proof(
-            "logup Shout currently supports word mode only".into(),
-        ));
-    }
     let table_columns = table_columns_from_witness(witness);
-    let position_values = positions(witness);
+    let position_values = positions(witness)?;
     let columns = table_columns.len();
     let pcs = P3BinaryPcs::with_params(100, 4, 16, 3);
     let reader_columns = (0..columns)
