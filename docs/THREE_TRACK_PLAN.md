@@ -246,3 +246,26 @@ Selected CPU component:
 | 4096 | 771,102 B | 247,838 B |
 
 Full runtime suite: 317 passing; clippy clean.
+
+
+## Track 1 fourth slice: compact selected variable mapping
+
+The selected row mapping no longer power-of-two aligns every component/block.
+All relation variables are packed sequentially, then one segment per cycle
+covers the next power-of-two block. This shrinks the committed selected witness.
+
+Native proof:
+
+| rows | before | compact mapping |
+|---:|---:|---:|
+| 1024 | 397,625 B | 381,001 B |
+| 4096 | 736,041 B | 720,153 B |
+
+Selected component:
+
+| rows | before | after |
+|---:|---:|---:|
+| 1024 | 164,438 B | 147,814 B |
+| 4096 | 247,838 B | 231,950 B |
+
+Full runtime suite: 317 passing; clippy clean.

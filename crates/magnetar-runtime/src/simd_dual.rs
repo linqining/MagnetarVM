@@ -5449,55 +5449,47 @@ fn segmented_dynamic_row(
     use magnetar_constraint::{Segment, SegmentKind, SegmentOwner, WitnessLayout};
     let original = DynamicMixedRow::build(mask, width)?;
     let mut mapping = vec![usize::MAX; original.relation.num_vars];
-    let mut data_cursor = 0usize;
-    let mut place_data = |size: usize| {
-        let start = (data_cursor + size - 1) & !(size - 1);
-        data_cursor = start + size;
-        start
-    };
+    let mut cursor = 0usize;
     for (index, component) in original.components.iter().enumerate() {
         let len = component.relation().num_vars;
-        let size = len.next_power_of_two();
-        let start = place_data(size);
         for local in 0..len {
-            mapping[original.offsets[index] + local] = start + local;
+            mapping[original.offsets[index] + local] = cursor + local;
         }
+        cursor += len;
     }
     let step_len = original.pc_step_add.relation.num_vars;
-    let step_size = step_len.next_power_of_two();
-    let step_start = place_data(step_size);
     for local in 0..step_len {
-        mapping[original.pc_step_offset + local] = step_start + local;
+        mapping[original.pc_step_offset + local] = cursor + local;
     }
-    let mux_len = original.selectors.len()
-        + original.ands.iter().map(Vec::len).sum::<usize>()
-        + width
-        + 1;
-    let mux_size = mux_len.next_power_of_two();
-    let mux_start = place_data(mux_size);
-    let mut local = 0usize;
+    cursor += step_len;
     for selector in &original.selectors {
-        mapping[*selector] = mux_start + local;
-        local += 1;
+        mapping[*selector] = cursor;
+        cursor += 1;
     }
     for and in &original.ands {
         for var in and {
-            mapping[*var] = mux_start + local;
-            local += 1;
+            mapping[*var] = cursor;
+            cursor += 1;
         }
     }
     for var in &original.raw_next {
-        mapping[*var] = mux_start + local;
-        local += 1;
+        mapping[*var] = cursor;
+        cursor += 1;
     }
-    mapping[original.pc_correction] = mux_start + local;
-    let pc_size = (2 * width).next_power_of_two();
-    let pc_start = place_data(pc_size);
+    mapping[original.pc_correction] = cursor;
+    cursor += 1;
     for bit in 0..width {
-        mapping[original.pc[bit]] = pc_start + bit;
-        mapping[original.next_pc[bit]] = pc_start + width + bit;
+        mapping[original.pc[bit]] = cursor;
+        cursor += 1;
+        mapping[original.next_pc[bit]] = cursor;
+        cursor += 1;
     }
-    let block_cols = data_cursor.next_power_of_two().max(2);
+    if cursor != original.relation.num_vars {
+        return Err(RuntimeError::Proof(
+            "dynamic segmented mapping size mismatch".into(),
+        ));
+    }
+    let block_cols = (cursor + 1).next_power_of_two().max(2);
     if mapping.contains(&usize::MAX) {
         return Err(RuntimeError::Proof(
             "dynamic segmented mapping is incomplete".into(),
