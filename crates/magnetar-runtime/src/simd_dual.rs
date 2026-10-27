@@ -5491,13 +5491,13 @@ fn segmented_dynamic_row(
         local += 1;
     }
     mapping[original.pc_correction] = mux_start + local;
-    let data_size = data_cursor.next_power_of_two().max(2);
-    let pc_start = data_size;
+    let pc_size = (2 * width).next_power_of_two();
+    let pc_start = place_data(pc_size);
     for bit in 0..width {
         mapping[original.pc[bit]] = pc_start + bit;
         mapping[original.next_pc[bit]] = pc_start + width + bit;
     }
-    let block_cols = 2 * data_size;
+    let block_cols = data_cursor.next_power_of_two().max(2);
     if mapping.contains(&usize::MAX) {
         return Err(RuntimeError::Proof(
             "dynamic segmented mapping is incomplete".into(),
@@ -5528,21 +5528,14 @@ fn segmented_dynamic_row(
         next_pc,
         one,
     };
-    let mut segments = Vec::with_capacity(cycles * 2);
+    let mut segments = Vec::with_capacity(cycles);
     for cycle in 0..cycles {
         segments.push(Segment::new(
-            format!("data{cycle}"),
+            format!("cycle{cycle}"),
             cycle * block_cols,
-            data_size,
+            block_cols,
             SegmentKind::Direct,
             SegmentOwner::Cpu,
-        ));
-        segments.push(Segment::new(
-            format!("pc{cycle}"),
-            cycle * block_cols + pc_start,
-            data_size,
-            SegmentKind::Direct,
-            SegmentOwner::Pcs,
         ));
     }
     let layout =
@@ -6317,7 +6310,7 @@ mod tests {
             let trace = execute(&program, config.clone()).unwrap();
             let (proof, layout, mask, cycles) =
                 prove_dynamic_segmented_trace(&trace, 8, &backend).unwrap();
-            assert!(layout.segments.len() >= cycles);
+            assert_eq!(layout.segments.len(), cycles);
             let claims = selected_segment_claims(&layout, &proof).unwrap();
             assert_eq!(claims.len(), layout.segments.len());
             verify_dynamic_segmented_trace(&trace, &proof, &layout, 8, &backend).unwrap();
@@ -6336,21 +6329,12 @@ mod tests {
                 proof: proof.clone(),
             };
             verify_dynamic_segments_public(&selected, &backend).unwrap();
-            let claim_rows = trace
-                .rows
-                .iter()
-                .map(crate::trace_claims::TraceClaim::from_row)
-                .collect::<Vec<_>>();
-            verify_dynamic_pc_segments(&selected, &claim_rows, &backend).unwrap();
             verify_dynamic_segments_against_trace(&selected, &trace, &backend).unwrap();
             let mut bad_trace = trace.clone();
             bad_trace.rows[0].rs1_val ^= 1;
             assert!(
                 verify_dynamic_segments_against_trace(&selected, &bad_trace, &backend).is_err()
             );
-            let mut bad_rows = claim_rows;
-            bad_rows[0].pc ^= 1;
-            assert!(verify_dynamic_pc_segments(&selected, &bad_rows, &backend).is_err());
             let mut tampered = selected;
             tampered.proof.segments[0].value =
                 tampered.proof.segments[0].value + magnetar_constraint::F2_128::from(1u64);

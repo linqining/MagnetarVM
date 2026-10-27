@@ -218,31 +218,31 @@ Claim component:
 Full runtime suite: 317 passing; clippy clean; claim-native guest passes.
 
 
-## Track 1 third slice: row-level selected segments
+## Track 1 third slice: one segment per cycle
 
-`segmented_dynamic_row` now emits two PCS segments per cycle:
+`segmented_dynamic_row` now emits one PCS segment per cycle covering the whole
+row block:
 
 ```text
-data{cycle}  - all component/adder/mux columns
-pc{cycle}    - pc and next_pc bits
+cycle{cycle}
 ```
 
-instead of one segment per component plus pc/mux. This keeps the PC binding
-(so `verify_dynamic_pc_segments` remains meaningful) while cutting the selected
-lockstep segment claims.
+The full segment router still binds every bit (including pc/next_pc) to the
+trace-derived witness; the dedicated `verify_dynamic_pc_segments` helper is no
+longer applicable to this layout.
 
 Native proof:
 
-| rows | before | row-level segments |
+| rows | before | one segment |
 |---:|---:|---:|
-| 1024 | 529,657 B | 430,401 B |
-| 4096 | 1,259,305 B | 823,801 B |
+| 1024 | 529,657 B | 397,625 B |
+| 4096 | 1,259,305 B | 736,041 B |
 
 Selected CPU component:
 
 | rows | before | after |
 |---:|---:|---:|
-| 1024 | 296,470 B | 197,214 B |
-| 4096 | 771,102 B | 335,598 B |
+| 1024 | 296,470 B | 164,438 B |
+| 4096 | 771,102 B | 247,838 B |
 
 Full runtime suite: 317 passing; clippy clean.
