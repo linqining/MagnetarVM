@@ -119,3 +119,18 @@ matches the flat MLE. The full register witness still produced a mismatch, so
 the prototype was reverted before committing a relation that is not verified.
 The remaining discrepancy is in the full witness's table construction or
 padding, not in the small-table MLE convention.
+
+
+## Full-witness Val debug: padding suspicion
+
+The register benchmark witness used for debugging has
+
+```text
+witness.cycles = 1023
+padded cycles  = 1024
+```
+
+The small-table formula matches the flat `Val` MLE, but the full witness does
+not. The remaining discrepancy is therefore in the padded-cycle / table
+construction path, not in the small-table point ordering. The Val prototype was
+reverted again without being committed.
