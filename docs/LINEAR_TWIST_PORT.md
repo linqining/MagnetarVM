@@ -93,3 +93,12 @@ The prototype round-trips on a 1024-cycle register witness and rejects a
 tampered claim. Verification in this prototype still recomputes the tables;
 the real integration will replace those recomputations with PCS claims and a
 separate Val-evaluation sumcheck.
+
+
+## Negative result: first Val-evaluation prototype
+
+A first Val-evaluation sumcheck prototype was attempted but the direct
+prefix/suffix formula did not match the flat `Val` table's MLE evaluation under
+the current point ordering. The prototype was reverted rather than committed
+with an unverified relation. Next attempt should isolate the MLE point-order
+convention in a small test before integrating it with the RW prototype.
