@@ -933,3 +933,21 @@ Measured (paper mode):
 Paper-mode 16384 proof: 444,669 B (access 20,498; logup 203,489; selected
 171,302; claim 47,921). This is the first completed 2^14 paper-mode run; the
 2^16 run is still open. Full runtime suite: 318 passing; clippy clean.
+
+
+## 2^16 blocker: dense Twist history factors
+
+At 2^16 rows, the history sumcheck has `cycles^2 = 2^32` entries. After the
+first fold it still holds about
+
+```text
+10 factors * 2^31 entries * 16 B  ~= 343 GB
+```
+
+and even the shared-factor variant needs roughly 85 GB, above this host's
+36 GiB. Raising parallelism or spilling cannot fit it.
+
+A 2^16 paper run therefore requires replacing the dense cycle-by-cycle history
+with a linear-size order/prefix argument (the paper's sorted-access Twist
+construction), not another memory/parallelism tweak. The 2^14 paper run at
+900 s is the current largest complete result.
