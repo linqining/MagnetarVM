@@ -398,3 +398,16 @@ half-size factors, then runs the remaining rounds on the folded tables.
 At 4096 rows the register-claims stage drops from about 91 s to 74.6 s
 (the earlier run was already under host load); proof bytes are unchanged.
 Full runtime suite: 317 passing; clippy clean.
+
+
+## Logup PCS: 24 grinding bits
+
+The logup Shout reader/position PCS now uses pow 24. At 4096 rows:
+
+```text
+logup       237,681 -> 231,857 B
+total proof 627,295 -> 614,303 B
+```
+
+At 1024 rows the native proof is 348,975 B. Prover grinding cost rises; verify
+stays low. Full runtime suite: 317 passing.

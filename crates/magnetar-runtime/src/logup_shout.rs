@@ -113,7 +113,7 @@ pub fn prove_logup_shout(witness: &BinaryShoutWitness) -> Result<LogupShoutProof
     let table_columns = table_columns_from_witness(witness);
     let position_values = positions(witness)?;
     let columns = table_columns.len();
-    let pcs = P3BinaryPcs::with_params(100, 4, 20, 3);
+    let pcs = P3BinaryPcs::with_params(100, 4, 24, 3);
     let reader_columns = (0..columns)
         .map(|column| {
             position_values
@@ -248,7 +248,7 @@ pub fn verify_logup_shout(
             "logup Shout statement shape mismatch".into(),
         ));
     }
-    let pcs = P3BinaryPcs::with_params(100, 4, 20, 3);
+    let pcs = P3BinaryPcs::with_params(100, 4, 24, 3);
     let commitment_bytes =
         bincode::serialize(&proof.opening.commitment).map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let point = reader_point(&commitment_bytes, proof.cycle_bits);
