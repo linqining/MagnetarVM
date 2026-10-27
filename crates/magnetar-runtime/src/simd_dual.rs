@@ -3782,6 +3782,11 @@ pub fn mixed_rows_component_mask(rows: &[(u64, MixedAluBranchInput)]) -> u8 {
     })
 }
 
+/// Number of witness variables in a dynamic mixed row for diagnostics.
+pub fn mixed_row_relation_vars(mask: u8, width: usize) -> Result<usize, RuntimeError> {
+    Ok(DynamicMixedRow::build(mask, width)?.relation.num_vars)
+}
+
 pub fn mixed_trace_component_mask(
     trace: &magnetar_spec::Trace,
     width: usize,

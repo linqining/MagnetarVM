@@ -791,3 +791,23 @@ does not yet replace the complete claim proof.
 
 Paper mode 1024 proof: 278,386 B. Full runtime suite: 318 passing; paper-mode
 root-tamper test passes.
+
+
+## Selected CPU width diagnostic
+
+Added `mixed_row_relation_vars` to measure selected witness width by component
+mask. For width 8:
+
+```text
+ALU only                 433 vars
+ALU + branch            1453 vars
+full mixed components   3515 vars
+```
+
+The ALU-only Addi benchmark gets `mask = 3` because the final fetch/halt row
+introduces the branch component, inflating the selected witness about 3.3x.
+The next selected-CPU optimization should split or special-case the final
+branch row rather than pay the branch component for every cycle.
+
+The virtual claim root binding and paper-mode baseline from the previous rounds
+remain in place; full runtime suite: 318 passing.
