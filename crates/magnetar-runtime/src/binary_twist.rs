@@ -1685,7 +1685,6 @@ pub(crate) fn prove_binary_twist_claims(
             *degree = a + 3;
         }
     }
-    let wa_valid = 2 * a;
     let wa_valid = 2 * a + 1;
     let factor_value = |factor: usize, index: usize| -> F2_128 {
         let cycle = index / cycles;
