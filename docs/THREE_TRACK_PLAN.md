@@ -700,3 +700,16 @@ changes (a second-order delta). At 4096 rows the claim component drops from
 
 The trace mode (no claim proof) is unchanged at about 175.5 KB at 4096. Full
 runtime suite: 318 passing.
+
+
+## Committed Shout: witness binding
+
+Added `verify_logup_shout_against_witness`. It first verifies the committed
+Shout PCS opening, then recomputes the reader/link/position MLEs from the
+supplied witness and checks the proof's claims against them. This closes the
+previous binding gap where a standalone committed Shout could prove a lookup
+for an arbitrary witness.
+
+The logup runtime test now also rejects tampered reader claims and a tampered
+ROM witness through this binding. This is a prerequisite for using committed
+Shout in the paper path while virtual claims are still under construction.

@@ -1,6 +1,9 @@
 use magnetar_executor::execute;
 use magnetar_runtime::binary_shout::BinaryShoutWitness;
-use magnetar_runtime::logup_shout::{logup_shout_proof_size, prove_logup_shout, verify_logup_shout};
+use magnetar_runtime::logup_shout::{
+    logup_shout_proof_size, prove_logup_shout, verify_logup_shout,
+    verify_logup_shout_against_witness,
+};
 use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 
 #[test]
@@ -42,6 +45,7 @@ fn runtime_logup_shout_round_trips() {
     let prove = started.elapsed();
     let started = std::time::Instant::now();
     verify_logup_shout(&proof, &witness.rom).unwrap();
+    verify_logup_shout_against_witness(&proof, &witness).unwrap();
     eprintln!(
         "runtime logup Shout rows={rows} prove={prove:?} verify={:?} bytes={}",
         started.elapsed(),
@@ -63,9 +67,15 @@ fn runtime_logup_shout_round_trips() {
         bincode::serialize(&proof.link_claims).unwrap().len(),
         bincode::serialize(&proof.rom_claims).unwrap().len()
     );
-    let mut bad = proof;
+    let mut bad = proof.clone();
     bad.reader_claims[0] = bad.reader_claims[0] + magnetar_constraint::F2_128::from(1u64);
     assert!(verify_logup_shout(&bad, &witness.rom).is_err());
+    assert!(verify_logup_shout_against_witness(&bad, &witness).is_err());
+
+    let mut bad_witness = witness.clone();
+    bad_witness.rom[0][0] =
+        bad_witness.rom[0][0] + magnetar_constraint::F2_128::from(1u64);
+    assert!(verify_logup_shout_against_witness(&proof, &bad_witness).is_err());
 }
 
 #[test]

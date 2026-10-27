@@ -13,7 +13,7 @@ use p3_challenger::HashChallenger;
 use p3_field::Field as P3Field;
 use p3_keccak::Keccak256Hash;
 use p3_multi_stark::logup_star::{
-    LogupStarProof, Reader, ReaderWitness, TableLookup, TableWitness,
+    LogupStarOutput, LogupStarProof, Reader, ReaderWitness, TableLookup, TableWitness,
 };
 use p3_multilinear_util::point::Point;
 use serde::{Deserialize, Serialize};
@@ -267,6 +267,14 @@ pub fn verify_logup_shout(
     proof: &LogupShoutProof,
     rom: &[Vec<F2_128>],
 ) -> Result<(), RuntimeError> {
+    verify_logup_shout_with_output(proof, rom).map(|_| ())
+}
+
+/// Verify the committed Shout proof and return the logup* output claims.
+pub fn verify_logup_shout_with_output(
+    proof: &LogupShoutProof,
+    rom: &[Vec<F2_128>],
+) -> Result<LogupStarOutput<B>, RuntimeError> {
     let mut reader_columns = proof
         .reader_claims
         .iter()
@@ -374,6 +382,60 @@ pub fn verify_logup_shout(
         .map_err(|error| RuntimeError::Proof(error.to_string()))?
     {
         return Err(RuntimeError::Proof("logup Shout PCS opening rejected".into()));
+    }
+    Ok(output)
+}
+
+/// Verify a committed Shout proof and additionally bind its reader/link/
+/// position claims to a supplied witness. This closes the gap between the
+/// standalone Shout lookup and the authenticated trace/claim layer.
+pub fn verify_logup_shout_against_witness(
+    proof: &LogupShoutProof,
+    witness: &BinaryShoutWitness,
+) -> Result<(), RuntimeError> {
+    let output = verify_logup_shout_with_output(proof, &witness.rom)?;
+    let table_columns = table_columns_from_witness(witness);
+    let position_values = positions(witness)?;
+    let commitment_bytes = bincode::serialize(&proof.opening.commitment)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let point = reader_point(&commitment_bytes, witness.cycle_bits);
+    let reader_columns = (0..table_columns.len())
+        .map(|column| {
+            position_values
+                .iter()
+                .map(|position| table_columns[column][*position])
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let expected_reader = reader_columns
+        .iter()
+        .map(|column| to_f2(eval_mle(column, &point)))
+        .collect::<Vec<_>>();
+    if proof.reader_claims != expected_reader {
+        return Err(RuntimeError::Proof(
+            "committed Shout reader claims do not match the witness".into(),
+        ));
+    }
+    let link_columns = witness
+        .link_columns()
+        .into_iter()
+        .map(|column| column.iter().map(|value| to_b(*value)).collect::<Vec<B>>())
+        .collect::<Vec<_>>();
+    let expected_link = link_columns
+        .iter()
+        .map(|column| to_f2(eval_mle(column, &point)))
+        .collect::<Vec<_>>();
+    if proof.link_claims != expected_link {
+        return Err(RuntimeError::Proof(
+            "committed Shout link claims do not match the witness".into(),
+        ));
+    }
+    let position_columns = position_values.iter().map(|position| embed(*position)).collect::<Vec<_>>();
+    let expected_position = eval_mle(&position_columns, &Point::new(output.position_point.as_slice().to_vec()));
+    if output.tables[0].position_claims[0] != expected_position {
+        return Err(RuntimeError::Proof(
+            "committed Shout position claim does not match the witness".into(),
+        ));
     }
     Ok(())
 }
