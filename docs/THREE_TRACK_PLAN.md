@@ -449,3 +449,19 @@ At 4096 rows the claim component drops from 89,696 B to 73,300 B and the native
 proof from 540,093 B to 523,697 B. At 1024 rows the proof is 326,203 B.
 
 Full runtime suite: 317 passing; claim-native guest passes; clippy clean.
+
+
+## Track 1 ninth slice: sparse claim memory/syscall columns
+
+The claim blob now stores memory rows and syscall options sparsely (row index +
+entries) instead of one vector/option slot per row.
+
+Native proof:
+
+| rows | before | sparse columns |
+|---:|---:|---:|
+| 1024 | 326,203 B | 324,156 B |
+| 4096 | 523,697 B | 515,506 B |
+
+Claim component: 73,300 -> 65,109 B at 4096; 14,932 -> 12,885 B at 1024.
+Full runtime suite: 317 passing; claim-native guest passes; clippy clean.

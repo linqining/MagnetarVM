@@ -358,8 +358,10 @@ struct ClaimColumns {
     rd_values: Vec<u64>,
     rs1_values: Vec<u64>,
     rs2_values: Vec<u64>,
+    memory_rows: Vec<u32>,
     memory: Vec<Vec<TraceMemClaim>>,
-    syscalls: Vec<Option<magnetar_spec::SyscallTrace>>,
+    syscall_rows: Vec<u32>,
+    syscalls: Vec<magnetar_spec::SyscallTrace>,
 }
 
 fn encode_claim_columns(claims: &[TraceClaim]) -> Vec<u8> {
@@ -372,8 +374,10 @@ fn encode_claim_columns(claims: &[TraceClaim]) -> Vec<u8> {
         rd_values: Vec::with_capacity(claims.len()),
         rs1_values: Vec::with_capacity(claims.len()),
         rs2_values: Vec::with_capacity(claims.len()),
-        memory: Vec::with_capacity(claims.len()),
-        syscalls: Vec::with_capacity(claims.len()),
+        memory_rows: Vec::new(),
+        memory: Vec::new(),
+        syscall_rows: Vec::new(),
+        syscalls: Vec::new(),
     };
     let mut previous_pc = columns.first_pc;
     for (index, claim) in claims.iter().enumerate() {
@@ -395,8 +399,14 @@ fn encode_claim_columns(claims: &[TraceClaim]) -> Vec<u8> {
         columns.rd_values.push(claim.rd_value);
         columns.rs1_values.push(claim.rs1_value);
         columns.rs2_values.push(claim.rs2_value);
-        columns.memory.push(claim.memory.clone());
-        columns.syscalls.push(claim.syscall);
+        if !claim.memory.is_empty() {
+            columns.memory_rows.push(index as u32);
+            columns.memory.push(claim.memory.clone());
+        }
+        if let Some(syscall) = claim.syscall {
+            columns.syscall_rows.push(index as u32);
+            columns.syscalls.push(syscall);
+        }
     }
     bincode::DefaultOptions::new()
         .with_varint_encoding()
@@ -409,6 +419,26 @@ fn decode_claim_columns(blob: &[u8]) -> Result<Vec<TraceClaim>, Box<bincode::Err
         .with_varint_encoding()
         .deserialize(blob)?;
     let mut claims = Vec::with_capacity(columns.words.len());
+    let mut memory = vec![Vec::new(); columns.words.len()];
+    for (row, entries) in columns.memory_rows.iter().zip(&columns.memory) {
+        let index = *row as usize;
+        if index >= memory.len() {
+            return Err(Box::new(bincode::ErrorKind::Custom(
+                "claim memory row out of range".into(),
+            )));
+        }
+        memory[index] = entries.clone();
+    }
+    let mut syscalls = vec![None; columns.words.len()];
+    for (row, syscall) in columns.syscall_rows.iter().zip(&columns.syscalls) {
+        let index = *row as usize;
+        if index >= syscalls.len() {
+            return Err(Box::new(bincode::ErrorKind::Custom(
+                "claim syscall row out of range".into(),
+            )));
+        }
+        syscalls[index] = Some(*syscall);
+    }
     let mut pc = columns.first_pc;
     for index in 0..columns.words.len() {
         if index > 0 {
@@ -445,8 +475,8 @@ fn decode_claim_columns(blob: &[u8]) -> Result<Vec<TraceClaim>, Box<bincode::Err
             rd_value: columns.rd_values[index],
             rs1_value: columns.rs1_values[index],
             rs2_value: columns.rs2_values[index],
-            memory: columns.memory[index].clone(),
-            syscall: columns.syscalls[index],
+            memory: std::mem::take(&mut memory[index]),
+            syscall: syscalls[index],
         });
     }
     Ok(claims)
