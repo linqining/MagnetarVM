@@ -636,3 +636,22 @@ trace_claims   648 B
 Components now fit in 250 KB at 8192 rows. The selected CPU PCS opening is the
 dominant cost; claim and access are comparatively small. This proof is
 trace/claims-backed (not a standalone PCS-bound Shout/CPU proof).
+
+
+## Claim-native 2^16 after claim compression
+
+`ROWS=65536 claim_native_bench`:
+
+```text
+proof      1,153,818 B
+claim        916,013 B
+selected     237,733 B
+prove        377.79 s
+verify       188.33 s
+throughput   173.47 cycles/s
+```
+
+Before the claim/shape/selected compression work the same path was about
+16.78 MB with 418 s prove and 198 s verify. The claim proof is now the dominant
+component (916 KB) and the main blocker for the paper's 380 KiB 2^16 target.
+This is the proof-only claim layer path, not the full trace-backed native proof.
