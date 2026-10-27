@@ -327,12 +327,73 @@ pub fn cpu_output_claims(claims: &[TraceClaim]) -> Vec<CpuOutputClaim> {
     claims.iter().map(CpuOutputClaim::from_claim).collect()
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClaimProof {
     pub root: [u8; 32],
-    #[serde(default)]
     pub complete: bool,
     pub openings: Vec<TraceClaimOpening>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+enum ClaimProofWire {
+    Compact {
+        root: [u8; 32],
+        claims: Vec<TraceClaim>,
+    },
+    Full {
+        root: [u8; 32],
+        complete: bool,
+        openings: Vec<TraceClaimOpening>,
+    },
+}
+
+impl serde::Serialize for ClaimProof {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.complete {
+            ClaimProofWire::Compact {
+                root: self.root,
+                claims: self.openings.iter().map(|opening| opening.claim.clone()).collect(),
+            }
+            .serialize(serializer)
+        } else {
+            ClaimProofWire::Full {
+                root: self.root,
+                complete: self.complete,
+                openings: self.openings.clone(),
+            }
+            .serialize(serializer)
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ClaimProof {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match ClaimProofWire::deserialize(deserializer)? {
+            ClaimProofWire::Compact { root, claims } => Ok(Self {
+                root,
+                complete: true,
+                openings: claims
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, claim)| TraceClaimOpening {
+                        index,
+                        leaf: claim.leaf(),
+                        claim,
+                        siblings: Vec::new(),
+                    })
+                    .collect(),
+            }),
+            ClaimProofWire::Full {
+                root,
+                complete,
+                openings,
+            } => Ok(Self {
+                root,
+                complete,
+                openings,
+            }),
+        }
+    }
 }
 
 impl ClaimProof {

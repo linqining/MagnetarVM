@@ -161,3 +161,32 @@ the selected CPU proof and the O(rows) claim layer. Track 2 is still required
 for paper semantics, but it is not the largest performance lever. The next
 high-impact work is Track 1 (virtual claims / selected CPU proof), with Track 2
 implemented before removing the claim compatibility path.
+
+
+## Track 1 first slice: compact complete ClaimProof
+
+`ClaimProof` now serializes a complete proof as:
+
+```text
+root + Vec<TraceClaim>
+```
+
+instead of one `TraceClaimOpening` per row (index, leaf, empty siblings).
+The deserializer rebuilds leaves and indices, so `verify_complete_claims`
+remains the same check. Non-complete proofs keep the old full form.
+
+Native proof size:
+
+| rows | before | after |
+|---:|---:|---:|
+| 1024 | 615,177 B | 566,028 B |
+| 4096 | 1,587,513 B | 1,390,908 B |
+
+Claim component:
+
+| rows | before | after |
+|---:|---:|---:|
+| 1024 | 110,666 B | 61,517 B |
+| 4096 | 442,442 B | 245,837 B |
+
+Full runtime suite: 317 passing; clippy clean; claim-native guest still passes.
