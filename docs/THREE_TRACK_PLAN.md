@@ -411,3 +411,19 @@ total proof 627,295 -> 614,303 B
 
 At 1024 rows the native proof is 348,975 B. Prover grinding cost rises; verify
 stays low. Full runtime suite: 317 passing.
+
+
+## Track 1 seventh slice: columnar CpuShape
+
+`CpuShape` was serialized as a row-major `Vec<CpuShapeRow>` at about 26 bytes
+per row. It now uses a columnar, varint-encoded blob (pc deltas, op/micro-op
+columns, imm, width flags). At 4096 rows this removes about 74 KB.
+
+Native proof:
+
+| rows | before | compact shape |
+|---:|---:|---:|
+| 1024 | 348,975 B | 330,311 B |
+| 4096 | 614,303 B | 540,093 B |
+
+Full runtime suite: 317 passing; clippy clean.

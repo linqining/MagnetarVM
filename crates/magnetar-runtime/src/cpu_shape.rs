@@ -15,9 +15,80 @@ pub struct CpuShapeRow {
     pub mem_write: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct CpuShape {
     pub rows: Vec<CpuShapeRow>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ShapeWire {
+    first_pc: u64,
+    pc_deltas: Vec<i64>,
+    micro_ops: Vec<magnetar_spec::MicroOpKind>,
+    ops: Vec<Op>,
+    imms: Vec<i64>,
+    widths: Vec<u8>,
+    flags: Vec<u8>,
+}
+
+impl serde::Serialize for CpuShape {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use bincode::Options as _;
+        let first_pc = self.rows.first().map_or(0, |row| row.pc);
+        let mut wire = ShapeWire {
+            first_pc,
+            pc_deltas: Vec::with_capacity(self.rows.len().saturating_sub(1)),
+            micro_ops: Vec::with_capacity(self.rows.len()),
+            ops: Vec::with_capacity(self.rows.len()),
+            imms: Vec::with_capacity(self.rows.len()),
+            widths: Vec::with_capacity(self.rows.len()),
+            flags: Vec::with_capacity(self.rows.len()),
+        };
+        let mut previous_pc = first_pc;
+        for (index, row) in self.rows.iter().enumerate() {
+            if index > 0 {
+                wire.pc_deltas.push(row.pc as i64 - previous_pc as i64);
+            }
+            previous_pc = row.pc;
+            wire.micro_ops.push(row.micro_op);
+            wire.ops.push(row.op);
+            wire.imms.push(row.imm);
+            wire.widths.push(row.mem_width.unwrap_or(0));
+            wire.flags.push(u8::from(row.mem_write));
+        }
+        let blob = bincode::DefaultOptions::new()
+            .with_varint_encoding()
+            .serialize(&wire)
+            .map_err(serde::ser::Error::custom)?;
+        blob.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for CpuShape {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use bincode::Options as _;
+        let blob = Vec::<u8>::deserialize(deserializer)?;
+        let wire: ShapeWire = bincode::DefaultOptions::new()
+            .with_varint_encoding()
+            .deserialize(&blob)
+            .map_err(serde::de::Error::custom)?;
+        let mut rows = Vec::with_capacity(wire.ops.len());
+        let mut pc = wire.first_pc;
+        for index in 0..wire.ops.len() {
+            if index > 0 {
+                pc = (pc as i64 + wire.pc_deltas[index - 1]) as u64;
+            }
+            rows.push(CpuShapeRow {
+                pc,
+                micro_op: wire.micro_ops[index],
+                op: wire.ops[index],
+                imm: wire.imms[index],
+                mem_width: (wire.widths[index] != 0).then_some(wire.widths[index]),
+                mem_write: wire.flags[index] != 0,
+            });
+        }
+        Ok(Self { rows })
+    }
 }
 
 impl CpuShape {
