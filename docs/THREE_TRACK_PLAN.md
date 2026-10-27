@@ -751,3 +751,31 @@ Paper-mode benchmark:
 
 Full runtime suite: 318 passing; paper_mode and logup runtime tests pass;
 clippy clean.
+
+
+## Paper-mode 8192
+
+`ADDS=8191 paper_unified_bench` (committed Shout + committed CPU + complete
+claim proof, proof-only verifier):
+
+```text
+proof      466,410 B
+access      19,378 B
+logup      187,529 B
+selected   169,606 B
+claim       88,518 B
+shape           60 B
+prove      329.95 s
+verify      21.83 s
+```
+
+Scaling of the paper path:
+
+| rows | proof | prove | verify |
+|---:|---:|---:|---:|
+| 1024 | 278,354 B | 34.02 s | 1.78 s |
+| 4096 | 381,328 B | 68.21 s | 10.32 s |
+| 8192 | 466,410 B | 329.95 s | 21.83 s |
+
+The complete claim proof grows linearly (88.5 KB at 8192) and remains the
+virtual-claims blocker for the 2^16 target.
