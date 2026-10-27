@@ -351,10 +351,10 @@ enum ClaimProofWire {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ClaimColumns {
     first_pc: u64,
-    pc_deltas: Vec<i64>,
-    next_deltas: Vec<i64>,
-    words: Vec<u32>,
-    flags: Vec<u8>,
+    pc_deltas: Vec<(i64, u32)>,
+    next_deltas: Vec<(i64, u32)>,
+    words: Vec<(u32, u32)>,
+    flags: Vec<(u8, u32)>,
     rd_values: Vec<u64>,
     rs1_values: Vec<u64>,
     rs2_values: Vec<u64>,
@@ -362,6 +362,29 @@ struct ClaimColumns {
     memory: Vec<Vec<TraceMemClaim>>,
     syscall_rows: Vec<u32>,
     syscalls: Vec<magnetar_spec::SyscallTrace>,
+}
+
+fn run_length<T: PartialEq + Copy>(values: &[T]) -> Vec<(T, u32)> {
+    let mut runs: Vec<(T, u32)> = Vec::new();
+    for value in values {
+        match runs.last_mut() {
+            Some((last, count)) if *last == *value => *count += 1,
+            _ => runs.push((*value, 1)),
+        }
+    }
+    runs
+}
+
+fn expand_runs<T: Copy>(runs: &[(T, u32)], len: usize) -> Option<Vec<T>> {
+    let mut values = Vec::with_capacity(len);
+    for (value, count) in runs {
+        let count = *count as usize;
+        if values.len().saturating_add(count) > len {
+            return None;
+        }
+        values.extend(std::iter::repeat_n(*value, count));
+    }
+    (values.len() == len).then_some(values)
 }
 
 fn encode_claim_columns(claims: &[TraceClaim]) -> Vec<u8> {
@@ -380,18 +403,18 @@ fn encode_claim_columns(claims: &[TraceClaim]) -> Vec<u8> {
         syscalls: Vec::new(),
     };
     let mut previous_pc = columns.first_pc;
+    let mut pc_deltas = Vec::with_capacity(claims.len().saturating_sub(1));
+    let mut next_deltas = Vec::with_capacity(claims.len());
+    let mut words = Vec::with_capacity(claims.len());
+    let mut flags = Vec::with_capacity(claims.len());
     for (index, claim) in claims.iter().enumerate() {
         if index > 0 {
-            columns
-                .pc_deltas
-                .push(claim.pc as i64 - previous_pc as i64);
+            pc_deltas.push(claim.pc as i64 - previous_pc as i64);
         }
         previous_pc = claim.pc;
-        columns
-            .next_deltas
-            .push(claim.next_pc as i64 - claim.pc as i64);
-        columns.words.push(claim.instruction_word);
-        columns.flags.push(
+        next_deltas.push(claim.next_pc as i64 - claim.pc as i64);
+        words.push(claim.instruction_word);
+        flags.push(
             u8::from(claim.rd_present)
                 | (u8::from(claim.rs1_present) << 1)
                 | (u8::from(claim.rs2_present) << 2),
@@ -408,6 +431,10 @@ fn encode_claim_columns(claims: &[TraceClaim]) -> Vec<u8> {
             columns.syscalls.push(syscall);
         }
     }
+    columns.pc_deltas = run_length(&pc_deltas);
+    columns.next_deltas = run_length(&next_deltas);
+    columns.words = run_length(&words);
+    columns.flags = run_length(&flags);
     bincode::DefaultOptions::new()
         .with_varint_encoding()
         .serialize(&columns)
@@ -418,8 +445,17 @@ fn decode_claim_columns(blob: &[u8]) -> Result<Vec<TraceClaim>, Box<bincode::Err
     let columns: ClaimColumns = bincode::DefaultOptions::new()
         .with_varint_encoding()
         .deserialize(blob)?;
-    let mut claims = Vec::with_capacity(columns.words.len());
-    let mut memory = vec![Vec::new(); columns.words.len()];
+    let count = columns.rd_values.len();
+    let pc_deltas = expand_runs(&columns.pc_deltas, count.saturating_sub(1))
+        .ok_or_else(|| Box::new(bincode::ErrorKind::Custom("claim pc runs".into())))?;
+    let next_deltas = expand_runs(&columns.next_deltas, count)
+        .ok_or_else(|| Box::new(bincode::ErrorKind::Custom("claim next runs".into())))?;
+    let words = expand_runs(&columns.words, count)
+        .ok_or_else(|| Box::new(bincode::ErrorKind::Custom("claim word runs".into())))?;
+    let flags = expand_runs(&columns.flags, count)
+        .ok_or_else(|| Box::new(bincode::ErrorKind::Custom("claim flag runs".into())))?;
+    let mut claims = Vec::with_capacity(count);
+    let mut memory = vec![Vec::new(); count];
     for (row, entries) in columns.memory_rows.iter().zip(&columns.memory) {
         let index = *row as usize;
         if index >= memory.len() {
@@ -429,7 +465,7 @@ fn decode_claim_columns(blob: &[u8]) -> Result<Vec<TraceClaim>, Box<bincode::Err
         }
         memory[index] = entries.clone();
     }
-    let mut syscalls = vec![None; columns.words.len()];
+    let mut syscalls = vec![None; count];
     for (row, syscall) in columns.syscall_rows.iter().zip(&columns.syscalls) {
         let index = *row as usize;
         if index >= syscalls.len() {
@@ -442,10 +478,10 @@ fn decode_claim_columns(blob: &[u8]) -> Result<Vec<TraceClaim>, Box<bincode::Err
     let mut pc = columns.first_pc;
     for index in 0..columns.words.len() {
         if index > 0 {
-            pc = (pc as i64 + columns.pc_deltas[index - 1]) as u64;
+            pc = (pc as i64 + pc_deltas[index - 1]) as u64;
         }
-        let flags = columns.flags[index];
-        let word = columns.words[index];
+        let row_flags = flags[index];
+        let word = words[index];
         let (instruction, instruction_len) = if word & 3 == 3 {
             (
                 magnetar_spec::decode(word).map_err(|error| {
@@ -463,15 +499,15 @@ fn decode_claim_columns(blob: &[u8]) -> Result<Vec<TraceClaim>, Box<bincode::Err
         };
         claims.push(TraceClaim {
             pc,
-            next_pc: (pc as i64 + columns.next_deltas[index]) as u64,
+            next_pc: (pc as i64 + next_deltas[index]) as u64,
             instruction_word: word,
             instruction_len,
             rd: instruction.rd,
             rs1: instruction.rs1,
             rs2: instruction.rs2,
-            rd_present: flags & 1 != 0,
-            rs1_present: flags & 2 != 0,
-            rs2_present: flags & 4 != 0,
+            rd_present: row_flags & 1 != 0,
+            rs1_present: row_flags & 2 != 0,
+            rs2_present: row_flags & 4 != 0,
             rd_value: columns.rd_values[index],
             rs1_value: columns.rs1_values[index],
             rs2_value: columns.rs2_values[index],

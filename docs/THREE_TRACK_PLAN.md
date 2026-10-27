@@ -492,3 +492,13 @@ memory width and flags. At 1024 rows the shape component drops from 7,968 B to
 2,861 B; at 4096 rows the native proof drops from 498,626 B to 478,159 B.
 
 Full runtime suite: 317 passing; clippy clean.
+
+
+## Track 1 eleventh slice: RLE claim columns
+
+Claim pc deltas, next-pc deltas, instruction words and presence flags are now
+run-length encoded. At 4096 rows the claim component drops from 65,109 B to
+56,928 B and the native proof from 478,159 B to 469,978 B; at 1024 rows the
+proof is 306,388 B.
+
+Full runtime suite: 317 passing; claim-native guest passes; clippy clean.
