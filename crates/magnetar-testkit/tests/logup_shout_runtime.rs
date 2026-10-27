@@ -48,6 +48,14 @@ fn runtime_logup_shout_round_trips() {
         logup_shout_proof_size(&proof).unwrap()
     );
     eprintln!(
+        "  pushforwards={}B fraction_gkr={}B product={}B position_claims={}B column_claims={}B",
+        bincode::serialize(&proof.logup.pushforwards).unwrap().len(),
+        bincode::serialize(&proof.logup.fraction_gkr).unwrap().len(),
+        bincode::serialize(&proof.logup.product).unwrap().len(),
+        bincode::serialize(&proof.logup.position_claims).unwrap().len(),
+        bincode::serialize(&proof.logup.column_claims).unwrap().len()
+    );
+    eprintln!(
         "  logup={}B opening={}B reader_claims={}B links={}B rom_claims={}B",
         bincode::serialize(&proof.logup).unwrap().len(),
         bincode::serialize(&proof.opening).unwrap().len(),
