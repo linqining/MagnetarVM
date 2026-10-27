@@ -229,7 +229,7 @@ fn build_val_tables(witness: &BinaryTwistWitness) -> (Vec<F2_128>, Vec<F2_128>, 
     let mut inc = vec![F2_128::from(0u64); cycles];
     let mut current = witness.initial.clone();
     current.resize(cells, F2_128::from(0u64));
-    for cycle in 0..cycles {
+    for (cycle, target_inc) in inc.iter_mut().enumerate() {
         let increment = witness
             .increment
             .get(cycle)
@@ -243,7 +243,7 @@ fn build_val_tables(witness: &BinaryTwistWitness) -> (Vec<F2_128>, Vec<F2_128>, 
             val[index] = current[cell];
             current[cell] = current[cell] + write_bit * increment;
         }
-        inc[cycle] = increment;
+        *target_inc = increment;
     }
     (val, wa, inc)
 }
