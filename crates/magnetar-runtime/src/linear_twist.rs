@@ -368,7 +368,7 @@ pub fn prove_val_pcs(witness: &BinaryTwistWitness) -> Result<ValPcsProof, ProofE
         .commit_batch(&[val.clone(), wa.clone()])
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
     let inc_commit: P3BatchCommitment = pcs
-        .commit_batch(&[inc.clone()])
+        .commit_batch(std::slice::from_ref(&inc))
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
     let initial_commit: P3BatchCommitment = pcs
         .commit_batch(&[initial.clone()])
@@ -431,7 +431,7 @@ pub fn prove_val_pcs(witness: &BinaryTwistWitness) -> Result<ValPcsProof, ProofE
         .open_batch(&[val.clone(), wa.clone()], &val_wa_points)
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
     let inc_opening = pcs
-        .open_batch(&[inc.clone()], &inc_points)
+        .open_batch(std::slice::from_ref(&inc), &inc_points)
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
     let initial_opening = pcs
         .open_batch(&[initial.clone()], &initial_points)
