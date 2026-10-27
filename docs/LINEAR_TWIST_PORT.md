@@ -183,3 +183,22 @@ the final product against `LT`. A tampered sumcheck round is rejected.
 
 Full runtime suite: 321 passing. The dense prototypes are still not integrated
 with `binary_twist`; dense RA/WA/Inc/Val tables are committed here independently.
+
+
+## Prototype 4: RW checking with PCS openings
+
+`prove_rw_pcs` / `verify_rw_pcs` commit two PCS batches:
+
+```text
+RA, WA, Val       (K*T)
+Inc, read, write  (T)
+```
+
+Openings at the cycle point are used for the left-hand read/write value
+claims; openings at the sumcheck final point supply RA/WA/Val/Inc for the
+final product. The verifier replays the RW sumcheck and checks the final
+`eq * (WA*(Inc+Val) + gamma*RA*Val)` term. A tampered round is rejected.
+
+Full runtime suite: 322 passing. Still missing: one-hot/address-bit bindings,
+and sharing the Val commitment between the RW and Val PCS proofs. The dense
+tables are not yet integrated into `binary_twist`.

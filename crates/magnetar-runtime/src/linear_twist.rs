@@ -267,7 +267,6 @@ pub fn prove_val_evaluation(
         suffix[previous] = running;
         running = running + eq_rj[previous];
     }
-    let cells = 1usize << witness.address_bits;
     let mut wa_at_rk = (0..cycles)
         .map(|cycle| {
             witness.write_address.get(cycle).map_or(F2_128::from(0u64), |row| {
@@ -276,7 +275,6 @@ pub fn prove_val_evaluation(
         })
         .collect::<Vec<_>>();
     wa_at_rk.resize(cycles, F2_128::from(0u64));
-    let _ = cells;
     let factors = vec![wa_at_rk, inc, suffix];
     let (rounds, challenges) =
         sumcheck_terms(&factors, &vec![3usize; cycle_bits], &mut transcript, |folded| {
@@ -357,10 +355,10 @@ pub struct ValPcsProof {
 }
 
 pub fn prove_val_pcs(witness: &BinaryTwistWitness) -> Result<ValPcsProof, ProofError> {
-    let cells = 1usize << witness.address_bits;
     let cycles = witness.cycles.next_power_of_two().max(2);
     let cycle_bits = cycles.trailing_zeros() as usize;
     let (val, wa, inc) = build_val_tables(witness);
+    let cells = 1usize << witness.address_bits;
     let mut initial = witness.initial.clone();
     initial.resize(cells.next_power_of_two(), F2_128::from(0u64));
     let pcs = P3BinaryPcs::new(100);
@@ -542,5 +540,207 @@ mod val_pcs_tests {
         let mut tampered = proof;
         tampered.rounds[0][0] = tampered.rounds[0][0] + F2_128::from(1u64);
         assert!(!verify_val_pcs(&witness, &tampered).unwrap());
+    }
+}
+
+/// RW-checking sumcheck with PCS openings.
+#[derive(Clone, Debug)]
+pub struct RwPcsProof {
+    pub tables: P3BatchOpening,
+    pub table_values: Vec<Vec<F2_128>>,
+    pub inputs: P3BatchOpening,
+    pub input_values: Vec<Vec<F2_128>>,
+    pub rounds: Vec<Vec<F2_128>>,
+    pub challenges: Vec<F2_128>,
+}
+
+fn eq_points_local(left: &[F2_128], right: &[F2_128]) -> F2_128 {
+    left.iter()
+        .zip(right)
+        .fold(F2_128::from(1u64), |acc, (a, b)| {
+            acc * (*a * *b + (F2_128::from(1u64) + *a) * (F2_128::from(1u64) + *b))
+        })
+}
+
+pub fn prove_rw_pcs(witness: &BinaryTwistWitness) -> Result<RwPcsProof, ProofError> {
+    let cells = 1usize << witness.address_bits;
+    let cycles = witness.cycles.next_power_of_two().max(2);
+    let cycle_bits = cycles.trailing_zeros() as usize;
+    let (val, wa, inc) = build_val_tables(witness);
+    let mut ra = vec![F2_128::from(0u64); cells * cycles];
+    for (cycle, read) in witness.read_address.iter().enumerate() {
+        for cell in 0..cells {
+            ra[cell * cycles + cycle] = read[cell];
+        }
+    }
+    let mut read_value = witness.read_value.clone();
+    read_value.resize(cycles, F2_128::from(0u64));
+    let mut write_value = witness.write_value.clone();
+    write_value.resize(cycles, F2_128::from(0u64));
+    let pcs = P3BinaryPcs::new(100);
+    let table_commit: P3BatchCommitment = pcs
+        .commit_batch(&[ra.clone(), wa.clone(), val.clone()])
+        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    let input_commit: P3BatchCommitment = pcs
+        .commit_batch(&[inc.clone(), read_value.clone(), write_value.clone()])
+        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    let mut transcript = Sha256Transcript::new("magnetar-rw-pcs");
+    for commitment in [&table_commit, &input_commit] {
+        transcript.absorb(
+            "commitment",
+            &bincode::serialize(commitment).map_err(|error| ProofError::Pcs(error.to_string()))?,
+        );
+    }
+    let gamma = sample_point(&mut transcript, 1)[0];
+    let cycle_point = sample_point(&mut transcript, cycle_bits);
+    let eq = eq_vector(&cycle_point, cycles);
+    let mut eq_flat = vec![F2_128::from(0u64); cells * cycles];
+    for cycle in 0..cycles {
+        for cell in 0..cells {
+            eq_flat[cell * cycles + cycle] = eq[cycle];
+        }
+    }
+    let mut inc_flat = vec![F2_128::from(0u64); cells * cycles];
+    for cycle in 0..cycles {
+        for cell in 0..cells {
+            inc_flat[cell * cycles + cycle] = inc[cycle];
+        }
+    }
+    let factors = vec![eq_flat, wa.clone(), inc_flat, val.clone(), ra.clone()];
+
+    let gamma_copy = gamma;
+    let (rounds, challenges) =
+        sumcheck_terms(&factors, &vec![3usize; cells.trailing_zeros() as usize + cycle_bits], &mut transcript, move |folded| {
+            (0..folded[0].len()).fold(F2_128::from(0u64), |sum, index| {
+                sum + folded[0][index]
+                    * (folded[1][index] * folded[2][index]
+                        + folded[1][index] * folded[3][index]
+                        + gamma_copy * folded[4][index] * folded[3][index])
+            })
+        })?;
+    let table_points = vec![P3BatchPoint {
+        point: challenges.clone(),
+        columns: (0..3).collect(),
+    }];
+    let cycle_challenges = &challenges[..cycle_bits];
+    let input_points = vec![
+        P3BatchPoint {
+            point: cycle_point.clone(),
+            columns: vec![1, 2],
+        },
+        P3BatchPoint {
+            point: cycle_challenges.to_vec(),
+            columns: vec![0],
+        },
+    ];
+    let tables = pcs
+        .open_batch(&[ra.clone(), wa.clone(), val.clone()], &table_points)
+        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    let inputs = pcs
+        .open_batch(&[inc.clone(), read_value.clone(), write_value.clone()], &input_points)
+        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    Ok(RwPcsProof {
+        tables,
+        table_values: vec![vec![
+            eval_mle(&ra, &challenges),
+            eval_mle(&wa, &challenges),
+            eval_mle(&val, &challenges),
+        ]],
+        inputs,
+        input_values: vec![
+            vec![
+                eval_mle(&read_value, &cycle_point),
+                eval_mle(&write_value, &cycle_point),
+            ],
+            vec![eval_mle(&inc, cycle_challenges)],
+        ],
+        rounds,
+        challenges,
+    })
+}
+
+pub fn verify_rw_pcs(witness: &BinaryTwistWitness, proof: &RwPcsProof) -> Result<bool, ProofError> {
+    let cells = 1usize << witness.address_bits;
+    let cycles = witness.cycles.next_power_of_two().max(2);
+    let cycle_bits = cycles.trailing_zeros() as usize;
+    let mut transcript = Sha256Transcript::new("magnetar-rw-pcs");
+    for commitment in [&proof.tables.commitment, &proof.inputs.commitment] {
+        transcript.absorb(
+            "commitment",
+            &bincode::serialize(commitment).map_err(|error| ProofError::Pcs(error.to_string()))?,
+        );
+    }
+    let gamma = sample_point(&mut transcript, 1)[0];
+    let cycle_point = sample_point(&mut transcript, cycle_bits);
+    let pcs = P3BinaryPcs::new(100);
+    let table_points = vec![P3BatchPoint {
+        point: proof.challenges.clone(),
+        columns: (0..3).collect(),
+    }];
+    let cycle_challenges = &proof.challenges[..cycle_bits];
+    let input_points = vec![
+        P3BatchPoint {
+            point: cycle_point.clone(),
+            columns: vec![1, 2],
+        },
+        P3BatchPoint {
+            point: cycle_challenges.to_vec(),
+            columns: vec![0],
+        },
+    ];
+    let vt = pcs
+        .verify_batch(&proof.tables, &table_points, &proof.table_values)
+        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    let vi = pcs
+        .verify_batch(&proof.inputs, &input_points, &proof.input_values)
+        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    if !(vt && vi) {
+        return Ok(false);
+    }
+    let ra_eval = proof.table_values[0][0];
+    let wa_eval = proof.table_values[0][1];
+    let val_eval = proof.table_values[0][2];
+    let read_eval = proof.input_values[0][0];
+    let write_eval = proof.input_values[0][1];
+    let inc_eval = proof.input_values[1][0];
+    let claimed = write_eval + gamma * read_eval;
+    let mut transcript = Sha256Transcript::new("magnetar-rw-pcs");
+    for commitment in [&proof.tables.commitment, &proof.inputs.commitment] {
+        transcript.absorb(
+            "commitment",
+            &bincode::serialize(commitment).map_err(|error| ProofError::Pcs(error.to_string()))?,
+        );
+    }
+    let _ = sample_point(&mut transcript, 1);
+    let _ = sample_point(&mut transcript, cycle_bits);
+    let Some((final_sum, challenges)) =
+        replay_terms_derived(&proof.rounds, claimed, &mut transcript)
+    else {
+        eprintln!("rw replay none claimed={:?}", claimed);
+        return Ok(false);
+    };
+    if challenges != proof.challenges {
+        return Ok(false);
+    }
+    let eq_final = eq_points_local(&cycle_point, cycle_challenges);
+    let expected = eq_final
+        * (wa_eval * (inc_eval + val_eval) + gamma * ra_eval * val_eval);
+    let _ = cells;
+    Ok(final_sum == expected)
+}
+
+#[cfg(test)]
+mod rw_pcs_tests {
+    use super::tests::register_witness;
+    use super::*;
+
+    #[test]
+    fn rw_pcs_round_trips() {
+        let witness = register_witness();
+        let proof = prove_rw_pcs(&witness).unwrap();
+        assert!(verify_rw_pcs(&witness, &proof).unwrap());
+        let mut tampered = proof;
+        tampered.rounds[0][0] = tampered.rounds[0][0] + F2_128::from(1u64);
+        assert!(!verify_rw_pcs(&witness, &tampered).unwrap());
     }
 }
