@@ -3837,6 +3837,42 @@ pub fn mixed_alu_branch_rows_from_trace(
     trace: &magnetar_spec::Trace,
     width: usize,
 ) -> Result<Vec<(u64, MixedAluBranchInput)>, RuntimeError> {
+    mixed_alu_branch_rows_from_trace_mode(trace, width, false)
+}
+
+/// Dynamic-row mapping that encodes the halt/ecall row as a jump so the
+/// smaller MIXED_JUMP component replaces the branch component.
+pub fn mixed_alu_branch_rows_from_trace_dynamic(
+    trace: &magnetar_spec::Trace,
+    width: usize,
+) -> Result<Vec<(u64, MixedAluBranchInput)>, RuntimeError> {
+    mixed_alu_branch_rows_from_trace_mode(trace, width, true)
+}
+
+fn dynamic_padding_input(mask: u8, final_pc: u64) -> MixedAluBranchInput {
+    if mask & MIXED_BRANCH != 0 {
+        MixedAluBranchInput::Fetch {
+            left: 0,
+            right: 0,
+            imm: 0,
+            kind: crate::branch_row::BranchKind::Beq,
+        }
+    } else if mask & MIXED_JUMP != 0 {
+        MixedAluBranchInput::Jump { target: final_pc }
+    } else {
+        MixedAluBranchInput::Alu {
+            left: 0,
+            right: 0,
+            op: crate::simd_f2::GatedAluOp::Add,
+        }
+    }
+}
+
+fn mixed_alu_branch_rows_from_trace_mode(
+    trace: &magnetar_spec::Trace,
+    width: usize,
+    halt_as_jump: bool,
+) -> Result<Vec<(u64, MixedAluBranchInput)>, RuntimeError> {
     use crate::simd_f2::GatedCpuRowInput;
 
     let rows = crate::simd_full::gated_rows_from_trace_full(trace, width)?;
@@ -3865,15 +3901,30 @@ pub fn mixed_alu_branch_rows_from_trace(
                 right,
                 imm,
                 kind,
-            } => Ok((
-                pc,
-                MixedAluBranchInput::Fetch {
-                    left,
-                    right,
-                    imm,
-                    kind,
-                },
-            )),
+            } => {
+                // The halt/ecall row is represented as a zero-condition branch
+                // with a zero offset: its next PC is the current PC. Encode it
+                // as a jump so the smaller MIXED_JUMP component is used instead
+                // of the full branch component for the whole trace.
+                if halt_as_jump
+                    && left == 0
+                    && right == 0
+                    && imm == 0
+                    && kind == crate::branch_row::BranchKind::Beq
+                {
+                    Ok((pc, MixedAluBranchInput::Jump { target: pc }))
+                } else {
+                    Ok((
+                        pc,
+                        MixedAluBranchInput::Fetch {
+                            left,
+                            right,
+                            imm,
+                            kind,
+                        },
+                    ))
+                }
+            }
             GatedCpuRowInput::Memory {
                 rs1,
                 imm,
@@ -5322,17 +5373,9 @@ fn dynamic_trace_bits(
         let (pc, mut input) = if index < rows.len() {
             rows[index]
         } else {
-            (
-                final_pc,
-                MixedAluBranchInput::Fetch {
-                    left: 0,
-                    right: 0,
-                    imm: 0,
-                    kind: crate::branch_row::BranchKind::Beq,
-                },
-            )
+            (final_pc, dynamic_padding_input(mask, final_pc))
         };
-        if index + 1 == rows.len() && final_pc == pc {
+        if index + 1 == rows.len() && final_pc == pc && mask & MIXED_JUMP == 0 {
             input = MixedAluBranchInput::Fetch {
                 left: 0,
                 right: 0,
@@ -5354,13 +5397,13 @@ pub fn prove_dynamic_selected_trace<B: magnetar_proof::BitPcs>(
 ) -> Result<LockstepBatch<B>, RuntimeError> {
     use magnetar_proof::prove_lockstep_bits;
 
-    let rows = mixed_alu_branch_rows_from_trace(trace, width)?;
+    let rows = mixed_alu_branch_rows_from_trace_dynamic(trace, width)?;
     let final_pc = trace.final_state.pc;
     let mut mask = mixed_rows_component_mask(&rows);
     if rows.len() < rows.len().next_power_of_two().max(2) {
         mask |= MIXED_BRANCH;
     }
-    if rows.last().map(|(pc, _)| *pc) == Some(final_pc) {
+    if rows.last().map(|(pc, _)| *pc) == Some(final_pc) && mask & MIXED_JUMP == 0 {
         mask |= MIXED_BRANCH;
     }
     let (bits, cycles, initial_pc) = dynamic_trace_bits(width, &rows, final_pc, mask)?;
@@ -5383,13 +5426,13 @@ pub fn verify_dynamic_selected_trace<B: magnetar_proof::BitPcs>(
 ) -> Result<(), RuntimeError> {
     use magnetar_proof::verify_lockstep_bits;
 
-    let rows = mixed_alu_branch_rows_from_trace(trace, width)?;
+    let rows = mixed_alu_branch_rows_from_trace_dynamic(trace, width)?;
     let final_pc = trace.final_state.pc;
     let mut mask = mixed_rows_component_mask(&rows);
     if rows.len() < rows.len().next_power_of_two().max(2) {
         mask |= MIXED_BRANCH;
     }
-    if rows.last().map(|(pc, _)| *pc) == Some(final_pc) {
+    if rows.last().map(|(pc, _)| *pc) == Some(final_pc) && mask & MIXED_JUMP == 0 {
         mask |= MIXED_BRANCH;
     }
     let (bits, cycles, initial_pc) = dynamic_trace_bits(width, &rows, final_pc, mask)?;
@@ -5555,13 +5598,13 @@ pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
 ) -> Result<DynamicSegmentProof<B::Commitment, B::Opening>, RuntimeError> {
     use magnetar_proof::prove_lockstep_bits;
 
-    let rows = mixed_alu_branch_rows_from_trace(trace, width)?;
+    let rows = mixed_alu_branch_rows_from_trace_dynamic(trace, width)?;
     let final_pc = trace.final_state.pc;
     let mut mask = mixed_rows_component_mask(&rows);
     if rows.len() < rows.len().next_power_of_two().max(2) {
         mask |= MIXED_BRANCH;
     }
-    if rows.last().map(|(pc, _)| *pc) == Some(final_pc) {
+    if rows.last().map(|(pc, _)| *pc) == Some(final_pc) && mask & MIXED_JUMP == 0 {
         mask |= MIXED_BRANCH;
     }
     let cycles = rows.len().next_power_of_two().max(2);
@@ -5579,17 +5622,9 @@ pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
         let (pc, mut input) = if index < rows.len() {
             rows[index]
         } else {
-            (
-                final_pc,
-                MixedAluBranchInput::Fetch {
-                    left: 0,
-                    right: 0,
-                    imm: 0,
-                    kind: crate::branch_row::BranchKind::Beq,
-                },
-            )
+            (final_pc, dynamic_padding_input(mask, final_pc))
         };
-        if index + 1 == rows.len() && final_pc == pc {
+        if index + 1 == rows.len() && final_pc == pc && mask & MIXED_JUMP == 0 {
             input = MixedAluBranchInput::Fetch {
                 left: 0,
                 right: 0,
@@ -5793,24 +5828,16 @@ where
         return Err(RuntimeError::Proof("dynamic segment count mismatch".into()));
     }
     let block_cols = layout.total_bits / matrix_cycles;
-    let rows = mixed_alu_branch_rows_from_trace(trace, claims.width)?;
+    let rows = mixed_alu_branch_rows_from_trace_dynamic(trace, claims.width)?;
     let final_pc = trace.final_state.pc;
     let original = DynamicMixedRow::build(claims.mask, claims.width)?;
     let block_for = |cycle: usize| -> Result<Vec<bool>, RuntimeError> {
         let (pc, mut input) = if cycle < rows.len() {
             rows[cycle]
         } else {
-            (
-                final_pc,
-                MixedAluBranchInput::Fetch {
-                    left: 0,
-                    right: 0,
-                    imm: 0,
-                    kind: crate::branch_row::BranchKind::Beq,
-                },
-            )
+            (final_pc, dynamic_padding_input(claims.mask, final_pc))
         };
-        if cycle + 1 == rows.len() && final_pc == pc {
+        if cycle + 1 == rows.len() && final_pc == pc && claims.mask & MIXED_JUMP == 0 {
             input = MixedAluBranchInput::Fetch {
                 left: 0,
                 right: 0,
@@ -5986,13 +6013,13 @@ where
 {
     use magnetar_proof::verify_lockstep_bits;
 
-    let rows = mixed_alu_branch_rows_from_trace(trace, width)?;
+    let rows = mixed_alu_branch_rows_from_trace_dynamic(trace, width)?;
     let final_pc = trace.final_state.pc;
     let mut mask = mixed_rows_component_mask(&rows);
     if rows.len() < rows.len().next_power_of_two().max(2) {
         mask |= MIXED_BRANCH;
     }
-    if rows.last().map(|(pc, _)| *pc) == Some(final_pc) {
+    if rows.last().map(|(pc, _)| *pc) == Some(final_pc) && mask & MIXED_JUMP == 0 {
         mask |= MIXED_BRANCH;
     }
     let cycles = rows.len().next_power_of_two().max(2);
@@ -6037,7 +6064,7 @@ where
                     },
                 )
             };
-            if index + 1 == rows.len() && final_pc == pc {
+            if index + 1 == rows.len() && final_pc == pc && mask & MIXED_JUMP == 0 {
                 input = MixedAluBranchInput::Fetch {
                     left: 0,
                     right: 0,
@@ -7054,7 +7081,7 @@ mod tests {
             },
         )
         .unwrap();
-        let rows = mixed_alu_branch_rows_from_trace(&trace, 8).unwrap();
+        let rows = mixed_alu_branch_rows_from_trace_dynamic(&trace, 8).unwrap();
         let mask = mixed_rows_component_mask(&rows);
         let original = DynamicMixedRow::build(mask, 8).unwrap();
         let cycles = rows.len().next_power_of_two().max(2);
@@ -7063,17 +7090,9 @@ mod tests {
             let (pc, mut input) = if cycle < rows.len() {
                 rows[cycle]
             } else {
-                (
-                    final_pc,
-                    MixedAluBranchInput::Fetch {
-                        left: 0,
-                        right: 0,
-                        imm: 0,
-                        kind: crate::branch_row::BranchKind::Beq,
-                    },
-                )
+                (final_pc, dynamic_padding_input(mask, final_pc))
             };
-            if cycle + 1 == rows.len() && final_pc == pc {
+            if cycle + 1 == rows.len() && final_pc == pc && mask & MIXED_JUMP == 0 {
                 input = MixedAluBranchInput::Fetch {
                     left: 0,
                     right: 0,

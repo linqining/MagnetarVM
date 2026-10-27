@@ -811,3 +811,30 @@ branch row rather than pay the branch component for every cycle.
 
 The virtual claim root binding and paper-mode baseline from the previous rounds
 remain in place; full runtime suite: 318 passing.
+
+
+## Selected CPU: halt/ecall row uses the jump component
+
+The dynamic row mapping now encodes the zero-condition halt/ecall row as a
+`Jump` to the current PC instead of a `Fetch` branch. With width 8:
+
+```text
+ALU                    433 vars
+ALU + branch          1453 vars
+ALU + jump             549 vars
+```
+
+The ALU+halt trace therefore uses `mask = ALU | JUMP` and a witness about 2.6x
+narrower than the old ALU+branch shape.
+
+Paper-mode proof:
+
+| rows | before | after |
+|---:|---:|---:|
+| 1024 | 278,386 B | 270,090 B |
+| 4096 | 381,360 B | 367,536 B |
+
+Selected component: 116,998 -> 108,702 B at 1024; 151,262 -> 137,438 B at
+4096. The dynamic padding rows use the component family present in the mask
+instead of unconditionally forcing a branch row. Full runtime suite: 318
+passing; clippy clean.
