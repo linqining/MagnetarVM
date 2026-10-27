@@ -354,3 +354,14 @@ Claim component:
 | 4096 | 114,234 B | 89,696 B |
 
 Full runtime suite: 317 passing; claim-native guest passes; clippy clean.
+
+
+## Logup PCS parameter: 20 grinding bits
+
+The logup Shout reader/position PCS now uses `(security=100, rate=4, pow=20,
+folding=3)` instead of pow 16. At 4096 rows this shrinks its opening from
+174,064 B to 168,720 B; native logup component 248,657 -> 237,681 B and total
+proof 638,271 -> 627,295 B. Prover cost rises from extra grinding; verifier
+milliseconds remain low.
+
+Full runtime suite: 317 passing; clippy clean.
