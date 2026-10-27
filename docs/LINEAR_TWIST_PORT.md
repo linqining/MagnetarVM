@@ -202,3 +202,23 @@ final product. The verifier replays the RW sumcheck and checks the final
 Full runtime suite: 322 passing. Still missing: one-hot/address-bit bindings,
 and sharing the Val commitment between the RW and Val PCS proofs. The dense
 tables are not yet integrated into `binary_twist`.
+
+
+## Prototype 5: PCS-backed RW + Val at 2^16
+
+`ROWS=65536 linear_twist_pcs_bench` with the prototype PCS parameters:
+
+```text
+rw_bytes       1,235,480 B
+val_bytes      1,050,304 B
+total_bytes    2,285,784 B
+rw_prove          41.82 s
+rw_verify         18.8 ms
+val_prove         17.27 s
+val_verify        12.0 ms
+```
+
+The prover is linear and the verifier is fast, but the prototype commits
+dense RA/WA/Val/Inc/read/write tables independently and does not bind one-hot
+addresses to the Access commitment. Proof size is therefore not comparable to
+the paper target; this is a scaling demonstration only.

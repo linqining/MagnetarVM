@@ -342,7 +342,7 @@ mod val_evaluation_tests {
 
 
 /// Val-evaluation proof with committed tables and P3 batch openings.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ValPcsProof {
     pub val_wa: P3BatchOpening,
     pub val_wa_values: Vec<Vec<F2_128>>,
@@ -544,7 +544,7 @@ mod val_pcs_tests {
 }
 
 /// RW-checking sumcheck with PCS openings.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RwPcsProof {
     pub tables: P3BatchOpening,
     pub table_values: Vec<Vec<F2_128>>,
