@@ -674,3 +674,18 @@ At 4096 the claim component (24,672 B) is removed. At 8192 this projects to
 roughly 197 KB. This is not virtual claims: the separate claim-native path and
 proof-only claim verifier still carry the complete claim proof. A dedicated
 test checks the trace-mode round trip.
+
+
+## Virtual-claim groundwork: sparse claim openings
+
+`ClaimProof::open_indices` now opens an arbitrary sorted subset of authenticated
+row claims, with the absolute row index preserved on every opening.
+`verify_indexed_claims` / `ClaimProof::verify_subset` verify those sparse
+openings without requiring a dense 0..n list.
+
+This is the first concrete building block for virtual claims: a proof-only
+verifier can ask for the rows needed by CPU/Shout/Access instead of carrying the
+complete claim proof. The trace-selected CPU experiment was reverted from the
+working tree; committed Shout/CPU remains the paper path.
+
+Full runtime suite: 318 passing.

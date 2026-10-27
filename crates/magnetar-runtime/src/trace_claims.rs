@@ -640,6 +640,36 @@ impl ClaimProof {
             verify_claims(self.root, &self.openings)
         }
     }
+
+    /// Open a sparse subset of authenticated row claims (virtual-claim style).
+    ///
+    /// Indices are sorted and deduplicated; the returned proof carries the
+    /// actual row index on every opening, so gaps are allowed.
+    pub fn open_indices(trace: &magnetar_spec::Trace, indices: &[usize]) -> Option<Self> {
+        let tree = TraceClaimTree::build(trace);
+        let mut indices = indices.to_vec();
+        indices.sort_unstable();
+        indices.dedup();
+        let openings = indices
+            .into_iter()
+            .map(|index| tree.open(index))
+            .collect::<Option<Vec<_>>>()?;
+        Some(Self {
+            root: tree.root(),
+            complete: false,
+            openings,
+        })
+    }
+
+    /// Verify a sparse opening and return `(row index, claim)` pairs.
+    pub fn verify_subset(&self) -> Option<Vec<(usize, TraceClaim)>> {
+        if self.complete {
+            return verify_complete_claims(self.root, &self.openings).map(|claims| {
+                claims.into_iter().enumerate().collect::<Vec<_>>()
+            });
+        }
+        verify_indexed_claims(self.root, &self.openings)
+    }
 }
 
 /// Verify a complete (all-row) claim proof without per-row Merkle paths.
@@ -677,6 +707,21 @@ pub fn verify_claims(root: [u8; 32], openings: &[TraceClaimOpening]) -> Option<V
             return None;
         }
         claims.push(opening.claim.clone());
+    }
+    Some(claims)
+}
+
+/// Verify sparse openings, preserving each opening's absolute row index.
+pub fn verify_indexed_claims(
+    root: [u8; 32],
+    openings: &[TraceClaimOpening],
+) -> Option<Vec<(usize, TraceClaim)>> {
+    let mut claims = Vec::with_capacity(openings.len());
+    for opening in openings {
+        if !verify_opening(root, opening) {
+            return None;
+        }
+        claims.push((opening.index, opening.claim.clone()));
     }
     Some(claims)
 }
@@ -833,5 +878,23 @@ mod tests {
         let mut changed = trace.clone();
         changed.rows[0].instruction_len = 2;
         assert_ne!(root, TraceClaimTree::build(&changed).root());
+    }
+
+    #[test]
+    fn sparse_claim_openings_preserve_absolute_indices() {
+        let trace = trace();
+        let last = trace.rows.len() - 1;
+        let proof = ClaimProof::open_indices(&trace, &[last, 0]).unwrap();
+        let rows = proof.verify_subset().unwrap();
+        assert_eq!(
+            rows.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
+            vec![0, last]
+        );
+        for (index, claim) in &rows {
+            assert_eq!(claim, &TraceClaim::from_row(&trace.rows[*index]));
+        }
+        let mut tampered = proof;
+        tampered.openings[0].claim.pc ^= 1;
+        assert!(tampered.verify_subset().is_none());
     }
 }
