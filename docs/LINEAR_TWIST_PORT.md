@@ -75,3 +75,21 @@ from the write increments and the initial state.
 - No `cycles^2` allocation in the prover path.
 - 32768-row paper run completes well below the previous 3600 s timeout.
 - Paper 2^16 attempt; report proof/prove/verify even if targets are missed.
+
+
+## Prototype 1: linear read/write-checking sumcheck
+
+Added `crates/magnetar-runtime/src/linear_twist.rs`. It materializes the
+one-hot `RA`/`WA` matrices and a prefix `Val` table of size `K*T` (not `T^2`)
+and proves the relation
+
+```text
+sum_j eq(r_cycle, j) * (WA * (Inc + Val) + gamma * RA * Val)
+```
+
+with a degree-3 sumcheck over the `K*T` boolean variables.
+
+The prototype round-trips on a 1024-cycle register witness and rejects a
+tampered claim. Verification in this prototype still recomputes the tables;
+the real integration will replace those recomputations with PCS claims and a
+separate Val-evaluation sumcheck.

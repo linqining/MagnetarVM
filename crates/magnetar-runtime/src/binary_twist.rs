@@ -146,7 +146,7 @@ fn absorb_commitment(transcript: &mut Sha256Transcript, label: &str, commitment:
     transcript.absorb(label, &bincode::serialize(commitment).unwrap_or_default());
 }
 
-fn sample_point(transcript: &mut Sha256Transcript, length: usize) -> Vec<F2_128> {
+pub(crate) fn sample_point(transcript: &mut Sha256Transcript, length: usize) -> Vec<F2_128> {
     (0..length)
         .map(|_| challenge(transcript, "point"))
         .collect()
@@ -1011,7 +1011,7 @@ fn eq_points(left: &[F2_128], right: &[F2_128]) -> F2_128 {
         })
 }
 
-fn eq_vector(point: &[F2_128], size: usize) -> Vec<F2_128> {
+pub(crate) fn eq_vector(point: &[F2_128], size: usize) -> Vec<F2_128> {
     (0..size).map(|index| eq_at_index(point, index)).collect()
 }
 
@@ -1060,7 +1060,7 @@ fn address_value(bits: &[F2_128], valid: F2_128, k_point: &[F2_128]) -> F2_128 {
     value
 }
 
-fn sumcheck_terms(
+pub(crate) fn sumcheck_terms(
     factors: &[Vec<F2_128>],
     degrees: &[usize],
     transcript: &mut Sha256Transcript,
@@ -1216,7 +1216,7 @@ fn sumcheck_terms_shared(
     Ok((polynomials, challenges))
 }
 
-fn replay_terms_derived(
+pub(crate) fn replay_terms_derived(
     rounds: &[Vec<F2_128>],
     mut sum: F2_128,
     transcript: &mut Sha256Transcript,
