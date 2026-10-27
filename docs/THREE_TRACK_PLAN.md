@@ -474,3 +474,12 @@ component drops from 167,438 B to 158,206 B and the native proof from
 515,506 B to 506,274 B; prover time changes little at this size.
 
 Full runtime suite: 317 passing.
+
+
+## Selected PCS: 24 grinding bits
+
+Selected PCS pow is now 24. At 4096 rows the selected component drops from
+158,206 B to 150,558 B and the native proof from 506,274 B to 498,626 B;
+prover time rises from about 35.5 s to 47.0 s at this row count.
+
+Full runtime suite: 317 passing.
