@@ -237,3 +237,12 @@ reduced standalone proof size substantially:
 but the 65536-row prototype did not finish within 2400 s, so the parameter
 change was reverted. The default prototype parameters keep the scaling
 benchmark runnable; production PCS integration remains a separate task.
+
+
+## One-hot lookup prototype (reverted)
+
+A logup*-based identity-table prototype for proving RA/WA rows are one-hot was
+started. It compiled, but no verifier/position-binding path and no shared PCS
+commitment were implemented, so it was reverted rather than committed as an
+unverified component. The next step is a proper one-hot verifier plus address
+bit/position binding.
