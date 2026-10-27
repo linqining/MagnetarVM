@@ -1040,7 +1040,7 @@ fn interpolate_values(values: &[F2_128], r: F2_128) -> F2_128 {
     result
 }
 
-fn lt_mle(jp_point: &[F2_128], j_point: &[F2_128], _cycles: usize) -> F2_128 {
+pub(crate) fn lt_mle(jp_point: &[F2_128], j_point: &[F2_128], _cycles: usize) -> F2_128 {
     let mut prefix = F2_128::from(1u64);
     let mut sum = F2_128::from(0u64);
     for index in (0..jp_point.len()).rev() {

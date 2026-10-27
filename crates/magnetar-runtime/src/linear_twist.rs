@@ -159,7 +159,7 @@ mod tests {
 
     use super::*;
 
-    fn register_witness() -> BinaryTwistWitness {
+    pub(super) fn register_witness() -> BinaryTwistWitness {
         let mut program = Vec::new();
         for index in 0..1023 {
             program.push(
@@ -198,5 +198,145 @@ mod tests {
         let mut tampered = proof;
         tampered.claimed = tampered.claimed + F2_128::from(1u64);
         assert!(!verify_linear_rw(&witness, &tampered).unwrap());
+    }
+}
+
+/// Val-evaluation sumcheck prototype.
+#[derive(Clone, Debug)]
+pub struct ValEvaluationProof {
+    pub claimed: F2_128,
+    pub rounds: Vec<Vec<F2_128>>,
+    pub challenges: Vec<F2_128>,
+}
+
+fn eval_mle(values: &[F2_128], point: &[F2_128]) -> F2_128 {
+    let mut folded = values.to_vec();
+    for coordinate in point {
+        let mut next = Vec::with_capacity(folded.len() / 2);
+        for pair in folded.chunks_exact(2) {
+            next.push(pair[0] + *coordinate * (pair[1] - pair[0]));
+        }
+        folded = next;
+    }
+    folded[0]
+}
+
+fn build_val_tables(witness: &BinaryTwistWitness) -> (Vec<F2_128>, Vec<F2_128>, Vec<F2_128>) {
+    let cells = 1usize << witness.address_bits;
+    let cycles = witness.cycles.next_power_of_two().max(2);
+    let mut val = vec![F2_128::from(0u64); cells * cycles];
+    let mut wa = vec![F2_128::from(0u64); cells * cycles];
+    let mut inc = vec![F2_128::from(0u64); cycles];
+    let mut current = witness.initial.clone();
+    current.resize(cells, F2_128::from(0u64));
+    for cycle in 0..cycles {
+        let increment = witness
+            .increment
+            .get(cycle)
+            .copied()
+            .unwrap_or(F2_128::from(0u64));
+        let write = witness.write_address.get(cycle);
+        for cell in 0..cells {
+            let index = cell * cycles + cycle;
+            let write_bit = write.map_or(F2_128::from(0u64), |row| row[cell]);
+            wa[index] = write_bit;
+            val[index] = current[cell];
+            current[cell] = current[cell] + write_bit * increment;
+        }
+        inc[cycle] = increment;
+    }
+    (val, wa, inc)
+}
+
+pub fn prove_val_evaluation(
+    witness: &BinaryTwistWitness,
+) -> Result<ValEvaluationProof, ProofError> {
+    let cycles = witness.cycles.next_power_of_two().max(2);
+    let cycle_bits = cycles.trailing_zeros() as usize;
+    let (val, _, inc) = build_val_tables(witness);
+    let mut transcript = Sha256Transcript::new("magnetar-val-evaluation");
+    let rk = sample_point(&mut transcript, witness.address_bits);
+    let rj = sample_point(&mut transcript, cycle_bits);
+    let val_claim = eval_mle(&val, &rj.iter().chain(&rk).copied().collect::<Vec<_>>());
+    let init_claim = eval_mle(&witness.initial, &rk);
+    let eq_rj = eq_vector(&rj, cycles);
+    let mut suffix = vec![F2_128::from(0u64); cycles];
+    let mut running = F2_128::from(0u64);
+    for previous in (0..cycles).rev() {
+        suffix[previous] = running;
+        running = running + eq_rj[previous];
+    }
+    let cells = 1usize << witness.address_bits;
+    let mut wa_at_rk = (0..cycles)
+        .map(|cycle| {
+            witness.write_address.get(cycle).map_or(F2_128::from(0u64), |row| {
+                eval_mle(row, &rk)
+            })
+        })
+        .collect::<Vec<_>>();
+    wa_at_rk.resize(cycles, F2_128::from(0u64));
+    let _ = cells;
+    let factors = vec![wa_at_rk, inc, suffix];
+    let (rounds, challenges) =
+        sumcheck_terms(&factors, &vec![3usize; cycle_bits], &mut transcript, |folded| {
+            (0..folded[0].len()).fold(F2_128::from(0u64), |sum, index| {
+                sum + folded[0][index] * folded[1][index] * folded[2][index]
+            })
+        })?;
+    Ok(ValEvaluationProof {
+        claimed: val_claim - init_claim,
+        rounds,
+        challenges,
+    })
+}
+
+pub fn verify_val_evaluation(
+    witness: &BinaryTwistWitness,
+    proof: &ValEvaluationProof,
+) -> Result<bool, ProofError> {
+    let cycles = witness.cycles.next_power_of_two().max(2);
+    let cycle_bits = cycles.trailing_zeros() as usize;
+    let (val, wa, inc) = build_val_tables(witness);
+    let mut transcript = Sha256Transcript::new("magnetar-val-evaluation");
+    let rk = sample_point(&mut transcript, witness.address_bits);
+    let rj = sample_point(&mut transcript, cycle_bits);
+    let val_claim = eval_mle(&val, &rj.iter().chain(&rk).copied().collect::<Vec<_>>());
+    let init_claim = eval_mle(&witness.initial, &rk);
+    if proof.claimed != val_claim - init_claim {
+        return Ok(false);
+    }
+    let mut transcript = Sha256Transcript::new("magnetar-val-evaluation");
+    let _ = sample_point(&mut transcript, witness.address_bits);
+    let _ = sample_point(&mut transcript, cycle_bits);
+    let Some((final_sum, challenges)) =
+        replay_terms_derived(&proof.rounds, proof.claimed, &mut transcript)
+    else {
+        return Ok(false);
+    };
+    if challenges != proof.challenges {
+        return Ok(false);
+    }
+    let wa_eval = eval_mle(
+        &wa,
+        &challenges.iter().chain(&rk).copied().collect::<Vec<_>>(),
+    );
+    let inc_eval = eval_mle(&inc, &challenges);
+    let lt_eval = crate::binary_twist::lt_mle(&challenges, &rj, cycles);
+    Ok(final_sum == wa_eval * inc_eval * lt_eval)
+}
+
+#[cfg(test)]
+mod val_evaluation_tests {
+    use super::tests::register_witness;
+    use super::*;
+
+    #[test]
+    fn val_evaluation_round_trips() {
+        let witness = register_witness();
+        let proof = prove_val_evaluation(&witness).unwrap();
+        assert!(verify_val_evaluation(&witness, &proof).unwrap());
+        let mut tampered = proof;
+        tampered.claimed = tampered.claimed + F2_128::from(1u64);
+        assert!(!verify_val_evaluation(&witness, &tampered).unwrap());
     }
 }

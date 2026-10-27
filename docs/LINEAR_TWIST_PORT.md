@@ -134,3 +134,16 @@ The small-table formula matches the flat `Val` MLE, but the full witness does
 not. The remaining discrepancy is therefore in the padded-cycle / table
 construction path, not in the small-table point ordering. The Val prototype was
 reverted again without being committed.
+
+
+## Prototype 2: Val-evaluation sumcheck (fixed padded rows)
+
+The mismatch was the padded tail of the `Val` table: cycles
+`witness.cycles..T` must repeat the final register state, not stay zero, because
+the MLE prefix formula includes those padded cycle coordinates.
+
+After filling padded rows with the final current values (WA/Inc zero), the
+Val-evaluation sumcheck round-trips and rejects a tampered claim. It remains a
+prototype: verification still materializes the tables; PCS claims are next.
+
+Full runtime suite: 320 passing; clippy clean.
