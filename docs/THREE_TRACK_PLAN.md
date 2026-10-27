@@ -465,3 +465,12 @@ Native proof:
 
 Claim component: 73,300 -> 65,109 B at 4096; 14,932 -> 12,885 B at 1024.
 Full runtime suite: 317 passing; claim-native guest passes; clippy clean.
+
+
+## Selected PCS: 20 grinding bits
+
+Selected CPU PCS now uses pow 20 instead of 16. At 4096 rows the selected
+component drops from 167,438 B to 158,206 B and the native proof from
+515,506 B to 506,274 B; prover time changes little at this size.
+
+Full runtime suite: 317 passing.
