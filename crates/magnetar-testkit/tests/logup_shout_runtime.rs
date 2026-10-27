@@ -67,3 +67,61 @@ fn runtime_logup_shout_round_trips() {
     bad.reader_claims[0] = bad.reader_claims[0] + magnetar_constraint::F2_128::from(1u64);
     assert!(verify_logup_shout(&bad, &witness.rom).is_err());
 }
+
+#[test]
+fn runtime_trace_logup_shout_round_trips() {
+    use magnetar_runtime::logup_shout::{
+        prove_trace_logup_shout, trace_logup_shout_link_claims, verify_trace_logup_shout,
+    };
+    let rows = std::env::var("ROWS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(128);
+    let mut rom = Vec::new();
+    for index in 0..rows.saturating_sub(1) {
+        rom.push(
+            Instruction {
+                op: Op::Addi,
+                rd: 1,
+                rs1: 1,
+                rs2: 0,
+                imm: index as i64 + 1,
+                shamt: 0,
+            }
+            .encode(),
+        );
+    }
+    rom.push(Instruction::new(Op::Ecall).encode());
+    let trace = execute(
+        &ProgramImage::new(0x1000, rom),
+        MachineConfig {
+            entry: 0x1000,
+            rom_base: 0x1000,
+            ram_base: 0x1000_0000,
+            ram_size: 0x100,
+            stack_top: 0x1000_0100,
+            max_cycles: 10_000_000,
+        },
+    )
+    .unwrap();
+    let witness = BinaryShoutWitness::from_trace(&trace).unwrap();
+    let proof = prove_trace_logup_shout(&witness).unwrap();
+    verify_trace_logup_shout(&proof, &witness).unwrap();
+    let _ = trace_logup_shout_link_claims(&proof, &witness).unwrap();
+    eprintln!(
+        "runtime trace logup Shout rows={rows} bytes={}",
+        bincode::serialize(&proof).unwrap().len()
+    );
+
+    let mut bad_link = proof.clone();
+    bad_link.link_claims[0] = bad_link.link_claims[0] + magnetar_constraint::F2_128::from(1u64);
+    assert!(verify_trace_logup_shout(&bad_link, &witness).is_err());
+
+    let mut bad_point = proof.clone();
+    bad_point.reader_point[0] = bad_point.reader_point[0] + magnetar_constraint::F2_128::from(1u64);
+    assert!(verify_trace_logup_shout(&bad_point, &witness).is_err());
+
+    let mut bad_witness = witness.clone();
+    bad_witness.rom[0][0] = bad_witness.rom[0][0] + magnetar_constraint::F2_128::from(1u64);
+    assert!(verify_trace_logup_shout(&proof, &bad_witness).is_err());
+}

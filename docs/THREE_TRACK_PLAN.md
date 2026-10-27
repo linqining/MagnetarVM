@@ -526,3 +526,19 @@ for standalone tests and compatibility; the native path uses the trace-backed
 variant. This moves Shout's soundness root from a committed Shout witness to
 the authenticated claim/trace layer. Full runtime suite: 317 passing;
 claim-native guest and logup Shout runtime tests pass; clippy clean.
+
+
+## Track 2 third slice: streamed write-history sumcheck
+
+The write-history sumcheck now uses the same first-round streaming as read
+history: first-round polynomial from base columns, one fold, then remaining
+rounds. The write-history claim is prefix-summed as well.
+
+At 4096 rows the access stage measured about 31 s -> 25.6 s (host dependent).
+
+## Trace-backed Shout soundness tests
+
+`runtime_trace_logup_shout_round_trips` checks the trace-backed path and
+rejects tampered link claims, reader point, and ROM witness. The soundness root
+is the authenticated claim/trace layer: this is not a standalone succinct Shout
+proof. The committed `LogupShoutProof` path remains for paper-form Shout.

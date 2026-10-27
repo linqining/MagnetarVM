@@ -1673,33 +1673,94 @@ pub(crate) fn prove_binary_twist_claims(
     });
     inc_expected.push(vec![inc_eval]);
 
-    // Write history part: eq * LT * Inc * WA * WA.
+    // Read history part: eq * LT * Inc * RA * WA.
     let mut transcript = Sha256Transcript::new("magnetar-binary-twist-write-history");
     absorb_mosaic_commitment(&mut transcript, commitment);
     absorb_point(&mut transcript, "cycle", &rho_j);
     let history_terms = cycles * cycles;
-    let mut factors = vec![vec![F2_128::from(0u64); history_terms]; a + 5];
-    for cycle in 0..cycles {
-        for previous in 0..cycles {
-            let index = cycle * cycles + previous;
-            factors[0][index] = eq_j[cycle];
-            factors[1][index] = if previous < cycle {
-                F2_128::from(1u64)
-            } else {
-                F2_128::from(0u64)
-            };
-            factors[2][index] = increments[previous];
-            factors[3][index] = addr[wa_valid][cycle];
-            factors[4][index] = addr[wa_valid][previous];
-            for bit in 0..a {
-                factors[5 + bit][index] =
-                    F2_128::from(1u64) + addr[a + bit][cycle] + addr[a + bit][previous];
-            }
+    let history_rounds = history_terms.trailing_zeros() as usize;
+    let mut history_degrees = vec![a + 3; history_rounds];
+    if history_degrees.len() >= 2 * n {
+        for degree in history_degrees.iter_mut().skip(n).take(n) {
+            *degree = a + 3;
         }
     }
-    let history_degrees = vec![a + 3; history_terms.trailing_zeros() as usize];
-    let (rounds, challenges) =
-        sumcheck_terms(&factors, &history_degrees, &mut transcript, |folded| {
+    let wa_valid = 2 * a;
+    let wa_valid = 2 * a + 1;
+    let factor_value = |factor: usize, index: usize| -> F2_128 {
+        let cycle = index / cycles;
+        let previous = index % cycles;
+        match factor {
+            0 => eq_j[cycle],
+            1 => F2_128::from(u64::from(previous < cycle)),
+            2 => increments[previous],
+            3 => addr[wa_valid][cycle],
+            4 => addr[wa_valid][previous],
+            _ => {
+                let bit = factor - 5;
+                F2_128::from(1u64) + addr[a + bit][cycle] + addr[a + bit][previous]
+            }
+        }
+    };
+    let history_factor_count = a + 5;
+    let history_started = std::time::Instant::now();
+    let (rounds, all_challenges) = if history_rounds == 0 {
+        (Vec::new(), Vec::new())
+    } else {
+        let first_degree = history_degrees[0];
+        let points = (0..=first_degree)
+            .map(|point| F2_128::from(point as u64))
+            .collect::<Vec<_>>();
+        let mut first_polynomial = vec![F2_128::from(0u64); points.len()];
+        std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(points.len());
+            for point in points.iter() {
+                let factor_value = &factor_value;
+                handles.push(scope.spawn(move || {
+                    let mut total = F2_128::from(0u64);
+                    for index in (0..history_terms).step_by(2) {
+                        let mut product = F2_128::from(1u64);
+                        for factor in 0..history_factor_count {
+                            let even = factor_value(factor, index);
+                            let odd = factor_value(factor, index + 1);
+                            product = product * (even + *point * (even + odd));
+                        }
+                        total = total + product;
+                    }
+                    total
+                }));
+            }
+            for (point_index, handle) in handles.into_iter().enumerate() {
+                first_polynomial[point_index] = handle.join().expect("history sumcheck worker");
+            }
+        });
+        for coefficient in &first_polynomial {
+            transcript.absorb("round", &coefficient.value().to_le_bytes());
+        }
+        let first_challenge = challenge(&mut transcript, "sumcheck");
+    if std::env::var_os("MAGNETAR_PROFILE_ACCESS").is_some() {
+        eprintln!("history first round: {:?}", history_started.elapsed());
+    }
+    let fold_started = std::time::Instant::now();
+        let half_terms = history_terms / 2;
+        let mut folded_factors = vec![vec![F2_128::from(0u64); half_terms]; history_factor_count];
+        std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(history_factor_count);
+            for (factor, target) in folded_factors.iter_mut().enumerate() {
+                let factor_value = &factor_value;
+                handles.push(scope.spawn(move || {
+                    for index in (0..history_terms).step_by(2) {
+                        let even = factor_value(factor, index);
+                        let odd = factor_value(factor, index + 1);
+                        target[index / 2] = even + first_challenge * (even + odd);
+                    }
+                }));
+            }
+            for handle in handles {
+                handle.join().expect("history fold worker");
+            }
+        });
+        let summand = |folded: &[Vec<F2_128>]| {
             (0..folded[0].len()).fold(F2_128::from(0u64), |sum, index| {
                 let mut equality = F2_128::from(1u64);
                 for bit in 0..a {
@@ -1712,9 +1773,45 @@ pub(crate) fn prove_binary_twist_claims(
                     * folded[4][index]
                     * equality
             })
-        })?;
-    let r_previous = &challenges[..n];
-    let r_j = &challenges[n..];
+        };
+        if std::env::var_os("MAGNETAR_PROFILE_ACCESS").is_some() {
+        eprintln!("history fold: {:?}", fold_started.elapsed());
+    }
+    let remaining_started = std::time::Instant::now();
+    let (remaining_rounds, mut challenges) =
+            sumcheck_terms(&folded_factors, &history_degrees[1..], &mut transcript, summand)?;
+        if std::env::var_os("MAGNETAR_PROFILE_ACCESS").is_some() {
+        eprintln!("history remaining: {:?}", remaining_started.elapsed());
+    }
+    let mut rounds = Vec::with_capacity(remaining_rounds.len() + 1);
+        rounds.push(first_polynomial);
+        rounds.extend(remaining_rounds);
+        let mut all_challenges = Vec::with_capacity(challenges.len() + 1);
+        all_challenges.push(first_challenge);
+        all_challenges.append(&mut challenges);
+        (rounds, all_challenges)
+    };
+    let history_claim = WriteHistoryClaim {
+        claimed: {
+            let mut total = F2_128::from(0u64);
+            let mut prefix = vec![F2_128::from(0u64); cells];
+            for cycle in 0..cycles {
+                let mut write_cell = 0usize;
+                for bit in 0..a {
+                    write_cell |= ((addr[a + bit][cycle].value() as usize) & 1) << bit;
+                }
+                total = total
+                    + eq_j[cycle] * addr[wa_valid][cycle] * prefix[write_cell];
+                if addr[wa_valid][cycle].value() == 1 {
+                    prefix[write_cell] = prefix[write_cell] + increments[cycle];
+                }
+            }
+            total
+        },
+        rounds,
+    };
+    let r_previous = &all_challenges[..n];
+    let r_j = &all_challenges[n..];
     let current_bits = (0..a)
         .map(|bit| fold_all(&addr[a + bit], r_j))
         .collect::<Vec<_>>();
@@ -1733,31 +1830,6 @@ pub(crate) fn prove_binary_twist_claims(
         values.push(successor_valid);
         values.push(successor_inc);
         values
-    };
-    let history_claim = WriteHistoryClaim {
-        claimed: {
-            let mut total = F2_128::from(0u64);
-            for cycle in 0..cycles {
-                for previous in 0..cycles {
-                    if previous >= cycle {
-                        continue;
-                    }
-                    let mut equality = F2_128::from(1u64);
-                    for bit in 0..a {
-                        equality = equality
-                            * (F2_128::from(1u64) + addr[a + bit][cycle] + addr[a + bit][previous]);
-                    }
-                    total = total
-                        + eq_j[cycle]
-                            * increments[previous]
-                            * addr[wa_valid][cycle]
-                            * addr[wa_valid][previous]
-                            * equality;
-                }
-            }
-            total
-        },
-        rounds,
     };
     addr_points.push(P3MosaicPoint {
         table: table_index,
