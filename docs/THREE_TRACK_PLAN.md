@@ -838,3 +838,11 @@ Selected component: 116,998 -> 108,702 B at 1024; 151,262 -> 137,438 B at
 4096. The dynamic padding rows use the component family present in the mask
 instead of unconditionally forcing a branch row. Full runtime suite: 318
 passing; clippy clean.
+
+
+## Negative result: external compression crates
+
+Tried compressing the claim blob with `zstd`/`flate2`, but the offline Cargo
+registry sandbox cannot unpack new transitive crates (`jobserver`, `crc32fast`).
+The dependency change was reverted. A in-tree compression codec would be
+required, which is not worth it before the virtual-claim rewrite.
