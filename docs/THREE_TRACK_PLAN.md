@@ -579,3 +579,12 @@ the shape component drops from 11,827 B to 52 B and the native proof from
 305,663 B to 293,888 B; at 1024 rows the proof is 168,532 B.
 
 Full runtime suite: 317 passing; clippy clean.
+
+
+## Track 1 fourteenth slice: RLE source-register values
+
+Claim `rs1_value`/`rs2_value` columns are run-length encoded. At 4096 rows the
+claim component drops from 52,836 B to 44,648 B and the native proof from
+293,888 B to 285,700 B; at 1024 rows the proof is 166,488 B.
+
+Full runtime suite: 317 passing; clippy clean.

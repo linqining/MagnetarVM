@@ -356,8 +356,8 @@ struct ClaimColumns {
     words: Vec<u32>,
     flags: Vec<(u8, u32)>,
     rd_values: Vec<u64>,
-    rs1_values: Vec<u64>,
-    rs2_values: Vec<u64>,
+    rs1_values: Vec<(u64, u32)>,
+    rs2_values: Vec<(u64, u32)>,
     memory_rows: Vec<u32>,
     memory: Vec<Vec<TraceMemClaim>>,
     syscall_rows: Vec<u32>,
@@ -407,6 +407,8 @@ fn encode_claim_columns(claims: &[TraceClaim]) -> Vec<u8> {
     let mut next_deltas = Vec::with_capacity(claims.len());
     let mut words = Vec::with_capacity(claims.len());
     let mut flags = Vec::with_capacity(claims.len());
+    let mut raw_rs1_values = Vec::with_capacity(claims.len());
+    let mut raw_rs2_values = Vec::with_capacity(claims.len());
     for (index, claim) in claims.iter().enumerate() {
         if index > 0 {
             pc_deltas.push(claim.pc as i64 - previous_pc as i64);
@@ -420,8 +422,8 @@ fn encode_claim_columns(claims: &[TraceClaim]) -> Vec<u8> {
                 | (u8::from(claim.rs2_present) << 2),
         );
         columns.rd_values.push(claim.rd_value);
-        columns.rs1_values.push(claim.rs1_value);
-        columns.rs2_values.push(claim.rs2_value);
+        raw_rs1_values.push(claim.rs1_value);
+        raw_rs2_values.push(claim.rs2_value);
         if !claim.memory.is_empty() {
             columns.memory_rows.push(index as u32);
             columns.memory.push(claim.memory.clone());
@@ -439,6 +441,8 @@ fn encode_claim_columns(claims: &[TraceClaim]) -> Vec<u8> {
         previous_word = *word;
     }
     columns.flags = run_length(&flags);
+    columns.rs1_values = run_length(&raw_rs1_values);
+    columns.rs2_values = run_length(&raw_rs2_values);
     bincode::DefaultOptions::new()
         .with_varint_encoding()
         .serialize(&columns)
@@ -459,6 +463,10 @@ fn decode_claim_columns(blob: &[u8]) -> Result<Vec<TraceClaim>, Box<bincode::Err
     }
     let flags = expand_runs(&columns.flags, count)
         .ok_or_else(|| Box::new(bincode::ErrorKind::Custom("claim flag runs".into())))?;
+    let rs1_values = expand_runs(&columns.rs1_values, count)
+        .ok_or_else(|| Box::new(bincode::ErrorKind::Custom("claim rs1 runs".into())))?;
+    let rs2_values = expand_runs(&columns.rs2_values, count)
+        .ok_or_else(|| Box::new(bincode::ErrorKind::Custom("claim rs2 runs".into())))?;
     let mut claims = Vec::with_capacity(count);
     let mut memory = vec![Vec::new(); count];
     for (row, entries) in columns.memory_rows.iter().zip(&columns.memory) {
@@ -520,8 +528,8 @@ fn decode_claim_columns(blob: &[u8]) -> Result<Vec<TraceClaim>, Box<bincode::Err
             rs1_present: row_flags & 2 != 0,
             rs2_present: row_flags & 4 != 0,
             rd_value: columns.rd_values[index],
-            rs1_value: columns.rs1_values[index],
-            rs2_value: columns.rs2_values[index],
+            rs1_value: rs1_values[index],
+            rs2_value: rs2_values[index],
             memory: std::mem::take(&mut memory[index]),
             syscall: syscalls[index],
         });
