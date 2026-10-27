@@ -68,13 +68,15 @@ fn main() {
         verify_unified_trace(&trace, &proof, 8).unwrap();
         let verify = started.elapsed();
         println!(
-            "adds={adds} rows={} proof={bytes}B access={}B logup={}B selected={}B claim={}B amo={}B prove={prove:?} verify={verify:?}",
+            "adds={adds} rows={} proof={bytes}B core={}B access={}B logup={}B selected={}B claim={}B trace_claims={}B batches={}B prove={prove:?} verify={verify:?}",
             trace.rows.len(),
+            sizes.opening + sizes.commitment,
             sizes.access,
             sizes.logup_shout,
             sizes.selected_cpu,
             sizes.claim_proof,
-            sizes.amo
+            sizes.trace_claims,
+            sizes.table_batches
         );
     }
 }

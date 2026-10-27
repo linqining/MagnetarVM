@@ -302,5 +302,16 @@ Selected component:
 
 Segment claim bytes: 16,392 -> 2,056 B at 1024; 65,544 -> 8,200 B at 4096.
 The grouped router is sequential and makes the P2 full-router tests slower; it
-is a proof-size optimization, not a verify-time optimization. Full runtime
-suite: 317 passing; clippy clean.
+is a proof-size optimization, not a verify-time optimization.
+
+Grouping sweep at 4096 rows (host-load dependent):
+
+```text
+group 8: proof 662,809 B / verify 21.48 s
+group 4: proof 671,001 B / verify 26.59 s
+group 2: proof 687,385 B / verify 22.77 s
+group 1: proof 720,153 B / verify ~12-13 s (earlier, lower-load run)
+```
+
+Group 8 gives the smallest proof; the verify-time regression needs a parallel
+grouped router. Full runtime suite: 317 passing; clippy clean.
