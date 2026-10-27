@@ -561,3 +561,12 @@ trace_claims  648 B
 This is down from 937,373 B before trace-backed Shout. The remaining large
 components are selected CPU (170 KB), claim proof (114 KB), and the trace
 Shout logup* reduction.
+
+
+## Track 1 twelfth slice: XOR-delta instruction words
+
+Claim instruction words are stored as XOR deltas from the previous row. At
+4096 rows the claim component drops from 56,928 B to 52,836 B and the native
+proof from 309,755 B to 305,663 B; at 1024 rows the proof is 171,345 B.
+
+Full runtime suite: 317 passing; clippy clean.

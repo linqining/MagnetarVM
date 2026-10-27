@@ -353,7 +353,7 @@ struct ClaimColumns {
     first_pc: u64,
     pc_deltas: Vec<(i64, u32)>,
     next_deltas: Vec<(i64, u32)>,
-    words: Vec<(u32, u32)>,
+    words: Vec<u32>,
     flags: Vec<(u8, u32)>,
     rd_values: Vec<u64>,
     rs1_values: Vec<u64>,
@@ -433,7 +433,11 @@ fn encode_claim_columns(claims: &[TraceClaim]) -> Vec<u8> {
     }
     columns.pc_deltas = run_length(&pc_deltas);
     columns.next_deltas = run_length(&next_deltas);
-    columns.words = run_length(&words);
+    let mut previous_word = 0u32;
+    for (index, word) in words.iter().enumerate() {
+        columns.words.push(if index == 0 { *word } else { previous_word ^ *word });
+        previous_word = *word;
+    }
     columns.flags = run_length(&flags);
     bincode::DefaultOptions::new()
         .with_varint_encoding()
@@ -450,8 +454,9 @@ fn decode_claim_columns(blob: &[u8]) -> Result<Vec<TraceClaim>, Box<bincode::Err
         .ok_or_else(|| Box::new(bincode::ErrorKind::Custom("claim pc runs".into())))?;
     let next_deltas = expand_runs(&columns.next_deltas, count)
         .ok_or_else(|| Box::new(bincode::ErrorKind::Custom("claim next runs".into())))?;
-    let words = expand_runs(&columns.words, count)
-        .ok_or_else(|| Box::new(bincode::ErrorKind::Custom("claim word runs".into())))?;
+    if columns.words.len() != count {
+        return Err(Box::new(bincode::ErrorKind::Custom("claim word count".into())));
+    }
     let flags = expand_runs(&columns.flags, count)
         .ok_or_else(|| Box::new(bincode::ErrorKind::Custom("claim flag runs".into())))?;
     let mut claims = Vec::with_capacity(count);
@@ -476,12 +481,18 @@ fn decode_claim_columns(blob: &[u8]) -> Result<Vec<TraceClaim>, Box<bincode::Err
         syscalls[index] = Some(*syscall);
     }
     let mut pc = columns.first_pc;
-    for index in 0..columns.words.len() {
+    let mut previous_word = 0u32;
+    for index in 0..count {
         if index > 0 {
             pc = (pc as i64 + pc_deltas[index - 1]) as u64;
         }
         let row_flags = flags[index];
-        let word = words[index];
+        let word = if index == 0 {
+            columns.words[0]
+        } else {
+            previous_word ^ columns.words[index]
+        };
+        previous_word = word;
         let (instruction, instruction_len) = if word & 3 == 3 {
             (
                 magnetar_spec::decode(word).map_err(|error| {
