@@ -26,7 +26,8 @@ struct ShapeWire {
     pc_deltas: Vec<(i64, u32)>,
     micro_ops: Vec<(magnetar_spec::MicroOpKind, u32)>,
     ops: Vec<(Op, u32)>,
-    imms: Vec<i64>,
+    first_imm: i64,
+    imm_deltas: Vec<(i64, u32)>,
     widths: Vec<(u8, u32)>,
     flags: Vec<(u8, u32)>,
 }
@@ -63,7 +64,8 @@ impl serde::Serialize for CpuShape {
             pc_deltas: Vec::with_capacity(self.rows.len().saturating_sub(1)),
             micro_ops: Vec::with_capacity(self.rows.len()),
             ops: Vec::with_capacity(self.rows.len()),
-            imms: Vec::with_capacity(self.rows.len()),
+            first_imm: 0,
+            imm_deltas: Vec::new(),
             widths: Vec::with_capacity(self.rows.len()),
             flags: Vec::with_capacity(self.rows.len()),
         };
@@ -88,7 +90,14 @@ impl serde::Serialize for CpuShape {
         wire.pc_deltas = run_length(&pc_deltas);
         wire.micro_ops = run_length(&micro_ops);
         wire.ops = run_length(&ops);
-        wire.imms = imms;
+        wire.first_imm = imms.first().copied().unwrap_or(0);
+        let mut previous_imm = wire.first_imm;
+        let mut imm_deltas = Vec::with_capacity(imms.len().saturating_sub(1));
+        for imm in imms.iter().skip(1) {
+            imm_deltas.push(*imm - previous_imm);
+            previous_imm = *imm;
+        }
+        wire.imm_deltas = run_length(&imm_deltas);
         wire.widths = run_length(&widths);
         wire.flags = run_length(&flags);
         let blob = bincode::DefaultOptions::new()
@@ -107,7 +116,7 @@ impl<'de> serde::Deserialize<'de> for CpuShape {
             .with_varint_encoding()
             .deserialize(&blob)
             .map_err(serde::de::Error::custom)?;
-        let count = wire.imms.len();
+        let count = wire.ops.iter().map(|(_, count)| *count as usize).sum();
         let ops = expand_runs(&wire.ops, count)
             .ok_or_else(|| serde::de::Error::custom("shape op runs"))?;
         let micro_ops = expand_runs(&wire.micro_ops, count)
@@ -118,17 +127,23 @@ impl<'de> serde::Deserialize<'de> for CpuShape {
             .ok_or_else(|| serde::de::Error::custom("shape flag runs"))?;
         let pc_deltas = expand_runs(&wire.pc_deltas, count.saturating_sub(1))
             .ok_or_else(|| serde::de::Error::custom("shape pc runs"))?;
+        let imm_deltas = expand_runs(&wire.imm_deltas, count.saturating_sub(1))
+            .ok_or_else(|| serde::de::Error::custom("shape imm runs"))?;
         let mut rows = Vec::with_capacity(count);
         let mut pc = wire.first_pc;
+        let mut imm = wire.first_imm;
         for index in 0..count {
             if index > 0 {
                 pc = (pc as i64 + pc_deltas[index - 1]) as u64;
+            }
+            if index > 0 {
+                imm += imm_deltas[index - 1];
             }
             rows.push(CpuShapeRow {
                 pc,
                 micro_op: micro_ops[index],
                 op: ops[index],
-                imm: wire.imms[index],
+                imm,
                 mem_width: (widths[index] != 0).then_some(widths[index]),
                 mem_write: flags[index] != 0,
             });

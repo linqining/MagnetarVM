@@ -570,3 +570,12 @@ Claim instruction words are stored as XOR deltas from the previous row. At
 proof from 309,755 B to 305,663 B; at 1024 rows the proof is 171,345 B.
 
 Full runtime suite: 317 passing; clippy clean.
+
+
+## Track 1 thirteenth slice: delta/RLE shape immediates
+
+CpuShape immediates are now stored as first value + RLE deltas. At 4096 rows
+the shape component drops from 11,827 B to 52 B and the native proof from
+305,663 B to 293,888 B; at 1024 rows the proof is 168,532 B.
+
+Full runtime suite: 317 passing; clippy clean.
