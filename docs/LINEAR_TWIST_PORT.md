@@ -147,3 +147,20 @@ Val-evaluation sumcheck round-trips and rejects a tampered claim. It remains a
 prototype: verification still materializes the tables; PCS claims are next.
 
 Full runtime suite: 320 passing; clippy clean.
+
+
+## Prototype scaling (RW + Val sumchecks)
+
+`ROWS=... linear_twist_bench` (release, register Twist witness):
+
+| rows | RW prove | RW verify | Val prove | Val verify |
+|---:|---:|---:|---:|---:|
+| 1024 | 59 ms | 19 ms | 15 ms | 8 ms |
+| 4096 | 44 ms | 20 ms | 9 ms | 5 ms |
+| 16384 | 531 ms | 89 ms | 29 ms | 20 ms |
+| 65536 | 986 ms | 1.38 s | 509 ms | 380 ms |
+
+The 2^16 run completes in under 3 seconds total for both prototype sumchecks,
+versus >900 s for the dense 2^14 paper run. This demonstrates the linear
+algorithm removes the structural blocker; it is not yet a sound proof because
+the prototype verifier recomputes the tables instead of checking PCS claims.
