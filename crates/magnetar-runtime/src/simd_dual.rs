@@ -5823,10 +5823,36 @@ where
         }
         Ok(block)
     };
-    let blocks = (0..matrix_cycles)
-        .map(block_for)
-        .collect::<Result<Vec<_>, _>>()?;
-    for (segment_index, segment) in layout.segments.iter().enumerate() {
+    let workers = std::thread::available_parallelism()
+        .map(|count| count.get().min(8))
+        .unwrap_or(1)
+        .max(1);
+    let blocks = if matrix_cycles >= 1024 && workers > 1 {
+        std::thread::scope(|scope| {
+            let chunk = matrix_cycles.div_ceil(workers);
+            let mut handles = Vec::with_capacity(workers);
+            for start in (0..matrix_cycles).step_by(chunk) {
+                let end = (start + chunk).min(matrix_cycles);
+                let block_for = &block_for;
+                handles.push(scope.spawn(move || {
+                    (start..end)
+                        .map(block_for)
+                        .collect::<Result<Vec<_>, RuntimeError>>()
+                }));
+            }
+            let mut blocks = Vec::with_capacity(matrix_cycles);
+            for handle in handles {
+                blocks.extend(handle.join().expect("dynamic router worker")?);
+            }
+            Ok::<_, RuntimeError>(blocks)
+        })?
+    } else {
+        (0..matrix_cycles)
+            .map(block_for)
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let check_segment = |segment_index: usize| -> Result<(), RuntimeError> {
+        let segment = &layout.segments[segment_index];
         let start = segment.offset / block_cols;
         let count = segment.len / block_cols;
         if segment.offset % block_cols != 0
@@ -5859,8 +5885,33 @@ where
                 segment.name
             )));
         }
+        Ok(())
+    };
+    if layout.segments.len() >= 1024 && workers > 1 {
+        std::thread::scope(|scope| {
+            let chunk = layout.segments.len().div_ceil(workers);
+            let mut handles = Vec::with_capacity(workers);
+            for start in (0..layout.segments.len()).step_by(chunk) {
+                let end = (start + chunk).min(layout.segments.len());
+                let check_segment = &check_segment;
+                handles.push(scope.spawn(move || {
+                    for index in start..end {
+                        check_segment(index)?;
+                    }
+                    Ok::<(), RuntimeError>(())
+                }));
+            }
+            for handle in handles {
+                handle.join().expect("dynamic segment worker")?;
+            }
+            Ok(())
+        })
+    } else {
+        for index in 0..layout.segments.len() {
+            check_segment(index)?;
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 /// Proof-only dynamic claim verification: authenticate the ClaimProof rows,

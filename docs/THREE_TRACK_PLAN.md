@@ -315,3 +315,11 @@ group 1: proof 720,153 B / verify ~12-13 s (earlier, lower-load run)
 
 Group 8 gives the smallest proof; the verify-time regression needs a parallel
 grouped router. Full runtime suite: 317 passing; clippy clean.
+
+
+## Parallel grouped router
+
+`verify_dynamic_segments_against_trace` now builds row blocks in parallel and
+checks grouped segments in parallel (up to 8 workers, thresholds 1024 cycles /
+1024 segments). Proof bytes are unchanged; this restores multi-core use for the
+grouped-segment layout. Full runtime suite: 317 passing; clippy clean.
