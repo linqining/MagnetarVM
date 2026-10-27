@@ -542,3 +542,22 @@ At 4096 rows the access stage measured about 31 s -> 25.6 s (host dependent).
 rejects tampered link claims, reader point, and ROM witness. The soundness root
 is the authenticated claim/trace layer: this is not a standalone succinct Shout
 proof. The committed `LogupShoutProof` path remains for paper-form Shout.
+
+
+## Native 8192 after trace-backed Shout
+
+`ADDS=8191 native_unified_bench`:
+
+```text
+proof     465,107 B
+prove     321.21 s
+verify     27.88 s
+access     18,666 B
+selected  169,830 B
+claim     113,766 B
+trace_claims  648 B
+```
+
+This is down from 937,373 B before trace-backed Shout. The remaining large
+components are selected CPU (170 KB), claim proof (114 KB), and the trace
+Shout logup* reduction.
