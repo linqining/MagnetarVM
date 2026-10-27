@@ -4,6 +4,7 @@
 //! verifier can check a row's claim record against the statement commitment
 //! without rebuilding the trace.
 
+use bincode::Options as _;
 use magnetar_spec::{Trace, TraceRow};
 
 const LEAF_DOMAIN: &[u8] = b"magnetar-trace-claim-leaf";
@@ -338,7 +339,7 @@ pub struct ClaimProof {
 enum ClaimProofWire {
     Compact {
         root: [u8; 32],
-        claims: Vec<TraceClaim>,
+        blob: Vec<u8>,
     },
     Full {
         root: [u8; 32],
@@ -350,9 +351,18 @@ enum ClaimProofWire {
 impl serde::Serialize for ClaimProof {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         if self.complete {
+            let claims = self
+                .openings
+                .iter()
+                .map(|opening| opening.claim.clone())
+                .collect::<Vec<_>>();
+            let blob = bincode::DefaultOptions::new()
+                .with_varint_encoding()
+                .serialize(&claims)
+                .map_err(serde::ser::Error::custom)?;
             ClaimProofWire::Compact {
                 root: self.root,
-                claims: self.openings.iter().map(|opening| opening.claim.clone()).collect(),
+                blob,
             }
             .serialize(serializer)
         } else {
@@ -369,20 +379,26 @@ impl serde::Serialize for ClaimProof {
 impl<'de> serde::Deserialize<'de> for ClaimProof {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         match ClaimProofWire::deserialize(deserializer)? {
-            ClaimProofWire::Compact { root, claims } => Ok(Self {
-                root,
-                complete: true,
-                openings: claims
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, claim)| TraceClaimOpening {
-                        index,
-                        leaf: claim.leaf(),
-                        claim,
-                        siblings: Vec::new(),
-                    })
-                    .collect(),
-            }),
+            ClaimProofWire::Compact { root, blob } => {
+                let claims: Vec<TraceClaim> = bincode::DefaultOptions::new()
+                    .with_varint_encoding()
+                    .deserialize(&blob)
+                    .map_err(serde::de::Error::custom)?;
+                Ok(Self {
+                    root,
+                    complete: true,
+                    openings: claims
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, claim)| TraceClaimOpening {
+                            index,
+                            leaf: claim.leaf(),
+                            claim,
+                            siblings: Vec::new(),
+                        })
+                        .collect(),
+                })
+            }
             ClaimProofWire::Full {
                 root,
                 complete,

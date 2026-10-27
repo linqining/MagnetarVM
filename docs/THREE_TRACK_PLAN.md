@@ -190,3 +190,29 @@ Claim component:
 | 4096 | 442,442 B | 245,837 B |
 
 Full runtime suite: 317 passing; clippy clean; claim-native guest still passes.
+
+
+## Track 1 second slice: varint-compressed claims
+
+For complete proofs the claim payload is now encoded with bincode varint
+encoding into a single byte blob, rather than the fixed-int row vector:
+
+```text
+ClaimProof::Compact { root, blob }
+```
+
+Native proof size:
+
+| rows | fixed claims | varint claims |
+|---:|---:|---:|
+| 1024 | 566,028 B | 529,657 B |
+| 4096 | 1,390,908 B | 1,259,305 B |
+
+Claim component:
+
+| rows | fixed | varint |
+|---:|---:|---:|
+| 1024 | 61,517 B | 25,146 B |
+| 4096 | 245,837 B | 114,234 B |
+
+Full runtime suite: 317 passing; clippy clean; claim-native guest passes.
