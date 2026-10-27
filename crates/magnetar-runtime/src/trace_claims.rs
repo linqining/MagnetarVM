@@ -356,7 +356,8 @@ struct ClaimColumns {
     words: Vec<u32>,
     flags: Vec<(u8, u32)>,
     first_rd_value: u64,
-    rd_value_deltas: Vec<i64>,
+    first_rd_delta: i64,
+    rd_delta_deltas: Vec<(i64, u32)>,
     rs1_values: Vec<(u64, u32)>,
     rs2_values: Vec<(u64, u32)>,
     memory_rows: Vec<u32>,
@@ -396,7 +397,8 @@ fn encode_claim_columns(claims: &[TraceClaim]) -> Vec<u8> {
         words: Vec::with_capacity(claims.len()),
         flags: Vec::with_capacity(claims.len()),
         first_rd_value: 0,
-        rd_value_deltas: Vec::with_capacity(claims.len().saturating_sub(1)),
+        first_rd_delta: 0,
+        rd_delta_deltas: Vec::new(),
         rs1_values: Vec::with_capacity(claims.len()),
         rs2_values: Vec::with_capacity(claims.len()),
         memory_rows: Vec::new(),
@@ -437,11 +439,20 @@ fn encode_claim_columns(claims: &[TraceClaim]) -> Vec<u8> {
         }
     }
     columns.first_rd_value = raw_rd_values.first().copied().unwrap_or(0);
+    let mut rd_deltas = Vec::with_capacity(raw_rd_values.len().saturating_sub(1));
     let mut previous_rd_value = columns.first_rd_value;
     for value in raw_rd_values.iter().skip(1) {
-        columns.rd_value_deltas.push(*value as i64 - previous_rd_value as i64);
+        rd_deltas.push(*value as i64 - previous_rd_value as i64);
         previous_rd_value = *value;
     }
+    columns.first_rd_delta = rd_deltas.first().copied().unwrap_or(0);
+    let mut previous_delta = columns.first_rd_delta;
+    let mut delta_deltas = Vec::with_capacity(rd_deltas.len().saturating_sub(1));
+    for delta in rd_deltas.iter().skip(1) {
+        delta_deltas.push(*delta - previous_delta);
+        previous_delta = *delta;
+    }
+    columns.rd_delta_deltas = run_length(&delta_deltas);
     columns.pc_deltas = run_length(&pc_deltas);
     columns.next_deltas = run_length(&next_deltas);
     let mut previous_word = 0u32;
@@ -476,11 +487,17 @@ fn decode_claim_columns(blob: &[u8]) -> Result<Vec<TraceClaim>, Box<bincode::Err
         .ok_or_else(|| Box::new(bincode::ErrorKind::Custom("claim rs1 runs".into())))?;
     let rs2_values = expand_runs(&columns.rs2_values, count)
         .ok_or_else(|| Box::new(bincode::ErrorKind::Custom("claim rs2 runs".into())))?;
+    let delta_deltas = expand_runs(&columns.rd_delta_deltas, count.saturating_sub(2))
+        .ok_or_else(|| Box::new(bincode::ErrorKind::Custom("claim rd delta runs".into())))?;
     let mut rd_values = Vec::with_capacity(count);
     let mut rd_value = columns.first_rd_value;
+    let mut rd_delta = columns.first_rd_delta;
     for index in 0..count {
         if index > 0 {
-            rd_value = (rd_value as i64 + columns.rd_value_deltas[index - 1]) as u64;
+            if index > 1 {
+                rd_delta += delta_deltas[index - 2];
+            }
+            rd_value = (rd_value as i64 + rd_delta) as u64;
         }
         rd_values.push(rd_value);
     }

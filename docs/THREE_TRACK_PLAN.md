@@ -689,3 +689,14 @@ complete claim proof. The trace-selected CPU experiment was reverted from the
 working tree; committed Shout/CPU remains the paper path.
 
 Full runtime suite: 318 passing.
+
+
+## Track 1 sixteenth slice: delta-of-delta destination values
+
+Claim destination values now use first value + first delta + RLE of delta
+changes (a second-order delta). At 4096 rows the claim component drops from
+24,672 B to 20,590 B and the full native proof from 200,180 B to 196,098 B; at
+1024 rows the claim is 5,222 B.
+
+The trace mode (no claim proof) is unchanged at about 175.5 KB at 4096. Full
+runtime suite: 318 passing.
