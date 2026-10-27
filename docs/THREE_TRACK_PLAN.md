@@ -732,3 +732,22 @@ Paper-mode benchmark (`paper_unified_bench`):
 
 This is the current paper-path baseline. It is still O(rows) due to the complete
 claim proof; virtual claims must replace that before the 2^16 target.
+
+
+## Paper path: rebuild committed Shout pushforwards
+
+The paper-mode prover clears the committed Shout pushforwards; the witness-bound
+verifier rebuilds them from the trace-derived witness and the reader-batching
+challenge before replaying logup*. This is the same deterministic-pushforward
+optimization used for trace-backed Shout, now applied while keeping the Shout
+PCS commitment/opening.
+
+Paper-mode benchmark:
+
+| rows | proof | logup | selected | claim | verify |
+|---:|---:|---:|---:|---:|---:|
+| 1024 | 278,354 B | 133,473 B | 116,998 B | 10,594 B | 1.78 s |
+| 4096 | 381,328 B | 166,441 B | 151,262 B | 44,028 B | 10.32 s |
+
+Full runtime suite: 318 passing; paper_mode and logup runtime tests pass;
+clippy clean.

@@ -393,7 +393,6 @@ pub fn verify_logup_shout_against_witness(
     proof: &LogupShoutProof,
     witness: &BinaryShoutWitness,
 ) -> Result<(), RuntimeError> {
-    let output = verify_logup_shout_with_output(proof, &witness.rom)?;
     let table_columns = table_columns_from_witness(witness);
     let position_values = positions(witness)?;
     let commitment_bytes = bincode::serialize(&proof.opening.commitment)
@@ -411,11 +410,6 @@ pub fn verify_logup_shout_against_witness(
         .iter()
         .map(|column| to_f2(eval_mle(column, &point)))
         .collect::<Vec<_>>();
-    if proof.reader_claims != expected_reader {
-        return Err(RuntimeError::Proof(
-            "committed Shout reader claims do not match the witness".into(),
-        ));
-    }
     let link_columns = witness
         .link_columns()
         .into_iter()
@@ -425,13 +419,57 @@ pub fn verify_logup_shout_against_witness(
         .iter()
         .map(|column| to_f2(eval_mle(column, &point)))
         .collect::<Vec<_>>();
+    let claims_b = expected_reader
+        .iter()
+        .map(|claim| to_b(*claim))
+        .collect::<Vec<_>>();
+    let readers = [Reader {
+        point: &point,
+        claims: &claims_b,
+    }];
+    let lookups = [TableLookup {
+        num_variables: witness.address_bits,
+        readers: &readers,
+    }];
+    let reader_witnesses = [ReaderWitness {
+        positions: &position_values,
+    }];
+    let column_refs = table_columns
+        .iter()
+        .map(|column| column.as_slice())
+        .collect::<Vec<_>>();
+    let table_witness = [TableWitness {
+        columns: &column_refs,
+        readers: &reader_witnesses,
+    }];
+    let mut pushforward_challenger = challenger();
+    let pushforwards = p3_multi_stark::logup_star::rebuild_pushforwards(
+        &lookups,
+        &table_witness,
+        &mut pushforward_challenger,
+    )
+    .map_err(|error| RuntimeError::Proof(format!("committed Shout pushforwards: {error:?}")))?;
+    let mut owned = proof.clone();
+    owned.logup.pushforwards = pushforwards;
+    let output = verify_logup_shout_with_output(&owned, &witness.rom)?;
+    if proof.reader_claims != expected_reader {
+        return Err(RuntimeError::Proof(
+            "committed Shout reader claims do not match the witness".into(),
+        ));
+    }
     if proof.link_claims != expected_link {
         return Err(RuntimeError::Proof(
             "committed Shout link claims do not match the witness".into(),
         ));
     }
-    let position_columns = position_values.iter().map(|position| embed(*position)).collect::<Vec<_>>();
-    let expected_position = eval_mle(&position_columns, &Point::new(output.position_point.as_slice().to_vec()));
+    let position_columns = position_values
+        .iter()
+        .map(|position| embed(*position))
+        .collect::<Vec<_>>();
+    let expected_position = eval_mle(
+        &position_columns,
+        &Point::new(output.position_point.as_slice().to_vec()),
+    );
     if output.tables[0].position_claims[0] != expected_position {
         return Err(RuntimeError::Proof(
             "committed Shout position claim does not match the witness".into(),

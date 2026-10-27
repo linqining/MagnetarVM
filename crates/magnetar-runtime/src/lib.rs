@@ -2732,10 +2732,10 @@ pub fn prove_unified_trace_paper(
     let mut proof = prove_unified_trace_dynamic_native(trace, width)?;
     let witness = crate::binary_shout::BinaryShoutWitness::from_trace(trace)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    proof.logup_shout = Some(
-        crate::logup_shout::prove_logup_shout(&witness)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?,
-    );
+    let mut logup = crate::logup_shout::prove_logup_shout(&witness)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    logup.logup.pushforwards.clear();
+    proof.logup_shout = Some(logup);
     proof.trace_logup_shout = None;
     Ok(proof)
 }
