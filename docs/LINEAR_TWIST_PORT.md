@@ -164,3 +164,22 @@ The 2^16 run completes in under 3 seconds total for both prototype sumchecks,
 versus >900 s for the dense 2^14 paper run. This demonstrates the linear
 algorithm removes the structural blocker; it is not yet a sound proof because
 the prototype verifier recomputes the tables instead of checking PCS claims.
+
+
+## Prototype 3: Val evaluation with PCS claims
+
+`prove_val_pcs` / `verify_val_pcs` commit three PCS batches (with the default
+P3 parameter set for test speed):
+
+```text
+Val, WA       (K*T)
+Inc           (T)
+initial       (cells)
+```
+
+The verifier obtains `Val(rk,rj)`, `WA(rk,r_i)`, `Inc(r_i)` and
+`init(rk)` from checked batch openings, replays the Val sumcheck, and checks
+the final product against `LT`. A tampered sumcheck round is rejected.
+
+Full runtime suite: 321 passing. The dense prototypes are still not integrated
+with `binary_twist`; dense RA/WA/Inc/Val tables are committed here independently.
