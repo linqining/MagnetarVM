@@ -608,3 +608,12 @@ Native proof: 285,700 -> 220,156 B at 4096; 166,488 -> 150,096 B at 1024.
 The prover's pushforward computation is unchanged; only serialization is
 removed. Full runtime suite: 317 passing; claim-native guest and logup Shout
 runtime tests pass; clippy clean.
+
+
+## Track 1 fifteenth slice: delta-encode destination values
+
+Claim `rd_value` is now stored as first value + signed deltas. At 4096 rows the
+claim component drops from 44,648 B to 24,672 B and the native proof from
+220,156 B to 200,180 B; at 1024 rows the proof is 148,552 B.
+
+Full runtime suite: 317 passing; clippy clean.

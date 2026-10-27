@@ -355,7 +355,8 @@ struct ClaimColumns {
     next_deltas: Vec<(i64, u32)>,
     words: Vec<u32>,
     flags: Vec<(u8, u32)>,
-    rd_values: Vec<u64>,
+    first_rd_value: u64,
+    rd_value_deltas: Vec<i64>,
     rs1_values: Vec<(u64, u32)>,
     rs2_values: Vec<(u64, u32)>,
     memory_rows: Vec<u32>,
@@ -394,7 +395,8 @@ fn encode_claim_columns(claims: &[TraceClaim]) -> Vec<u8> {
         next_deltas: Vec::with_capacity(claims.len()),
         words: Vec::with_capacity(claims.len()),
         flags: Vec::with_capacity(claims.len()),
-        rd_values: Vec::with_capacity(claims.len()),
+        first_rd_value: 0,
+        rd_value_deltas: Vec::with_capacity(claims.len().saturating_sub(1)),
         rs1_values: Vec::with_capacity(claims.len()),
         rs2_values: Vec::with_capacity(claims.len()),
         memory_rows: Vec::new(),
@@ -407,6 +409,7 @@ fn encode_claim_columns(claims: &[TraceClaim]) -> Vec<u8> {
     let mut next_deltas = Vec::with_capacity(claims.len());
     let mut words = Vec::with_capacity(claims.len());
     let mut flags = Vec::with_capacity(claims.len());
+    let mut raw_rd_values = Vec::with_capacity(claims.len());
     let mut raw_rs1_values = Vec::with_capacity(claims.len());
     let mut raw_rs2_values = Vec::with_capacity(claims.len());
     for (index, claim) in claims.iter().enumerate() {
@@ -421,7 +424,7 @@ fn encode_claim_columns(claims: &[TraceClaim]) -> Vec<u8> {
                 | (u8::from(claim.rs1_present) << 1)
                 | (u8::from(claim.rs2_present) << 2),
         );
-        columns.rd_values.push(claim.rd_value);
+        raw_rd_values.push(claim.rd_value);
         raw_rs1_values.push(claim.rs1_value);
         raw_rs2_values.push(claim.rs2_value);
         if !claim.memory.is_empty() {
@@ -432,6 +435,12 @@ fn encode_claim_columns(claims: &[TraceClaim]) -> Vec<u8> {
             columns.syscall_rows.push(index as u32);
             columns.syscalls.push(syscall);
         }
+    }
+    columns.first_rd_value = raw_rd_values.first().copied().unwrap_or(0);
+    let mut previous_rd_value = columns.first_rd_value;
+    for value in raw_rd_values.iter().skip(1) {
+        columns.rd_value_deltas.push(*value as i64 - previous_rd_value as i64);
+        previous_rd_value = *value;
     }
     columns.pc_deltas = run_length(&pc_deltas);
     columns.next_deltas = run_length(&next_deltas);
@@ -453,7 +462,7 @@ fn decode_claim_columns(blob: &[u8]) -> Result<Vec<TraceClaim>, Box<bincode::Err
     let columns: ClaimColumns = bincode::DefaultOptions::new()
         .with_varint_encoding()
         .deserialize(blob)?;
-    let count = columns.rd_values.len();
+    let count = columns.words.len();
     let pc_deltas = expand_runs(&columns.pc_deltas, count.saturating_sub(1))
         .ok_or_else(|| Box::new(bincode::ErrorKind::Custom("claim pc runs".into())))?;
     let next_deltas = expand_runs(&columns.next_deltas, count)
@@ -467,6 +476,14 @@ fn decode_claim_columns(blob: &[u8]) -> Result<Vec<TraceClaim>, Box<bincode::Err
         .ok_or_else(|| Box::new(bincode::ErrorKind::Custom("claim rs1 runs".into())))?;
     let rs2_values = expand_runs(&columns.rs2_values, count)
         .ok_or_else(|| Box::new(bincode::ErrorKind::Custom("claim rs2 runs".into())))?;
+    let mut rd_values = Vec::with_capacity(count);
+    let mut rd_value = columns.first_rd_value;
+    for index in 0..count {
+        if index > 0 {
+            rd_value = (rd_value as i64 + columns.rd_value_deltas[index - 1]) as u64;
+        }
+        rd_values.push(rd_value);
+    }
     let mut claims = Vec::with_capacity(count);
     let mut memory = vec![Vec::new(); count];
     for (row, entries) in columns.memory_rows.iter().zip(&columns.memory) {
@@ -527,7 +544,7 @@ fn decode_claim_columns(blob: &[u8]) -> Result<Vec<TraceClaim>, Box<bincode::Err
             rd_present: row_flags & 1 != 0,
             rs1_present: row_flags & 2 != 0,
             rs2_present: row_flags & 4 != 0,
-            rd_value: columns.rd_values[index],
+            rd_value: rd_values[index],
             rs1_value: rs1_values[index],
             rs2_value: rs2_values[index],
             memory: std::mem::take(&mut memory[index]),
