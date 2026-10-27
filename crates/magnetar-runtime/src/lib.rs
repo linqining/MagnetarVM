@@ -2710,6 +2710,18 @@ pub fn prove_unified_trace_dynamic_native(
     Ok(prove_unified_trace_dynamic_native_profile(trace, width)?.0)
 }
 
+/// Native trace-verifier mode: the caller supplies the trace, so the O(rows)
+/// complete claim proof is not carried in the proof. The claim root and trace
+/// commitment still bind the statement.
+pub fn prove_unified_trace_dynamic_native_trace(
+    trace: &Trace,
+    width: usize,
+) -> Result<UnifiedTraceProof, RuntimeError> {
+    let mut proof = prove_unified_trace_dynamic_native_profile(trace, width)?.0;
+    proof.claim_proof = None;
+    Ok(proof)
+}
+
 /// Native dynamic prover with per-stage wall-clock timings.
 pub fn prove_unified_trace_dynamic_native_profile(
     trace: &Trace,

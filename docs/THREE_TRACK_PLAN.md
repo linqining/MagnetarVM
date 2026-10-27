@@ -655,3 +655,22 @@ Before the claim/shape/selected compression work the same path was about
 16.78 MB with 418 s prove and 198 s verify. The claim proof is now the dominant
 component (916 KB) and the main blocker for the paper's 380 KiB 2^16 target.
 This is the proof-only claim layer path, not the full trace-backed native proof.
+
+
+## Native trace mode: omit complete claim proof
+
+Added `prove_unified_trace_dynamic_native_trace`, a native mode for callers that
+supply the trace. It keeps root/commitment binding and the trace-backed Shout
+and selected CPU proofs, but omits the O(rows) complete claim proof.
+
+Native trace-mode proof:
+
+| rows | with claim | trace mode |
+|---:|---:|---:|
+| 1024 | 148,552 B | 142,313 B |
+| 4096 | 200,180 B | 175,509 B |
+
+At 4096 the claim component (24,672 B) is removed. At 8192 this projects to
+roughly 197 KB. This is not virtual claims: the separate claim-native path and
+proof-only claim verifier still carry the complete claim proof. A dedicated
+test checks the trace-mode round trip.
