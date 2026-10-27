@@ -951,3 +951,12 @@ A 2^16 paper run therefore requires replacing the dense cycle-by-cycle history
 with a linear-size order/prefix argument (the paper's sorted-access Twist
 construction), not another memory/parallelism tweak. The 2^14 paper run at
 900 s is the current largest complete result.
+
+
+## Negative result: early-round factor recomputation for 32768
+
+A prototype that recomputed early history rounds directly from base columns
+(and only materialized a smaller folded table) did not finish the 32768-row
+paper run within a 3600 s timeout. The prototype was reverted. This confirms
+that the 2^16 blocker needs a genuinely linear Twist/order argument; time-memory
+trading around the dense pair table is not sufficient.
