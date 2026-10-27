@@ -278,3 +278,29 @@ reduced the batch PCS opening by less than 1 KB at 4096 rows; the P3 opening is
 dominated by witness/security parameters rather than column count. The change
 was reverted. Reducing the logup opening needs shared/aggregated PCS opening,
 not fewer columns.
+
+
+## Track 1 fifth slice: grouped selected segments
+
+The selected layout groups 8 cycles into one PCS segment instead of one segment
+per cycle. The full segment router now reconstructs multi-cycle blocks for each
+segment; the trace-based native verifier is unchanged.
+
+Native proof:
+
+| rows | before | grouped segments |
+|---:|---:|---:|
+| 1024 | 381,001 B | 366,665 B |
+| 4096 | 720,153 B | 662,809 B |
+
+Selected component:
+
+| rows | before | after |
+|---:|---:|---:|
+| 1024 | 147,814 B | 133,478 B |
+| 4096 | 231,950 B | 174,606 B |
+
+Segment claim bytes: 16,392 -> 2,056 B at 1024; 65,544 -> 8,200 B at 4096.
+The grouped router is sequential and makes the P2 full-router tests slower; it
+is a proof-size optimization, not a verify-time optimization. Full runtime
+suite: 317 passing; clippy clean.

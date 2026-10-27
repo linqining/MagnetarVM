@@ -5520,12 +5520,13 @@ fn segmented_dynamic_row(
         next_pc,
         one,
     };
-    let mut segments = Vec::with_capacity(cycles);
-    for cycle in 0..cycles {
+    let group = if cycles >= 8 { 8 } else { 1 };
+    let mut segments = Vec::with_capacity(cycles / group);
+    for start in (0..cycles).step_by(group) {
         segments.push(Segment::new(
-            format!("cycle{cycle}"),
-            cycle * block_cols,
-            block_cols,
+            format!("group{start}"),
+            start * block_cols,
+            group * block_cols,
             SegmentKind::Direct,
             SegmentOwner::Cpu,
         ));
@@ -5787,14 +5788,10 @@ where
         return Err(RuntimeError::Proof("dynamic segment count mismatch".into()));
     }
     let block_cols = layout.total_bits / matrix_cycles;
-    if layout.segments.len() % matrix_cycles != 0 {
-        return Err(RuntimeError::Proof("dynamic segment layout shape".into()));
-    }
-    let segments_per_cycle = layout.segments.len() / matrix_cycles;
     let rows = mixed_alu_branch_rows_from_trace(trace, claims.width)?;
     let final_pc = trace.final_state.pc;
     let original = DynamicMixedRow::build(claims.mask, claims.width)?;
-    let check_cycle = |cycle: usize| -> Result<(), RuntimeError> {
+    let block_for = |cycle: usize| -> Result<Vec<bool>, RuntimeError> {
         let (pc, mut input) = if cycle < rows.len() {
             rows[cycle]
         } else {
@@ -5824,69 +5821,46 @@ where
                 block[*to] = true;
             }
         }
-        for local in 0..segments_per_cycle {
-            let segment_index = cycle * segments_per_cycle + local;
-            let segment = &layout.segments[segment_index];
-            let size_bits = segment.len.trailing_zeros() as usize;
-            if size_bits == 0 {
-                continue;
-            }
-            let local_start = segment.offset - cycle * block_cols;
-            let mut bits = block
-                .get(local_start..local_start + segment.len)
-                .ok_or_else(|| RuntimeError::Proof("dynamic segment slice".into()))?
-                .to_vec();
-            bits.resize(1usize << size_bits, false);
-            let expected = bits
-                .iter()
-                .enumerate()
-                .fold(F2_128::from(0u64), |sum, (index, bit)| {
-                    if !*bit {
-                        return sum;
-                    }
-                    let index_bits = (0..size_bits)
-                        .map(|bit| F2_128::from(((index >> bit) & 1) as u64))
-                        .collect::<Vec<_>>();
-                    sum + eq_bits(&ry[..size_bits], &index_bits)
-                });
-            if claims.proof.segments[segment_index].value != expected {
-                return Err(RuntimeError::Proof(format!(
-                    "dynamic segment {} does not match claim witness",
-                    segment.name
-                )));
-            }
-        }
-        Ok(())
+        Ok(block)
     };
-    let workers = std::thread::available_parallelism()
-        .map(|count| count.get().min(8))
-        .unwrap_or(1)
-        .max(1);
-    if matrix_cycles >= 1024 && workers > 1 {
-        std::thread::scope(|scope| {
-            let chunk = matrix_cycles.div_ceil(workers);
-            let mut handles = Vec::with_capacity(workers);
-            for start in (0..matrix_cycles).step_by(chunk) {
-                let end = (start + chunk).min(matrix_cycles);
-                let check_cycle = &check_cycle;
-                handles.push(scope.spawn(move || {
-                    for cycle in start..end {
-                        check_cycle(cycle)?;
-                    }
-                    Ok::<(), RuntimeError>(())
-                }));
-            }
-            for handle in handles {
-                handle.join().expect("segment router worker")?;
-            }
-            Ok(())
-        })
-    } else {
-        for cycle in 0..matrix_cycles {
-            check_cycle(cycle)?;
+    let blocks = (0..matrix_cycles)
+        .map(block_for)
+        .collect::<Result<Vec<_>, _>>()?;
+    for (segment_index, segment) in layout.segments.iter().enumerate() {
+        let start = segment.offset / block_cols;
+        let count = segment.len / block_cols;
+        if segment.offset % block_cols != 0
+            || count == 0
+            || start + count > blocks.len()
+            || count * block_cols != segment.len
+        {
+            return Err(RuntimeError::Proof("dynamic segment layout shape".into()));
         }
-        Ok(())
+        let mut bits = Vec::with_capacity(segment.len);
+        for block in &blocks[start..start + count] {
+            bits.extend_from_slice(block);
+        }
+        let size_bits = segment.len.trailing_zeros() as usize;
+        let expected = bits
+            .iter()
+            .enumerate()
+            .fold(F2_128::from(0u64), |sum, (index, bit)| {
+                if !*bit {
+                    return sum;
+                }
+                let index_bits = (0..size_bits)
+                    .map(|bit| F2_128::from(((index >> bit) & 1) as u64))
+                    .collect::<Vec<_>>();
+                sum + eq_bits(&ry[..size_bits], &index_bits)
+            });
+        if claims.proof.segments[segment_index].value != expected {
+            return Err(RuntimeError::Proof(format!(
+                "dynamic segment {} does not match claim witness",
+                segment.name
+            )));
+        }
     }
+    Ok(())
 }
 
 /// Proof-only dynamic claim verification: authenticate the ClaimProof rows,
