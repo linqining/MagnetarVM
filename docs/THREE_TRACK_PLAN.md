@@ -323,3 +323,34 @@ grouped router. Full runtime suite: 317 passing; clippy clean.
 checks grouped segments in parallel (up to 8 workers, thresholds 1024 cycles /
 1024 segments). Proof bytes are unchanged; this restores multi-core use for the
 grouped-segment layout. Full runtime suite: 317 passing; clippy clean.
+
+
+## Track 1 sixth slice: columnar claim payload
+
+The complete claim blob now uses a columnar layout:
+
+```text
+first_pc + pc deltas + next_pc deltas
+instruction words/lengths/register indices
+bit-packed presence flags
+register values
+memory rows + syscall options columns
+```
+
+instead of bincode of a row-major `Vec<TraceClaim>`.
+
+Native proof:
+
+| rows | before | columnar |
+|---:|---:|---:|
+| 1024 | 366,665 B | 360,559 B |
+| 4096 | 662,809 B | 638,271 B |
+
+Claim component:
+
+| rows | before | after |
+|---:|---:|---:|
+| 1024 | 25,146 B | 19,040 B |
+| 4096 | 114,234 B | 89,696 B |
+
+Full runtime suite: 317 passing; claim-native guest passes; clippy clean.

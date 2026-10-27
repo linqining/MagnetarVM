@@ -348,6 +348,106 @@ enum ClaimProofWire {
     },
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ClaimColumns {
+    first_pc: u64,
+    pc_deltas: Vec<i64>,
+    next_deltas: Vec<i64>,
+    words: Vec<u32>,
+    lens: Vec<u8>,
+    rd: Vec<u8>,
+    rs1: Vec<u8>,
+    rs2: Vec<u8>,
+    flags: Vec<u8>,
+    rd_values: Vec<u64>,
+    rs1_values: Vec<u64>,
+    rs2_values: Vec<u64>,
+    memory: Vec<Vec<TraceMemClaim>>,
+    syscalls: Vec<Option<magnetar_spec::SyscallTrace>>,
+}
+
+fn encode_claim_columns(claims: &[TraceClaim]) -> Vec<u8> {
+    let mut columns = ClaimColumns {
+        first_pc: claims.first().map_or(0, |claim| claim.pc),
+        pc_deltas: Vec::with_capacity(claims.len().saturating_sub(1)),
+        next_deltas: Vec::with_capacity(claims.len()),
+        words: Vec::with_capacity(claims.len()),
+        lens: Vec::with_capacity(claims.len()),
+        rd: Vec::with_capacity(claims.len()),
+        rs1: Vec::with_capacity(claims.len()),
+        rs2: Vec::with_capacity(claims.len()),
+        flags: Vec::with_capacity(claims.len()),
+        rd_values: Vec::with_capacity(claims.len()),
+        rs1_values: Vec::with_capacity(claims.len()),
+        rs2_values: Vec::with_capacity(claims.len()),
+        memory: Vec::with_capacity(claims.len()),
+        syscalls: Vec::with_capacity(claims.len()),
+    };
+    let mut previous_pc = columns.first_pc;
+    for (index, claim) in claims.iter().enumerate() {
+        if index > 0 {
+            columns
+                .pc_deltas
+                .push(claim.pc as i64 - previous_pc as i64);
+        }
+        previous_pc = claim.pc;
+        columns
+            .next_deltas
+            .push(claim.next_pc as i64 - claim.pc as i64);
+        columns.words.push(claim.instruction_word);
+        columns.lens.push(claim.instruction_len);
+        columns.rd.push(claim.rd);
+        columns.rs1.push(claim.rs1);
+        columns.rs2.push(claim.rs2);
+        columns.flags.push(
+            u8::from(claim.rd_present)
+                | (u8::from(claim.rs1_present) << 1)
+                | (u8::from(claim.rs2_present) << 2),
+        );
+        columns.rd_values.push(claim.rd_value);
+        columns.rs1_values.push(claim.rs1_value);
+        columns.rs2_values.push(claim.rs2_value);
+        columns.memory.push(claim.memory.clone());
+        columns.syscalls.push(claim.syscall);
+    }
+    bincode::DefaultOptions::new()
+        .with_varint_encoding()
+        .serialize(&columns)
+        .unwrap_or_default()
+}
+
+fn decode_claim_columns(blob: &[u8]) -> Result<Vec<TraceClaim>, Box<bincode::ErrorKind>> {
+    let columns: ClaimColumns = bincode::DefaultOptions::new()
+        .with_varint_encoding()
+        .deserialize(blob)?;
+    let mut claims = Vec::with_capacity(columns.words.len());
+    let mut pc = columns.first_pc;
+    for index in 0..columns.words.len() {
+        if index > 0 {
+            pc = (pc as i64 + columns.pc_deltas[index - 1]) as u64;
+        }
+        let flags = columns.flags[index];
+        claims.push(TraceClaim {
+            pc,
+            next_pc: (pc as i64 + columns.next_deltas[index]) as u64,
+            instruction_word: columns.words[index],
+            instruction_len: columns.lens[index],
+            rd: columns.rd[index],
+            rs1: columns.rs1[index],
+            rs2: columns.rs2[index],
+            rd_present: flags & 1 != 0,
+            rs1_present: flags & 2 != 0,
+            rs2_present: flags & 4 != 0,
+            rd_value: columns.rd_values[index],
+            rs1_value: columns.rs1_values[index],
+            rs2_value: columns.rs2_values[index],
+            memory: columns.memory[index].clone(),
+            syscall: columns.syscalls[index],
+        });
+    }
+    Ok(claims)
+}
+
 impl serde::Serialize for ClaimProof {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         if self.complete {
@@ -356,10 +456,7 @@ impl serde::Serialize for ClaimProof {
                 .iter()
                 .map(|opening| opening.claim.clone())
                 .collect::<Vec<_>>();
-            let blob = bincode::DefaultOptions::new()
-                .with_varint_encoding()
-                .serialize(&claims)
-                .map_err(serde::ser::Error::custom)?;
+            let blob = encode_claim_columns(&claims);
             ClaimProofWire::Compact {
                 root: self.root,
                 blob,
@@ -380,10 +477,7 @@ impl<'de> serde::Deserialize<'de> for ClaimProof {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         match ClaimProofWire::deserialize(deserializer)? {
             ClaimProofWire::Compact { root, blob } => {
-                let claims: Vec<TraceClaim> = bincode::DefaultOptions::new()
-                    .with_varint_encoding()
-                    .deserialize(&blob)
-                    .map_err(serde::de::Error::custom)?;
+                let claims = decode_claim_columns(&blob).map_err(serde::de::Error::custom)?;
                 Ok(Self {
                     root,
                     complete: true,
