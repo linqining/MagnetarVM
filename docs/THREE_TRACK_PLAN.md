@@ -901,3 +901,13 @@ Paper scaling:
 
 The 2^16 target remains open; selected CPU and committed Shout openings now
 dominate the paper path, with claim compressed to 24.9 KB at 8192.
+
+
+## Paper-mode 16384 timeout
+
+`ADDS=16383 paper_unified_bench` did not finish within a 2400 s timeout. The
+paper path is therefore not ready for a 2^16 run: at 8192 rows it already takes
+about 597 s to prove, and the Access/Twist and selected-CPU stages scale
+superlinearly in the current implementation. Proof-size work alone is not
+enough; prover scaling must be fixed before the paper 2^16 performance target
+can be measured.
