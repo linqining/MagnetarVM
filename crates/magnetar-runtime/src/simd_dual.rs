@@ -5449,47 +5449,32 @@ fn segmented_dynamic_row(
     use magnetar_constraint::{Segment, SegmentKind, SegmentOwner, WitnessLayout};
     let original = DynamicMixedRow::build(mask, width)?;
     let mut mapping = vec![usize::MAX; original.relation.num_vars];
-    let mut blocks: Vec<(String, usize, usize, SegmentOwner)> = Vec::new();
-    let mut cursor = 0usize;
-    let mut place = |size: usize| {
-        let start = (cursor + size - 1) & !(size - 1);
-        cursor = start + size;
+    let mut data_cursor = 0usize;
+    let mut place_data = |size: usize| {
+        let start = (data_cursor + size - 1) & !(size - 1);
+        data_cursor = start + size;
         start
     };
     for (index, component) in original.components.iter().enumerate() {
         let len = component.relation().num_vars;
         let size = len.next_power_of_two();
-        let start = place(size);
+        let start = place_data(size);
         for local in 0..len {
             mapping[original.offsets[index] + local] = start + local;
         }
-        let owner = match component.kind() {
-            MIXED_MEMORY => SegmentOwner::Memory(crate::MemoryKind::Ram),
-            MIXED_SHIFT => SegmentOwner::Routing(crate::RoutingKind::Shifts),
-            _ => SegmentOwner::Cpu,
-        };
-        blocks.push((format!("component{index}"), start, size, owner));
     }
     let step_len = original.pc_step_add.relation.num_vars;
     let step_size = step_len.next_power_of_two();
-    let step_start = place(step_size);
+    let step_start = place_data(step_size);
     for local in 0..step_len {
         mapping[original.pc_step_offset + local] = step_start + local;
     }
-    blocks.push(("pc_step".into(), step_start, step_size, SegmentOwner::Cpu));
-    let pc_size = (2 * width).next_power_of_two();
-    let pc_start = place(pc_size);
-    for bit in 0..width {
-        mapping[original.pc[bit]] = pc_start + bit;
-        mapping[original.next_pc[bit]] = pc_start + width + bit;
-    }
-    blocks.push(("pc".into(), pc_start, pc_size, SegmentOwner::Pcs));
     let mux_len = original.selectors.len()
         + original.ands.iter().map(Vec::len).sum::<usize>()
         + width
         + 1;
     let mux_size = mux_len.next_power_of_two();
-    let mux_start = place(mux_size);
+    let mux_start = place_data(mux_size);
     let mut local = 0usize;
     for selector in &original.selectors {
         mapping[*selector] = mux_start + local;
@@ -5506,25 +5491,13 @@ fn segmented_dynamic_row(
         local += 1;
     }
     mapping[original.pc_correction] = mux_start + local;
-    let _ = local;
-    blocks.push(("mux".into(), mux_start, mux_size, SegmentOwner::Cpu));
-    let block_cols = cursor.next_power_of_two();
-    let mut padding_index = 0usize;
-    while cursor < block_cols {
-        let remaining = block_cols - cursor;
-        let mut size = 1usize << (usize::BITS - 1 - remaining.leading_zeros());
-        while size > 1 && !cursor.is_multiple_of(size) {
-            size >>= 1;
-        }
-        blocks.push((
-            format!("padding{padding_index}"),
-            cursor,
-            size,
-            SegmentOwner::Cpu,
-        ));
-        padding_index += 1;
-        cursor += size;
+    let data_size = data_cursor.next_power_of_two().max(2);
+    let pc_start = data_size;
+    for bit in 0..width {
+        mapping[original.pc[bit]] = pc_start + bit;
+        mapping[original.next_pc[bit]] = pc_start + width + bit;
     }
+    let block_cols = 2 * data_size;
     if mapping.contains(&usize::MAX) {
         return Err(RuntimeError::Proof(
             "dynamic segmented mapping is incomplete".into(),
@@ -5555,17 +5528,22 @@ fn segmented_dynamic_row(
         next_pc,
         one,
     };
-    let mut segments = Vec::with_capacity(cycles * blocks.len());
+    let mut segments = Vec::with_capacity(cycles * 2);
     for cycle in 0..cycles {
-        for (name, start, size, owner) in &blocks {
-            segments.push(Segment::new(
-                format!("{name}{cycle}"),
-                cycle * block_cols + start,
-                *size,
-                SegmentKind::Direct,
-                *owner,
-            ));
-        }
+        segments.push(Segment::new(
+            format!("data{cycle}"),
+            cycle * block_cols,
+            data_size,
+            SegmentKind::Direct,
+            SegmentOwner::Cpu,
+        ));
+        segments.push(Segment::new(
+            format!("pc{cycle}"),
+            cycle * block_cols + pc_start,
+            data_size,
+            SegmentKind::Direct,
+            SegmentOwner::Pcs,
+        ));
     }
     let layout =
         WitnessLayout::new(segments).map_err(|error| RuntimeError::Proof(error.to_string()))?;
@@ -6339,7 +6317,7 @@ mod tests {
             let trace = execute(&program, config.clone()).unwrap();
             let (proof, layout, mask, cycles) =
                 prove_dynamic_segmented_trace(&trace, 8, &backend).unwrap();
-            assert!(layout.segments.len() > 2);
+            assert!(layout.segments.len() >= cycles);
             let claims = selected_segment_claims(&layout, &proof).unwrap();
             assert_eq!(claims.len(), layout.segments.len());
             verify_dynamic_segmented_trace(&trace, &proof, &layout, 8, &backend).unwrap();

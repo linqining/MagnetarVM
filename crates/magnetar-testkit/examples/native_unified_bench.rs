@@ -47,6 +47,23 @@ fn main() {
         let prove = started.elapsed();
         let bytes = bincode::serialize(&proof).unwrap().len();
         let sizes = unified_proof_sizes(&proof).unwrap();
+        if let Some(selected) = &proof.selected_cpu {
+            eprintln!(
+                "selected layout={}B proof={}B mask={} cycles={}",
+                bincode::serialize(&selected.layout).unwrap().len(),
+                bincode::serialize(&selected.proof).unwrap().len(),
+                selected.mask,
+                selected.cycles
+            );
+            eprintln!(
+                "  commitment={}B outer={}B inner={}B segments={}B opening={}B",
+                bincode::serialize(&selected.proof.commitment).unwrap().len(),
+                bincode::serialize(&selected.proof.outer).unwrap().len(),
+                bincode::serialize(&selected.proof.inner).unwrap().len(),
+                bincode::serialize(&selected.proof.segments).unwrap().len(),
+                bincode::serialize(&selected.proof.opening).unwrap().len()
+            );
+        }
         let started = Instant::now();
         verify_unified_trace(&trace, &proof, 8).unwrap();
         let verify = started.elapsed();
