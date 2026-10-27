@@ -269,3 +269,12 @@ Selected component:
 | 4096 | 247,838 B | 231,950 B |
 
 Full runtime suite: 317 passing; clippy clean.
+
+
+## Negative result: link-column packing
+
+Packing the 8-bit shift code into one field element (12 link columns -> 5)
+reduced the batch PCS opening by less than 1 KB at 4096 rows; the P3 opening is
+dominated by witness/security parameters rather than column count. The change
+was reverted. Reducing the logup opening needs shared/aggregated PCS opening,
+not fewer columns.
