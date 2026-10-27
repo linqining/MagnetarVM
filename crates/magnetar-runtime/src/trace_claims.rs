@@ -354,10 +354,6 @@ struct ClaimColumns {
     pc_deltas: Vec<i64>,
     next_deltas: Vec<i64>,
     words: Vec<u32>,
-    lens: Vec<u8>,
-    rd: Vec<u8>,
-    rs1: Vec<u8>,
-    rs2: Vec<u8>,
     flags: Vec<u8>,
     rd_values: Vec<u64>,
     rs1_values: Vec<u64>,
@@ -372,10 +368,6 @@ fn encode_claim_columns(claims: &[TraceClaim]) -> Vec<u8> {
         pc_deltas: Vec::with_capacity(claims.len().saturating_sub(1)),
         next_deltas: Vec::with_capacity(claims.len()),
         words: Vec::with_capacity(claims.len()),
-        lens: Vec::with_capacity(claims.len()),
-        rd: Vec::with_capacity(claims.len()),
-        rs1: Vec::with_capacity(claims.len()),
-        rs2: Vec::with_capacity(claims.len()),
         flags: Vec::with_capacity(claims.len()),
         rd_values: Vec::with_capacity(claims.len()),
         rs1_values: Vec::with_capacity(claims.len()),
@@ -395,10 +387,6 @@ fn encode_claim_columns(claims: &[TraceClaim]) -> Vec<u8> {
             .next_deltas
             .push(claim.next_pc as i64 - claim.pc as i64);
         columns.words.push(claim.instruction_word);
-        columns.lens.push(claim.instruction_len);
-        columns.rd.push(claim.rd);
-        columns.rs1.push(claim.rs1);
-        columns.rs2.push(claim.rs2);
         columns.flags.push(
             u8::from(claim.rd_present)
                 | (u8::from(claim.rs1_present) << 1)
@@ -427,14 +415,30 @@ fn decode_claim_columns(blob: &[u8]) -> Result<Vec<TraceClaim>, Box<bincode::Err
             pc = (pc as i64 + columns.pc_deltas[index - 1]) as u64;
         }
         let flags = columns.flags[index];
+        let word = columns.words[index];
+        let (instruction, instruction_len) = if word & 3 == 3 {
+            (
+                magnetar_spec::decode(word).map_err(|error| {
+                    Box::new(bincode::ErrorKind::Custom(error.to_string()))
+                })?,
+                4,
+            )
+        } else {
+            (
+                magnetar_spec::decode_compressed((word & 0xffff) as u16).map_err(|error| {
+                    Box::new(bincode::ErrorKind::Custom(error.to_string()))
+                })?,
+                2,
+            )
+        };
         claims.push(TraceClaim {
             pc,
             next_pc: (pc as i64 + columns.next_deltas[index]) as u64,
-            instruction_word: columns.words[index],
-            instruction_len: columns.lens[index],
-            rd: columns.rd[index],
-            rs1: columns.rs1[index],
-            rs2: columns.rs2[index],
+            instruction_word: word,
+            instruction_len,
+            rd: instruction.rd,
+            rs1: instruction.rs1,
+            rs2: instruction.rs2,
             rd_present: flags & 1 != 0,
             rs1_present: flags & 2 != 0,
             rs2_present: flags & 4 != 0,

@@ -437,3 +437,15 @@ proof rounds are unchanged, so proof bytes are unchanged.
 
 At 4096 rows the register-claims stage measured 35.9 s -> 31.1 s (host-load
 dependent). Full runtime suite: 317 passing; clippy clean.
+
+
+## Track 1 eighth slice: derive claim instruction fields
+
+The complete claim blob now stores only the instruction word, not the decoded
+`rd/rs1/rs2` or instruction length. The decoder reconstructs them from the
+canonical 32-bit/compressed encoding.
+
+At 4096 rows the claim component drops from 89,696 B to 73,300 B and the native
+proof from 540,093 B to 523,697 B. At 1024 rows the proof is 326,203 B.
+
+Full runtime suite: 317 passing; claim-native guest passes; clippy clean.
