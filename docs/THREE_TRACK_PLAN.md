@@ -386,3 +386,15 @@ Before the segment/claim/formal optimizations the native 8192 proof was
 2,833,745 B; the current proof is about 67% smaller. Prove/verify times are
 host-load dependent and the grouped segment router remains the main verify
 cost.
+
+
+## Track 2 first slice: streamed register Twist history sumcheck
+
+The history sumcheck previously materialized `(a+5) * cycles^2` field
+elements for the register Twist. The prover now evaluates the first-round
+polynomial directly from the base address/increment columns, folds once to
+half-size factors, then runs the remaining rounds on the folded tables.
+
+At 4096 rows the register-claims stage drops from about 91 s to 74.6 s
+(the earlier run was already under host load); proof bytes are unchanged.
+Full runtime suite: 317 passing; clippy clean.

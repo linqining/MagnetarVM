@@ -1245,7 +1245,6 @@ pub(crate) fn prove_binary_twist_claims(
     let addr_columns = tables.column_count();
     let col_bits = tables.column_bits();
     let ra_valid = 2 * a;
-    let wa_valid = 2 * a + 1;
     let mut addr_points = Vec::new();
     let mut addr_expected = Vec::new();
     let mut inc_points = Vec::new();
@@ -1389,33 +1388,84 @@ pub(crate) fn prove_binary_twist_claims(
     absorb_mosaic_commitment(&mut transcript, commitment);
     absorb_point(&mut transcript, "cycle", &rho_j);
     let history_terms = cycles * cycles;
-    let mut factors = vec![vec![F2_128::from(0u64); history_terms]; a + 5];
-    for cycle in 0..cycles {
-        for previous in 0..cycles {
-            let index = cycle * cycles + previous;
-            factors[0][index] = eq_j[cycle];
-            factors[1][index] = if previous < cycle {
-                F2_128::from(1u64)
-            } else {
-                F2_128::from(0u64)
-            };
-            factors[2][index] = increments[previous];
-            factors[3][index] = addr[ra_valid][cycle];
-            factors[4][index] = addr[wa_valid][previous];
-            for bit in 0..a {
-                factors[5 + bit][index] =
-                    F2_128::from(1u64) + addr[bit][cycle] + addr[a + bit][previous];
-            }
-        }
-    }
-    let mut history_degrees = vec![a + 3; history_terms.trailing_zeros() as usize];
+    let history_rounds = history_terms.trailing_zeros() as usize;
+    let mut history_degrees = vec![a + 3; history_rounds];
     if history_degrees.len() >= 2 * n {
         for degree in history_degrees.iter_mut().skip(n).take(n) {
             *degree = a + 3;
         }
     }
-    let (rounds, challenges) =
-        sumcheck_terms(&factors, &history_degrees, &mut transcript, |folded| {
+    let ra_valid = 2 * a;
+    let wa_valid = 2 * a + 1;
+    let factor_value = |factor: usize, index: usize| -> F2_128 {
+        let cycle = index / cycles;
+        let previous = index % cycles;
+        match factor {
+            0 => eq_j[cycle],
+            1 => F2_128::from(u64::from(previous < cycle)),
+            2 => increments[previous],
+            3 => addr[ra_valid][cycle],
+            4 => addr[wa_valid][previous],
+            _ => {
+                let bit = factor - 5;
+                F2_128::from(1u64) + addr[bit][cycle] + addr[a + bit][previous]
+            }
+        }
+    };
+    let history_factor_count = a + 5;
+    let (rounds, all_challenges) = if history_rounds == 0 {
+        (Vec::new(), Vec::new())
+    } else {
+        let first_degree = history_degrees[0];
+        let points = (0..=first_degree)
+            .map(|point| F2_128::from(point as u64))
+            .collect::<Vec<_>>();
+        let mut first_polynomial = vec![F2_128::from(0u64); points.len()];
+        std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(points.len());
+            for point in points.iter() {
+                let factor_value = &factor_value;
+                handles.push(scope.spawn(move || {
+                    let mut total = F2_128::from(0u64);
+                    for index in (0..history_terms).step_by(2) {
+                        let mut product = F2_128::from(1u64);
+                        for factor in 0..history_factor_count {
+                            let even = factor_value(factor, index);
+                            let odd = factor_value(factor, index + 1);
+                            product = product * (even + *point * (even + odd));
+                        }
+                        total = total + product;
+                    }
+                    total
+                }));
+            }
+            for (point_index, handle) in handles.into_iter().enumerate() {
+                first_polynomial[point_index] = handle.join().expect("history sumcheck worker");
+            }
+        });
+        for coefficient in &first_polynomial {
+            transcript.absorb("round", &coefficient.value().to_le_bytes());
+        }
+        let first_challenge = challenge(&mut transcript, "sumcheck");
+        let half_terms = history_terms / 2;
+        let mut folded_factors = vec![vec![F2_128::from(0u64); half_terms]; history_factor_count];
+        std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(history_factor_count);
+            for (factor, target) in folded_factors.iter_mut().enumerate() {
+                let factor_value = &factor_value;
+                handles.push(scope.spawn(move || {
+                    for index in (0..history_terms).step_by(2) {
+                        let even = factor_value(factor, index);
+                        let odd = factor_value(factor, index + 1);
+                        target[index / 2] = even + first_challenge * (even + odd);
+                    }
+                }));
+            }
+            for handle in handles {
+                handle.join().expect("history fold worker");
+            }
+        });
+        let summand = |folded: &[Vec<F2_128>]| {
             (0..folded[0].len()).fold(F2_128::from(0u64), |sum, index| {
                 let mut equality = F2_128::from(1u64);
                 for bit in 0..a {
@@ -1428,9 +1478,19 @@ pub(crate) fn prove_binary_twist_claims(
                     * folded[4][index]
                     * equality
             })
-        })?;
-    let r_previous = &challenges[..n];
-    let r_j = &challenges[n..];
+        };
+        let (remaining_rounds, mut challenges) =
+            sumcheck_terms(&folded_factors, &history_degrees[1..], &mut transcript, summand)?;
+        let mut rounds = Vec::with_capacity(remaining_rounds.len() + 1);
+        rounds.push(first_polynomial);
+        rounds.extend(remaining_rounds);
+        let mut all_challenges = Vec::with_capacity(challenges.len() + 1);
+        all_challenges.push(first_challenge);
+        all_challenges.append(&mut challenges);
+        (rounds, all_challenges)
+    };
+    let r_previous = &all_challenges[..n];
+    let r_j = &all_challenges[n..];
     let ra_bit_evals = (0..a)
         .map(|bit| fold_all(&addr[bit], r_j))
         .collect::<Vec<_>>();
