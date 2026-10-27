@@ -102,3 +102,20 @@ prefix/suffix formula did not match the flat `Val` table's MLE evaluation under
 the current point ordering. The prototype was reverted rather than committed
 with an unverified relation. Next attempt should isolate the MLE point-order
 convention in a small test before integrating it with the RW prototype.
+
+
+## Val-evaluation prototype: point-order findings
+
+A second Val-evaluation attempt confirmed the flat `Val` table point layout:
+the table must be indexed `cell * cycles + cycle` and evaluated with the cycle
+point first, then the address point. In a small standalone table the suffix
+formula
+
+```text
+Val(rk,rj) = init(rk) + sum_p WA(rk,p) Inc(p) sum_{j>p} eq(rj,j)
+```
+
+matches the flat MLE. The full register witness still produced a mismatch, so
+the prototype was reverted before committing a relation that is not verified.
+The remaining discrepancy is in the full witness's table construction or
+padding, not in the small-table MLE convention.
