@@ -873,3 +873,31 @@ The 2^16 prove/verify timings were 605 s / 241 s under host load. The claim
 layer is still O(rows), but the compressed payload is now small enough that the
 remaining gap to the paper's 380 KiB is dominated by committed Shout/CPU
 openings. Full runtime suite: 318 passing; clippy clean.
+
+
+## Paper-mode 8192 after claim compression
+
+`ADDS=8191 paper_unified_bench` (committed Shout + committed CPU + compressed
+claim proof, proof-only verifier):
+
+```text
+proof      385,708 B
+access      19,378 B
+logup      187,529 B
+selected   152,510 B
+claim       24,880 B
+shape           60 B
+prove      597.45 s
+verify      23.91 s
+```
+
+Paper scaling:
+
+| rows | proof | verify |
+|---:|---:|---:|
+| 1024 | 262,597 B | ~3.0 s |
+| 4096 | 336,595 B | ~25.3 s |
+| 8192 | 385,708 B | ~23.9 s |
+
+The 2^16 target remains open; selected CPU and committed Shout openings now
+dominate the paper path, with claim compressed to 24.9 KB at 8192.
