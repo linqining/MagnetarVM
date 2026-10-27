@@ -365,3 +365,24 @@ proof 638,271 -> 627,295 B. Prover cost rises from extra grinding; verifier
 milliseconds remain low.
 
 Full runtime suite: 317 passing; clippy clean.
+
+
+## Native 8192 after size optimizations
+
+`ADDS=8191 native_unified_bench`:
+
+```text
+proof     937,373 B
+prove     1220.97 s
+verify       53.29 s
+access       18,666 B
+logup       327,601 B
+selected    197,510 B
+claim       179,302 B
+trace_claims    648 B
+```
+
+Before the segment/claim/formal optimizations the native 8192 proof was
+2,833,745 B; the current proof is about 67% smaller. Prove/verify times are
+host-load dependent and the grouped segment router remains the main verify
+cost.
