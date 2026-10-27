@@ -1089,7 +1089,7 @@ fn sumcheck_terms(
     let memory_gb = std::env::var("MAGNETAR_SUMCHECK_MEMORY_GB")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(8);
+        .unwrap_or(24);
     let memory_budget = memory_gb.saturating_mul(1usize << 30);
     let memory_threads = memory_budget
         .checked_div(per_point_bytes)
@@ -1136,6 +1136,80 @@ fn sumcheck_terms(
         for factor in &mut factors {
             *factor = fold(factor, challenge);
         }
+        polynomials.push(polynomial);
+        challenges.push(challenge);
+    }
+    Ok((polynomials, challenges))
+}
+
+fn sumcheck_terms_shared(
+    factors: &[Vec<F2_128>],
+    degrees: &[usize],
+    transcript: &mut Sha256Transcript,
+) -> Result<(Vec<Vec<F2_128>>, Vec<F2_128>), ProofError> {
+    let mut factors = factors.to_vec();
+    let mut polynomials = Vec::with_capacity(degrees.len());
+    let mut challenges = Vec::with_capacity(degrees.len());
+    let workers = std::thread::available_parallelism()
+        .map(|count| count.get().min(8))
+        .unwrap_or(1)
+        .max(1);
+    for degree in degrees {
+        let len = factors[0].len();
+        if len < 2 {
+            return Err(ProofError::DimensionMismatch);
+        }
+        let pairs = len / 2;
+        let points = *degree + 1;
+        let polynomial = std::thread::scope(|scope| {
+            let chunk = pairs.div_ceil(workers);
+            let mut handles = Vec::with_capacity(workers);
+            for start in (0..pairs).step_by(chunk) {
+                let end = (start + chunk).min(pairs);
+                let factors = &factors;
+                handles.push(scope.spawn(move || {
+                    let mut local = vec![F2_128::from(0u64); points];
+                    for pair in start..end {
+                        let index = 2 * pair;
+                        for (point_index, target) in local.iter_mut().enumerate() {
+                            let p = F2_128::from(point_index as u64);
+                            let mut product = F2_128::from(1u64);
+                            for factor in factors {
+                                let even = factor[index];
+                                let odd = factor[index + 1];
+                                product = product * (even + p * (even + odd));
+                            }
+                            *target = *target + product;
+                        }
+                    }
+                    local
+                }));
+            }
+            let mut polynomial = vec![F2_128::from(0u64); points];
+            for handle in handles {
+                let local = handle.join().expect("history sumcheck worker");
+                for (target, value) in polynomial.iter_mut().zip(local) {
+                    *target = *target + value;
+                }
+            }
+            polynomial
+        });
+        for coefficient in &polynomial {
+            transcript.absorb("round", &coefficient.value().to_le_bytes());
+        }
+        let challenge = challenge(transcript, "sumcheck");
+        std::thread::scope(|scope| {
+            for factor in &mut factors {
+                scope.spawn(move || {
+                    for pair in 0..factor.len() / 2 {
+                        let even = factor[2 * pair];
+                        let odd = factor[2 * pair + 1];
+                        factor[pair] = even + challenge * (even + odd);
+                    }
+                    factor.truncate(factor.len() / 2);
+                });
+            }
+        });
         polynomials.push(polynomial);
         challenges.push(challenge);
     }
@@ -1489,7 +1563,11 @@ pub(crate) fn prove_binary_twist_claims(
     }
     let remaining_started = std::time::Instant::now();
     let (remaining_rounds, mut challenges) =
-            sumcheck_terms(&folded_factors, &history_degrees[1..], &mut transcript, summand)?;
+            if history_terms >= (1usize << 27) {
+            sumcheck_terms_shared(&folded_factors, &history_degrees[1..], &mut transcript)?
+        } else {
+            sumcheck_terms(&folded_factors, &history_degrees[1..], &mut transcript, summand)?
+        };
         if std::env::var_os("MAGNETAR_PROFILE_ACCESS").is_some() {
         eprintln!("history remaining: {:?}", remaining_started.elapsed());
     }
@@ -1778,7 +1856,11 @@ pub(crate) fn prove_binary_twist_claims(
     }
     let remaining_started = std::time::Instant::now();
     let (remaining_rounds, mut challenges) =
-            sumcheck_terms(&folded_factors, &history_degrees[1..], &mut transcript, summand)?;
+            if history_terms >= (1usize << 27) {
+            sumcheck_terms_shared(&folded_factors, &history_degrees[1..], &mut transcript)?
+        } else {
+            sumcheck_terms(&folded_factors, &history_degrees[1..], &mut transcript, summand)?
+        };
         if std::env::var_os("MAGNETAR_PROFILE_ACCESS").is_some() {
         eprintln!("history remaining: {:?}", remaining_started.elapsed());
     }

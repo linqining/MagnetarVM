@@ -911,3 +911,25 @@ about 597 s to prove, and the Access/Twist and selected-CPU stages scale
 superlinearly in the current implementation. Proof-size work alone is not
 enough; prover scaling must be fixed before the paper 2^16 performance target
 can be measured.
+
+
+## Prover scaling: default sumcheck memory and shared history rounds
+
+Two fixes to the dense Twin/Twist history prover:
+
+1. Default `MAGNETAR_SUMCHECK_MEMORY_GB` raised from 8 to 24, so the
+   per-point sumcheck folds can use more workers on this 36 GiB host.
+2. For histories with `cycles^2 >= 2^27`, the remaining rounds use a shared
+   factor table streamed in-place instead of per-point factor copies. This
+   avoids the >20 GiB per point blow-up at 16K cycles.
+
+Measured (paper mode):
+
+| rows | before | after |
+|---:|---:|---:|
+| 8192 | prove 597 s / verify 23.9 s | prove 261 s / verify 15.9 s |
+| 16384 | >2400 s timeout | prove 900 s / verify 54.9 s |
+
+Paper-mode 16384 proof: 444,669 B (access 20,498; logup 203,489; selected
+171,302; claim 47,921). This is the first completed 2^14 paper-mode run; the
+2^16 run is still open. Full runtime suite: 318 passing; clippy clean.
