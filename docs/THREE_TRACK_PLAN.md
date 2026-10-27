@@ -617,3 +617,22 @@ claim component drops from 44,648 B to 24,672 B and the native proof from
 220,156 B to 200,180 B; at 1024 rows the proof is 148,552 B.
 
 Full runtime suite: 317 passing; clippy clean.
+
+
+## Native 8192 after trace Shout and claim deltas
+
+`ADDS=8191 native_unified_bench`:
+
+```text
+proof     245,958 B
+prove     313.48 s
+verify     31.41 s
+access     18,666 B
+selected  169,830 B
+claim      49,250 B
+trace_claims   648 B
+```
+
+Components now fit in 250 KB at 8192 rows. The selected CPU PCS opening is the
+dominant cost; claim and access are comparatively small. This proof is
+trace/claims-backed (not a standalone PCS-bound Shout/CPU proof).
