@@ -588,3 +588,23 @@ claim component drops from 52,836 B to 44,648 B and the native proof from
 293,888 B to 285,700 B; at 1024 rows the proof is 166,488 B.
 
 Full runtime suite: 317 passing; clippy clean.
+
+
+## Trace Shout: recompute pushforwards
+
+The pushforward vector is determined by the reader positions, the statement and
+the reader-batching challenge. Since the trace-backed verifier already has the
+Shout witness, it now rebuilds the pushforwards itself (vendor
+`logup_star::rebuild_pushforwards`) instead of reading them from the proof.
+
+Trace Shout proof:
+
+| rows | before | after |
+|---:|---:|---:|
+| 1024 | 21,089 B | 4,697 B |
+| 4096 | 71,633 B | 6,089 B |
+
+Native proof: 285,700 -> 220,156 B at 4096; 166,488 -> 150,096 B at 1024.
+The prover's pushforward computation is unchanged; only serialization is
+removed. Full runtime suite: 317 passing; claim-native guest and logup Shout
+runtime tests pass; clippy clean.

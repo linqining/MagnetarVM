@@ -72,6 +72,7 @@ use p3_field::Field;
 use p3_multilinear_util::point::Point;
 pub use plan::LogupStarPlan;
 pub use proof::{LogupStarOutput, LogupStarProof, TableOutput};
+pub use verifier::rebuild_pushforwards;
 
 /// One reader's claim on the values it pulled out of a table.
 ///

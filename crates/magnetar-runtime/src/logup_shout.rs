@@ -425,8 +425,9 @@ pub fn prove_trace_logup_shout(
         .map(|column| eval_mle(column, &point))
         .collect::<Vec<_>>();
     let mut prover_challenger = challenger();
-    let (logup, _output) =
+    let (mut logup, _output) =
         LogupStarProof::<B, B>::prove(&lookups, &table_witness, &mut prover_challenger);
+    logup.pushforwards.clear();
     Ok(TraceLogupShoutProof {
         address_bits: witness.address_bits,
         cycle_bits: witness.cycle_bits,
@@ -521,9 +522,28 @@ pub fn verify_trace_logup_shout(
         num_variables: proof.address_bits,
         readers: &readers,
     }];
+    let reader_witnesses = [ReaderWitness {
+        positions: &position_values,
+    }];
+    let column_refs = table_columns
+        .iter()
+        .map(|column| column.as_slice())
+        .collect::<Vec<_>>();
+    let table_witness = [TableWitness {
+        columns: &column_refs,
+        readers: &reader_witnesses,
+    }];
+    let mut pushforward_challenger = challenger();
+    let pushforwards = p3_multi_stark::logup_star::rebuild_pushforwards(
+        &lookups,
+        &table_witness,
+        &mut pushforward_challenger,
+    )
+    .map_err(|error| RuntimeError::Proof(format!("trace logup Shout pushforwards: {error:?}")))?;
+    let mut logup = proof.logup.clone();
+    logup.pushforwards = pushforwards;
     let mut verifier_challenger = challenger();
-    let output = proof
-        .logup
+    let output = logup
         .verify(&lookups, &mut verifier_challenger)
         .map_err(|error| RuntimeError::Proof(format!("trace logup Shout reduction: {error:?}")))?;
     let table_point = Point::new(output.table_point.as_slice().to_vec());

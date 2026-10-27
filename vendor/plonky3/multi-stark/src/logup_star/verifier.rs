@@ -1,5 +1,7 @@
 //! Check that every reader pulled what the table holds at the entry it named.
 
+use alloc::vec::Vec;
+
 use p3_challenger::fs::TranscriptField;
 use p3_challenger::{FieldChallenger, GrindingChallenger};
 use p3_field::ExtensionField;
@@ -10,8 +12,9 @@ use super::error::LogupStarError;
 use super::plan::{BlockRole, LogupStarPlan};
 use super::proof::{LogupStarOutput, LogupStarProof, TableOutput};
 use super::prover::PRODUCT_DEGREE;
-use super::transcript::{LogupStarShape, LogupStarVerifierTranscript};
-use super::{TableLookup, position, product};
+use super::transcript::{LogupStarProverTranscript, LogupStarShape, LogupStarVerifierTranscript};
+use super::witness::Weights;
+use super::{TableLookup, TableWitness, position, product};
 use crate::fractional_gkr::verify_fractional_gkr;
 
 impl<F, EF> LogupStarProof<F, EF>
@@ -279,4 +282,29 @@ where
 
         (numerator, denominator + (EF::ONE - covered))
     }
+}
+
+
+/// Recompute the pushforwards the verifier would otherwise read from the proof.
+///
+/// The pushforward is determined by the statement, the reader positions and the
+/// reader-batching challenge, so a verifier that knows the witness can rebuild it
+/// before replaying the reduction.
+pub fn rebuild_pushforwards<F, EF, Challenger>(
+    lookups: &[TableLookup<'_, EF>],
+    witness: &[TableWitness<'_, F>],
+    challenger: &mut Challenger,
+) -> Result<Vec<Vec<EF>>, LogupStarError>
+where
+    F: TranscriptField,
+    EF: ExtensionField<F>,
+    Challenger: FieldChallenger<F> + GrindingChallenger<Witness = F>,
+{
+    let plan = LogupStarPlan::new(lookups);
+    let shape = LogupStarShape::new(&plan);
+    let mut transcript = LogupStarProverTranscript::<Challenger, F, EF>::new(challenger, &shape);
+    transcript.statement(&TableLookup::statement(lookups));
+    let reader_batching = transcript.reader_batching();
+    transcript.abandon();
+    Ok(Weights::build(&plan, lookups, witness, reader_batching).pushforwards)
 }

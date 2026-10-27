@@ -320,6 +320,11 @@ where
         }
     }
 
+    /// Abandon the transcript before it reaches the end (partial replay).
+    pub fn abandon(mut self) {
+        self.state.abort();
+    }
+
     /// Bind what is being proved, before anything is drawn from the sponge.
     ///
     /// Both sides hold these already, so they are absorbed rather than sent.
