@@ -427,3 +427,13 @@ Native proof:
 | 4096 | 614,303 B | 540,093 B |
 
 Full runtime suite: 317 passing; clippy clean.
+
+
+## Track 2 second slice: prefix-summed Twist history claim
+
+The prover's history claim value is now accumulated with one per-address prefix
+array (O(cycles) updates), instead of the O(cycles^2) double loop. The sumcheck
+proof rounds are unchanged, so proof bytes are unchanged.
+
+At 4096 rows the register-claims stage measured 35.9 s -> 31.1 s (host-load
+dependent). Full runtime suite: 317 passing; clippy clean.

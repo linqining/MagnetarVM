@@ -47,6 +47,7 @@ fn main() {
         let prove = started.elapsed();
         let bytes = bincode::serialize(&proof).unwrap().len();
         let sizes = unified_proof_sizes(&proof).unwrap();
+        eprintln!("sizes={sizes:?}");
         if let Some(selected) = &proof.selected_cpu {
             eprintln!(
                 "selected layout={}B proof={}B mask={} cycles={}",

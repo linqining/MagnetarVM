@@ -1413,6 +1413,7 @@ pub(crate) fn prove_binary_twist_claims(
         }
     };
     let history_factor_count = a + 5;
+    let history_started = std::time::Instant::now();
     let (rounds, all_challenges) = if history_rounds == 0 {
         (Vec::new(), Vec::new())
     } else {
@@ -1447,6 +1448,10 @@ pub(crate) fn prove_binary_twist_claims(
             transcript.absorb("round", &coefficient.value().to_le_bytes());
         }
         let first_challenge = challenge(&mut transcript, "sumcheck");
+    if std::env::var_os("MAGNETAR_PROFILE_ACCESS").is_some() {
+        eprintln!("history first round: {:?}", history_started.elapsed());
+    }
+    let fold_started = std::time::Instant::now();
         let half_terms = history_terms / 2;
         let mut folded_factors = vec![vec![F2_128::from(0u64); half_terms]; history_factor_count];
         std::thread::scope(|scope| {
@@ -1479,9 +1484,16 @@ pub(crate) fn prove_binary_twist_claims(
                     * equality
             })
         };
-        let (remaining_rounds, mut challenges) =
+        if std::env::var_os("MAGNETAR_PROFILE_ACCESS").is_some() {
+        eprintln!("history fold: {:?}", fold_started.elapsed());
+    }
+    let remaining_started = std::time::Instant::now();
+    let (remaining_rounds, mut challenges) =
             sumcheck_terms(&folded_factors, &history_degrees[1..], &mut transcript, summand)?;
-        let mut rounds = Vec::with_capacity(remaining_rounds.len() + 1);
+        if std::env::var_os("MAGNETAR_PROFILE_ACCESS").is_some() {
+        eprintln!("history remaining: {:?}", remaining_started.elapsed());
+    }
+    let mut rounds = Vec::with_capacity(remaining_rounds.len() + 1);
         rounds.push(first_polynomial);
         rounds.extend(remaining_rounds);
         let mut all_challenges = Vec::with_capacity(challenges.len() + 1);
@@ -1511,22 +1523,20 @@ pub(crate) fn prove_binary_twist_claims(
     let history_claim = ReadHistoryClaim {
         claimed: {
             let mut total = F2_128::from(0u64);
+            let ra_valid = 2 * a;
+            let wa_valid = 2 * a + 1;
+            let mut prefix = vec![F2_128::from(0u64); cells];
             for cycle in 0..cycles {
-                for previous in 0..cycles {
-                    if previous >= cycle {
-                        continue;
-                    }
-                    let mut equality = F2_128::from(1u64);
-                    for bit in 0..a {
-                        equality = equality
-                            * (F2_128::from(1u64) + addr[bit][cycle] + addr[a + bit][previous]);
-                    }
-                    total = total
-                        + eq_j[cycle]
-                            * increments[previous]
-                            * addr[ra_valid][cycle]
-                            * addr[wa_valid][previous]
-                            * equality;
+                let mut read_cell = 0usize;
+                let mut write_cell = 0usize;
+                for bit in 0..a {
+                    read_cell |= ((addr[bit][cycle].value() as usize) & 1) << bit;
+                    write_cell |= ((addr[a + bit][cycle].value() as usize) & 1) << bit;
+                }
+                total = total
+                    + eq_j[cycle] * addr[ra_valid][cycle] * prefix[read_cell];
+                if addr[wa_valid][cycle].value() == 1 {
+                    prefix[write_cell] = prefix[write_cell] + increments[cycle];
                 }
             }
             total
