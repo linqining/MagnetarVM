@@ -55,4 +55,8 @@ fn paper_mode_committed_shout_round_trips() {
         exit_code: trace.exit_code,
     };
     verify_native_unified(&statement, &proof, 8).unwrap();
+
+    let mut bad_root = proof.clone();
+    bad_root.virtual_claim_root[0] ^= 1;
+    assert!(verify_native_unified(&statement, &bad_root, 8).is_err());
 }

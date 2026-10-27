@@ -779,3 +779,15 @@ Scaling of the paper path:
 
 The complete claim proof grows linearly (88.5 KB at 8192) and remains the
 virtual-claims blocker for the 2^16 target.
+
+
+## Virtual claim root in the unified proof
+
+`UnifiedTraceProof` now carries a canonical `virtual_claim_root` derived from
+the selected CPU segment claims. The native prover sets it and the verifier
+recomputes `VirtualClaimSet::from_selected` and rejects a mismatch. This is a
++32 B proof field and the first statement-visible virtual-claim commitment; it
+does not yet replace the complete claim proof.
+
+Paper mode 1024 proof: 278,386 B. Full runtime suite: 318 passing; paper-mode
+root-tamper test passes.

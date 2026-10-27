@@ -1162,6 +1162,8 @@ pub struct UnifiedTraceProof {
     pub gated: Option<GatedCpuClaims>,
     #[serde(default)]
     pub selected_cpu: Option<SelectedCpuProof>,
+    #[serde(default)]
+    pub virtual_claim_root: [u8; 32],
     pub opening: Option<P3MosaicOpening>,
     pub e5_opening: Option<E5Opening>,
     pub field_opening: Option<P3MosaicOpening>,
@@ -2614,6 +2616,22 @@ pub(crate) fn verify_unified_with_plan_impl(
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         crate::logup_shout::verify_trace_logup_shout(trace_logup, &witness)?;
     }
+
+    if proof.virtual_claim_root != [0u8; 32] {
+        if let Some(selected) = &proof.selected_cpu {
+            let set = crate::virtual_claims::VirtualClaimSet::from_selected(selected)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            if set.root != proof.virtual_claim_root {
+                return Err(RuntimeError::Proof(
+                    "virtual claim root does not match selected CPU proof".into(),
+                ));
+            }
+        } else {
+            return Err(RuntimeError::Proof(
+                "virtual claim root without selected CPU proof".into(),
+            ));
+        }
+    }
     let mut context = crate::protocol::UnifiedVerifyContext::new(trace, proof, width)?;
     for stage in plan.execution() {
         let started = std::time::Instant::now();
@@ -2800,6 +2818,11 @@ pub fn prove_unified_trace_dynamic_native_profile(
                 .join()
                 .map_err(|_| RuntimeError::Proof("selected CPU worker panicked".into()))??,
         );
+        if let Some(selected) = &proof.selected_cpu {
+            if let Ok(set) = crate::virtual_claims::VirtualClaimSet::from_selected(selected) {
+                proof.virtual_claim_root = set.root;
+            }
+        }
         timings.push(StageTiming {
             stage: "SelectedCpu(wall)".into(),
             duration: selected_started.elapsed(),
