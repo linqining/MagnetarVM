@@ -483,3 +483,12 @@ Selected PCS pow is now 24. At 4096 rows the selected component drops from
 prover time rises from about 35.5 s to 47.0 s at this row count.
 
 Full runtime suite: 317 passing.
+
+
+## Track 1 tenth slice: RLE CPU-shape columns
+
+The compact `CpuShape` columns now run-length encode pc deltas, micro-op, op,
+memory width and flags. At 1024 rows the shape component drops from 7,968 B to
+2,861 B; at 4096 rows the native proof drops from 498,626 B to 478,159 B.
+
+Full runtime suite: 317 passing; clippy clean.
