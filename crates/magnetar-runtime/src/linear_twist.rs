@@ -49,16 +49,20 @@ fn build_tables(
     let mut value = vec![F2_128::from(0u64); cells * cycles];
     let mut current = witness.initial.clone();
     current.resize(cells, F2_128::from(0u64));
-    for cycle in 0..witness.cycles {
+    for (cycle, (read, write)) in witness
+        .read_address
+        .iter()
+        .zip(&witness.write_address)
+        .enumerate()
+    {
         let row = cycle * cells;
         eq_cycle[row..row + cells].copy_from_slice(&vec![eq[cycle]; cells]);
-        read_address[row..row + cells].copy_from_slice(&witness.read_address[cycle]);
-        write_address[row..row + cells].copy_from_slice(&witness.write_address[cycle]);
-        for cell in 0..cells {
+        read_address[row..row + cells].copy_from_slice(read);
+        write_address[row..row + cells].copy_from_slice(write);
+        for (cell, current_cell) in current.iter_mut().enumerate().take(cells) {
             increment[row + cell] = witness.increment[cycle];
-            value[row + cell] = current[cell];
-            current[cell] = current[cell]
-                + witness.write_address[cycle][cell] * witness.increment[cycle];
+            value[row + cell] = *current_cell;
+            *current_cell = *current_cell + write[cell] * witness.increment[cycle];
         }
     }
     Ok(LinearRwTables {
