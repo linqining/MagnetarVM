@@ -2607,7 +2607,7 @@ pub(crate) fn verify_unified_with_plan_impl(
     if let Some(logup_shout) = &proof.logup_shout {
         let witness = crate::binary_shout::BinaryShoutWitness::from_trace(trace)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        crate::logup_shout::verify_logup_shout(logup_shout, &witness.rom)?;
+        crate::logup_shout::verify_logup_shout_against_witness(logup_shout, &witness)?;
     }
     if let Some(trace_logup) = &proof.trace_logup_shout {
         let witness = crate::binary_shout::BinaryShoutWitness::from_trace(trace)
@@ -2719,6 +2719,24 @@ pub fn prove_unified_trace_dynamic_native_trace(
 ) -> Result<UnifiedTraceProof, RuntimeError> {
     let mut proof = prove_unified_trace_dynamic_native_profile(trace, width)?.0;
     proof.claim_proof = None;
+    Ok(proof)
+}
+
+/// Paper-path baseline: committed Shout + committed selected CPU + complete
+/// claim proof. The proof-only verifier rebuilds the trace from claims and
+/// checks the committed Shout claims against that witness.
+pub fn prove_unified_trace_paper(
+    trace: &Trace,
+    width: usize,
+) -> Result<UnifiedTraceProof, RuntimeError> {
+    let mut proof = prove_unified_trace_dynamic_native(trace, width)?;
+    let witness = crate::binary_shout::BinaryShoutWitness::from_trace(trace)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    proof.logup_shout = Some(
+        crate::logup_shout::prove_logup_shout(&witness)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?,
+    );
+    proof.trace_logup_shout = None;
     Ok(proof)
 }
 

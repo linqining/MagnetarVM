@@ -713,3 +713,22 @@ for an arbitrary witness.
 The logup runtime test now also rejects tampered reader claims and a tampered
 ROM witness through this binding. This is a prerequisite for using committed
 Shout in the paper path while virtual claims are still under construction.
+
+
+## Paper baseline: committed Shout + committed CPU + full claim proof
+
+Added `prove_unified_trace_paper` and `verify_logup_shout_against_witness`
+integration. The native verifier now binds any committed Shout proof's
+reader/link/position claims to the trace-derived witness. The proof-only
+`verify_native_unified` path therefore works with committed Shout, committed
+selected CPU, and the complete claim proof.
+
+Paper-mode benchmark (`paper_unified_bench`):
+
+| rows | proof | logup | selected | claim | verify |
+|---:|---:|---:|---:|---:|---:|
+| 1024 | 294,746 B | 149,865 B | 116,998 B | 10,594 B | 1.74 s |
+| 4096 | 446,872 B | 231,985 B | 151,262 B | 44,028 B | 8.56 s |
+
+This is the current paper-path baseline. It is still O(rows) due to the complete
+claim proof; virtual claims must replace that before the 2^16 target.
