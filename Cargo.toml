@@ -8,6 +8,8 @@ exclude = [
     "vendor/ligerito-reed-solomon",
     "vendor/wide",
     "vendor/safe_arch",
+    "vendor/miniz_oxide",
+    "vendor/adler2",
 ]
 members = [
     "crates/magnetar-spec",

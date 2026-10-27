@@ -580,6 +580,7 @@ impl serde::Serialize for ClaimProof {
                 .map(|opening| opening.claim.clone())
                 .collect::<Vec<_>>();
             let blob = encode_claim_columns(&claims);
+            let blob = miniz_oxide::deflate::compress_to_vec(&blob, 6);
             ClaimProofWire::Compact {
                 root: self.root,
                 blob,
@@ -600,6 +601,8 @@ impl<'de> serde::Deserialize<'de> for ClaimProof {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         match ClaimProofWire::deserialize(deserializer)? {
             ClaimProofWire::Compact { root, blob } => {
+                let blob = miniz_oxide::inflate::decompress_to_vec(&blob)
+                    .map_err(serde::de::Error::custom)?;
                 let claims = decode_claim_columns(&blob).map_err(serde::de::Error::custom)?;
                 Ok(Self {
                     root,

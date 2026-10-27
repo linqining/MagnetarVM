@@ -28,6 +28,7 @@ magnetar-recursion.workspace = true
 magnetar-privacy.workspace = true
 magnetar-guest.workspace = true
 thiserror.workspace = true
+miniz_oxide = { path = "../../vendor/miniz_oxide" }
 
 [dev-dependencies]
 criterion.workspace = true

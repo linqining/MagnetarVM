@@ -846,3 +846,30 @@ Tried compressing the claim blob with `zstd`/`flate2`, but the offline Cargo
 registry sandbox cannot unpack new transitive crates (`jobserver`, `crc32fast`).
 The dependency change was reverted. A in-tree compression codec would be
 required, which is not worth it before the virtual-claim rewrite.
+
+
+## Claim proof: DEFLATE compression (vendored miniz_oxide)
+
+The compact complete claim blob is now DEFLATE-compressed. To keep the offline
+build self-contained, `miniz_oxide` and `adler2` were copied into `vendor/` and
+wired as path dependencies; no registry unpack is required.
+
+Paper mode:
+
+| rows | before claim | after claim | before proof | after proof |
+|---:|---:|---:|---:|---:|
+| 1024 | 10,594 B | 3,101 B | 270,090 B | 262,597 B |
+| 4096 | 44,028 B | 13,087 B | 367,536 B | 336,595 B |
+
+Claim-native 2^16:
+
+```text
+proof      1,153,818 -> 403,315 B
+claim        916,013 -> 183,598 B
+selected     219,645 B
+```
+
+The 2^16 prove/verify timings were 605 s / 241 s under host load. The claim
+layer is still O(rows), but the compressed payload is now small enough that the
+remaining gap to the paper's 380 KiB is dominated by committed Shout/CPU
+openings. Full runtime suite: 318 passing; clippy clean.
