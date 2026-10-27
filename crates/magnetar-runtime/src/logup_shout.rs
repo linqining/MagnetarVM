@@ -38,6 +38,45 @@ pub struct LogupShoutProof {
     pub opening: P3BatchOpening,
 }
 
+/// Shout lookup proof whose reader/position witness is reconstructed from the
+/// authenticated trace or claims. No PCS opening is carried: the verifier
+/// recomputes the witness columns and checks the logup* output claims.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TraceLogupShoutProof {
+    pub address_bits: usize,
+    pub cycle_bits: usize,
+    pub cycles: usize,
+    pub columns: usize,
+    pub reader_point: Vec<F2_128>,
+    pub link_claims: Vec<F2_128>,
+    pub link_point: Vec<F2_128>,
+    pub logup: LogupStarProof<B, B>,
+}
+
+fn public_reader_point(
+    witness: &BinaryShoutWitness,
+    columns: usize,
+) -> Point<B> {
+    let mut transcript = Sha256Transcript::new("magnetar-trace-logup-shout-reader-point");
+    transcript.absorb("address_bits", &(witness.address_bits as u64).to_le_bytes());
+    transcript.absorb("cycle_bits", &(witness.cycle_bits as u64).to_le_bytes());
+    transcript.absorb("cycles", &(witness.cycles as u64).to_le_bytes());
+    transcript.absorb("columns", &(columns as u64).to_le_bytes());
+    for row in &witness.rom {
+        for value in row {
+            transcript.absorb("rom", &value.value().to_le_bytes());
+        }
+    }
+    Point::new(
+        (0..witness.cycle_bits)
+            .map(|_| {
+                let bytes = transcript.challenge_bytes("reader-point", 16);
+                B::from_repr(u128::from_le_bytes(bytes.try_into().expect("16 bytes")))
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
 fn challenger() -> Challenger {
     BinaryChallenger::from_hasher(b"magnetar-logup-shout".to_vec(), Keccak256Hash)
 }
@@ -337,6 +376,211 @@ pub fn verify_logup_shout(
         return Err(RuntimeError::Proof("logup Shout PCS opening rejected".into()));
     }
     Ok(())
+}
+
+pub fn prove_trace_logup_shout(
+    witness: &BinaryShoutWitness,
+) -> Result<TraceLogupShoutProof, RuntimeError> {
+    let table_columns = table_columns_from_witness(witness);
+    let position_values = positions(witness)?;
+    let columns = table_columns.len();
+    let reader_columns = (0..columns)
+        .map(|column| {
+            position_values
+                .iter()
+                .map(|position| table_columns[column][*position])
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let point = public_reader_point(witness, columns);
+    let claims = (0..columns)
+        .map(|column| eval_mle(&reader_columns[column], &point))
+        .collect::<Vec<_>>();
+    let readers = [Reader {
+        point: &point,
+        claims: &claims,
+    }];
+    let lookups = [TableLookup {
+        num_variables: witness.address_bits,
+        readers: &readers,
+    }];
+    let reader_witnesses = [ReaderWitness {
+        positions: &position_values,
+    }];
+    let column_refs = table_columns
+        .iter()
+        .map(|column| column.as_slice())
+        .collect::<Vec<_>>();
+    let table_witness = [TableWitness {
+        columns: &column_refs,
+        readers: &reader_witnesses,
+    }];
+    let link_columns = witness
+        .link_columns()
+        .into_iter()
+        .map(|column| column.iter().map(|value| to_b(*value)).collect::<Vec<B>>())
+        .collect::<Vec<_>>();
+    let link_claims = link_columns
+        .iter()
+        .map(|column| eval_mle(column, &point))
+        .collect::<Vec<_>>();
+    let mut prover_challenger = challenger();
+    let (logup, _output) =
+        LogupStarProof::<B, B>::prove(&lookups, &table_witness, &mut prover_challenger);
+    Ok(TraceLogupShoutProof {
+        address_bits: witness.address_bits,
+        cycle_bits: witness.cycle_bits,
+        cycles: witness.cycles,
+        columns,
+        reader_point: point
+            .iter()
+            .rev()
+            .map(|coordinate| to_f2(*coordinate))
+            .collect(),
+        link_claims: link_claims.iter().map(|claim| to_f2(*claim)).collect(),
+        link_point: point
+            .iter()
+            .rev()
+            .map(|coordinate| to_f2(*coordinate))
+            .collect(),
+        logup,
+    })
+}
+
+pub fn verify_trace_logup_shout(
+    proof: &TraceLogupShoutProof,
+    witness: &BinaryShoutWitness,
+) -> Result<(), RuntimeError> {
+    if proof.cycles != 1usize << proof.cycle_bits
+        || proof.address_bits != witness.address_bits
+        || proof.cycle_bits != witness.cycle_bits
+        || proof.cycles != witness.cycles
+        || proof.reader_point.len() != proof.cycle_bits
+        || proof.link_claims.len() != 12
+        || proof.link_point != proof.reader_point
+        || witness.rom.len() != 1usize << proof.address_bits
+        || witness.rom.iter().any(|row| row.len() != proof.columns)
+    {
+        return Err(RuntimeError::Proof(
+            "trace logup Shout statement mismatch".into(),
+        ));
+    }
+    let table_columns = table_columns_from_witness(witness);
+    let position_values = positions(witness)?;
+    if table_columns.len() != proof.columns {
+        return Err(RuntimeError::Proof(
+            "trace logup Shout column mismatch".into(),
+        ));
+    }
+    let reader_columns = (0..proof.columns)
+        .map(|column| {
+            position_values
+                .iter()
+                .map(|position| table_columns[column][*position])
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let point = public_reader_point(witness, proof.columns);
+    let expected_point = point
+        .iter()
+        .rev()
+        .map(|coordinate| to_f2(*coordinate))
+        .collect::<Vec<_>>();
+    if proof.reader_point != expected_point {
+        return Err(RuntimeError::Proof(
+            "trace logup Shout reader point mismatch".into(),
+        ));
+    }
+    let claims = (0..proof.columns)
+        .map(|column| eval_mle(&reader_columns[column], &point))
+        .collect::<Vec<_>>();
+    let link_columns = witness
+        .link_columns()
+        .into_iter()
+        .map(|column| column.iter().map(|value| to_b(*value)).collect::<Vec<B>>())
+        .collect::<Vec<_>>();
+    let expected_link_claims = link_columns
+        .iter()
+        .map(|column| eval_mle(column, &point))
+        .collect::<Vec<_>>();
+    if proof
+        .link_claims
+        .iter()
+        .zip(&expected_link_claims)
+        .any(|(claim, expected)| to_b(*claim) != *expected)
+    {
+        return Err(RuntimeError::Proof(
+            "trace logup Shout link claims mismatch".into(),
+        ));
+    }
+    let readers = [Reader {
+        point: &point,
+        claims: &claims,
+    }];
+    let lookups = [TableLookup {
+        num_variables: proof.address_bits,
+        readers: &readers,
+    }];
+    let mut verifier_challenger = challenger();
+    let output = proof
+        .logup
+        .verify(&lookups, &mut verifier_challenger)
+        .map_err(|error| RuntimeError::Proof(format!("trace logup Shout reduction: {error:?}")))?;
+    let table_point = Point::new(output.table_point.as_slice().to_vec());
+    for (column, claim) in output.tables[0].column_claims.iter().enumerate() {
+        let values = witness
+            .rom
+            .iter()
+            .map(|row| to_b(row[column]))
+            .collect::<Vec<_>>();
+        let direct = eval_mle(&values, &table_point);
+        if direct != *claim {
+            return Err(RuntimeError::Proof(format!(
+                "trace logup Shout table claim mismatch at column {column}"
+            )));
+        }
+    }
+    let position_values_b = position_values
+        .iter()
+        .map(|position| embed(*position))
+        .collect::<Vec<_>>();
+    let position_claim = eval_mle(&position_values_b, &Point::new(output.position_point.as_slice().to_vec()));
+    if output.tables[0].position_claims[0] != position_claim {
+        return Err(RuntimeError::Proof(
+            "trace logup Shout position claim mismatch".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub fn trace_logup_shout_link_claims(
+    proof: &TraceLogupShoutProof,
+    witness: &BinaryShoutWitness,
+) -> Result<(Vec<F2_128>, Vec<F2_128>, F2_128), RuntimeError> {
+    let columns = witness.link_columns();
+    let point = Point::new(
+        proof
+            .reader_point
+            .iter()
+            .rev()
+            .map(|coordinate| to_b(*coordinate))
+            .collect(),
+    );
+    let width = columns[..4]
+        .iter()
+        .map(|column| {
+            let values = column.iter().map(|value| to_b(*value)).collect::<Vec<B>>();
+            to_f2(eval_mle(&values, &point))
+        })
+        .collect::<Vec<_>>();
+    let mut code = F2_128::from(0u64);
+    for (bit, column) in columns[4..].iter().enumerate() {
+        let values = column.iter().map(|value| to_b(*value)).collect::<Vec<B>>();
+        if to_f2(eval_mle(&values, &point)).value() == 1 {
+            code = code + F2_128::from(1u128 << bit);
+        }
+    }
+    Ok((proof.reader_point.clone(), width, code))
 }
 
 pub fn logup_shout_proof_size(proof: &LogupShoutProof) -> Result<usize, RuntimeError> {

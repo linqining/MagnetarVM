@@ -502,3 +502,27 @@ run-length encoded. At 4096 rows the claim component drops from 65,109 B to
 proof is 306,388 B.
 
 Full runtime suite: 317 passing; claim-native guest passes; clippy clean.
+
+
+## Trace-backed Shout: no Shout PCS opening
+
+The native dynamic proof now carries a `TraceLogupShoutProof`: only the logup*
+reduction, the public reader point, and the 12 link claims. The verifier
+reconstructs the Shout reader/position witness from the authenticated trace or
+from the trace rebuilt from the claim proof, recomputes the reader claims and
+checks the logup* output table/position claims and link claims. The separate
+Shout PCS commitment/opening is gone.
+
+Native proof:
+
+| rows | before | trace-backed Shout |
+|---:|---:|---:|
+| 1024 | 306,388 B | 172,365 B |
+| 4096 | 469,978 B | 309,755 B |
+
+At 4096 rows the logup component drops from 231,857 B to roughly 70 KB (the
+remaining pushforward/GKR proof). The old committed `LogupShoutProof` remains
+for standalone tests and compatibility; the native path uses the trace-backed
+variant. This moves Shout's soundness root from a committed Shout witness to
+the authenticated claim/trace layer. Full runtime suite: 317 passing;
+claim-native guest and logup Shout runtime tests pass; clippy clean.

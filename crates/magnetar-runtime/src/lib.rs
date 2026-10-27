@@ -1186,6 +1186,8 @@ pub struct UnifiedTraceProof {
     pub packed_shout: Option<crate::packed_shout::PackedShoutProof>,
     #[serde(default)]
     pub logup_shout: Option<crate::logup_shout::LogupShoutProof>,
+    #[serde(default)]
+    pub trace_logup_shout: Option<crate::logup_shout::TraceLogupShoutProof>,
 }
 
 pub(crate) struct GatedProveInput {
@@ -2607,6 +2609,11 @@ pub(crate) fn verify_unified_with_plan_impl(
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         crate::logup_shout::verify_logup_shout(logup_shout, &witness.rom)?;
     }
+    if let Some(trace_logup) = &proof.trace_logup_shout {
+        let witness = crate::binary_shout::BinaryShoutWitness::from_trace(trace)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        crate::logup_shout::verify_trace_logup_shout(trace_logup, &witness)?;
+    }
     let mut context = crate::protocol::UnifiedVerifyContext::new(trace, proof, width)?;
     for stage in plan.execution() {
         let started = std::time::Instant::now();
@@ -2714,9 +2721,9 @@ pub fn prove_unified_trace_dynamic_native_profile(
     std::thread::scope(|scope| {
         let selected =
             scope.spawn(|| crate::simd_dual::prove_dynamic_cpu_claims(trace, width, &backend));
-        let logup_shout = packed_witness
-            .as_ref()
-            .map(|witness| scope.spawn(|| crate::logup_shout::prove_logup_shout(witness)));
+        let trace_logup_shout = packed_witness.as_ref().map(|witness| {
+            scope.spawn(|| crate::logup_shout::prove_trace_logup_shout(witness))
+        });
         let plan = crate::protocol::ProtocolPlan::unified();
         let mut context = crate::protocol::UnifiedProveContext::new_with_group(trace, width, None)?;
         let mut timings = Vec::new();
@@ -2751,9 +2758,9 @@ pub fn prove_unified_trace_dynamic_native_profile(
         proof.opening = None;
         proof.shout = None;
         proof.shout_index = None;
-        if let Some(logup_shout) = logup_shout {
-            proof.logup_shout = Some(
-                logup_shout
+        if let Some(trace_logup_shout) = trace_logup_shout {
+            proof.trace_logup_shout = Some(
+                trace_logup_shout
                     .join()
                     .map_err(|_| RuntimeError::Proof("logup Shout worker panicked".into()))??,
             );
@@ -3138,6 +3145,46 @@ pub fn verify_core_statement(
             values.push(link_values);
         }
     }
+    if let Some(logup) = &proof.trace_logup_shout {
+        let link = &logup.link_claims;
+        if link.len() != 12 {
+            return Err(RuntimeError::Proof(
+                "trace logup Shout link claims".into(),
+            ));
+        }
+        let point = logup.link_point.clone();
+        let width = link[..4].to_vec();
+        let mut code = F2_128::from(0u64);
+        for (bit, value) in link[4..].iter().enumerate() {
+            if value.value() == 1 {
+                code = code + F2_128::from(1u128 << bit);
+            }
+        }
+        if let Some(index) = proof.shift_router_index {
+            let total = proof.commitment.tables[index].num_columns;
+            if total >= 10 {
+                points.push(magnetar_pcs::P3MosaicPoint {
+                    table: index,
+                    point: point.clone(),
+                    columns: vec![total - 8],
+                    next_columns: Vec::new(),
+                });
+                values.push(vec![code]);
+            }
+        }
+        if let Some(index) = proof.store_router_index {
+            let total = proof.commitment.tables[index].num_columns;
+            if total >= 10 {
+                points.push(magnetar_pcs::P3MosaicPoint {
+                    table: index,
+                    point,
+                    columns: (total - 7..total - 3).collect(),
+                    next_columns: Vec::new(),
+                });
+                values.push(width);
+            }
+        }
+    }
     let mut pairs = points.into_iter().zip(values).collect::<Vec<_>>();
     pairs.sort_by_key(|(point, _)| crate::point_sort_key(point));
     let selected = proof
@@ -3487,6 +3534,7 @@ pub struct UnifiedProofSizes {
     pub shout: usize,
     pub packed_shout: usize,
     pub logup_shout: usize,
+    pub trace_logup_shout: usize,
     pub shift_router: usize,
     pub store_router: usize,
     pub trace_claims: usize,
@@ -3513,6 +3561,7 @@ impl UnifiedProofSizes {
                 + self.shout
                 + self.packed_shout
                 + self.logup_shout
+                + self.trace_logup_shout
                 + self.shift_router
                 + self.store_router
                 + self.trace_claims
@@ -3544,6 +3593,7 @@ pub fn unified_proof_sizes(proof: &UnifiedTraceProof) -> Result<UnifiedProofSize
         shout: size(bincode::serialize(&proof.shout))?,
         packed_shout: size(bincode::serialize(&proof.packed_shout))?,
         logup_shout: size(bincode::serialize(&proof.logup_shout))?,
+        trace_logup_shout: size(bincode::serialize(&proof.trace_logup_shout))?,
         shift_router: size(bincode::serialize(&proof.shift_router))?,
         store_router: size(bincode::serialize(&proof.store_router))?,
         trace_claims: size(bincode::serialize(&proof.trace_claims))?,
