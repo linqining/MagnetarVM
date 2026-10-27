@@ -222,3 +222,18 @@ The prover is linear and the verifier is fast, but the prototype commits
 dense RA/WA/Val/Inc/read/write tables independently and does not bind one-hot
 addresses to the Access commitment. Proof size is therefore not comparable to
 the paper target; this is a scaling demonstration only.
+
+
+## PCS parameter experiment
+
+Switching the prototype PCS to `(security=100, rate=4, pow=16, folding=3)`
+reduced standalone proof size substantially:
+
+| rows | RW+Val bytes | prove |
+|---:|---:|---:|
+| 1024 | 528,552 B | 4.2 s |
+| 16384 | 798,080 B | 48 s |
+
+but the 65536-row prototype did not finish within 2400 s, so the parameter
+change was reverted. The default prototype parameters keep the scaling
+benchmark runnable; production PCS integration remains a separate task.
