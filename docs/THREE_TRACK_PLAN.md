@@ -960,3 +960,20 @@ A prototype that recomputed early history rounds directly from base columns
 paper run within a 3600 s timeout. The prototype was reverted. This confirms
 that the 2^16 blocker needs a genuinely linear Twist/order argument; time-memory
 trading around the dense pair table is not sufficient.
+
+
+## Linear Twist integration results
+
+Paper-mode unified benchmark after switching BinaryTwist history to the linear
+proof at >=8192 cycles:
+
+| rows | proof | prove | verify |
+|---:|---:|---:|---:|
+| 16384 | 3,955,231 B | 43.6 s | 16.5 s |
+| 32768 | 4,568,567 B | 106.3 s | 30.5 s |
+| 65536 | 5,233,435 B | 200.7 s | 66.6 s |
+
+This is the first complete paper-mode 2^16 run in this repository. The dense
+history is gone from this path; the remaining proof-size gap is dominated by the
+linear Access commitment/opening (~4.58 MB at 2^16), and final-state checking is
+still missing from the linear branch.

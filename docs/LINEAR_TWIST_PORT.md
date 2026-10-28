@@ -398,3 +398,34 @@ dependent, not a general point issue.
 The unified-routing branch and test were reverted rather than enabled with an
 unverified one-hot proof. Standalone linear BinaryTwist remains available and
 its 2^16 benchmark is unchanged.
+
+
+## Unified integration: paper-mode linear Twist
+
+The unified BinaryTwist claims now switch to the linear proof at
+`cycles >= 8192`:
+
+```text
+BinaryTwistRamProof.linear: Option<BinaryTwistLinearProof>
+prove_binary_twist_claims -> linear branch
+verify_binary_twist_from_proof_inner -> proof-only linear verify
++ linear_outer_mosaic_claims bound to the Access commitment
+```
+
+Paper-mode benchmark (`paper_unified_bench`, proof-only verifier):
+
+| rows | proof bytes | access bytes | logup | selected | claim | prove | verify |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 16384 | 3,955,231 | 3,531,060 | 203,489 | 171,302 | 47,921 | 43.6 s | 16.5 s |
+| 32768 | 4,568,567 | 4,057,684 | 221,009 | 195,262 | 93,089 | 106.3 s | 30.5 s |
+| 65536 | 5,233,435 | 4,583,188 | 245,377 | 219,646 | 183,599 | 200.7 s | 66.6 s |
+
+The 2^16 paper proof now completes in about 201 s prove / 67 s verify. The
+dense c² history is no longer used at these sizes.
+
+Remaining paper-alignment gaps:
+
+- proof is ~5.2 MB, far from the paper's ~380 KiB target, dominated by the
+  linear Access proof's PCS commitments/openings;
+- the linear branch does not yet check the final state;
+- the selected CPU/logup/claim layers are unchanged.

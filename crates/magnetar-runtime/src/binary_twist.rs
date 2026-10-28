@@ -988,6 +988,10 @@ pub struct BinaryTwistRamProof {
     pub final_values_evals: Vec<F2_128>,
     pub cycle_bits: usize,
     pub address_bits: usize,
+    /// When present, dense history claims are replaced by the standalone linear
+    /// Twist proof plus its outer-table claims.
+    #[serde(default)]
+    pub linear: Option<BinaryTwistLinearProof>,
 }
 
 fn eq_at_index(point: &[F2_128], index: usize) -> F2_128 {
@@ -1334,6 +1338,77 @@ pub fn verify_binary_twist_ram_linear_proof_only(
     crate::linear_twist::verify_linear_twist_proof_only(&proof.linear)
 }
 
+/// Convert linear outer-table claims into mosaic claims at `table_index`.
+pub(crate) fn linear_outer_mosaic_claims(
+    proof: &BinaryTwistLinearProof,
+    table_index: usize,
+) -> Result<MosaicClaims, ProofError> {
+    use crate::linear_twist::LinearOuterTable;
+    let claims = crate::linear_twist::linear_outer_claims(&proof.linear)?;
+    let mut points = Vec::with_capacity(claims.len());
+    let mut expected = Vec::with_capacity(claims.len());
+    for claim in claims {
+        let table = match claim.table {
+            LinearOuterTable::Address => table_index,
+            LinearOuterTable::Increment => table_index + 1,
+            LinearOuterTable::Initial => table_index + 2,
+            LinearOuterTable::ReadValue => table_index + 3,
+            LinearOuterTable::WriteValue => table_index + 4,
+        };
+        points.push(P3MosaicPoint {
+            table,
+            point: claim.point,
+            columns: vec![claim.column],
+            next_columns: Vec::new(),
+        });
+        expected.push(vec![claim.value]);
+    }
+    Ok((points, expected))
+}
+
+pub(crate) const LINEAR_TWIST_MIN_CYCLES: usize = 8192;
+
+fn prove_binary_twist_claims_linear(
+    tables: &BatchTables,
+    witness: &BinaryTwistWitness,
+    _commitment: &P3MosaicCommitment,
+    table_index: usize,
+) -> Result<ClaimedRam, ProofError> {
+    let linear = BinaryTwistLinearProof {
+        linear: crate::linear_twist::prove_linear_twist(witness)?,
+    };
+    let claims = linear_outer_mosaic_claims(&linear, table_index)?;
+    let zero = F2_128::from(0u64);
+    let proof = BinaryTwistRamProof {
+        boolean: AddressBooleanClaim { rounds: Vec::new() },
+        read: BinaryTwistReadClaim {
+            initial: ReadInitialClaim { claimed: zero, rounds: Vec::new() },
+            history: ReadHistoryClaim { claimed: zero, rounds: Vec::new() },
+        },
+        write: BinaryTwistWriteClaim {
+            base: WriteBaseClaim { claimed: zero, rounds: Vec::new() },
+            history: WriteHistoryClaim { claimed: zero, rounds: Vec::new() },
+        },
+        update: BinaryTwistUpdateClaim { rounds: Vec::new() },
+        opening: None,
+        read_value_eval: zero,
+        write_value_eval: zero,
+        initial_read_eval: zero,
+        initial_write_eval: zero,
+        initial_update_eval: zero,
+        boolean_evals: Vec::new(),
+        read_initial_addr: Vec::new(),
+        read_history_values: Vec::new(),
+        write_base_values: Vec::new(),
+        write_history_values: Vec::new(),
+        final_values_evals: Vec::new(),
+        cycle_bits: tables.cycle_bits,
+        address_bits: tables.address_bits,
+        linear: Some(linear),
+    };
+    Ok((proof, claims))
+}
+
 /// Build all BinaryTwist claims against a commitment owned by an outer proof.
 ///
 /// `table_index` is the address table's index in that commitment; the compact
@@ -1345,6 +1420,9 @@ pub(crate) fn prove_binary_twist_claims(
     commitment: &P3MosaicCommitment,
     table_index: usize,
 ) -> Result<ClaimedRam, ProofError> {
+    if witness.cycles >= LINEAR_TWIST_MIN_CYCLES {
+        return prove_binary_twist_claims_linear(tables, witness, commitment, table_index);
+    }
     let addr = tables.address_columns();
     let increments = tables.increments();
     let cells = witness.initial.len();
@@ -2103,6 +2181,7 @@ pub(crate) fn prove_binary_twist_claims(
             final_values_evals,
             cycle_bits: tables.cycle_bits,
             address_bits: tables.address_bits,
+            linear: None,
         },
         (addr_points, addr_expected),
     ))
@@ -2160,6 +2239,15 @@ fn verify_binary_twist_from_proof_inner(
 ) -> Result<Option<MosaicClaims>, ProofError> {
     if commitment.tables.len() <= table_index + 4 {
         return Ok(None);
+    }
+    if let Some(linear) = &proof.linear {
+        if linear.linear.shape.address_bits != proof.address_bits
+            || linear.linear.shape.cycle_bits() != proof.cycle_bits
+            || !crate::linear_twist::verify_linear_twist_proof_only(&linear.linear)?
+        {
+            return Ok(None);
+        }
+        return Ok(Some(linear_outer_mosaic_claims(linear, table_index)?));
     }
     let cycle_bits = proof.cycle_bits;
     let address_bits = proof.address_bits;
@@ -2585,6 +2673,72 @@ mod ram_tests {
             },
         )
         .unwrap()
+    }
+
+    #[test]
+    fn ram_binary_twist_linear_mode_round_trips() {
+        let mut program = vec![
+            Instruction {
+                op: Op::Addi,
+                rd: 1,
+                rs1: 0,
+                rs2: 0,
+                imm: 7,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Lui,
+                rd: 2,
+                rs1: 0,
+                rs2: 0,
+                imm: 0x1000_0000,
+                shamt: 0,
+            }
+            .encode(),
+        ];
+        for _ in 0..4096 {
+            program.push(
+                Instruction {
+                    op: Op::Sd,
+                    rd: 0,
+                    rs1: 2,
+                    rs2: 1,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+            );
+            program.push(
+                Instruction {
+                    op: Op::Ld,
+                    rd: 3,
+                    rs1: 2,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+            );
+        }
+        program.push(Instruction::new(Op::Ecall).encode());
+        let trace = execute(
+            &ProgramImage::new(0x1000, program),
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 20_000,
+            },
+        )
+        .unwrap();
+        let witness = BinaryTwistWitness::from_trace(&trace).unwrap();
+        assert!(witness.cycles >= LINEAR_TWIST_MIN_CYCLES);
+        let proof = prove_binary_twist_ram(&witness).unwrap();
+        assert!(proof.linear.is_some());
+        assert!(verify_binary_twist_ram(&witness, &proof).unwrap());
     }
 
     #[test]

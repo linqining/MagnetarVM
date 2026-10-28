@@ -884,18 +884,12 @@ pub fn prove_onehot_pcs(
         );
     }
     let point_f2 = sample_point(&mut transcript, cycles.trailing_zeros() as usize);
-    let point_b = Point::new(point_f2.iter().map(|value| to_b(*value)).collect());
-    let columns_b = columns
+    let point_b = Point::new(point_f2.iter().rev().map(|value| to_b(*value)).collect());
+    let claims = columns
         .iter()
-        .map(|column| column.iter().map(|value| to_b(*value)).collect::<Vec<_>>())
+        .map(|column| eval_mle(column, &point_f2))
         .collect::<Vec<_>>();
-    let claims_b = columns_b
-        .iter()
-        .map(|column| {
-            p3_multilinear_util::poly::Poly::new(column.clone()).eval_ext::<B>(&point_b)
-        })
-        .collect::<Vec<_>>();
-    let claims = claims_b.iter().map(|value| to_f2(*value)).collect::<Vec<_>>();
+    let claims_b = claims.iter().map(|value| to_b(*value)).collect::<Vec<_>>();
     let readers = [Reader {
         point: &point_b,
         claims: &claims_b,
@@ -1026,7 +1020,7 @@ pub fn verify_onehot_pcs_shape(
         );
     }
     let point_f2 = sample_point(&mut transcript, cycles.trailing_zeros() as usize);
-    let point_b = Point::new(point_f2.iter().map(|value| to_b(*value)).collect());
+    let point_b = Point::new(point_f2.iter().rev().map(|value| to_b(*value)).collect());
     let pcs = P3BinaryPcs::new(100);
     let points = vec![P3BatchPoint {
         point: point_f2.clone(),
@@ -1314,4 +1308,79 @@ pub fn linear_outer_claims(
         }
     }
     Ok(claims)
+}
+
+#[cfg(test)]
+mod ram_onehot_tests {
+    use magnetar_executor::execute;
+    use magnetar_memory::BinaryTwistWitness;
+    use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+    use super::*;
+
+    #[test]
+    fn write_onehot_ram_8192_round_trips() {
+        let mut program = vec![
+            Instruction {
+                op: Op::Addi,
+                rd: 1,
+                rs1: 0,
+                rs2: 0,
+                imm: 7,
+                shamt: 0,
+            }
+            .encode(),
+            Instruction {
+                op: Op::Lui,
+                rd: 2,
+                rs1: 0,
+                rs2: 0,
+                imm: 0x1000_0000,
+                shamt: 0,
+            }
+            .encode(),
+        ];
+        for _ in 0..4096 {
+            program.push(
+                Instruction {
+                    op: Op::Sd,
+                    rd: 0,
+                    rs1: 2,
+                    rs2: 1,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+            );
+            program.push(
+                Instruction {
+                    op: Op::Ld,
+                    rd: 3,
+                    rs1: 2,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+            );
+        }
+        program.push(Instruction::new(Op::Ecall).encode());
+        let trace = execute(
+            &ProgramImage::new(0x1000, program),
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 20_000,
+            },
+        )
+        .unwrap();
+        let witness = BinaryTwistWitness::from_trace(&trace).unwrap();
+        for write in [false, true] {
+            let proof = prove_onehot_pcs(&witness, write).unwrap();
+            assert!(verify_onehot_pcs(&witness, write, &proof).unwrap());
+        }
+    }
 }
