@@ -914,3 +914,20 @@ verify            71.6 s (includes decompress + original verify)
 ```
 
 At 16384 the compressed proof is 482,569 B vs 649,679 B raw.
+
+
+## Varint proof wire format
+
+Added `serialize_unified_proof` / `deserialize_unified_proof` using varint
+bincode encoding, plus compressed helpers on the varint bytes.
+
+2^16:
+
+```text
+default bincode   910,083 B
+varint            798,773 B
+varint+DEFLATE    712,967 B
+```
+
+Varint encoding removes ~12% without changing proof content; the bench
+round-trips the decoded proof.

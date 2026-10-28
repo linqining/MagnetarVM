@@ -59,6 +59,10 @@ fn main() {
     let sizes = unified_proof_sizes(&proof).unwrap();
     let serialized = bincode::serialize(&proof).unwrap();
     let bytes = serialized.len();
+    let varint_bytes = magnetar_runtime::serialize_unified_proof(&proof).unwrap();
+    let varint_decoded = magnetar_runtime::deserialize_unified_proof(&varint_bytes).unwrap();
+    assert_eq!(varint_decoded.trace_commitment, proof.trace_commitment);
+    let varint = varint_bytes.len();
     let compressed_bytes =
         magnetar_runtime::serialize_unified_proof_compressed(&proof).unwrap();
     let compressed = compressed_bytes.len();
@@ -70,7 +74,7 @@ fn main() {
     let verify = started.elapsed();
     eprintln!("{sizes:?}");
     println!(
-        "adds={adds} rows={} proof={bytes}B compressed={compressed}B access={}B logup={}B selected={}B claim={}B shape={}B prove={prove:?} verify={verify:?}",
+        "adds={adds} rows={} proof={bytes}B varint={varint}B compressed={compressed}B access={}B logup={}B selected={}B claim={}B shape={}B prove={prove:?} verify={verify:?}",
         trace.rows.len(),
         sizes.access,
         // compressed,

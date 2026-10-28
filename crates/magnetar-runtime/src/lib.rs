@@ -1197,11 +1197,32 @@ pub struct UnifiedTraceProof {
     pub trace_logup_shout: Option<crate::logup_shout::TraceLogupShoutProof>,
 }
 
+/// Serialize a unified proof with varint bincode encoding.
+pub fn serialize_unified_proof(proof: &UnifiedTraceProof) -> Result<Vec<u8>, RuntimeError> {
+    use bincode::Options;
+    bincode::DefaultOptions::new()
+        .with_varint_encoding()
+        .serialize(proof)
+        .map_err(|error| RuntimeError::Proof(format!("proof serialize: {error}")))
+}
+
+/// Deserialize a varint-encoded unified proof.
+pub fn deserialize_unified_proof(bytes: &[u8]) -> Result<UnifiedTraceProof, RuntimeError> {
+    use bincode::Options;
+    bincode::DefaultOptions::new()
+        .with_varint_encoding()
+        .deserialize(bytes)
+        .map_err(|error| RuntimeError::Proof(format!("proof deserialize: {error}")))
+}
+
 /// Serialize a unified proof with DEFLATE compression.
 pub fn serialize_unified_proof_compressed(
     proof: &UnifiedTraceProof,
 ) -> Result<Vec<u8>, RuntimeError> {
-    let bytes = bincode::serialize(proof)
+    use bincode::Options;
+    let bytes = bincode::DefaultOptions::new()
+        .with_varint_encoding()
+        .serialize(proof)
         .map_err(|error| RuntimeError::Proof(format!("proof serialize: {error}")))?;
     Ok(miniz_oxide::deflate::compress_to_vec_zlib(&bytes, 6))
 }
@@ -1210,9 +1231,12 @@ pub fn serialize_unified_proof_compressed(
 pub fn deserialize_unified_proof_compressed(
     bytes: &[u8],
 ) -> Result<UnifiedTraceProof, RuntimeError> {
+    use bincode::Options;
     let decompressed = miniz_oxide::inflate::decompress_to_vec_zlib(bytes)
         .map_err(|error| RuntimeError::Proof(format!("proof inflate: {error:?}")))?;
-    bincode::deserialize(&decompressed)
+    bincode::DefaultOptions::new()
+        .with_varint_encoding()
+        .deserialize(&decompressed)
         .map_err(|error| RuntimeError::Proof(format!("proof deserialize: {error}")))
 }
 

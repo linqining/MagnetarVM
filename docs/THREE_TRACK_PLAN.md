@@ -1024,3 +1024,7 @@ paper total 910,083 B (715,353 B DEFLATE-compressed). Other layers dominate.
 
 B transport compression: 2^16 unified proof raw 910,083 B, DEFLATE 715,353 B;
 memory proof 257,144 B/4.4 ms. Remaining gap is logup/selected/claim.
+
+
+B wire format: varint bincode gives 2^16 proof 798,773 B (from 910,083 B);
+varint+DEFLATE 712,967 B.
