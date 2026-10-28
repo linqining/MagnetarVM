@@ -265,3 +265,32 @@ is rejected. This proves one-hotness but not yet the link between positions and
 the committed address-bit columns.
 
 Full runtime suite: 323 passing.
+
+
+## Prototype 7: one-hot + address-bit binding
+
+The one-hot PCS proof now commits two batches:
+
+```text
+RA/WA columns              (K x T)
+address-bit columns + valid (a+1 x T)
+```
+
+The lookup table is indexed by `valid * K + address` so its embedding is linear
+in the committed address/valid bits:
+
+```text
+index = valid*K + cell
+row 0..K      = all-zero vectors
+row K+c       = basis vector e_c
+```
+
+The logup* position claim is checked against the PCS-opened address/valid bits
+through the embedding
+
+```text
+position = sum_b address_bit_b * embed(1<<b) + valid * embed(K)
+```
+
+A tampered reader claim is rejected. This closes one-hot and address-bit binding
+for a standalone committed table. Full runtime suite: 323 passing.

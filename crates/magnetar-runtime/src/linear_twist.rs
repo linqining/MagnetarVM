@@ -746,17 +746,39 @@ mod rw_pcs_tests {
 }
 
 /// One-hot proof for a committed address matrix: PCS binds the RA/WA columns,
-/// and logup* proves each row is a basis vector (or the all-zero row).
+/// logup* proves each row is a basis vector or zero, and a second PCS opening
+/// binds the logup position claims to the committed address bits and valid bit.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct OneHotPcsProof {
     pub opening: P3BatchOpening,
     pub claims: Vec<F2_128>,
+    pub address_opening: P3BatchOpening,
+    pub address_values: Vec<F2_128>,
     pub logup: p3_multi_stark::logup_star::LogupStarProof<
         p3_binary_field::BinaryField128,
         p3_binary_field::BinaryField128,
     >,
 }
 
+type OneHotB = p3_binary_field::BinaryField128;
+
+fn to_f2(value: OneHotB) -> F2_128 {
+    use p3_binary_field::TowerLevel;
+    F2_128::new(value.to_repr())
+}
+
+fn to_b(value: F2_128) -> OneHotB {
+    use p3_binary_field::TowerLevel;
+    OneHotB::from_repr(value.value())
+}
+
+fn embed_position(position: usize) -> OneHotB {
+    use p3_field::Field;
+    (0..usize::BITS as usize)
+        .filter(|bit| (position >> bit) & 1 == 1)
+        .map(|bit| OneHotB::interpolation_node(1 << bit))
+        .sum()
+}
 
 fn onehot_columns(
     witness: &BinaryTwistWitness,
@@ -778,6 +800,31 @@ fn onehot_columns(
     (columns, cells, cycles)
 }
 
+fn address_bit_columns(
+    witness: &BinaryTwistWitness,
+    write: bool,
+) -> (Vec<Vec<F2_128>>, Vec<F2_128>, usize, usize) {
+    let cells = 1usize << witness.address_bits;
+    let cycles = witness.cycles.next_power_of_two().max(2);
+    let source = if write {
+        &witness.write_address
+    } else {
+        &witness.read_address
+    };
+    let mut bits = vec![vec![F2_128::from(0u64); cycles]; witness.address_bits];
+    let mut valid = vec![F2_128::from(0u64); cycles];
+    for (cycle, row) in source.iter().enumerate() {
+        let Some(cell) = row.iter().position(|value| value.value() == 1) else {
+            continue;
+        };
+        valid[cycle] = F2_128::from(1u64);
+        for (bit, column) in bits.iter_mut().enumerate() {
+            column[cycle] = F2_128::from(((cell >> bit) & 1) as u64);
+        }
+    }
+    (bits, valid, cells, cycles)
+}
+
 pub fn prove_onehot_pcs(
     witness: &BinaryTwistWitness,
     write: bool,
@@ -791,36 +838,36 @@ pub fn prove_onehot_pcs(
     use p3_multilinear_util::point::Point;
     type B = BinaryField128;
     let (columns, cells, cycles) = onehot_columns(witness, write);
+    let (bits, valid, _, _) = address_bit_columns(witness, write);
+    let mut address_columns = bits;
+    address_columns.push(valid.clone());
     let pcs = P3BinaryPcs::new(100);
     let commitment = pcs
         .commit_batch(&columns)
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    let address_commitment = pcs
+        .commit_batch(&address_columns)
+        .map_err(|error| ProofError::Pcs(error.to_string()))?;
     let mut transcript = Sha256Transcript::new("magnetar-onehot-pcs");
-    transcript.absorb(
-        "commitment",
-        &bincode::serialize(&commitment).map_err(|error| ProofError::Pcs(error.to_string()))?,
-    );
+    for commitment in [&commitment, &address_commitment] {
+        transcript.absorb(
+            "commitment",
+            &bincode::serialize(commitment).map_err(|error| ProofError::Pcs(error.to_string()))?,
+        );
+    }
     let point_f2 = sample_point(&mut transcript, cycles.trailing_zeros() as usize);
-    let point_b = Point::new(
-        point_f2
-            .iter()
-            .map(|value| B::from_repr(value.value()))
-            .collect(),
-    );
-    let claims_b = columns
+    let point_b = Point::new(point_f2.iter().map(|value| to_b(*value)).collect());
+    let columns_b = columns
+        .iter()
+        .map(|column| column.iter().map(|value| to_b(*value)).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    let claims_b = columns_b
         .iter()
         .map(|column| {
-            let values = column
-                .iter()
-                .map(|value| B::from_repr(value.value()))
-                .collect::<Vec<_>>();
-            p3_multilinear_util::poly::Poly::new(values).eval_ext::<B>(&point_b)
+            p3_multilinear_util::poly::Poly::new(column.clone()).eval_ext::<B>(&point_b)
         })
         .collect::<Vec<_>>();
-    let claims = claims_b
-        .iter()
-        .map(|value| F2_128::new(value.to_repr()))
-        .collect::<Vec<_>>();
+    let claims = claims_b.iter().map(|value| to_f2(*value)).collect::<Vec<_>>();
     let readers = [Reader {
         point: &point_b,
         claims: &claims_b,
@@ -838,7 +885,7 @@ pub fn prove_onehot_pcs(
     .map(|row| {
         row.iter()
             .position(|value| value.value() == 1)
-            .map_or(0, |cell| cell + 1)
+            .map_or(0, |cell| cells + cell)
     })
     .collect::<Vec<_>>();
     let mut positions = positions;
@@ -848,7 +895,7 @@ pub fn prove_onehot_pcs(
         .map(|column| {
             (0..2 * cells)
                 .map(|row| {
-                    if row == column + 1 {
+                    if row == cells + column {
                         B::from_repr(magnetar_constraint::F2_128::from(1u64).value())
                     } else {
                         B::from_repr(0)
@@ -866,7 +913,39 @@ pub fn prove_onehot_pcs(
         b"magnetar-onehot-pcs".to_vec(),
         Keccak256Hash,
     );
-    let (logup, _) = LogupStarProof::<B, B>::prove(&lookups, &table_witness, &mut challenger);
+    let (logup, output) = LogupStarProof::<B, B>::prove(&lookups, &table_witness, &mut challenger);
+    let position_point = Point::new(
+        output
+            .position_point
+            .as_slice()
+            .iter()
+            .rev()
+            .copied()
+            .collect::<Vec<_>>(),
+    );
+    let position_point_f2 = position_point
+        .as_slice()
+        .iter()
+        .map(|value| to_f2(*value))
+        .collect::<Vec<_>>();
+    let address_values = address_columns
+        .iter()
+        .map(|column| eval_mle(column, &position_point_f2))
+        .collect::<Vec<_>>();
+    let expected_position = address_values
+        .iter()
+        .enumerate()
+        .fold(OneHotB::from_repr(0), |sum, (index, value)| {
+            let coefficient = if index < witness.address_bits {
+                embed_position(1usize << index)
+            } else {
+                embed_position(cells)
+            };
+            sum + coefficient * to_b(*value)
+        });
+    if output.tables[0].position_claims[0] != expected_position {
+        return Err(ProofError::FinalOracle);
+    }
     let points = vec![P3BatchPoint {
         point: point_f2.clone(),
         columns: (0..cells).collect(),
@@ -874,9 +953,18 @@ pub fn prove_onehot_pcs(
     let opening = pcs
         .open_batch(&columns, &points)
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    let address_points = vec![P3BatchPoint {
+        point: position_point_f2,
+        columns: (0..witness.address_bits + 1).collect(),
+    }];
+    let address_opening = pcs
+        .open_batch(&address_columns, &address_points)
+        .map_err(|error| ProofError::Pcs(error.to_string()))?;
     Ok(OneHotPcsProof {
         opening,
         claims,
+        address_opening,
+        address_values,
         logup,
     })
 }
@@ -891,34 +979,29 @@ pub fn verify_onehot_pcs(
     use p3_multilinear_util::point::Point;
     type B = BinaryField128;
     let (_, cells, cycles) = onehot_columns(witness, write);
+    let (bits, _, _, _) = address_bit_columns(witness, write);
+    let address_columns = witness.address_bits + 1;
     let mut transcript = Sha256Transcript::new("magnetar-onehot-pcs");
-    transcript.absorb(
-        "commitment",
-        &bincode::serialize(&proof.opening.commitment)
-            .map_err(|error| ProofError::Pcs(error.to_string()))?,
-    );
+    for commitment in [&proof.opening.commitment, &proof.address_opening.commitment] {
+        transcript.absorb(
+            "commitment",
+            &bincode::serialize(commitment).map_err(|error| ProofError::Pcs(error.to_string()))?,
+        );
+    }
     let point_f2 = sample_point(&mut transcript, cycles.trailing_zeros() as usize);
+    let point_b = Point::new(point_f2.iter().map(|value| to_b(*value)).collect());
+    let pcs = P3BinaryPcs::new(100);
     let points = vec![P3BatchPoint {
         point: point_f2.clone(),
         columns: (0..cells).collect(),
     }];
-    let pcs_ok = P3BinaryPcs::new(100)
+    if !pcs
         .verify_batch(&proof.opening, &points, std::slice::from_ref(&proof.claims))
-        .map_err(|error| ProofError::Pcs(error.to_string()))?;
-    if !pcs_ok {
+        .map_err(|error| ProofError::Pcs(error.to_string()))?
+    {
         return Ok(false);
     }
-    let point_b = Point::new(
-        point_f2
-            .iter()
-            .map(|value| B::from_repr(value.value()))
-            .collect(),
-    );
-    let claims_b = proof
-        .claims
-        .iter()
-        .map(|value| B::from_repr(value.value()))
-        .collect::<Vec<_>>();
+    let claims_b = proof.claims.iter().map(|value| to_b(*value)).collect::<Vec<_>>();
     let readers = [Reader {
         point: &point_b,
         claims: &claims_b,
@@ -935,11 +1018,12 @@ pub fn verify_onehot_pcs(
         Ok(output) => output,
         Err(_) => return Ok(false),
     };
+    let table_point = output.table_point.clone();
     let table = (0..cells)
         .map(|column| {
             (0..2 * cells)
                 .map(|row| {
-                    if row == column + 1 {
+                    if row == cells + column {
                         B::from_repr(magnetar_constraint::F2_128::from(1u64).value())
                     } else {
                         B::from_repr(0)
@@ -948,7 +1032,6 @@ pub fn verify_onehot_pcs(
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    let table_point = output.table_point.clone();
     for (column, claim) in output.tables[0].column_claims.iter().enumerate() {
         let direct = p3_multilinear_util::poly::Poly::new(table[column].clone())
             .eval_ext::<B>(&table_point);
@@ -956,9 +1039,45 @@ pub fn verify_onehot_pcs(
             return Ok(false);
         }
     }
+    let position_point_f2 = output
+        .position_point
+        .as_slice()
+        .iter()
+        .rev()
+        .map(|value| to_f2(*value))
+        .collect::<Vec<_>>();
+    let address_points = vec![P3BatchPoint {
+        point: position_point_f2.clone(),
+        columns: (0..address_columns).collect(),
+    }];
+    if !pcs
+        .verify_batch(
+            &proof.address_opening,
+            &address_points,
+            std::slice::from_ref(&proof.address_values),
+        )
+        .map_err(|error| ProofError::Pcs(error.to_string()))?
+    {
+        return Ok(false);
+    }
+    let expected_position = proof
+        .address_values
+        .iter()
+        .enumerate()
+        .fold(B::from_repr(0), |sum, (index, value)| {
+            let coefficient = if index < witness.address_bits {
+                embed_position(1usize << index)
+            } else {
+                embed_position(cells)
+            };
+            sum + coefficient * to_b(*value)
+        });
+    if output.tables[0].position_claims[0] != expected_position {
+        return Ok(false);
+    }
+    let _ = (bits, address_columns);
     Ok(true)
 }
-
 #[cfg(test)]
 mod onehot_pcs_tests {
     use super::tests::register_witness;
