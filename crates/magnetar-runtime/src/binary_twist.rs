@@ -2600,6 +2600,40 @@ mod ram_tests {
         assert!(!verify_binary_twist_ram_linear(&witness, &tampered).unwrap());
     }
 
+    fn eval_outer(values: &[F2_128], point: &[F2_128]) -> F2_128 {
+        let mut folded = values.to_vec();
+        for coordinate in point {
+            let mut next = Vec::with_capacity(folded.len() / 2);
+            for pair in folded.chunks_exact(2) {
+                next.push(pair[0] + *coordinate * (pair[1] - pair[0]));
+            }
+            folded = next;
+        }
+        folded[0]
+    }
+
+    #[test]
+    fn linear_outer_claims_match_access_tables() {
+        let trace = trace();
+        let witness = BinaryTwistWitness::from_trace(&trace).unwrap();
+        let tables = batch_tables(&witness).unwrap();
+        let proof = prove_binary_twist_ram_linear(&witness).unwrap();
+        let claims = crate::linear_twist::linear_outer_claims(&proof.linear).unwrap();
+        assert!(!claims.is_empty());
+        for claim in claims {
+            let values = match claim.table {
+                crate::linear_twist::LinearOuterTable::Address => {
+                    &tables.addr.columns[claim.column]
+                }
+                crate::linear_twist::LinearOuterTable::Increment => &tables.inc.columns[0],
+                crate::linear_twist::LinearOuterTable::Initial => &tables.initial.columns[0],
+                crate::linear_twist::LinearOuterTable::ReadValue => &tables.read_value.columns[0],
+                crate::linear_twist::LinearOuterTable::WriteValue => &tables.write_value.columns[0],
+            };
+            assert_eq!(eval_outer(values, &claim.point), claim.value);
+        }
+    }
+
     #[test]
     fn ram_binary_twist_bundle_round_trips() {
         let trace = trace();

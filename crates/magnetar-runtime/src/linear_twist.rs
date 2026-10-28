@@ -781,6 +781,7 @@ pub struct OneHotPcsProof {
     pub claims: Vec<F2_128>,
     pub address_opening: P3BatchOpening,
     pub address_values: Vec<F2_128>,
+    pub position_point: Vec<F2_128>,
     pub logup: p3_multi_stark::logup_star::LogupStarProof<
         p3_binary_field::BinaryField128,
         p3_binary_field::BinaryField128,
@@ -981,7 +982,7 @@ pub fn prove_onehot_pcs(
         .open_batch(&columns, &points)
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
     let address_points = vec![P3BatchPoint {
-        point: position_point_f2,
+        point: position_point_f2.clone(),
         columns: (0..witness.address_bits + 1).collect(),
     }];
     let address_opening = pcs
@@ -992,6 +993,7 @@ pub fn prove_onehot_pcs(
         claims,
         address_opening,
         address_values,
+        position_point: position_point_f2,
         logup,
     })
 }
@@ -1081,6 +1083,9 @@ pub fn verify_onehot_pcs_shape(
         .rev()
         .map(|value| to_f2(*value))
         .collect::<Vec<_>>();
+    if position_point_f2 != proof.position_point {
+        return Ok(false);
+    }
     let address_points = vec![P3BatchPoint {
         point: position_point_f2.clone(),
         columns: (0..address_columns).collect(),
@@ -1196,4 +1201,117 @@ mod linear_twist_tests {
             tampered.write_onehot.claims[0] + F2_128::from(1u64);
         assert!(!verify_linear_twist(&witness, &tampered).unwrap());
     }
+}
+
+/// An outer commitment table that a linear Twist opening must match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum LinearOuterTable {
+    Address,
+    Increment,
+    Initial,
+    ReadValue,
+    WriteValue,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct LinearOuterClaim {
+    pub table: LinearOuterTable,
+    pub column: usize,
+    pub point: Vec<F2_128>,
+    pub value: F2_128,
+}
+
+/// Outer-table claims implied by the linear proof, for binding to an Access
+/// commitment. Points are low-coordinate-first, as used by `eval_mle`.
+pub fn linear_outer_claims(
+    proof: &LinearTwistProof,
+) -> Result<Vec<LinearOuterClaim>, ProofError> {
+    let shape = proof.shape;
+    let address_bits = shape.address_bits;
+    let cycle_bits = shape.cycle_bits();
+    let mut claims = Vec::new();
+    // RW: read/write at the cycle point; inc at the final sumcheck point.
+    let mut transcript = Sha256Transcript::new("magnetar-rw-pcs");
+    for commitment in [&proof.rw.tables.commitment, &proof.rw.inputs.commitment] {
+        transcript.absorb(
+            "commitment",
+            &bincode::serialize(commitment).map_err(|error| ProofError::Pcs(error.to_string()))?,
+        );
+    }
+    let _gamma = sample_point(&mut transcript, 1)[0];
+    let cycle_point = sample_point(&mut transcript, cycle_bits);
+    let read_value = proof.rw.input_values[0][0];
+    let write_value = proof.rw.input_values[0][1];
+    claims.push(LinearOuterClaim {
+        table: LinearOuterTable::ReadValue,
+        column: 0,
+        point: cycle_point.clone(),
+        value: read_value,
+    });
+    claims.push(LinearOuterClaim {
+        table: LinearOuterTable::WriteValue,
+        column: 0,
+        point: cycle_point.clone(),
+        value: write_value,
+    });
+    let final_cycle = proof.rw.challenges[..cycle_bits].to_vec();
+    claims.push(LinearOuterClaim {
+        table: LinearOuterTable::Increment,
+        column: 0,
+        point: final_cycle,
+        value: proof.rw.input_values[1][0],
+    });
+    // Val: initial at rk; inc at the Val sumcheck final point.
+    let mut transcript = Sha256Transcript::new("magnetar-val-pcs");
+    for commitment in [
+        &proof.val.val_wa.commitment,
+        &proof.val.inc.commitment,
+        &proof.val.initial.commitment,
+    ] {
+        transcript.absorb(
+            "commitment",
+            &bincode::serialize(commitment).map_err(|error| ProofError::Pcs(error.to_string()))?,
+        );
+    }
+    let rk = sample_point(&mut transcript, address_bits);
+    let _rj = sample_point(&mut transcript, cycle_bits);
+    claims.push(LinearOuterClaim {
+        table: LinearOuterTable::Initial,
+        column: 0,
+        point: rk,
+        value: proof.val.initial_value,
+    });
+    claims.push(LinearOuterClaim {
+        table: LinearOuterTable::Increment,
+        column: 0,
+        point: proof.val.challenges.clone(),
+        value: proof.val.inc_value,
+    });
+    // Address bit/valid columns at the two logup position points.
+    for (onehot, write) in [
+        (&proof.read_onehot, false),
+        (&proof.write_onehot, true),
+    ] {
+        for (index, value) in onehot.address_values.iter().enumerate() {
+            let (table_column, is_valid) = if write {
+                if index < address_bits {
+                    (address_bits + index, false)
+                } else {
+                    (2 * address_bits + 1, true)
+                }
+            } else if index < address_bits {
+                (index, false)
+            } else {
+                (2 * address_bits, true)
+            };
+            let _ = is_valid;
+            claims.push(LinearOuterClaim {
+                table: LinearOuterTable::Address,
+                column: table_column,
+                point: onehot.position_point.clone(),
+                value: *value,
+            });
+        }
+    }
+    Ok(claims)
 }

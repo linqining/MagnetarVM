@@ -357,3 +357,25 @@ still standalone: it does not yet bind its PCS commitments to the outer Access
 commitment or check the final-state claim.
 
 Full runtime suite: 324 passing.
+
+
+## Prototype 11: outer-table claims
+
+`linear_outer_claims(proof)` extracts the linear proof's opening claims in a
+form that can be bound to the existing Access tables:
+
+```text
+ReadValue / WriteValue  at the RW cycle point
+Increment               at RW/Val final points
+Initial                 at the Val initial point
+Address bit+valid       at both logup position points
+```
+
+The claims and points are low-coordinate-first. The test
+`linear_outer_claims_match_access_tables` evaluates the `batch_tables` Access
+columns at those points and checks every claim, so the extraction is consistent
+with the outer commitment data.
+
+Full runtime suite: 326 passing. Wiring these claims into the unified verifier
+(and making the linear proof's own commitments the source of truth in the paper
+path) is the next step.
