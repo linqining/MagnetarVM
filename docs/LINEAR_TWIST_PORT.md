@@ -709,3 +709,17 @@ rate=2,pow=8 : 1,329,103 B, prove 72.1 s
 
 Both rate=3 and pow=16 variants exceeded 2400 s at 65536 rows, so the retained
 2^16 configuration remains rate=2,pow=8,folding=3 with 1,718,763 B.
+
+
+## Reusing RW table commitment for one-hot claims (negative)
+
+Probe: open the shared RW table batch `[ra,wa,val]` at one point per cell
+(K points, columns `[0,1]`) to obtain all K read/write one-hot claims.
+
+```text
+reuse table opening = 381,992 B
+current shared one-hot proof = 381,824 B
+```
+
+The multi-point opening alone already costs as much as the whole current
+one-hot proof, before adding address openings/logup. This reuse is rejected.
