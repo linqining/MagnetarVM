@@ -337,3 +337,23 @@ proof. `linear_binary_twist_bench` (release):
 This is the first actual `binary_twist.rs` path that runs at 2^16 without the
 c² history. It is standalone (its own PCS commitments) and still misses the
 outer Access commitment binding and final-state check.
+
+
+## Prototype 10: proof-only linear verifier
+
+Added `LinearTwistShape` plus shape-based verifiers:
+
+```text
+verify_val_pcs_shape
+verify_rw_pcs_shape
+verify_onehot_pcs_shape
+verify_linear_twist_proof_only
+```
+
+No witness is needed: the proof carries `address_bits`/`cycles`, and all table
+values come from PCS openings. `BinaryTwistLinearProof` also has a proof-only
+verifier. This is a prerequisite for the paper/verifier path, but the proof is
+still standalone: it does not yet bind its PCS commitments to the outer Access
+commitment or check the final-state claim.
+
+Full runtime suite: 324 passing.

@@ -13,6 +13,30 @@ use magnetar_transcript::Sha256Transcript;
 
 use crate::binary_twist::{eq_vector, replay_terms_derived, sample_point, sumcheck_terms};
 
+/// Public shape of a linear Twist instance, independent of the witness.
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+pub struct LinearTwistShape {
+    pub address_bits: usize,
+    pub cycles: usize,
+}
+
+impl LinearTwistShape {
+    pub fn cells(self) -> usize {
+        1usize << self.address_bits
+    }
+
+    pub fn cycle_bits(self) -> usize {
+        self.cycles.trailing_zeros() as usize
+    }
+}
+
+pub fn witness_shape(witness: &BinaryTwistWitness) -> LinearTwistShape {
+    LinearTwistShape {
+        address_bits: witness.address_bits,
+        cycles: witness.cycles.next_power_of_two().max(2),
+    }
+}
+
 /// Proof of the linear read/write-checking sumcheck for one read and one write
 /// address per cycle.
 #[derive(Clone, Debug)]
@@ -448,11 +472,12 @@ pub fn prove_val_pcs(witness: &BinaryTwistWitness) -> Result<ValPcsProof, ProofE
 }
 
 pub fn verify_val_pcs(witness: &BinaryTwistWitness, proof: &ValPcsProof) -> Result<bool, ProofError> {
-    let cells = 1usize << witness.address_bits;
-    let cycles = witness.cycles.next_power_of_two().max(2);
-    let cycle_bits = cycles.trailing_zeros() as usize;
-    let mut initial = witness.initial.clone();
-    initial.resize(cells.next_power_of_two(), F2_128::from(0u64));
+    verify_val_pcs_shape(witness_shape(witness), proof)
+}
+
+pub fn verify_val_pcs_shape(shape: LinearTwistShape, proof: &ValPcsProof) -> Result<bool, ProofError> {
+    let cycles = shape.cycles;
+    let cycle_bits = shape.cycle_bits();
     let mut transcript = Sha256Transcript::new("magnetar-val-pcs");
     for commitment in [
         &proof.val_wa.commitment,
@@ -464,7 +489,7 @@ pub fn verify_val_pcs(witness: &BinaryTwistWitness, proof: &ValPcsProof) -> Resu
             &bincode::serialize(commitment).map_err(|error| ProofError::Pcs(error.to_string()))?,
         );
     }
-    let rk = sample_point(&mut transcript, witness.address_bits);
+    let rk = sample_point(&mut transcript, shape.address_bits);
     let rj = sample_point(&mut transcript, cycle_bits);
     let val_point = rj.iter().chain(&rk).copied().collect::<Vec<_>>();
     let wa_point = proof.challenges.iter().chain(&rk).copied().collect::<Vec<_>>();
@@ -513,7 +538,7 @@ pub fn verify_val_pcs(witness: &BinaryTwistWitness, proof: &ValPcsProof) -> Resu
             &bincode::serialize(commitment).map_err(|error| ProofError::Pcs(error.to_string()))?,
         );
     }
-    let _ = sample_point(&mut transcript, witness.address_bits);
+    let _ = sample_point(&mut transcript, shape.address_bits);
     let _ = sample_point(&mut transcript, cycle_bits);
     let Some((final_sum, challenges)) =
         replay_terms_derived(&proof.rounds, claimed, &mut transcript)
@@ -660,9 +685,12 @@ pub fn prove_rw_pcs(witness: &BinaryTwistWitness) -> Result<RwPcsProof, ProofErr
 }
 
 pub fn verify_rw_pcs(witness: &BinaryTwistWitness, proof: &RwPcsProof) -> Result<bool, ProofError> {
-    let cells = 1usize << witness.address_bits;
-    let cycles = witness.cycles.next_power_of_two().max(2);
-    let cycle_bits = cycles.trailing_zeros() as usize;
+    verify_rw_pcs_shape(witness_shape(witness), proof)
+}
+
+pub fn verify_rw_pcs_shape(shape: LinearTwistShape, proof: &RwPcsProof) -> Result<bool, ProofError> {
+    let _cycles = shape.cycles;
+    let cycle_bits = shape.cycle_bits();
     let mut transcript = Sha256Transcript::new("magnetar-rw-pcs");
     for commitment in [&proof.tables.commitment, &proof.inputs.commitment] {
         transcript.absorb(
@@ -725,7 +753,6 @@ pub fn verify_rw_pcs(witness: &BinaryTwistWitness, proof: &RwPcsProof) -> Result
     let eq_final = eq_points_local(&cycle_point, cycle_challenges);
     let expected = eq_final
         * (wa_eval * (inc_eval + val_eval) + gamma * ra_eval * val_eval);
-    let _ = cells;
     Ok(final_sum == expected)
 }
 
@@ -974,13 +1001,21 @@ pub fn verify_onehot_pcs(
     write: bool,
     proof: &OneHotPcsProof,
 ) -> Result<bool, ProofError> {
+    verify_onehot_pcs_shape(witness_shape(witness), write, proof)
+}
+
+pub fn verify_onehot_pcs_shape(
+    shape: LinearTwistShape,
+    _write: bool,
+    proof: &OneHotPcsProof,
+) -> Result<bool, ProofError> {
     use p3_binary_field::{BinaryField128, TowerLevel};
     use p3_multi_stark::logup_star::{Reader, TableLookup};
     use p3_multilinear_util::point::Point;
     type B = BinaryField128;
-    let (_, cells, cycles) = onehot_columns(witness, write);
-    let (bits, _, _, _) = address_bit_columns(witness, write);
-    let address_columns = witness.address_bits + 1;
+    let cells = shape.cells();
+    let cycles = shape.cycles;
+    let address_columns = shape.address_bits + 1;
     let mut transcript = Sha256Transcript::new("magnetar-onehot-pcs");
     for commitment in [&proof.opening.commitment, &proof.address_opening.commitment] {
         transcript.absorb(
@@ -1007,7 +1042,7 @@ pub fn verify_onehot_pcs(
         claims: &claims_b,
     }];
     let lookups = [TableLookup {
-        num_variables: witness.address_bits + 1,
+        num_variables: shape.address_bits + 1,
         readers: &readers,
     }];
     let mut challenger = p3_binary_field::BinaryChallenger::<B, p3_challenger::HashChallenger<u8, p3_keccak::Keccak256Hash, 32>>::from_hasher(
@@ -1065,7 +1100,7 @@ pub fn verify_onehot_pcs(
         .iter()
         .enumerate()
         .fold(B::from_repr(0), |sum, (index, value)| {
-            let coefficient = if index < witness.address_bits {
+            let coefficient = if index < shape.address_bits {
                 embed_position(1usize << index)
             } else {
                 embed_position(cells)
@@ -1075,7 +1110,6 @@ pub fn verify_onehot_pcs(
     if output.tables[0].position_claims[0] != expected_position {
         return Ok(false);
     }
-    let _ = (bits, address_columns);
     Ok(true)
 }
 #[cfg(test)]
@@ -1103,6 +1137,7 @@ mod onehot_pcs_tests {
 /// address bits through the one-hot lookup proofs.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LinearTwistProof {
+    pub shape: LinearTwistShape,
     pub rw: RwPcsProof,
     pub val: ValPcsProof,
     pub read_onehot: OneHotPcsProof,
@@ -1113,6 +1148,7 @@ pub fn prove_linear_twist(
     witness: &BinaryTwistWitness,
 ) -> Result<LinearTwistProof, ProofError> {
     Ok(LinearTwistProof {
+        shape: witness_shape(witness),
         rw: prove_rw_pcs(witness)?,
         val: prove_val_pcs(witness)?,
         read_onehot: prove_onehot_pcs(witness, false)?,
@@ -1121,13 +1157,21 @@ pub fn prove_linear_twist(
 }
 
 pub fn verify_linear_twist(
-    witness: &BinaryTwistWitness,
+    _witness: &BinaryTwistWitness,
     proof: &LinearTwistProof,
 ) -> Result<bool, ProofError> {
-    Ok(verify_rw_pcs(witness, &proof.rw)?
-        && verify_val_pcs(witness, &proof.val)?
-        && verify_onehot_pcs(witness, false, &proof.read_onehot)?
-        && verify_onehot_pcs(witness, true, &proof.write_onehot)?)
+    verify_linear_twist_proof_only(proof)
+}
+
+/// Verify the standalone linear Twist proof without a witness.
+pub fn verify_linear_twist_proof_only(
+    proof: &LinearTwistProof,
+) -> Result<bool, ProofError> {
+    let shape = proof.shape;
+    Ok(verify_rw_pcs_shape(shape, &proof.rw)?
+        && verify_val_pcs_shape(shape, &proof.val)?
+        && verify_onehot_pcs_shape(shape, false, &proof.read_onehot)?
+        && verify_onehot_pcs_shape(shape, true, &proof.write_onehot)?)
 }
 
 pub fn linear_twist_proof_bytes(proof: &LinearTwistProof) -> Result<usize, ProofError> {
@@ -1146,6 +1190,7 @@ mod linear_twist_tests {
         let witness = register_witness();
         let proof = prove_linear_twist(&witness).unwrap();
         assert!(verify_linear_twist(&witness, &proof).unwrap());
+        assert!(verify_linear_twist_proof_only(&proof).unwrap());
         let mut tampered = proof;
         tampered.write_onehot.claims[0] =
             tampered.write_onehot.claims[0] + F2_128::from(1u64);

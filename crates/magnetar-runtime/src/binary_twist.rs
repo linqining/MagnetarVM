@@ -1321,10 +1321,17 @@ pub fn prove_binary_twist_ram_linear(
 }
 
 pub fn verify_binary_twist_ram_linear(
-    witness: &BinaryTwistWitness,
+    _witness: &BinaryTwistWitness,
     proof: &BinaryTwistLinearProof,
 ) -> Result<bool, ProofError> {
-    crate::linear_twist::verify_linear_twist(witness, &proof.linear)
+    verify_binary_twist_ram_linear_proof_only(proof)
+}
+
+/// Verify the standalone linear BinaryTwist proof without a witness.
+pub fn verify_binary_twist_ram_linear_proof_only(
+    proof: &BinaryTwistLinearProof,
+) -> Result<bool, ProofError> {
+    crate::linear_twist::verify_linear_twist_proof_only(&proof.linear)
 }
 
 /// Build all BinaryTwist claims against a commitment owned by an outer proof.
@@ -2586,6 +2593,7 @@ mod ram_tests {
         let witness = BinaryTwistWitness::from_trace(&trace).unwrap();
         let proof = prove_binary_twist_ram_linear(&witness).unwrap();
         assert!(verify_binary_twist_ram_linear(&witness, &proof).unwrap());
+        assert!(verify_binary_twist_ram_linear_proof_only(&proof).unwrap());
         let mut tampered = proof;
         tampered.linear.write_onehot.claims[0] =
             tampered.linear.write_onehot.claims[0] + F2_128::from(1u64);
