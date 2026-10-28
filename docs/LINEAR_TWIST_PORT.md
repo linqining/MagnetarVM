@@ -475,3 +475,22 @@ commitment strategy, not just PCS tuning.
 Compared with the previous default 2^16 result, proof size drops from
 5,233,435 B to 3,028,299 B; prove time is 202.2 s and verify time 67.9 s.
 These are now the retained working parameters for the linear Access proof.
+
+
+## Final-state check: concrete design
+
+The linear branch still omits the final-state claim. The planned check is:
+
+```text
+commit initial and final vectors in a small PCS batch
+claim = final(rk) - initial(rk)
+
+prove claim = sum_{cell,cycle} eq(rk,cell) * WA(cell,cycle) * Inc(cycle)
+```
+
+by a degree-2 sumcheck over the `K*T` address/cycle variables. The terminal
+needs `WA` and `Inc` evaluations at the sumcheck point; these should reuse the
+existing RW/Val PCS openings rather than adding new commitments. A full
+implementation therefore requires extending the RW/Val proof structs to expose
+one extra terminal opening, plus a small committed initial/final batch. This
+remains the next soundness item before paper alignment.
