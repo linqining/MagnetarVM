@@ -50,8 +50,7 @@ fn main() {
     let inner = &proof.linear;
     let components = vec![
         ("rwval", bincode::serialize(&inner.rwval).unwrap().len()),
-        ("read_onehot", bincode::serialize(&inner.read_onehot).unwrap().len()),
-        ("write_onehot", bincode::serialize(&inner.write_onehot).unwrap().len()),
+        ("onehot", bincode::serialize(&inner.onehot).unwrap().len()),
         ("final_state", bincode::serialize(&inner.final_state).unwrap().len()),
     ];
     println!(

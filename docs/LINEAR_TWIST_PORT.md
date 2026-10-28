@@ -661,3 +661,29 @@ final state     38,464 B
 ```
 
 The two one-hot proofs are now the dominant remaining size target.
+
+
+## Shared one-hot proof integrated
+
+Read and write one-hot proofs now share one PCS commitment/opening and one
+logup reduction with two readers. At 1024 rows:
+
+```text
+old read+write one-hot 947,392 B -> shared 381,824 B
+```
+
+Paper-mode results:
+
+| rows | proof bytes | access | logup | selected | claim | prove | verify |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 16384 | **1,329,103** | 904,908 | 203,489 | 171,302 | 47,921 | 72.1 s | 21.1 s |
+| 65536 | **1,718,763** | 1,068,492 | 245,377 | 219,646 | 183,599 | 267.9 s | 158.8 s |
+
+Cumulative effect of option A at 2^16:
+
+```text
+3,067,123 B -> 1,718,763 B
+```
+
+Remaining linear components at 1024 are `rwval 558 KB`, `onehot 382 KB`,
+`final 38 KB`.

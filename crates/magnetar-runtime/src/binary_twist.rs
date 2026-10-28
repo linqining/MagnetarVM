@@ -2747,8 +2747,8 @@ mod ram_tests {
         assert!(verify_binary_twist_ram_linear(&witness, &proof).unwrap());
         assert!(verify_binary_twist_ram_linear_proof_only(&proof).unwrap());
         let mut tampered = proof;
-        tampered.linear.write_onehot.claims[0] =
-            tampered.linear.write_onehot.claims[0] + F2_128::from(1u64);
+        tampered.linear.onehot.write_claims[0] =
+            tampered.linear.onehot.write_claims[0] + F2_128::from(1u64);
         assert!(!verify_binary_twist_ram_linear(&witness, &tampered).unwrap());
     }
 

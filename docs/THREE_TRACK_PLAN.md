@@ -990,3 +990,8 @@ final-state check is fully bound. Latest 2^16: 3,067,123 B / 283.7 s prove /
 
 Shared RW+Val integrated: 2^16 proof drops from 3,067,123 B to 2,521,411 B
 (prove 320.5 s, verify 114.9 s). One-hot proofs are the next target.
+
+
+Shared one-hot integrated: 2^16 proof is now 1,718,763 B, prove 267.9 s,
+verify 158.8 s. Combined with shared RW+Val, proof size is down from 3.07 MB to
+1.72 MB.

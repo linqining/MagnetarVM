@@ -1155,8 +1155,7 @@ mod onehot_pcs_tests {
 pub struct LinearTwistProof {
     pub shape: LinearTwistShape,
     pub rwval: SharedRwValProof,
-    pub read_onehot: OneHotPcsProof,
-    pub write_onehot: OneHotPcsProof,
+    pub onehot: SharedOneHotProof,
     pub final_state: FinalStateProof,
 }
 
@@ -1169,8 +1168,7 @@ pub fn prove_linear_twist(
     Ok(LinearTwistProof {
         shape,
         rwval,
-        read_onehot: prove_onehot_pcs(witness, false)?,
-        write_onehot: prove_onehot_pcs(witness, true)?,
+        onehot: prove_shared_onehot(witness)?,
         final_state,
     })
 }
@@ -1188,8 +1186,7 @@ pub fn verify_linear_twist_proof_only(
 ) -> Result<bool, ProofError> {
     let shape = proof.shape;
     Ok(verify_shared_rwval(shape, &proof.rwval)?
-        && verify_onehot_pcs_shape(shape, false, &proof.read_onehot)?
-        && verify_onehot_pcs_shape(shape, true, &proof.write_onehot)?
+        && verify_shared_onehot(shape, &proof.onehot)?
         && verify_final_state(&proof.rwval, shape, &proof.final_state)?)
 }
 
@@ -1211,8 +1208,8 @@ mod linear_twist_tests {
         assert!(verify_linear_twist(&witness, &proof).unwrap());
         assert!(verify_linear_twist_proof_only(&proof).unwrap());
         let mut tampered = proof.clone();
-        tampered.write_onehot.claims[0] =
-            tampered.write_onehot.claims[0] + F2_128::from(1u64);
+        tampered.onehot.write_claims[0] =
+            tampered.onehot.write_claims[0] + F2_128::from(1u64);
         assert!(!verify_linear_twist(&witness, &tampered).unwrap());
         let mut tampered = proof;
         tampered.final_state.final_value =
@@ -1314,10 +1311,15 @@ pub fn linear_outer_claims(
     });
     // Address bit/valid columns at the two logup position points.
     for (onehot, write) in [
-        (&proof.read_onehot, false),
-        (&proof.write_onehot, true),
+        (&proof.onehot, false),
+        (&proof.onehot, true),
     ] {
-        for (index, value) in onehot.address_values.iter().enumerate() {
+        let address_values = if write {
+            &onehot.write_address_values
+        } else {
+            &onehot.read_address_values
+        };
+        for (index, value) in address_values.iter().enumerate() {
             let (table_column, is_valid) = if write {
                 if index < address_bits {
                     (address_bits + index, false)
@@ -2203,5 +2205,369 @@ mod shared_rwval_tests {
         let old = bincode::serialize(&prove_rw_pcs(&witness).unwrap()).unwrap().len()
             + bincode::serialize(&prove_val_pcs(&witness).unwrap()).unwrap().len();
         eprintln!("shared_rwval={shared} old_rw_val={old}");
+    }
+}
+
+/// One-hot proof covering both read and write address matrices.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SharedOneHotProof {
+    pub opening: P3BatchOpening,
+    pub read_claims: Vec<F2_128>,
+    pub write_claims: Vec<F2_128>,
+    pub read_address_values: Vec<F2_128>,
+    pub write_address_values: Vec<F2_128>,
+    pub position_point: Vec<F2_128>,
+    pub logup: p3_multi_stark::logup_star::LogupStarProof<
+        p3_binary_field::BinaryField128,
+        p3_binary_field::BinaryField128,
+    >,
+}
+
+pub fn prove_shared_onehot(
+    witness: &BinaryTwistWitness,
+) -> Result<SharedOneHotProof, ProofError> {
+    use p3_binary_field::{BinaryChallenger, BinaryField128, TowerLevel};
+    use p3_challenger::HashChallenger;
+    use p3_keccak::Keccak256Hash;
+    use p3_multi_stark::logup_star::{
+        LogupStarProof, Reader, ReaderWitness, TableWitness,
+    };
+    use p3_multilinear_util::point::Point;
+    type B = BinaryField128;
+    let (read_columns, cells, cycles) = onehot_columns(witness, false);
+    let (write_columns, _, _) = onehot_columns(witness, true);
+    let adjust = |mut columns: Vec<Vec<F2_128>>| {
+        for column in &mut columns {
+            for value in column.iter_mut() {
+                *value = *value + F2_128::from(1u64);
+            }
+        }
+        columns
+    };
+    let read_columns = adjust(read_columns);
+    let write_columns = adjust(write_columns);
+    let (read_bits, read_valid, _, _) = address_bit_columns(witness, false);
+    let (write_bits, write_valid, _, _) = address_bit_columns(witness, true);
+    let mut read_address = read_bits;
+    read_address.push(read_valid);
+    let mut write_address = write_bits;
+    write_address.push(write_valid);
+    let mut columns = Vec::new();
+    columns.extend(read_columns.iter().cloned());
+    columns.extend(write_columns.iter().cloned());
+    columns.extend(read_address.iter().cloned());
+    columns.extend(write_address.iter().cloned());
+    let table_count = 2 * cells;
+    let address_width = witness.address_bits + 1;
+    let pcs = linear_pcs(cycles);
+    let commitment = pcs
+        .commit_batch(&columns)
+        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    let mut transcript = Sha256Transcript::new("magnetar-onehot-shared");
+    transcript.absorb(
+        "commitment",
+        &bincode::serialize(&commitment).map_err(|error| ProofError::Pcs(error.to_string()))?,
+    );
+    let point_f2 = sample_point(&mut transcript, cycles.trailing_zeros() as usize);
+    let point_b = Point::new(point_f2.iter().rev().map(|value| to_b(*value)).collect());
+    let read_claims = read_columns
+        .iter()
+        .map(|column| eval_mle(column, &point_f2))
+        .collect::<Vec<_>>();
+    let write_claims = write_columns
+        .iter()
+        .map(|column| eval_mle(column, &point_f2))
+        .collect::<Vec<_>>();
+    let read_claims_b = read_claims.iter().map(|value| to_b(*value)).collect::<Vec<_>>();
+    let write_claims_b = write_claims.iter().map(|value| to_b(*value)).collect::<Vec<_>>();
+    let readers = [
+        Reader {
+            point: &point_b,
+            claims: &read_claims_b,
+        },
+        Reader {
+            point: &point_b,
+            claims: &write_claims_b,
+        },
+    ];
+    let lookups = [p3_multi_stark::logup_star::TableLookup {
+        num_variables: witness.address_bits + 1,
+        readers: &readers,
+    }];
+    let read_positions = witness
+        .read_address
+        .iter()
+        .map(|row| {
+            row.iter()
+                .position(|value| value.value() == 1)
+                .map_or(0, |cell| cells + cell)
+        })
+        .collect::<Vec<_>>();
+    let write_positions = witness
+        .write_address
+        .iter()
+        .map(|row| {
+            row.iter()
+                .position(|value| value.value() == 1)
+                .map_or(0, |cell| cells + cell)
+        })
+        .collect::<Vec<_>>();
+    let mut read_positions = read_positions;
+    read_positions.resize(cycles, 0);
+    let mut write_positions = write_positions;
+    write_positions.resize(cycles, 0);
+    let reader_witnesses = [
+        ReaderWitness {
+            positions: &read_positions,
+        },
+        ReaderWitness {
+            positions: &write_positions,
+        },
+    ];
+    let table = (0..cells)
+        .map(|column| {
+            (0..2 * cells)
+                .map(|row| {
+                    if row == cells + column {
+                        B::from_repr(0)
+                    } else {
+                        B::from_repr(magnetar_constraint::F2_128::from(1u64).value())
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let table_refs = table.iter().map(|row| row.as_slice()).collect::<Vec<_>>();
+    let table_witness = [TableWitness {
+        columns: &table_refs,
+        readers: &reader_witnesses,
+    }];
+    let mut challenger = BinaryChallenger::<B, HashChallenger<u8, Keccak256Hash, 32>>::from_hasher(
+        b"magnetar-onehot-shared".to_vec(),
+        Keccak256Hash,
+    );
+    let (logup, output) = LogupStarProof::<B, B>::prove(&lookups, &table_witness, &mut challenger);
+    let position_point = Point::new(
+        output
+            .position_point
+            .as_slice()
+            .iter()
+            .rev()
+            .copied()
+            .collect::<Vec<_>>(),
+    );
+    let position_point_f2 = position_point
+        .as_slice()
+        .iter()
+        .map(|value| to_f2(*value))
+        .collect::<Vec<_>>();
+    let read_address_values = read_address
+        .iter()
+        .map(|column| eval_mle(column, &position_point_f2))
+        .collect::<Vec<_>>();
+    let write_address_values = write_address
+        .iter()
+        .map(|column| eval_mle(column, &position_point_f2))
+        .collect::<Vec<_>>();
+    let expected = |values: &[F2_128]| {
+        values
+            .iter()
+            .enumerate()
+            .fold(OneHotB::from_repr(0), |sum, (index, value)| {
+                let coefficient = if index < witness.address_bits {
+                    embed_position(1usize << index)
+                } else {
+                    embed_position(cells)
+                };
+                sum + coefficient * to_b(*value)
+            })
+    };
+    if output.tables[0].position_claims[0] != expected(&read_address_values)
+        || output.tables[0].position_claims[1] != expected(&write_address_values)
+    {
+        return Err(ProofError::FinalOracle);
+    }
+    let points = vec![
+        P3BatchPoint {
+            point: point_f2.clone(),
+            columns: (0..table_count).collect(),
+        },
+        P3BatchPoint {
+            point: position_point_f2.clone(),
+            columns: (table_count..columns.len()).collect(),
+        },
+    ];
+    let values = vec![
+        read_claims
+            .iter()
+            .chain(&write_claims)
+            .copied()
+            .collect::<Vec<_>>(),
+        read_address_values
+            .iter()
+            .chain(&write_address_values)
+            .copied()
+            .collect::<Vec<_>>(),
+    ];
+    let opening = pcs
+        .open_batch(&columns, &points)
+        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    let _ = pcs
+        .verify_batch(&opening, &points, &values)
+        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    let _ = address_width;
+    Ok(SharedOneHotProof {
+        opening,
+        read_claims,
+        write_claims,
+        read_address_values,
+        write_address_values,
+        position_point: position_point_f2,
+        logup,
+    })
+}
+
+pub fn verify_shared_onehot(
+    shape: LinearTwistShape,
+    proof: &SharedOneHotProof,
+) -> Result<bool, ProofError> {
+    use p3_binary_field::{BinaryField128, TowerLevel};
+    use p3_multi_stark::logup_star::{Reader, TableLookup};
+    use p3_multilinear_util::point::Point;
+    type B = BinaryField128;
+    let cells = shape.cells();
+    let cycles = shape.cycles;
+    let table_count = 2 * cells;
+    let address_width = shape.address_bits + 1;
+    let mut transcript = Sha256Transcript::new("magnetar-onehot-shared");
+    transcript.absorb(
+        "commitment",
+        &bincode::serialize(&proof.opening.commitment)
+            .map_err(|error| ProofError::Pcs(error.to_string()))?,
+    );
+    let point_f2 = sample_point(&mut transcript, cycles.trailing_zeros() as usize);
+    let point_b = Point::new(point_f2.iter().rev().map(|value| to_b(*value)).collect());
+    let read_claims_b = proof.read_claims.iter().map(|value| to_b(*value)).collect::<Vec<_>>();
+    let write_claims_b = proof
+        .write_claims
+        .iter()
+        .map(|value| to_b(*value))
+        .collect::<Vec<_>>();
+    let readers = [
+        Reader {
+            point: &point_b,
+            claims: &read_claims_b,
+        },
+        Reader {
+            point: &point_b,
+            claims: &write_claims_b,
+        },
+    ];
+    let lookups = [TableLookup {
+        num_variables: shape.address_bits + 1,
+        readers: &readers,
+    }];
+    let mut challenger = p3_binary_field::BinaryChallenger::<B, p3_challenger::HashChallenger<u8, p3_keccak::Keccak256Hash, 32>>::from_hasher(
+        b"magnetar-onehot-shared".to_vec(),
+        p3_keccak::Keccak256Hash,
+    );
+    let output = match proof.logup.verify(&lookups, &mut challenger) {
+        Ok(output) => output,
+        Err(_) => return Ok(false),
+    };
+    let table_point = output.table_point.clone();
+    let table = (0..cells)
+        .map(|column| {
+            (0..2 * cells)
+                .map(|row| {
+                    if row == cells + column {
+                        B::from_repr(0)
+                    } else {
+                        B::from_repr(magnetar_constraint::F2_128::from(1u64).value())
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    for (column, claim) in output.tables[0].column_claims.iter().enumerate() {
+        let direct = p3_multilinear_util::poly::Poly::new(table[column].clone())
+            .eval_ext::<B>(&table_point);
+        if direct != *claim {
+            return Ok(false);
+        }
+    }
+    let position_point_f2 = output
+        .position_point
+        .as_slice()
+        .iter()
+        .rev()
+        .map(|value| to_f2(*value))
+        .collect::<Vec<_>>();
+    if position_point_f2 != proof.position_point {
+        return Ok(false);
+    }
+    let all_points = vec![
+        P3BatchPoint {
+            point: point_f2.clone(),
+            columns: (0..table_count).collect(),
+        },
+        P3BatchPoint {
+            point: position_point_f2.clone(),
+            columns: (table_count..table_count + 2 * address_width).collect(),
+        },
+    ];
+    let all_values = vec![
+        proof
+            .read_claims
+            .iter()
+            .chain(&proof.write_claims)
+            .copied()
+            .collect::<Vec<_>>(),
+        proof
+            .read_address_values
+            .iter()
+            .chain(&proof.write_address_values)
+            .copied()
+            .collect::<Vec<_>>(),
+    ];
+    let pcs = linear_pcs(cycles);
+    if !pcs
+        .verify_batch(&proof.opening, &all_points, &all_values)
+        .map_err(|error| ProofError::Pcs(error.to_string()))?
+    {
+        return Ok(false);
+    }
+    let expected = |values: &[F2_128]| {
+        values
+            .iter()
+            .enumerate()
+            .fold(B::from_repr(0), |sum, (index, value)| {
+                let coefficient = if index < shape.address_bits {
+                    embed_position(1usize << index)
+                } else {
+                    embed_position(cells)
+                };
+                sum + coefficient * to_b(*value)
+            })
+    };
+    Ok(output.tables[0].position_claims[0] == expected(&proof.read_address_values)
+        && output.tables[0].position_claims[1] == expected(&proof.write_address_values))
+}
+
+#[cfg(test)]
+mod shared_onehot_tests {
+    use super::*;
+
+    #[test]
+    fn shared_onehot_round_trips() {
+        let witness = crate::linear_twist::tests::register_witness();
+        let shape = witness_shape(&witness);
+        let proof = prove_shared_onehot(&witness).unwrap();
+        assert!(verify_shared_onehot(shape, &proof).unwrap());
+        let shared = bincode::serialize(&proof).unwrap().len();
+        let old = bincode::serialize(&prove_onehot_pcs(&witness, false).unwrap()).unwrap().len()
+            + bincode::serialize(&prove_onehot_pcs(&witness, true).unwrap()).unwrap().len();
+        eprintln!("shared_onehot={shared} old_onehot={old}");
+        assert!(shared > 0);
     }
 }
