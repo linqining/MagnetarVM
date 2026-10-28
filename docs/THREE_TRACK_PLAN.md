@@ -1020,3 +1020,7 @@ memory target). Paper total is 962,787 B; remaining gap is other proof layers.
 
 B exploration: local PCS pow24 gives 2^16 memory proof 257,144 B/4.4 ms;
 paper total 910,083 B (715,353 B DEFLATE-compressed). Other layers dominate.
+
+
+B transport compression: 2^16 unified proof raw 910,083 B, DEFLATE 715,353 B;
+memory proof 257,144 B/4.4 ms. Remaining gap is logup/selected/claim.

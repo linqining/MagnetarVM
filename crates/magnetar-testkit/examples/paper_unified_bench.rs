@@ -59,7 +59,12 @@ fn main() {
     let sizes = unified_proof_sizes(&proof).unwrap();
     let serialized = bincode::serialize(&proof).unwrap();
     let bytes = serialized.len();
-    let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&serialized, 6).len();
+    let compressed_bytes =
+        magnetar_runtime::serialize_unified_proof_compressed(&proof).unwrap();
+    let compressed = compressed_bytes.len();
+    let decoded =
+        magnetar_runtime::deserialize_unified_proof_compressed(&compressed_bytes).unwrap();
+    assert_eq!(decoded.trace_commitment, proof.trace_commitment);
     let started = Instant::now();
     verify_native_unified(&statement, &proof, 8).unwrap();
     let verify = started.elapsed();

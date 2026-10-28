@@ -896,3 +896,21 @@ verify       112.6 s
 
 The memory component is below the paper memory target; the remaining total-proof
 gap is logup/selected/claim.
+
+
+## Whole-proof compression format
+
+Added `serialize_unified_proof_compressed` /
+`deserialize_unified_proof_compressed` (bincode + DEFLATE level 6). The paper
+bench verifies the decompressed proof round-trip.
+
+2^16:
+
+```text
+raw proof        910,083 B
+compressed       715,353 B
+prove            208.5 s
+verify            71.6 s (includes decompress + original verify)
+```
+
+At 16384 the compressed proof is 482,569 B vs 649,679 B raw.

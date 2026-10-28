@@ -1197,6 +1197,26 @@ pub struct UnifiedTraceProof {
     pub trace_logup_shout: Option<crate::logup_shout::TraceLogupShoutProof>,
 }
 
+/// Serialize a unified proof with DEFLATE compression.
+pub fn serialize_unified_proof_compressed(
+    proof: &UnifiedTraceProof,
+) -> Result<Vec<u8>, RuntimeError> {
+    let bytes = bincode::serialize(proof)
+        .map_err(|error| RuntimeError::Proof(format!("proof serialize: {error}")))?;
+    Ok(miniz_oxide::deflate::compress_to_vec_zlib(&bytes, 6))
+}
+
+/// Deserialize a DEFLATE-compressed unified proof.
+pub fn deserialize_unified_proof_compressed(
+    bytes: &[u8],
+) -> Result<UnifiedTraceProof, RuntimeError> {
+    let decompressed = miniz_oxide::inflate::decompress_to_vec_zlib(bytes)
+        .map_err(|error| RuntimeError::Proof(format!("proof inflate: {error:?}")))?;
+    bincode::deserialize(&decompressed)
+        .map_err(|error| RuntimeError::Proof(format!("proof deserialize: {error}")))
+}
+
+
 pub(crate) struct GatedProveInput {
     pub z: Vec<F2_128>,
     pub a0: [magnetar_proof::SharedBlockMatrix; 3],
