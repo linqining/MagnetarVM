@@ -797,3 +797,35 @@ single-target proofs. This is the component that can replace dense one-hot
 commitments in the local Twist path.
 
 Full suite: 335 passing.
+
+
+## A2 local Twist proof integrated
+
+Added `local_twist.rs`: no dense RA/WA/Val commitments. It commits only
+increment/read-write values, address bits/valid, and initial/final endpoints,
+and proves:
+
+```text
+RW checking with locally computed dense factors
+Val evaluation from Inc/WA/initial
+multi-target virtual address claims
+final-state fixed sumcheck
+```
+
+Standalone local proof:
+
+| rows | proof bytes | prove | verify |
+|---:|---:|---:|---:|
+| 16384 | 460,512 | 0.80 s | 6.4 ms |
+| 65536 | 557,624 | 3.30 s | 8.1 ms |
+
+Paper-mode unified results with the local proof:
+
+| rows | proof bytes | access | logup | selected | claim | prove | verify |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 16384 | **887,375** | 463,180 | 203,489 | 171,302 | 47,921 | 87.1 s | 42.9 s |
+| 65536 | **1,210,563** | 560,292 | 245,377 | 219,646 | 183,599 | 329.2 s | 102.5 s |
+
+Cumulative: 2^16 paper proof 3,067,123 B -> 1,210,563 B (-61%). The standalone
+local memory proof is 557,624 B / 8 ms verify, close to the paper's 380 KiB /
+8 ms memory target; the remaining paper overhead is logup/selected/claim.

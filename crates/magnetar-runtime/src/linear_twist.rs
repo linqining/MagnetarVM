@@ -590,7 +590,7 @@ pub struct RwPcsProof {
     pub challenges: Vec<F2_128>,
 }
 
-fn eq_points_local(left: &[F2_128], right: &[F2_128]) -> F2_128 {
+pub(crate) fn eq_points_local(left: &[F2_128], right: &[F2_128]) -> F2_128 {
     left.iter()
         .zip(right)
         .fold(F2_128::from(1u64), |acc, (a, b)| {
@@ -1420,7 +1420,7 @@ mod ram_onehot_tests {
 
 /// Fixed-challenge sumcheck: the challenges are the RW final point, so the
 /// terminal WA/Inc evaluations can be reused from the RW proof.
-fn fixed_sumcheck(
+pub(crate) fn fixed_sumcheck(
     mut factors: Vec<Vec<F2_128>>,
     challenges: &[F2_128],
     summand: impl Fn(&[Vec<F2_128>]) -> F2_128,
@@ -1455,7 +1455,7 @@ fn fixed_sumcheck(
     (rounds, summand(&factors))
 }
 
-fn replay_fixed(
+pub(crate) fn replay_fixed(
     rounds: &[Vec<F2_128>],
     claimed: F2_128,
     challenges: &[F2_128],
@@ -1470,7 +1470,7 @@ fn replay_fixed(
     Some(claim)
 }
 
-fn interpolate_f2(values: &[F2_128], r: F2_128) -> F2_128 {
+pub(crate) fn interpolate_f2(values: &[F2_128], r: F2_128) -> F2_128 {
     let points = (0..values.len())
         .map(|index| F2_128::from(index as u64))
         .collect::<Vec<_>>();

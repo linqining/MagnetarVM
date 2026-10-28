@@ -1008,3 +1008,7 @@ commitment). Next: multi-target address virtualization + local RW/Val circuits.
 A2 multi-target virtual address proof works: 3 targets in 235,760 B at 1024
 rows, replacing dense shared one-hot claims. Next: local RW/Val circuits using
 these virtual claims.
+
+
+A2 local Twist integrated: standalone 2^16 memory proof 557,624 B, 8 ms verify;
+paper-mode total 1,210,563 B. Full suite 336 passing.

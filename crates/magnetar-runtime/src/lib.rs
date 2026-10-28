@@ -21,6 +21,7 @@ pub mod binary_twist_address;
 pub mod branch_row;
 pub mod claim_native;
 pub mod linear_twist;
+pub mod local_twist;
 pub mod logup_shout;
 pub mod cpu_shape;
 pub mod div_row;
