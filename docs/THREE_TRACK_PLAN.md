@@ -969,9 +969,8 @@ proof at >=8192 cycles:
 
 | rows | proof | prove | verify |
 |---:|---:|---:|---:|
-| 16384 | 3,955,231 B | 43.6 s | 16.5 s |
-| 32768 | 4,568,567 B | 106.3 s | 30.5 s |
-| 65536 | 5,233,435 B | 200.7 s | 66.6 s |
+| 16384 | 2,374,327 B | 41.3 s | 16.3 s |
+| 65536 | 3,028,299 B | 202.2 s | 67.9 s |
 
 This is the first complete paper-mode 2^16 run in this repository. The dense
 history is gone from this path; the remaining proof-size gap is dominated by the

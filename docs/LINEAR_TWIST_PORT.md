@@ -469,10 +469,9 @@ commitment strategy, not just PCS tuning.
 
 | rows | proof bytes | access | logup | selected | claim | prove | verify |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 16384 | 2,382,327 | 1,958,156 | 203,489 | 171,302 | 47,921 | 40.0 s | 16.0 s |
-| 65536 | 3,039,947 | 2,389,700 | 245,377 | 219,646 | 183,599 | 193.5 s | 85.8 s |
+| 16384 | 2,374,327 | 1,950,156 | 203,489 | 171,302 | 47,921 | 41.3 s | 16.3 s |
+| 65536 | 3,028,299 | 2,378,052 | 245,377 | 219,646 | 183,599 | 202.2 s | 67.9 s |
 
 Compared with the previous default 2^16 result, proof size drops from
-5,233,435 B to 3,039,947 B and prove time drops from 200.7 s to 193.5 s;
-verify time rises from 66.6 s to 85.8 s. These are now the retained working
-parameters for the linear Access proof.
+5,233,435 B to 3,028,299 B; prove time is 202.2 s and verify time 67.9 s.
+These are now the retained working parameters for the linear Access proof.
