@@ -695,3 +695,17 @@ With shared RW+Val and shared one-hot, `(100, 4, 16, 3)` gives 16384-row proof
 1,171,823 B (prove 68 s), but 65536 rows still exceeds 2400 s. `(100,4,8,3)`
 gives 1,228,815 B at 16384 and also times out at 2^16. The working 2^16
 configuration remains `(100,2,8,3)` with proof 1,718,763 B.
+
+
+### Post-sharing parameter sweeps
+
+At 16384 rows with shared proofs:
+
+```text
+rate=3,pow=8 : 1,236,159 B, prove 46.9 s
+rate=2,pow=16: 1,264,111 B, prove 72.9 s
+rate=2,pow=8 : 1,329,103 B, prove 72.1 s
+```
+
+Both rate=3 and pow=16 variants exceeded 2400 s at 65536 rows, so the retained
+2^16 configuration remains rate=2,pow=8,folding=3 with 1,718,763 B.
