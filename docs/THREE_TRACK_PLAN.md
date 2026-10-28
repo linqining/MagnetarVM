@@ -1012,3 +1012,7 @@ these virtual claims.
 
 A2 local Twist integrated: standalone 2^16 memory proof 557,624 B, 8 ms verify;
 paper-mode total 1,210,563 B. Full suite 336 passing.
+
+
+A2 shared local opening: 2^16 memory proof 309,848 B / 4.8 ms verify (below paper
+memory target). Paper total is 962,787 B; remaining gap is other proof layers.

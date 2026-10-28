@@ -22,7 +22,7 @@ pub struct VirtualOneHotProof {
     pub terminal_values: Vec<F2_128>,
 }
 
-fn bit_columns(
+pub(crate) fn bit_columns_pub(
     witness: &BinaryTwistWitness,
     write: bool,
 ) -> (Vec<Vec<F2_128>>, Vec<F2_128>, usize) {
@@ -75,7 +75,7 @@ pub fn prove_virtual_onehot(
     rj: &[F2_128],
 ) -> Result<VirtualOneHotProof, ProofError> {
     let shape = witness_shape(witness);
-    let (bits, valid, cycles) = bit_columns(witness, write);
+    let (bits, valid, cycles) = bit_columns_pub(witness, write);
     let claimed = onehot_formula(&bits, &valid, rk, rj, cycles);
     let mut columns = bits.clone();
     columns.push(valid.clone());
@@ -254,7 +254,7 @@ fn target_claim(
     target: &VirtualTarget,
     cycles: usize,
 ) -> F2_128 {
-    let (bits, valid, _) = bit_columns(witness, target.write);
+    let (bits, valid, _) = bit_columns_pub(witness, target.write);
     onehot_formula(&bits, &valid, &target.rk, &target.rj, cycles)
 }
 
@@ -263,8 +263,8 @@ pub fn prove_virtual_address(
     targets: &[VirtualTarget],
 ) -> Result<VirtualAddressProof, ProofError> {
     let shape = witness_shape(witness);
-    let (read_bits, read_valid, cycles) = bit_columns(witness, false);
-    let (write_bits, write_valid, _) = bit_columns(witness, true);
+    let (read_bits, read_valid, cycles) = bit_columns_pub(witness, false);
+    let (write_bits, write_valid, _) = bit_columns_pub(witness, true);
     let mut columns = Vec::new();
     columns.extend(read_bits.iter().cloned());
     columns.push(read_valid.clone());

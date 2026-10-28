@@ -845,3 +845,26 @@ The two PCS openings dominate. A single shared local opening covering values,
 address bits, and endpoint broadcasts is the next size lever; even then the
 paper's 380 KiB total target also requires compressing logup/selected/claim,
 which currently total ~648 KB at 2^16.
+
+
+## A2 shared local opening: memory proof below paper target
+
+`local_shared.rs` commits values, address bits/valid and endpoint tables with one
+shared opening plus a small endpoint opening. Standalone:
+
+| rows | proof bytes | prove | verify |
+|---:|---:|---:|---:|
+| 65536 | **309,848** | 2.80 s | 4.8 ms |
+
+This is below the paper's ~380 KiB / 8 ms memory target.
+
+Paper-mode unified results:
+
+| rows | proof bytes | access | logup | selected | claim | prove | verify |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 16384 | **690,351** | 266,156 | 203,489 | 171,302 | 47,921 | 47.3 s | 22.6 s |
+| 65536 | **962,787** | 312,516 | 245,377 | 219,646 | 183,599 | 234.1 s | 108.6 s |
+
+Cumulative: 2^16 paper proof 3,067,123 B -> 962,787 B (-69%). The memory
+component now meets the paper target; the remaining total-proof gap is
+logup/selected/claim (~648 KB together) and the endpoint opening.

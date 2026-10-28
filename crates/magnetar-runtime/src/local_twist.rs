@@ -33,7 +33,7 @@ pub struct LocalTwistProof {
     pub final_rounds: Vec<Vec<F2_128>>,
 }
 
-fn dense_onehot(witness: &BinaryTwistWitness, write: bool) -> Vec<Vec<F2_128>> {
+pub(crate) fn dense_onehot(witness: &BinaryTwistWitness, write: bool) -> Vec<Vec<F2_128>> {
     let shape = witness_shape(witness);
     let cells = shape.cells();
     let cycles = shape.cycles;
@@ -51,7 +51,7 @@ fn dense_onehot(witness: &BinaryTwistWitness, write: bool) -> Vec<Vec<F2_128>> {
     dense
 }
 
-fn flat(columns: &[Vec<F2_128>], cycles: usize) -> Vec<F2_128> {
+pub(crate) fn flat(columns: &[Vec<F2_128>], cycles: usize) -> Vec<F2_128> {
     let cells = columns.len();
     let mut result = vec![F2_128::from(0u64); cells * cycles];
     for (cell, column) in columns.iter().enumerate() {
@@ -62,7 +62,7 @@ fn flat(columns: &[Vec<F2_128>], cycles: usize) -> Vec<F2_128> {
     result
 }
 
-fn padded(values: &[F2_128], cycles: usize) -> Vec<F2_128> {
+pub(crate) fn padded(values: &[F2_128], cycles: usize) -> Vec<F2_128> {
     let mut result = values.to_vec();
     result.resize(cycles, F2_128::from(0u64));
     result

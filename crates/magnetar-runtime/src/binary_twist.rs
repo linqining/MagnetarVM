@@ -1308,7 +1308,7 @@ fn push_twist_value_points(
 /// address bindings) instead of the `O(cycles^2)` history sumchecks.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BinaryTwistLinearProof {
-    pub local: crate::local_twist::LocalTwistProof,
+    pub local: crate::local_shared::LocalSharedProof,
 }
 
 pub fn prove_binary_twist_ram_linear(
@@ -1318,7 +1318,7 @@ pub fn prove_binary_twist_ram_linear(
         .validate()
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
     Ok(BinaryTwistLinearProof {
-        local: crate::local_twist::prove_local_twist(witness)?,
+        local: crate::local_shared::prove_local_shared(witness)?,
     })
 }
 
@@ -1333,7 +1333,7 @@ pub fn verify_binary_twist_ram_linear(
 pub fn verify_binary_twist_ram_linear_proof_only(
     proof: &BinaryTwistLinearProof,
 ) -> Result<bool, ProofError> {
-    crate::local_twist::verify_local_twist(&proof.local)
+    crate::local_shared::verify_local_shared(&proof.local)
 }
 
 /// Convert linear outer-table claims into mosaic claims at `table_index`.
@@ -1342,7 +1342,7 @@ pub(crate) fn linear_outer_mosaic_claims(
     table_index: usize,
 ) -> Result<MosaicClaims, ProofError> {
     use crate::linear_twist::LinearOuterTable;
-    let claims = crate::local_twist::local_outer_claims(&proof.local)?;
+    let claims = crate::local_shared::local_shared_outer_claims(&proof.local)?;
     let mut points = Vec::with_capacity(claims.len());
     let mut expected = Vec::with_capacity(claims.len());
     for claim in claims {
@@ -1373,7 +1373,7 @@ fn prove_binary_twist_claims_linear(
     table_index: usize,
 ) -> Result<ClaimedRam, ProofError> {
     let linear = BinaryTwistLinearProof {
-        local: crate::local_twist::prove_local_twist(witness)?,
+        local: crate::local_shared::prove_local_shared(witness)?,
     };
     let claims = linear_outer_mosaic_claims(&linear, table_index)?;
     let zero = F2_128::from(0u64);
@@ -2241,7 +2241,7 @@ fn verify_binary_twist_from_proof_inner(
     if let Some(linear) = &proof.linear {
         if linear.local.shape.address_bits != proof.address_bits
             || linear.local.shape.cycle_bits() != proof.cycle_bits
-            || !crate::local_twist::verify_local_twist(&linear.local)?
+            || !crate::local_shared::verify_local_shared(&linear.local)?
         {
             return Ok(None);
         }
@@ -2747,8 +2747,8 @@ mod ram_tests {
         assert!(verify_binary_twist_ram_linear(&witness, &proof).unwrap());
         assert!(verify_binary_twist_ram_linear_proof_only(&proof).unwrap());
         let mut tampered = proof;
-        tampered.local.virtual_address.claims[0] =
-            tampered.local.virtual_address.claims[0] + F2_128::from(1u64);
+        tampered.local.virtual_claims[0] =
+            tampered.local.virtual_claims[0] + F2_128::from(1u64);
         assert!(!verify_binary_twist_ram_linear(&witness, &tampered).unwrap());
     }
 
@@ -2770,7 +2770,7 @@ mod ram_tests {
         let witness = BinaryTwistWitness::from_trace(&trace).unwrap();
         let tables = batch_tables(&witness).unwrap();
         let proof = prove_binary_twist_ram_linear(&witness).unwrap();
-        let claims = crate::local_twist::local_outer_claims(&proof.local).unwrap();
+        let claims = crate::local_shared::local_shared_outer_claims(&proof.local).unwrap();
         assert!(!claims.is_empty());
         for claim in claims {
             let values = match claim.table {

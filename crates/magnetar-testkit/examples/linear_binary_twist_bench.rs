@@ -49,9 +49,10 @@ fn main() {
     let verify_time = started.elapsed();
     let inner = &proof.local;
     let components = vec![
-        ("values", bincode::serialize(&inner.values_opening).unwrap().len()),
+        ("opening", bincode::serialize(&inner.opening).unwrap().len()),
         ("endpoints", bincode::serialize(&inner.endpoints_opening).unwrap().len()),
-        ("virtual_address", bincode::serialize(&inner.virtual_address).unwrap().len()),
+        ("rw_rounds", bincode::serialize(&inner.rw_rounds).unwrap().len()),
+        ("virtual_rounds", bincode::serialize(&inner.virtual_rounds).unwrap().len()),
     ];
     println!(
         "rows={rows} bytes={bytes} prove={prove_time:?} verify={verify_time:?} components={components:?}"
