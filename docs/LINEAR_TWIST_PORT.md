@@ -517,3 +517,11 @@ claim. Paper-mode results with the final-state check:
 The final check adds about 39 KiB to the proof and ~44 s prove / ~40 s verify at
 2^16. The final vector itself is still committed by the linear proof, not by the
 outer Access commitment.
+
+
+## Combined one-hot commitment attempt (reverted)
+
+Combining the one-hot table and address-bit batches into one PCS commitment
+with two opening points reduced commitment count but the combined
+`verify_batch` rejected the opening. The separate-commitment version was
+restored; the combined version was not committed.
