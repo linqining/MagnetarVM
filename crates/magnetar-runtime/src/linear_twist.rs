@@ -25,7 +25,7 @@ pub struct LinearTwistShape {
 /// once the stacked table has enough variables.
 pub(crate) fn linear_pcs(cycles: usize) -> P3BinaryPcs {
     if cycles >= 8192 {
-        P3BinaryPcs::with_params(100, 2, 8, 3)
+        P3BinaryPcs::with_params(100, 4, 24, 3)
     } else {
         P3BinaryPcs::new(100)
     }

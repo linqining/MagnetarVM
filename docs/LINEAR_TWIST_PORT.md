@@ -868,3 +868,31 @@ Paper-mode unified results:
 Cumulative: 2^16 paper proof 3,067,123 B -> 962,787 B (-69%). The memory
 component now meets the paper target; the remaining total-proof gap is
 logup/selected/claim (~648 KB together) and the endpoint opening.
+
+
+## Extreme local PCS parameters
+
+Local shared proof with production-style PCS params:
+
+| params | proof bytes | prove | verify |
+|---|---:|---:|---:|
+| rate2/pow8/fold3 | 309,848 | 2.80 s | 4.8 ms |
+| rate4/pow16/fold3 | 277,080 | 7.41 s | 4.29 ms |
+| rate4/pow24/fold3 | **257,144** | 10.60 s | 4.38 ms |
+| rate4/pow28/fold3 | 240,184 | 208.06 s | 3.54 ms |
+
+`pow24` is the retained local setting. Paper-mode 2^16 with it:
+
+```text
+proof        910,083 B
+compressed   715,353 B (whole-proof DEFLATE level 6)
+access       259,812 B
+logup        245,377 B
+selected     219,646 B
+claim        183,599 B
+prove        219.7 s
+verify       112.6 s
+```
+
+The memory component is below the paper memory target; the remaining total-proof
+gap is logup/selected/claim.

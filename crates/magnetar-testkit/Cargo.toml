@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+miniz_oxide = { path = "../../vendor/miniz_oxide" }
 p3-binary-field = { path = "../../vendor/plonky3/binary-field" }
 p3-challenger = { path = "../../vendor/plonky3/challenger" }
 p3-field = { path = "../../vendor/plonky3/field" }

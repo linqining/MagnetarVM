@@ -57,15 +57,18 @@ fn main() {
     let proof = prove_unified_trace_paper(&trace, 8).unwrap();
     let prove = started.elapsed();
     let sizes = unified_proof_sizes(&proof).unwrap();
-    let bytes = bincode::serialize(&proof).unwrap().len();
+    let serialized = bincode::serialize(&proof).unwrap();
+    let bytes = serialized.len();
+    let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&serialized, 6).len();
     let started = Instant::now();
     verify_native_unified(&statement, &proof, 8).unwrap();
     let verify = started.elapsed();
     eprintln!("{sizes:?}");
     println!(
-        "adds={adds} rows={} proof={bytes}B access={}B logup={}B selected={}B claim={}B shape={}B prove={prove:?} verify={verify:?}",
+        "adds={adds} rows={} proof={bytes}B compressed={compressed}B access={}B logup={}B selected={}B claim={}B shape={}B prove={prove:?} verify={verify:?}",
         trace.rows.len(),
         sizes.access,
+        // compressed,
         sizes.logup_shout,
         sizes.selected_cpu,
         sizes.claim_proof,

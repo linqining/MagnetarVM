@@ -1016,3 +1016,7 @@ paper-mode total 1,210,563 B. Full suite 336 passing.
 
 A2 shared local opening: 2^16 memory proof 309,848 B / 4.8 ms verify (below paper
 memory target). Paper total is 962,787 B; remaining gap is other proof layers.
+
+
+B exploration: local PCS pow24 gives 2^16 memory proof 257,144 B/4.4 ms;
+paper total 910,083 B (715,353 B DEFLATE-compressed). Other layers dominate.
