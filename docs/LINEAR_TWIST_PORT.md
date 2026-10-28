@@ -445,3 +445,19 @@ prove 43.6 s -> 51.1 s
 but the 65536-row run did not complete within 2400 s, so the parameters were
 reverted. The working 2^16 result remains the default-parameter 5,233,435 B
 proof. Proof-size reduction for 2^16 remains open.
+
+
+### Additional parameter sweep
+
+`(security=100, rate=4, pow=8, folding=3)` at 16384 rows:
+
+```text
+proof   2,144,311 B
+access  1,720,140 B
+prove      50.3 s
+verify     16.1 s
+```
+
+but 65536 rows again exceeded 2400 s, so the default PCS parameters remain the
+only working 2^16 configuration. Proof-size reduction at 2^16 needs a different
+commitment strategy, not just PCS tuning.
