@@ -558,3 +558,22 @@ total       1,986,176 B
 The paper target (~380 KiB) would require roughly a 5x reduction. PCS
 parameter tuning and one-hot batching attempts do not close that gap; it needs
 a smaller commitment/opening scheme for the dense linear tables.
+
+
+## Final vector in the outer Access commitment
+
+The outer `initial` table now has two columns `[initial, final]`, so the final
+vector is committed by Access without adding a new table index. The linear
+proof exposes the final value at the fixed cell point as an outer claim, and the
+`initial/final` columns are checked by the existing Access opening.
+
+Latest paper-mode results:
+
+| rows | proof bytes | access | logup | selected | claim | prove | verify |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 16384 | 2,413,039 | 1,988,844 | 203,489 | 171,302 | 47,921 | 66.3 s | 19.1 s |
+| 65536 | 3,067,123 | 2,416,852 | 245,377 | 219,646 | 183,599 | 283.7 s | 77.6 s |
+
+The final-state relation and both endpoint commitments are now bound to the
+outer Access commitment. Proof size is unchanged (~3.07 MB at 2^16); the
+remaining paper-alignment gap is proof size.

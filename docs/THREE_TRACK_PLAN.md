@@ -981,3 +981,8 @@ still missing from the linear branch.
 Final-state check added: 2^16 paper proof is 3,067,099 B, prove 246.8 s,
 verify 107.5 s. Initial is bound to the outer Access commitment; the final
 vector remains in the linear proof's own commitment.
+
+
+Final vector is now in the outer Access `initial` table as a second column;
+final-state check is fully bound. Latest 2^16: 3,067,123 B / 283.7 s prove /
+77.6 s verify (timing varies with machine load). Proof-size parity remains open.

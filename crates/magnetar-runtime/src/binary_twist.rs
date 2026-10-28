@@ -878,19 +878,17 @@ pub(crate) fn batch_tables(witness: &BinaryTwistWitness) -> Result<BatchTables, 
             }
         }
     }
-    let mut initial = witness.initial.clone();
-    initial.resize(
-        witness.initial.len().next_power_of_two().max(2),
-        F2_128::from(0u64),
-    );
+    let cells_padded = witness.initial.len().next_power_of_two().max(2);
+    let mut initial = vec![witness.initial.clone(), witness.final_value.clone()];
+    for column in &mut initial {
+        column.resize(cells_padded, F2_128::from(0u64));
+    }
     Ok(BatchTables {
         addr: P3MosaicTable { columns: addr },
         inc: P3MosaicTable {
             columns: vec![increments],
         },
-        initial: P3MosaicTable {
-            columns: vec![initial],
-        },
+        initial: P3MosaicTable { columns: initial },
         read_value: P3MosaicTable {
             columns: vec![read_value],
         },
@@ -1351,7 +1349,7 @@ pub(crate) fn linear_outer_mosaic_claims(
         let table = match claim.table {
             LinearOuterTable::Address => table_index,
             LinearOuterTable::Increment => table_index + 1,
-            LinearOuterTable::Initial => table_index + 2,
+            LinearOuterTable::Initial | LinearOuterTable::Final => table_index + 2,
             LinearOuterTable::ReadValue => table_index + 3,
             LinearOuterTable::WriteValue => table_index + 4,
         };
@@ -2781,6 +2779,7 @@ mod ram_tests {
                 }
                 crate::linear_twist::LinearOuterTable::Increment => &tables.inc.columns[0],
                 crate::linear_twist::LinearOuterTable::Initial => &tables.initial.columns[0],
+                crate::linear_twist::LinearOuterTable::Final => &tables.initial.columns[1],
                 crate::linear_twist::LinearOuterTable::ReadValue => &tables.read_value.columns[0],
                 crate::linear_twist::LinearOuterTable::WriteValue => &tables.write_value.columns[0],
             };

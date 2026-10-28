@@ -1230,6 +1230,7 @@ pub enum LinearOuterTable {
     Address,
     Increment,
     Initial,
+    Final,
     ReadValue,
     WriteValue,
 }
@@ -1279,7 +1280,7 @@ pub fn linear_outer_claims(
     claims.push(LinearOuterClaim {
         table: LinearOuterTable::Initial,
         column: 0,
-        point: cell_point,
+        point: cell_point.clone(),
         value: proof.final_state.initial,
     });
     let final_cycle = proof.rw.challenges[..cycle_bits].to_vec();
@@ -1308,6 +1309,12 @@ pub fn linear_outer_claims(
         column: 0,
         point: rk,
         value: proof.val.initial_value,
+    });
+    claims.push(LinearOuterClaim {
+        table: LinearOuterTable::Final,
+        column: 1,
+        point: cell_point.clone(),
+        value: proof.final_state.final_value,
     });
     claims.push(LinearOuterClaim {
         table: LinearOuterTable::Increment,
