@@ -616,3 +616,20 @@ Conclusion: simply sharing commitments is not sufficient; the sub-proofs must
 also share *points/columns* so one opening covers RW and Val terminals. The next
 step is a single shared table opening with both RW and Val points and no
 duplicated commitment caps.
+
+
+## Single-opening probe for RW+Val
+
+A probe opens one shared table batch and one shared input batch at all six
+RW/Val points:
+
+```text
+rows=1024 old_rw_val=990,392 B
+shared_open=748,496 B
+open ~0.34 s
+verify ~9 ms
+```
+
+So one multi-point opening saves ~24% versus separate RW+Val proofs at small
+size. The actual shared RW+Val proof still needs the circuits to consume the
+same opening values; this is the next implementation step.
