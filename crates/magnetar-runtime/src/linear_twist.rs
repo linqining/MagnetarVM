@@ -385,7 +385,7 @@ pub fn prove_val_pcs(witness: &BinaryTwistWitness) -> Result<ValPcsProof, ProofE
     let cells = 1usize << witness.address_bits;
     let mut initial = witness.initial.clone();
     initial.resize(cells.next_power_of_two(), F2_128::from(0u64));
-    let pcs = P3BinaryPcs::new(100);
+    let pcs = P3BinaryPcs::with_params(100, 2, 8, 3);
     let val_wa_commit: P3BatchCommitment = pcs
         .commit_batch(&[val.clone(), wa.clone()])
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
@@ -511,7 +511,7 @@ pub fn verify_val_pcs_shape(shape: LinearTwistShape, proof: &ValPcsProof) -> Res
         point: rk.clone(),
         columns: vec![0],
     }];
-    let pcs = P3BinaryPcs::new(100);
+    let pcs = P3BinaryPcs::with_params(100, 2, 8, 3);
     let vw = pcs
         .verify_batch(&proof.val_wa, &val_wa_points, &proof.val_wa_values)
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
@@ -602,7 +602,7 @@ pub fn prove_rw_pcs(witness: &BinaryTwistWitness) -> Result<RwPcsProof, ProofErr
     read_value.resize(cycles, F2_128::from(0u64));
     let mut write_value = witness.write_value.clone();
     write_value.resize(cycles, F2_128::from(0u64));
-    let pcs = P3BinaryPcs::new(100);
+    let pcs = P3BinaryPcs::with_params(100, 2, 8, 3);
     let table_commit: P3BatchCommitment = pcs
         .commit_batch(&[ra.clone(), wa.clone(), val.clone()])
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
@@ -700,7 +700,7 @@ pub fn verify_rw_pcs_shape(shape: LinearTwistShape, proof: &RwPcsProof) -> Resul
     }
     let gamma = sample_point(&mut transcript, 1)[0];
     let cycle_point = sample_point(&mut transcript, cycle_bits);
-    let pcs = P3BinaryPcs::new(100);
+    let pcs = P3BinaryPcs::with_params(100, 2, 8, 3);
     let table_points = vec![P3BatchPoint {
         point: proof.challenges.clone(),
         columns: (0..3).collect(),
@@ -869,7 +869,7 @@ pub fn prove_onehot_pcs(
     let (bits, valid, _, _) = address_bit_columns(witness, write);
     let mut address_columns = bits;
     address_columns.push(valid.clone());
-    let pcs = P3BinaryPcs::new(100);
+    let pcs = P3BinaryPcs::with_params(100, 2, 8, 3);
     let commitment = pcs
         .commit_batch(&columns)
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
@@ -1021,7 +1021,7 @@ pub fn verify_onehot_pcs_shape(
     }
     let point_f2 = sample_point(&mut transcript, cycles.trailing_zeros() as usize);
     let point_b = Point::new(point_f2.iter().rev().map(|value| to_b(*value)).collect());
-    let pcs = P3BinaryPcs::new(100);
+    let pcs = P3BinaryPcs::with_params(100, 2, 8, 3);
     let points = vec![P3BatchPoint {
         point: point_f2.clone(),
         columns: (0..cells).collect(),
