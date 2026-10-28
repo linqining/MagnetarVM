@@ -633,3 +633,31 @@ verify ~9 ms
 So one multi-point opening saves ~24% versus separate RW+Val proofs at small
 size. The actual shared RW+Val proof still needs the circuits to consume the
 same opening values; this is the next implementation step.
+
+
+## Shared RW+Val proof integrated
+
+`SharedRwValProof` now replaces the separate RW and Val proofs. It uses one
+table opening and one input opening covering both reductions:
+
+```text
+rows 1024: old RW+Val 990,392 B -> shared 558,376 B
+```
+
+Paper-mode results after integration:
+
+| rows | proof bytes | access | logup | selected | claim | prove | verify |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 16384 | **1,970,159** | 1,545,964 | 203,489 | 171,302 | 47,921 | 46.1 s | 17.5 s |
+| 65536 | **2,521,411** | 1,871,140 | 245,377 | 219,646 | 183,599 | 320.5 s | 114.9 s |
+
+At 1024 the remaining components are:
+
+```text
+rwval          558,376 B
+read one-hot   473,696 B
+write one-hot  473,696 B
+final state     38,464 B
+```
+
+The two one-hot proofs are now the dominant remaining size target.

@@ -986,3 +986,7 @@ vector remains in the linear proof's own commitment.
 Final vector is now in the outer Access `initial` table as a second column;
 final-state check is fully bound. Latest 2^16: 3,067,123 B / 283.7 s prove /
 77.6 s verify (timing varies with machine load). Proof-size parity remains open.
+
+
+Shared RW+Val integrated: 2^16 proof drops from 3,067,123 B to 2,521,411 B
+(prove 320.5 s, verify 114.9 s). One-hot proofs are the next target.
