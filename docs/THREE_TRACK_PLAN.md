@@ -1028,3 +1028,8 @@ memory proof 257,144 B/4.4 ms. Remaining gap is logup/selected/claim.
 
 B wire format: varint bincode gives 2^16 proof 798,773 B (from 910,083 B);
 varint+DEFLATE 712,967 B.
+
+
+B virtual claims milestone 1: verify_virtual_cpu_layer authenticates selected CPU
++ virtual claim root without full row claims; ClaimProof remains needed for
+access/Shout binding. Full suite 338 passing.

@@ -2804,6 +2804,11 @@ pub fn prove_unified_trace_paper(
     logup.logup.pushforwards.clear();
     proof.logup_shout = Some(logup);
     proof.trace_logup_shout = None;
+    if let Some(selected) = &proof.selected_cpu {
+        if let Ok(set) = crate::virtual_claims::VirtualClaimSet::from_selected(selected) {
+            proof.virtual_claim_root = set.root;
+        }
+    }
     Ok(proof)
 }
 
@@ -2970,6 +2975,44 @@ pub(crate) fn point_sort_key(point: &magnetar_pcs::P3MosaicPoint) -> (usize, Vec
 /// from proof-carried data.
 pub fn verify_unified_proof(proof: &UnifiedTraceProof) -> Result<(), RuntimeError> {
     verify_core_proof(proof)
+}
+
+/// Verify the selected CPU proof and its virtual claim set without the full
+/// trace-claim layer. This is milestone 1 of the virtual-claim integration:
+/// it authenticates the CPU segment claims and PC statement, but the access
+/// statement digest and Shout row binding are not yet derived from the virtual
+/// claim set.
+pub fn verify_virtual_cpu_layer(
+    statement: &Statement,
+    proof: &UnifiedTraceProof,
+    width: usize,
+) -> Result<[u8; 32], RuntimeError> {
+    let selected = proof
+        .selected_cpu
+        .as_ref()
+        .ok_or_else(|| RuntimeError::Proof("missing selected CPU proof".into()))?;
+    let claims = crate::virtual_claims::VirtualClaimSet::from_selected(selected)?;
+    if proof.virtual_claim_root != claims.root {
+        return Err(RuntimeError::Proof(
+            "virtual claim root does not match selected proof".into(),
+        ));
+    }
+    if proof.trace_commitment != statement.trace_commitment {
+        return Err(RuntimeError::Proof(
+            "trace commitment does not match the public statement".into(),
+        ));
+    }
+    let virtual_cpu = crate::virtual_claims::VirtualCpuProof {
+        width,
+        cycles: selected.cycles,
+        trace_commitment: proof.trace_commitment,
+        initial_pc: selected.initial_pc,
+        final_pc: selected.final_pc,
+        claims: claims.clone(),
+        selected_cpu: selected.clone(),
+    };
+    crate::virtual_claims::verify_virtual_cpu(statement, &virtual_cpu, width)?;
+    Ok(claims.root)
 }
 
 pub(crate) fn verify_table_batch_claims(

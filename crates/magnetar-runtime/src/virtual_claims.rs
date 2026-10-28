@@ -209,6 +209,45 @@ mod virtual_cpu_tests {
     }
 
     #[test]
+    fn unified_virtual_cpu_layer_round_trips() {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap();
+        let statement = statement(&trace);
+        let proof = crate::prove_unified_trace_paper(&trace, 8).unwrap();
+        assert!(proof.selected_cpu.is_some());
+        let root = crate::verify_virtual_cpu_layer(&statement, &proof, 8).unwrap();
+        assert_eq!(root, proof.virtual_claim_root);
+        let mut tampered = proof;
+        tampered.virtual_claim_root[0] ^= 1;
+        assert!(crate::verify_virtual_cpu_layer(&statement, &tampered, 8).is_err());
+    }
+
+    #[test]
     fn virtual_cpu_proof_round_trips_without_trace() {
         let program = ProgramImage::new(
             0x1000,

@@ -118,3 +118,21 @@ Only after milestones 1-4 should the old full-trace claim path be removed.
 - P3/MosaicPCS opening canonicalization.
 - Large-scale memory and parallel scheduling.
 - Recursion/ZK/FP/AMO/unaligned parity remains separate.
+
+
+## Milestone 1 progress (B exploration)
+
+`verify_virtual_cpu_layer` now verifies the selected CPU proof and its canonical
+`VirtualClaimSet` root from a `UnifiedTraceProof` without the trace-claim layer:
+
+```text
+selected CPU segments verified publicly
+virtual_claim_root checked against selected proof
+statement trace_commitment / PC checked
+```
+
+A paper proof round-trip test (`unified_virtual_cpu_layer_round_trips`) passes;
+tampering the virtual claim root is rejected. This does not yet remove ClaimProof:
+the access statement digest and Shout row binding still come from the full row
+claims, so proof size is unchanged. Next milestone: virtual Shout binding derived
+from the virtual claim set.
