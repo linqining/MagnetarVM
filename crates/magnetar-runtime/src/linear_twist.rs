@@ -23,7 +23,7 @@ pub struct LinearTwistShape {
 /// PCS parameters for the linear Twist tables. Small test instances use the
 /// default configuration; the tuned large-instance parameters are only valid
 /// once the stacked table has enough variables.
-fn linear_pcs(cycles: usize) -> P3BinaryPcs {
+pub(crate) fn linear_pcs(cycles: usize) -> P3BinaryPcs {
     if cycles >= 8192 {
         P3BinaryPcs::with_params(100, 2, 8, 3)
     } else {
@@ -245,7 +245,7 @@ pub struct ValEvaluationProof {
     pub challenges: Vec<F2_128>,
 }
 
-fn eval_mle(values: &[F2_128], point: &[F2_128]) -> F2_128 {
+pub fn eval_mle(values: &[F2_128], point: &[F2_128]) -> F2_128 {
     let mut folded = values.to_vec();
     for coordinate in point {
         let mut next = Vec::with_capacity(folded.len() / 2);
@@ -257,7 +257,7 @@ fn eval_mle(values: &[F2_128], point: &[F2_128]) -> F2_128 {
     folded[0]
 }
 
-fn build_val_tables(witness: &BinaryTwistWitness) -> (Vec<F2_128>, Vec<F2_128>, Vec<F2_128>) {
+pub(crate) fn build_val_tables(witness: &BinaryTwistWitness) -> (Vec<F2_128>, Vec<F2_128>, Vec<F2_128>) {
     let cells = 1usize << witness.address_bits;
     let cycles = witness.cycles.next_power_of_two().max(2);
     let mut val = vec![F2_128::from(0u64); cells * cycles];

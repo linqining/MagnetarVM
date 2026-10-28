@@ -44,6 +44,7 @@ pub mod reservation_row;
 pub mod sc_row;
 pub mod signed_div_row;
 pub mod simd_cpu;
+pub mod shared_twist;
 pub mod simd_dual;
 pub mod simd_f2;
 pub mod simd_full;

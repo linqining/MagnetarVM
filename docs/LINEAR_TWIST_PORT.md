@@ -577,3 +577,25 @@ Latest paper-mode results:
 The final-state relation and both endpoint commitments are now bound to the
 outer Access commitment. Proof size is unchanged (~3.07 MB at 2^16); the
 remaining paper-alignment gap is proof size.
+
+
+## Shared-commitment groundwork (option A)
+
+Added `shared_twist.rs`: all linear tables are flattened to `K*T` columns and
+committed by one PCS batch (`ra, wa, val, inc, read, write, read/write address
+bits + valid, initial, final`).
+
+At 1024 rows a single combined opening is:
+
+```text
+columns=20
+commit ~0.67 s
+open   ~1.29 s
+verify ~5 ms
+proof bytes 557,696
+```
+
+versus ~1.98 MB for the separate sub-proofs. The 16384-row 20-column batch did
+not finish within 1800 s, so the next implementation step is to split the
+shared commitment into three groups (K*T tables, cycle tables, cell endpoints)
+rather than one wide batch.
