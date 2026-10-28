@@ -429,3 +429,19 @@ Remaining paper-alignment gaps:
   linear Access proof's PCS commitments/openings;
 - the linear branch does not yet check the final state;
 - the selected CPU/logup/claim layers are unchanged.
+
+
+## Paper-parameter experiment on the linear Access proof
+
+Using `(security=100, rate=4, pow=16, folding=3)` for the linear PCS reduced
+the 16384-row paper proof:
+
+```text
+proof 3,955,231 B -> 2,023,191 B
+access 3,531,060 B -> 1,599,020 B
+prove 43.6 s -> 51.1 s
+```
+
+but the 65536-row run did not complete within 2400 s, so the parameters were
+reverted. The working 2^16 result remains the default-parameter 5,233,435 B
+proof. Proof-size reduction for 2^16 remains open.
