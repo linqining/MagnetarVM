@@ -687,3 +687,11 @@ Cumulative effect of option A at 2^16:
 
 Remaining linear components at 1024 are `rwval 558 KB`, `onehot 382 KB`,
 `final 38 KB`.
+
+
+## Parameter sweep after shared proofs
+
+With shared RW+Val and shared one-hot, `(100, 4, 16, 3)` gives 16384-row proof
+1,171,823 B (prove 68 s), but 65536 rows still exceeds 2400 s. `(100,4,8,3)`
+gives 1,228,815 B at 16384 and also times out at 2^16. The working 2^16
+configuration remains `(100,2,8,3)` with proof 1,718,763 B.
