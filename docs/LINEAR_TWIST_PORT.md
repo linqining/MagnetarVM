@@ -764,3 +764,16 @@ At 1024 rows a single virtual one-hot proof is 196,144 B. Two separate proofs
 (392 KB) are not yet smaller than the current shared one-hot proof (382 KB), so
 the next step is a multi-target virtual address proof sharing one commitment/
 opening, then using its claims inside the local RW/Val sumchecks.
+
+
+## A2 multi-target virtual address attempt (reverted)
+
+A multi-target virtual address proof was prototyped: one address-bit commitment
+and one batched cycle sumcheck for RA/WA evaluations at several points. The
+prover's combined sum matched the weighted claims, but replay rejected the
+round polynomials (sumcheck degree/folding mismatch). The prototype was
+reverted; the committed single-target `virtual_onehot` proof remains.
+
+Next attempt should first fix the multi-target sumcheck degree handling in a
+small standalone test, then reuse the same commitment for all local Twist
+terminal claims.
