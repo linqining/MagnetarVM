@@ -744,3 +744,235 @@ mod rw_pcs_tests {
         assert!(!verify_rw_pcs(&witness, &tampered).unwrap());
     }
 }
+
+/// One-hot proof for a committed address matrix: PCS binds the RA/WA columns,
+/// and logup* proves each row is a basis vector (or the all-zero row).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct OneHotPcsProof {
+    pub opening: P3BatchOpening,
+    pub claims: Vec<F2_128>,
+    pub logup: p3_multi_stark::logup_star::LogupStarProof<
+        p3_binary_field::BinaryField128,
+        p3_binary_field::BinaryField128,
+    >,
+}
+
+
+fn onehot_columns(
+    witness: &BinaryTwistWitness,
+    write: bool,
+) -> (Vec<Vec<F2_128>>, usize, usize) {
+    let cells = 1usize << witness.address_bits;
+    let cycles = witness.cycles.next_power_of_two().max(2);
+    let source = if write {
+        &witness.write_address
+    } else {
+        &witness.read_address
+    };
+    let mut columns = vec![vec![F2_128::from(0u64); cycles]; cells];
+    for (cycle, row) in source.iter().enumerate() {
+        for cell in 0..cells {
+            columns[cell][cycle] = row[cell];
+        }
+    }
+    (columns, cells, cycles)
+}
+
+pub fn prove_onehot_pcs(
+    witness: &BinaryTwistWitness,
+    write: bool,
+) -> Result<OneHotPcsProof, ProofError> {
+    use p3_binary_field::{BinaryChallenger, BinaryField128, TowerLevel};
+    use p3_challenger::HashChallenger;
+    use p3_keccak::Keccak256Hash;
+    use p3_multi_stark::logup_star::{
+        LogupStarProof, Reader, ReaderWitness, TableWitness,
+    };
+    use p3_multilinear_util::point::Point;
+    type B = BinaryField128;
+    let (columns, cells, cycles) = onehot_columns(witness, write);
+    let pcs = P3BinaryPcs::new(100);
+    let commitment = pcs
+        .commit_batch(&columns)
+        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    let mut transcript = Sha256Transcript::new("magnetar-onehot-pcs");
+    transcript.absorb(
+        "commitment",
+        &bincode::serialize(&commitment).map_err(|error| ProofError::Pcs(error.to_string()))?,
+    );
+    let point_f2 = sample_point(&mut transcript, cycles.trailing_zeros() as usize);
+    let point_b = Point::new(
+        point_f2
+            .iter()
+            .map(|value| B::from_repr(value.value()))
+            .collect(),
+    );
+    let claims_b = columns
+        .iter()
+        .map(|column| {
+            let values = column
+                .iter()
+                .map(|value| B::from_repr(value.value()))
+                .collect::<Vec<_>>();
+            p3_multilinear_util::poly::Poly::new(values).eval_ext::<B>(&point_b)
+        })
+        .collect::<Vec<_>>();
+    let claims = claims_b
+        .iter()
+        .map(|value| F2_128::new(value.to_repr()))
+        .collect::<Vec<_>>();
+    let readers = [Reader {
+        point: &point_b,
+        claims: &claims_b,
+    }];
+    let lookups = [p3_multi_stark::logup_star::TableLookup {
+        num_variables: witness.address_bits + 1,
+        readers: &readers,
+    }];
+    let positions = if write {
+        &witness.write_address
+    } else {
+        &witness.read_address
+    }
+    .iter()
+    .map(|row| {
+        row.iter()
+            .position(|value| value.value() == 1)
+            .map_or(0, |cell| cell + 1)
+    })
+    .collect::<Vec<_>>();
+    let mut positions = positions;
+    positions.resize(cycles, 0);
+    let reader_witnesses = [ReaderWitness { positions: &positions }];
+    let table = (0..cells)
+        .map(|column| {
+            (0..2 * cells)
+                .map(|row| {
+                    if row == column + 1 {
+                        B::from_repr(magnetar_constraint::F2_128::from(1u64).value())
+                    } else {
+                        B::from_repr(0)
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let table_refs = table.iter().map(|row| row.as_slice()).collect::<Vec<_>>();
+    let table_witness = [TableWitness {
+        columns: &table_refs,
+        readers: &reader_witnesses,
+    }];
+    let mut challenger = BinaryChallenger::<B, HashChallenger<u8, Keccak256Hash, 32>>::from_hasher(
+        b"magnetar-onehot-pcs".to_vec(),
+        Keccak256Hash,
+    );
+    let (logup, _) = LogupStarProof::<B, B>::prove(&lookups, &table_witness, &mut challenger);
+    let points = vec![P3BatchPoint {
+        point: point_f2.clone(),
+        columns: (0..cells).collect(),
+    }];
+    let opening = pcs
+        .open_batch(&columns, &points)
+        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    Ok(OneHotPcsProof {
+        opening,
+        claims,
+        logup,
+    })
+}
+
+pub fn verify_onehot_pcs(
+    witness: &BinaryTwistWitness,
+    write: bool,
+    proof: &OneHotPcsProof,
+) -> Result<bool, ProofError> {
+    use p3_binary_field::{BinaryField128, TowerLevel};
+    use p3_multi_stark::logup_star::{Reader, TableLookup};
+    use p3_multilinear_util::point::Point;
+    type B = BinaryField128;
+    let (_, cells, cycles) = onehot_columns(witness, write);
+    let mut transcript = Sha256Transcript::new("magnetar-onehot-pcs");
+    transcript.absorb(
+        "commitment",
+        &bincode::serialize(&proof.opening.commitment)
+            .map_err(|error| ProofError::Pcs(error.to_string()))?,
+    );
+    let point_f2 = sample_point(&mut transcript, cycles.trailing_zeros() as usize);
+    let points = vec![P3BatchPoint {
+        point: point_f2.clone(),
+        columns: (0..cells).collect(),
+    }];
+    let pcs_ok = P3BinaryPcs::new(100)
+        .verify_batch(&proof.opening, &points, std::slice::from_ref(&proof.claims))
+        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    if !pcs_ok {
+        return Ok(false);
+    }
+    let point_b = Point::new(
+        point_f2
+            .iter()
+            .map(|value| B::from_repr(value.value()))
+            .collect(),
+    );
+    let claims_b = proof
+        .claims
+        .iter()
+        .map(|value| B::from_repr(value.value()))
+        .collect::<Vec<_>>();
+    let readers = [Reader {
+        point: &point_b,
+        claims: &claims_b,
+    }];
+    let lookups = [TableLookup {
+        num_variables: witness.address_bits + 1,
+        readers: &readers,
+    }];
+    let mut challenger = p3_binary_field::BinaryChallenger::<B, p3_challenger::HashChallenger<u8, p3_keccak::Keccak256Hash, 32>>::from_hasher(
+        b"magnetar-onehot-pcs".to_vec(),
+        p3_keccak::Keccak256Hash,
+    );
+    let output = match proof.logup.verify(&lookups, &mut challenger) {
+        Ok(output) => output,
+        Err(_) => return Ok(false),
+    };
+    let table = (0..cells)
+        .map(|column| {
+            (0..2 * cells)
+                .map(|row| {
+                    if row == column + 1 {
+                        B::from_repr(magnetar_constraint::F2_128::from(1u64).value())
+                    } else {
+                        B::from_repr(0)
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let table_point = output.table_point.clone();
+    for (column, claim) in output.tables[0].column_claims.iter().enumerate() {
+        let direct = p3_multilinear_util::poly::Poly::new(table[column].clone())
+            .eval_ext::<B>(&table_point);
+        if direct != *claim {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+#[cfg(test)]
+mod onehot_pcs_tests {
+    use super::tests::register_witness;
+    use super::*;
+
+    #[test]
+    fn onehot_pcs_round_trips() {
+        let witness = register_witness();
+        for write in [false, true] {
+            let proof = prove_onehot_pcs(&witness, write).unwrap();
+            assert!(verify_onehot_pcs(&witness, write, &proof).unwrap());
+        }
+        let mut tampered = prove_onehot_pcs(&witness, false).unwrap();
+        tampered.claims[0] = tampered.claims[0] + F2_128::from(1u64);
+        assert!(!verify_onehot_pcs(&witness, false, &tampered).unwrap());
+    }
+}

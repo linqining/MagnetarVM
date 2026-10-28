@@ -246,3 +246,22 @@ started. It compiled, but no verifier/position-binding path and no shared PCS
 commitment were implemented, so it was reverted rather than committed as an
 unverified component. The next step is a proper one-hot verifier plus address
 bit/position binding.
+
+
+## Prototype 6: one-hot PCS proof
+
+`prove_onehot_pcs` / `verify_onehot_pcs` commit the K one-hot address columns
+and prove with logup* over an extended identity table:
+
+```text
+row 0       = all-zero vector (no access)
+row c+1     = basis vector e_c
+table width = K
+```
+
+The table has 2K entries, so the lookup uses `address_bits + 1` variables.
+PCS binds the committed columns to the reader claims. A tampered reader claim
+is rejected. This proves one-hotness but not yet the link between positions and
+the committed address-bit columns.
+
+Full runtime suite: 323 passing.
