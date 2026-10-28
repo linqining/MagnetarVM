@@ -777,3 +777,23 @@ reverted; the committed single-target `virtual_onehot` proof remains.
 Next attempt should first fix the multi-target sumcheck degree handling in a
 small standalone test, then reuse the same commitment for all local Twist
 terminal claims.
+
+
+## A2: multi-target virtual address proof
+
+Added `prove_virtual_address` / `verify_virtual_address`. One address-bit
+commitment and one grouped sumcheck prove RA/WA evaluations at several points;
+the summand is a sum of per-target products and the round degree is the address
+width.
+
+At 1024 rows, three targets (RA @ RW point, WA @ RW point, WA @ Val point):
+
+```text
+virtual address proof = 235,760 B
+```
+
+versus 382 KB for the dense shared one-hot proof and 3 x 196 KB for separate
+single-target proofs. This is the component that can replace dense one-hot
+commitments in the local Twist path.
+
+Full suite: 335 passing.

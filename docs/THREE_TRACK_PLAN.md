@@ -1003,3 +1003,8 @@ initial/final are now integrated; proof-size target still open.
 
 A2 started: virtual one-hot evaluation proofs are implemented (no dense K x T
 commitment). Next: multi-target address virtualization + local RW/Val circuits.
+
+
+A2 multi-target virtual address proof works: 3 targets in 235,760 B at 1024
+rows, replacing dense shared one-hot claims. Next: local RW/Val circuits using
+these virtual claims.
