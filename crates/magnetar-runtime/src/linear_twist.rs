@@ -1598,3 +1598,254 @@ pub fn verify_final_state(
     let expected = eq_cell * rw.table_values[0][1] * rw.input_values[1][0];
     Ok(final_sum == expected)
 }
+
+/// Val-evaluation proof that reuses the RW table/input commitments.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SharedValProof {
+    pub tables_opening: P3BatchOpening,
+    pub table_values: Vec<Vec<F2_128>>,
+    pub inputs_opening: P3BatchOpening,
+    pub inc_value: F2_128,
+    pub initial_opening: P3BatchOpening,
+    pub initial_value: F2_128,
+    pub rounds: Vec<Vec<F2_128>>,
+    pub challenges: Vec<F2_128>,
+}
+
+fn shared_rw_columns(
+    witness: &BinaryTwistWitness,
+) -> (Vec<Vec<F2_128>>, Vec<Vec<F2_128>>, usize, usize) {
+    let cells = 1usize << witness.address_bits;
+    let cycles = witness.cycles.next_power_of_two().max(2);
+    let (val, wa, inc) = build_val_tables(witness);
+    let mut ra = vec![F2_128::from(0u64); cells * cycles];
+    for (cycle, read) in witness.read_address.iter().enumerate() {
+        for cell in 0..cells {
+            ra[cell * cycles + cycle] = read[cell];
+        }
+    }
+    let mut read_value = witness.read_value.clone();
+    read_value.resize(cycles, F2_128::from(0u64));
+    let mut write_value = witness.write_value.clone();
+    write_value.resize(cycles, F2_128::from(0u64));
+    (
+        vec![ra, wa, val],
+        vec![inc, read_value, write_value],
+        cells,
+        cycles,
+    )
+}
+
+pub fn prove_val_shared(
+    witness: &BinaryTwistWitness,
+    rw: &RwPcsProof,
+) -> Result<SharedValProof, ProofError> {
+    let (tables_columns, input_columns, cells, cycles) = shared_rw_columns(witness);
+    let cycle_bits = cycles.trailing_zeros() as usize;
+    let (_, _, inc) = build_val_tables(witness);
+    let val = &tables_columns[2];
+    let wa = &tables_columns[1];
+    let pcs = linear_pcs(cycles);
+    let mut initial = witness.initial.clone();
+    initial.resize(cells.next_power_of_two().max(2), F2_128::from(0u64));
+    let initial_commit = pcs
+        .commit_batch(std::slice::from_ref(&initial))
+        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    let mut transcript = Sha256Transcript::new("magnetar-val-shared");
+    for commitment in [
+        &rw.tables.commitment,
+        &rw.inputs.commitment,
+        &initial_commit,
+    ] {
+        transcript.absorb(
+            "commitment",
+            &bincode::serialize(commitment).map_err(|error| ProofError::Pcs(error.to_string()))?,
+        );
+    }
+    let rk = sample_point(&mut transcript, witness.address_bits);
+    let rj = sample_point(&mut transcript, cycle_bits);
+    let val_claim = eval_mle(val, &rj.iter().chain(&rk).copied().collect::<Vec<_>>());
+    let init_claim = eval_mle(&initial, &rk);
+    let eq_rj = eq_vector(&rj, cycles);
+    let mut suffix = vec![F2_128::from(0u64); cycles];
+    let mut running = F2_128::from(0u64);
+    for previous in (0..cycles).rev() {
+        suffix[previous] = running;
+        running = running + eq_rj[previous];
+    }
+    let mut wa_at_rk = (0..cycles)
+        .map(|cycle| {
+            witness
+                .write_address
+                .get(cycle)
+                .map_or(F2_128::from(0u64), |row| eval_mle(row, &rk))
+        })
+        .collect::<Vec<_>>();
+    wa_at_rk.resize(cycles, F2_128::from(0u64));
+    let factors = vec![wa_at_rk, inc.clone(), suffix];
+    let (rounds, challenges) =
+        sumcheck_terms(&factors, &vec![3usize; cycle_bits], &mut transcript, |folded| {
+            (0..folded[0].len()).fold(F2_128::from(0u64), |sum, index| {
+                sum + folded[0][index] * folded[1][index] * folded[2][index]
+            })
+        })?;
+    let val_point = rj.iter().chain(&rk).copied().collect::<Vec<_>>();
+    let wa_point = challenges.iter().chain(&rk).copied().collect::<Vec<_>>();
+    let table_points = vec![
+        P3BatchPoint {
+            point: val_point.clone(),
+            columns: vec![2],
+        },
+        P3BatchPoint {
+            point: wa_point.clone(),
+            columns: vec![1],
+        },
+    ];
+    let input_points = vec![P3BatchPoint {
+        point: challenges.clone(),
+        columns: vec![0],
+    }];
+    let initial_points = vec![P3BatchPoint {
+        point: rk.clone(),
+        columns: vec![0],
+    }];
+    let tables_opening = pcs
+        .open_batch(&tables_columns, &table_points)
+        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    if tables_opening.commitment.num_columns != rw.tables.commitment.num_columns
+        || tables_opening.commitment.stacked_variables
+            != rw.tables.commitment.stacked_variables
+    {
+        return Err(ProofError::Pcs("shared RW table commitment mismatch".into()));
+    }
+    let inputs_opening = pcs
+        .open_batch(&input_columns, &input_points)
+        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    if inputs_opening.commitment.num_columns != rw.inputs.commitment.num_columns
+        || inputs_opening.commitment.stacked_variables
+            != rw.inputs.commitment.stacked_variables
+    {
+        return Err(ProofError::Pcs("shared RW input commitment mismatch".into()));
+    }
+    let initial_opening = pcs
+        .open_batch(std::slice::from_ref(&initial), &initial_points)
+        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    Ok(SharedValProof {
+        table_values: vec![vec![val_claim], vec![eval_mle(wa, &wa_point)]],
+        inc_value: eval_mle(&inc, &challenges),
+        initial_value: init_claim,
+        tables_opening,
+        inputs_opening,
+        initial_opening,
+        rounds,
+        challenges,
+    })
+}
+
+pub fn verify_val_shared(
+    rw: &RwPcsProof,
+    shape: LinearTwistShape,
+    proof: &SharedValProof,
+) -> Result<bool, ProofError> {
+    let cycle_bits = shape.cycle_bits();
+    let cycles = shape.cycles;
+    let mut transcript = Sha256Transcript::new("magnetar-val-shared");
+    for commitment in [
+        &rw.tables.commitment,
+        &rw.inputs.commitment,
+        &proof.initial_opening.commitment,
+    ] {
+        transcript.absorb(
+            "commitment",
+            &bincode::serialize(commitment).map_err(|error| ProofError::Pcs(error.to_string()))?,
+        );
+    }
+    let rk = sample_point(&mut transcript, shape.address_bits);
+    let rj = sample_point(&mut transcript, cycle_bits);
+    let val_point = rj.iter().chain(&rk).copied().collect::<Vec<_>>();
+    let wa_point = proof.challenges.iter().chain(&rk).copied().collect::<Vec<_>>();
+    let table_points = vec![
+        P3BatchPoint {
+            point: val_point.clone(),
+            columns: vec![2],
+        },
+        P3BatchPoint {
+            point: wa_point.clone(),
+            columns: vec![1],
+        },
+    ];
+    let input_points = vec![P3BatchPoint {
+        point: proof.challenges.clone(),
+        columns: vec![0],
+    }];
+    let initial_points = vec![P3BatchPoint {
+        point: rk.clone(),
+        columns: vec![0],
+    }];
+    let pcs = linear_pcs(cycles);
+    if !pcs
+        .verify_batch(&proof.tables_opening, &table_points, &proof.table_values)
+        .map_err(|error| ProofError::Pcs(error.to_string()))?
+        || !pcs
+            .verify_batch(
+                &proof.inputs_opening,
+                &input_points,
+                &[vec![proof.inc_value]],
+            )
+            .map_err(|error| ProofError::Pcs(error.to_string()))?
+        || !pcs
+            .verify_batch(
+                &proof.initial_opening,
+                &initial_points,
+                &[vec![proof.initial_value]],
+            )
+            .map_err(|error| ProofError::Pcs(error.to_string()))?
+    {
+        return Ok(false);
+    }
+    let val_claim = proof.table_values[0][0];
+    let wa_eval = proof.table_values[1][0];
+    let claimed = val_claim - proof.initial_value;
+    let mut transcript = Sha256Transcript::new("magnetar-val-shared");
+    for commitment in [
+        &rw.tables.commitment,
+        &rw.inputs.commitment,
+        &proof.initial_opening.commitment,
+    ] {
+        transcript.absorb(
+            "commitment",
+            &bincode::serialize(commitment).map_err(|error| ProofError::Pcs(error.to_string()))?,
+        );
+    }
+    let _ = sample_point(&mut transcript, shape.address_bits);
+    let _ = sample_point(&mut transcript, cycle_bits);
+    let Some((final_sum, challenges)) =
+        replay_terms_derived(&proof.rounds, claimed, &mut transcript)
+    else {
+        return Ok(false);
+    };
+    if challenges != proof.challenges {
+        return Ok(false);
+    }
+    let lt_eval = crate::binary_twist::lt_mle(&challenges, &rj, cycles);
+    Ok(final_sum == wa_eval * proof.inc_value * lt_eval)
+}
+
+#[cfg(test)]
+mod shared_val_tests {
+    use super::*;
+
+    #[test]
+    fn shared_val_reuses_rw_commitments() {
+        let witness = crate::linear_twist::tests::register_witness();
+        let shape = witness_shape(&witness);
+        let rw = prove_rw_pcs(&witness).unwrap();
+        let val = prove_val_shared(&witness, &rw).unwrap();
+        assert!(verify_val_shared(&rw, shape, &val).unwrap());
+        let rw_bytes = bincode::serialize(&rw).unwrap().len();
+        let shared_bytes = bincode::serialize(&val).unwrap().len();
+        let old_val_bytes = bincode::serialize(&prove_val_pcs(&witness).unwrap()).unwrap().len();
+        eprintln!("shared_val={shared_bytes} old_val={old_val_bytes} rw={rw_bytes}");
+        assert!(rw_bytes > 0);
+    }
+}

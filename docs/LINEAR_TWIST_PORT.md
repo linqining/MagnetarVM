@@ -599,3 +599,20 @@ versus ~1.98 MB for the separate sub-proofs. The 16384-row 20-column batch did
 not finish within 1800 s, so the next implementation step is to split the
 shared commitment into three groups (K*T tables, cycle tables, cell endpoints)
 rather than one wide batch.
+
+
+## Option A: shared-opening findings
+
+- Multi-point `P3BatchOpening` works (probe with two points/subsets passes).
+- A single 20-column flattened shared batch opens in ~0.56 MB at 1024, but the
+  16384-row version did not finish within 1800 s.
+- Splitting into three broadcast groups at 16384 gives ~1.99 MB and
+  commit/open ~7/14 s, i.e. no size win.
+- A shared Val proof that reuses the RW table/input commitments verifies, but
+  at 1024 rows it is 556,568 B versus 445,104 B for the standalone Val proof;
+  the extra commitment caps/points outweigh the reuse.
+
+Conclusion: simply sharing commitments is not sufficient; the sub-proofs must
+also share *points/columns* so one opening covers RW and Val terminals. The next
+step is a single shared table opening with both RW and Val points and no
+duplicated commitment caps.

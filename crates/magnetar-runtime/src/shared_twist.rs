@@ -178,3 +178,53 @@ mod tests {
         assert!(tables.verify(&opening, &points, &values).unwrap());
     }
 }
+
+
+#[cfg(test)]
+mod multi_point_tests {
+    use super::*;
+    use magnetar_pcs::{P3BatchPoint, P3BinaryPcs};
+
+    #[test]
+    fn multi_point_batch_opens() {
+        let cells = 8usize;
+        let cycles = 1024usize;
+        let height = cells * cycles;
+        let columns = (0..3)
+            .map(|column| {
+                (0..height)
+                    .map(|index| F2_128::from(((index + column) % 5) as u64))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let pcs = P3BinaryPcs::new(100);
+        let _commitment = pcs.commit_batch(&columns).unwrap();
+        let point = |salt: usize| {
+            (0..height.trailing_zeros() as usize)
+                .map(|index| F2_128::from((index * 3 + salt) as u64))
+                .collect::<Vec<_>>()
+        };
+        let points = vec![
+            P3BatchPoint {
+                point: point(1),
+                columns: vec![0, 1, 2],
+            },
+            P3BatchPoint {
+                point: point(2),
+                columns: vec![0, 2],
+            },
+        ];
+        let values = points
+            .iter()
+            .map(|point| {
+                point
+                    .columns
+                    .iter()
+                    .map(|column| crate::linear_twist::eval_mle(&columns[*column], &point.point))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let opening = pcs.open_batch(&columns, &points).unwrap();
+        assert!(pcs.verify_batch(&opening, &points, &values).unwrap());
+    }
+}
