@@ -542,3 +542,19 @@ total       1,976,264 B
 
 The two one-hot proofs are the largest single contributors; reducing/merging
 them is the main remaining proof-size lever.
+
+
+At 16384 rows the breakdown is:
+
+```text
+RW            521,000 B
+Val           448,248 B
+read one-hot  489,112 B
+write one-hot 489,112 B
+final state    38,688 B
+total       1,986,176 B
+```
+
+The paper target (~380 KiB) would require roughly a 5x reduction. PCS
+parameter tuning and one-hot batching attempts do not close that gap; it needs
+a smaller commitment/opening scheme for the dense linear tables.
