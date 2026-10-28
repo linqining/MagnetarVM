@@ -494,3 +494,26 @@ existing RW/Val PCS openings rather than adding new commitments. A full
 implementation therefore requires extending the RW/Val proof structs to expose
 one extra terminal opening, plus a small committed initial/final batch. This
 remains the next soundness item before paper alignment.
+
+
+## Final-state check implemented
+
+`FinalStateProof` now commits `initial`/`final`, reuses the RW final point as a
+fixed-challenge sumcheck point, and proves
+
+```text
+final(rk) - initial(rk)
+  = sum_{cell,cycle} eq(rk,cell) * WA(cell,cycle) * Inc(cycle)
+```
+
+The initial claim at the same cell point is also exposed as an outer Access
+claim. Paper-mode results with the final-state check:
+
+| rows | proof bytes | access | logup | selected | claim | prove | verify |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 16384 | 2,413,015 | 1,988,844 | 203,489 | 171,302 | 47,921 | 42.7 s | 16.6 s |
+| 65536 | 3,067,099 | 2,416,852 | 245,377 | 219,646 | 183,599 | 246.8 s | 107.5 s |
+
+The final check adds about 39 KiB to the proof and ~44 s prove / ~40 s verify at
+2^16. The final vector itself is still committed by the linear proof, not by the
+outer Access commitment.

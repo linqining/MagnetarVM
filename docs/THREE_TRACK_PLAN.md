@@ -976,3 +976,8 @@ This is the first complete paper-mode 2^16 run in this repository. The dense
 history is gone from this path; the remaining proof-size gap is dominated by the
 linear Access commitment/opening (~4.58 MB at 2^16), and final-state checking is
 still missing from the linear branch.
+
+
+Final-state check added: 2^16 paper proof is 3,067,099 B, prove 246.8 s,
+verify 107.5 s. Initial is bound to the outer Access commitment; the final
+vector remains in the linear proof's own commitment.

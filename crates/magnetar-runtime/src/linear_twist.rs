@@ -5,7 +5,7 @@
 //! table, so the prover only materializes `O(K * T)` data instead of the
 //! dense `O(T^2)` pair history.
 
-use magnetar_constraint::F2_128;
+use magnetar_constraint::{Field, F2_128};
 use magnetar_pcs::{P3BatchCommitment, P3BatchOpening, P3BatchPoint, P3BinaryPcs};
 use magnetar_memory::BinaryTwistWitness;
 use magnetar_proof::ProofError;
@@ -1158,17 +1158,22 @@ pub struct LinearTwistProof {
     pub val: ValPcsProof,
     pub read_onehot: OneHotPcsProof,
     pub write_onehot: OneHotPcsProof,
+    pub final_state: FinalStateProof,
 }
 
 pub fn prove_linear_twist(
     witness: &BinaryTwistWitness,
 ) -> Result<LinearTwistProof, ProofError> {
+    let shape = witness_shape(witness);
+    let rw = prove_rw_pcs(witness)?;
+    let final_state = prove_final_state(witness, &rw, shape)?;
     Ok(LinearTwistProof {
-        shape: witness_shape(witness),
-        rw: prove_rw_pcs(witness)?,
+        shape,
+        rw,
         val: prove_val_pcs(witness)?,
         read_onehot: prove_onehot_pcs(witness, false)?,
         write_onehot: prove_onehot_pcs(witness, true)?,
+        final_state,
     })
 }
 
@@ -1187,7 +1192,8 @@ pub fn verify_linear_twist_proof_only(
     Ok(verify_rw_pcs_shape(shape, &proof.rw)?
         && verify_val_pcs_shape(shape, &proof.val)?
         && verify_onehot_pcs_shape(shape, false, &proof.read_onehot)?
-        && verify_onehot_pcs_shape(shape, true, &proof.write_onehot)?)
+        && verify_onehot_pcs_shape(shape, true, &proof.write_onehot)?
+        && verify_final_state(&proof.rw, shape, &proof.final_state)?)
 }
 
 pub fn linear_twist_proof_bytes(proof: &LinearTwistProof) -> Result<usize, ProofError> {
@@ -1207,9 +1213,13 @@ mod linear_twist_tests {
         let proof = prove_linear_twist(&witness).unwrap();
         assert!(verify_linear_twist(&witness, &proof).unwrap());
         assert!(verify_linear_twist_proof_only(&proof).unwrap());
-        let mut tampered = proof;
+        let mut tampered = proof.clone();
         tampered.write_onehot.claims[0] =
             tampered.write_onehot.claims[0] + F2_128::from(1u64);
+        assert!(!verify_linear_twist(&witness, &tampered).unwrap());
+        let mut tampered = proof;
+        tampered.final_state.final_value =
+            tampered.final_state.final_value + F2_128::from(1u64);
         assert!(!verify_linear_twist(&witness, &tampered).unwrap());
     }
 }
@@ -1264,6 +1274,13 @@ pub fn linear_outer_claims(
         column: 0,
         point: cycle_point.clone(),
         value: write_value,
+    });
+    let cell_point = proof.rw.challenges[cycle_bits..].to_vec();
+    claims.push(LinearOuterClaim {
+        table: LinearOuterTable::Initial,
+        column: 0,
+        point: cell_point,
+        value: proof.final_state.initial,
     });
     let final_cycle = proof.rw.challenges[..cycle_bits].to_vec();
     claims.push(LinearOuterClaim {
@@ -1400,4 +1417,177 @@ mod ram_onehot_tests {
             assert!(verify_onehot_pcs(&witness, write, &proof).unwrap());
         }
     }
+}
+
+/// Fixed-challenge sumcheck: the challenges are the RW final point, so the
+/// terminal WA/Inc evaluations can be reused from the RW proof.
+fn fixed_sumcheck(
+    mut factors: Vec<Vec<F2_128>>,
+    challenges: &[F2_128],
+    summand: impl Fn(&[Vec<F2_128>]) -> F2_128,
+) -> (Vec<Vec<F2_128>>, F2_128) {
+    let mut rounds = Vec::with_capacity(challenges.len());
+    let mut point = Vec::with_capacity(2);
+    for challenge in challenges {
+        let mut evaluations = Vec::with_capacity(3);
+        for t in 0..3u64 {
+            let t = F2_128::from(t);
+            let mut folded = Vec::with_capacity(factors.len());
+            for factor in &factors {
+                let mut next = Vec::with_capacity(factor.len() / 2);
+                for pair in factor.chunks_exact(2) {
+                    next.push(pair[0] + t * (pair[1] - pair[0]));
+                }
+                folded.push(next);
+            }
+            evaluations.push(summand(&folded));
+        }
+        rounds.push(evaluations.clone());
+        for factor in &mut factors {
+            let mut next = Vec::with_capacity(factor.len() / 2);
+            for pair in factor.chunks_exact(2) {
+                next.push(pair[0] + *challenge * (pair[1] - pair[0]));
+            }
+            *factor = next;
+        }
+        point.push(*challenge);
+    }
+    let _ = point;
+    (rounds, summand(&factors))
+}
+
+fn replay_fixed(
+    rounds: &[Vec<F2_128>],
+    claimed: F2_128,
+    challenges: &[F2_128],
+) -> Option<F2_128> {
+    let mut claim = claimed;
+    for (round, challenge) in rounds.iter().zip(challenges) {
+        if round.len() != 3 || round[0] + round[1] != claim {
+            return None;
+        }
+        claim = interpolate_f2(round, *challenge);
+    }
+    Some(claim)
+}
+
+fn interpolate_f2(values: &[F2_128], r: F2_128) -> F2_128 {
+    let points = (0..values.len())
+        .map(|index| F2_128::from(index as u64))
+        .collect::<Vec<_>>();
+    let mut result = F2_128::from(0u64);
+    for (i, &value) in values.iter().enumerate() {
+        let mut basis = F2_128::from(1u64);
+        for (j, &point) in points.iter().enumerate() {
+            if i != j {
+                basis = basis * (r + point) * (points[i] + point).inv().expect("distinct");
+            }
+        }
+        result = result + value * basis;
+    }
+    result
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct FinalStateProof {
+    pub opening: P3BatchOpening,
+    pub initial: F2_128,
+    pub final_value: F2_128,
+    pub rounds: Vec<Vec<F2_128>>,
+}
+
+pub fn prove_final_state(
+    witness: &BinaryTwistWitness,
+    rw: &RwPcsProof,
+    shape: LinearTwistShape,
+) -> Result<FinalStateProof, ProofError> {
+    let cells = shape.cells();
+    let cycles = shape.cycles;
+    let cycle_bits = shape.cycle_bits();
+    let (_, wa, inc) = build_val_tables(witness);
+    let cell_point = rw.challenges[cycle_bits..].to_vec();
+    let eq_cell = eq_vector(&cell_point, cells);
+    let mut eq_flat = vec![F2_128::from(0u64); cells * cycles];
+    let mut inc_flat = vec![F2_128::from(0u64); cells * cycles];
+    for (cell, eq_value) in eq_cell.iter().enumerate() {
+        for (cycle, inc_value) in inc.iter().enumerate() {
+            let index = cell * cycles + cycle;
+            eq_flat[index] = *eq_value;
+            inc_flat[index] = *inc_value;
+        }
+    }
+    let factors = vec![eq_flat, wa, inc_flat];
+    let summand = |folded: &[Vec<F2_128>]| {
+        (0..folded[0].len()).fold(F2_128::from(0u64), |sum, index| {
+            sum + folded[0][index] * folded[1][index] * folded[2][index]
+        })
+    };
+    let (rounds, _) = fixed_sumcheck(factors, &rw.challenges, summand);
+    let mut initial = witness.initial.clone();
+    initial.resize(cells, F2_128::from(0u64));
+    let mut final_value = witness.final_value.clone();
+    final_value.resize(cells, F2_128::from(0u64));
+    let pcs = P3BinaryPcs::new(100);
+    let columns = vec![initial, final_value];
+    let commitment = pcs
+        .commit_batch(&columns)
+        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    let mut transcript = Sha256Transcript::new("magnetar-final-state");
+    transcript.absorb(
+        "commitment",
+        &bincode::serialize(&commitment).map_err(|error| ProofError::Pcs(error.to_string()))?,
+    );
+    let points = vec![P3BatchPoint {
+        point: cell_point.clone(),
+        columns: vec![0, 1],
+    }];
+    let initial_value = eval_mle(&columns[0], &cell_point);
+    let final_value = eval_mle(&columns[1], &cell_point);
+    let opening = pcs
+        .open_batch(&columns, &points)
+        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    Ok(FinalStateProof {
+        opening,
+        initial: initial_value,
+        final_value,
+        rounds,
+    })
+}
+
+pub fn verify_final_state(
+    rw: &RwPcsProof,
+    shape: LinearTwistShape,
+    proof: &FinalStateProof,
+) -> Result<bool, ProofError> {
+    let cells = shape.cells();
+    let cycle_bits = shape.cycle_bits();
+    let cell_point = rw.challenges[cycle_bits..].to_vec();
+    let mut transcript = Sha256Transcript::new("magnetar-final-state");
+    transcript.absorb(
+        "commitment",
+        &bincode::serialize(&proof.opening.commitment)
+            .map_err(|error| ProofError::Pcs(error.to_string()))?,
+    );
+    let points = vec![P3BatchPoint {
+        point: cell_point.clone(),
+        columns: vec![0, 1],
+    }];
+    if !P3BinaryPcs::new(100)
+        .verify_batch(
+            &proof.opening,
+            &points,
+            &[vec![proof.initial, proof.final_value]],
+        )
+        .map_err(|error| ProofError::Pcs(error.to_string()))?
+    {
+        return Ok(false);
+    }
+    let claimed = proof.final_value - proof.initial;
+    let Some(final_sum) = replay_fixed(&proof.rounds, claimed, &rw.challenges) else {
+        return Ok(false);
+    };
+    let eq_cell = eq_points_local(&cell_point, &cell_point);
+    let _ = cells;
+    let expected = eq_cell * rw.table_values[0][1] * rw.input_values[1][0];
+    Ok(final_sum == expected)
 }
