@@ -50,6 +50,7 @@ pub mod simd_f2;
 pub mod simd_full;
 pub mod simd_memory;
 pub mod trace_claims;
+pub mod virtual_onehot;
 pub mod trace_commitment;
 pub mod unified_gated;
 pub mod virtual_claims;

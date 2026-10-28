@@ -740,3 +740,27 @@ Paper-mode results after the merge:
 
 Timings vary strongly with machine load; proof size continues the A-direction
 reduction (3,067,123 B -> 1,684,331 B at 2^16).
+
+
+## A2 first component: virtual one-hot evaluation
+
+Added `virtual_onehot.rs`:
+
+```text
+prove_virtual_onehot(witness, write, rk, rj)
+verify_virtual_onehot(shape, rk, rj, proof)
+```
+
+It commits only address bits + valid, then proves a dense one-hot evaluation
+
+```text
+RA(rk,rj) = sum_cycle eq(rj,cycle) * valid(cycle) * prod_b factor(bit_b,rk_b)
+```
+
+by a cycle-variable sumcheck; the terminal opens the bit/valid columns. No dense
+K x T one-hot commitment.
+
+At 1024 rows a single virtual one-hot proof is 196,144 B. Two separate proofs
+(392 KB) are not yet smaller than the current shared one-hot proof (382 KB), so
+the next step is a multi-target virtual address proof sharing one commitment/
+opening, then using its claims inside the local RW/Val sumchecks.

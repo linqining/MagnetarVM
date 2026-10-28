@@ -189,13 +189,13 @@ pub fn verify_linear_rw(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use magnetar_executor::execute;
     use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 
     use super::*;
 
-    pub(super) fn register_witness() -> BinaryTwistWitness {
+    pub(crate) fn register_witness() -> BinaryTwistWitness {
         let mut program = Vec::new();
         for index in 0..1023 {
             program.push(

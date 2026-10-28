@@ -999,3 +999,7 @@ verify 158.8 s. Combined with shared RW+Val, proof size is down from 3.07 MB to
 
 Final-state merge: 2^16 proof 1,684,331 B. Shared RW+Val, one-hot, and
 initial/final are now integrated; proof-size target still open.
+
+
+A2 started: virtual one-hot evaluation proofs are implemented (no dense K x T
+commitment). Next: multi-target address virtualization + local RW/Val circuits.
