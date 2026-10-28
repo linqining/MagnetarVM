@@ -313,3 +313,27 @@ boundary for replacing `binary_twist` history; the sub-proofs still use separate
 commitments and the outer Access commitment is not yet wired.
 
 Full runtime suite: 324 passing.
+
+
+## Prototype 9: binary_twist linear entry point
+
+Added to `binary_twist.rs`:
+
+```text
+BinaryTwistLinearProof
+prove_binary_twist_ram_linear
+verify_binary_twist_ram_linear
+```
+
+They validate the witness and delegate to the combined PCS-backed linear Twist
+proof. `linear_binary_twist_bench` (release):
+
+| rows | proof bytes | prove | verify |
+|---:|---:|---:|---:|
+| 1024 | 1,948,712 | 0.68 s | 25 ms |
+| 16384 | 3,540,776 | 10.34 s | 68 ms |
+| 65536 | 4,575,944 | 41.67 s | 80 ms |
+
+This is the first actual `binary_twist.rs` path that runs at 2^16 without the
+c² history. It is standalone (its own PCS commitments) and still misses the
+outer Access commitment binding and final-state check.

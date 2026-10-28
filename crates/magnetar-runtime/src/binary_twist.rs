@@ -1299,6 +1299,34 @@ fn push_twist_value_points(
     expected.push(vec![evals.write]);
 }
 
+/// Linear-size replacement for the dense BinaryTwist history proof.
+///
+/// This is the standalone integration entry point: it validates the witness and
+/// emits the combined PCS-backed linear Twist proof (RW, Val, and both one-hot
+/// address bindings) instead of the `O(cycles^2)` history sumchecks.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BinaryTwistLinearProof {
+    pub linear: crate::linear_twist::LinearTwistProof,
+}
+
+pub fn prove_binary_twist_ram_linear(
+    witness: &BinaryTwistWitness,
+) -> Result<BinaryTwistLinearProof, ProofError> {
+    witness
+        .validate()
+        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    Ok(BinaryTwistLinearProof {
+        linear: crate::linear_twist::prove_linear_twist(witness)?,
+    })
+}
+
+pub fn verify_binary_twist_ram_linear(
+    witness: &BinaryTwistWitness,
+    proof: &BinaryTwistLinearProof,
+) -> Result<bool, ProofError> {
+    crate::linear_twist::verify_linear_twist(witness, &proof.linear)
+}
+
 /// Build all BinaryTwist claims against a commitment owned by an outer proof.
 ///
 /// `table_index` is the address table's index in that commitment; the compact
@@ -2550,6 +2578,18 @@ mod ram_tests {
             },
         )
         .unwrap()
+    }
+
+    #[test]
+    fn ram_binary_twist_linear_round_trips() {
+        let trace = trace();
+        let witness = BinaryTwistWitness::from_trace(&trace).unwrap();
+        let proof = prove_binary_twist_ram_linear(&witness).unwrap();
+        assert!(verify_binary_twist_ram_linear(&witness, &proof).unwrap());
+        let mut tampered = proof;
+        tampered.linear.write_onehot.claims[0] =
+            tampered.linear.write_onehot.claims[0] + F2_128::from(1u64);
+        assert!(!verify_binary_twist_ram_linear(&witness, &tampered).unwrap());
     }
 
     #[test]
