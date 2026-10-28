@@ -995,3 +995,7 @@ Shared RW+Val integrated: 2^16 proof drops from 3,067,123 B to 2,521,411 B
 Shared one-hot integrated: 2^16 proof is now 1,718,763 B, prove 267.9 s,
 verify 158.8 s. Combined with shared RW+Val, proof size is down from 3.07 MB to
 1.72 MB.
+
+
+Final-state merge: 2^16 proof 1,684,331 B. Shared RW+Val, one-hot, and
+initial/final are now integrated; proof-size target still open.

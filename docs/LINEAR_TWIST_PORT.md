@@ -723,3 +723,20 @@ current shared one-hot proof = 381,824 B
 
 The multi-point opening alone already costs as much as the whole current
 one-hot proof, before adding address openings/logup. This reuse is rejected.
+
+
+## Final state merged into shared RWVal opening
+
+The shared RWVal initial batch now commits `[initial, final]` and opens at both
+the Val point and the RW final cell point. `FinalStateProof` is reduced to the
+fixed-challenge sumcheck rounds (no separate PCS opening).
+
+Paper-mode results after the merge:
+
+| rows | proof bytes | access | logup | selected | claim | prove | verify |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 16384 | **1,299,663** | 875,468 | 203,489 | 171,302 | 47,921 | 98.1 s | 41.0 s |
+| 65536 | **1,684,331** | 1,034,060 | 245,377 | 219,646 | 183,599 | 340.3 s | 216.4 s |
+
+Timings vary strongly with machine load; proof size continues the A-direction
+reduction (3,067,123 B -> 1,684,331 B at 2^16).

@@ -1212,8 +1212,8 @@ mod linear_twist_tests {
             tampered.onehot.write_claims[0] + F2_128::from(1u64);
         assert!(!verify_linear_twist(&witness, &tampered).unwrap());
         let mut tampered = proof;
-        tampered.final_state.final_value =
-            tampered.final_state.final_value + F2_128::from(1u64);
+        tampered.rwval.final_state_final =
+            tampered.rwval.final_state_final + F2_128::from(1u64);
         assert!(!verify_linear_twist(&witness, &tampered).unwrap());
     }
 }
@@ -1283,13 +1283,13 @@ pub fn linear_outer_claims(
         table: LinearOuterTable::Initial,
         column: 0,
         point: cell_point.clone(),
-        value: proof.final_state.initial,
+        value: proof.rwval.final_state_initial,
     });
     claims.push(LinearOuterClaim {
         table: LinearOuterTable::Final,
         column: 1,
         point: cell_point,
-        value: proof.final_state.final_value,
+        value: proof.rwval.final_state_final,
     });
     claims.push(LinearOuterClaim {
         table: LinearOuterTable::Increment,
@@ -1489,9 +1489,6 @@ fn interpolate_f2(values: &[F2_128], r: F2_128) -> F2_128 {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FinalStateProof {
-    pub opening: P3BatchOpening,
-    pub initial: F2_128,
-    pub final_value: F2_128,
     pub rounds: Vec<Vec<F2_128>>,
 }
 
@@ -1522,35 +1519,8 @@ pub fn prove_final_state(
         })
     };
     let (rounds, _) = fixed_sumcheck(factors, &rw.rw_challenges, summand);
-    let mut initial = witness.initial.clone();
-    initial.resize(cells, F2_128::from(0u64));
-    let mut final_value = witness.final_value.clone();
-    final_value.resize(cells, F2_128::from(0u64));
-    let pcs = P3BinaryPcs::new(100);
-    let columns = vec![initial, final_value];
-    let commitment = pcs
-        .commit_batch(&columns)
-        .map_err(|error| ProofError::Pcs(error.to_string()))?;
-    let mut transcript = Sha256Transcript::new("magnetar-final-state");
-    transcript.absorb(
-        "commitment",
-        &bincode::serialize(&commitment).map_err(|error| ProofError::Pcs(error.to_string()))?,
-    );
-    let points = vec![P3BatchPoint {
-        point: cell_point.clone(),
-        columns: vec![0, 1],
-    }];
-    let initial_value = eval_mle(&columns[0], &cell_point);
-    let final_value = eval_mle(&columns[1], &cell_point);
-    let opening = pcs
-        .open_batch(&columns, &points)
-        .map_err(|error| ProofError::Pcs(error.to_string()))?;
-    Ok(FinalStateProof {
-        opening,
-        initial: initial_value,
-        final_value,
-        rounds,
-    })
+    let _ = witness;
+    Ok(FinalStateProof { rounds })
 }
 
 pub fn verify_final_state(
@@ -1561,27 +1531,7 @@ pub fn verify_final_state(
     let cells = shape.cells();
     let cycle_bits = shape.cycle_bits();
     let cell_point = rw.rw_challenges[cycle_bits..].to_vec();
-    let mut transcript = Sha256Transcript::new("magnetar-final-state");
-    transcript.absorb(
-        "commitment",
-        &bincode::serialize(&proof.opening.commitment)
-            .map_err(|error| ProofError::Pcs(error.to_string()))?,
-    );
-    let points = vec![P3BatchPoint {
-        point: cell_point.clone(),
-        columns: vec![0, 1],
-    }];
-    if !P3BinaryPcs::new(100)
-        .verify_batch(
-            &proof.opening,
-            &points,
-            &[vec![proof.initial, proof.final_value]],
-        )
-        .map_err(|error| ProofError::Pcs(error.to_string()))?
-    {
-        return Ok(false);
-    }
-    let claimed = proof.final_value - proof.initial;
+    let claimed = rw.final_state_final - rw.final_state_initial;
     let Some(final_sum) = replay_fixed(&proof.rounds, claimed, &rw.rw_challenges) else {
         return Ok(false);
     };
@@ -1851,6 +1801,8 @@ pub struct SharedRwValProof {
     pub input_values: Vec<Vec<F2_128>>,
     pub initial_opening: P3BatchOpening,
     pub initial_value: F2_128,
+    pub final_state_initial: F2_128,
+    pub final_state_final: F2_128,
     pub rw_rounds: Vec<Vec<F2_128>>,
     pub rw_challenges: Vec<F2_128>,
     pub val_rounds: Vec<Vec<F2_128>>,
@@ -1868,6 +1820,9 @@ pub fn prove_shared_rwval(
     let (_, _, inc) = build_val_tables(witness);
     let mut initial = witness.initial.clone();
     initial.resize(cells.next_power_of_two().max(2), F2_128::from(0u64));
+    let mut final_vector = witness.final_value.clone();
+    final_vector.resize(cells.next_power_of_two().max(2), F2_128::from(0u64));
+    let initial_columns = vec![initial.clone(), final_vector];
     let pcs = linear_pcs(cycles);
     let table_commit = pcs
         .commit_batch(&tables_columns)
@@ -1876,7 +1831,7 @@ pub fn prove_shared_rwval(
         .commit_batch(&input_columns)
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
     let initial_commit = pcs
-        .commit_batch(std::slice::from_ref(&initial))
+        .commit_batch(&initial_columns)
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
     let mut transcript = Sha256Transcript::new("magnetar-rwval-shared");
     for commitment in [&table_commit, &input_commit, &initial_commit] {
@@ -1972,10 +1927,17 @@ pub fn prove_shared_rwval(
             columns: vec![0],
         },
     ];
-    let initial_points = vec![P3BatchPoint {
-        point: rk.clone(),
-        columns: vec![0],
-    }];
+    let cell_point = rw_challenges[cycle_bits..].to_vec();
+    let initial_points = vec![
+        P3BatchPoint {
+            point: rk.clone(),
+            columns: vec![0],
+        },
+        P3BatchPoint {
+            point: cell_point.clone(),
+            columns: vec![0, 1],
+        },
+    ];
     let tables_opening = pcs
         .open_batch(&tables_columns, &table_points)
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
@@ -1983,7 +1945,7 @@ pub fn prove_shared_rwval(
         .open_batch(&input_columns, &input_points)
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
     let initial_opening = pcs
-        .open_batch(std::slice::from_ref(&initial), &initial_points)
+        .open_batch(&initial_columns, &initial_points)
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
     Ok(SharedRwValProof {
         table_values: vec![
@@ -2004,6 +1966,8 @@ pub fn prove_shared_rwval(
             vec![eval_mle(&input_columns[0], &val_challenges)],
         ],
         initial_value: eval_mle(&initial, &rk),
+        final_state_initial: eval_mle(&initial, &cell_point),
+        final_state_final: eval_mle(&initial_columns[1], &cell_point),
         tables_opening,
         inputs_opening,
         initial_opening,
@@ -2101,7 +2065,7 @@ pub fn verify_shared_rwval(
             columns: vec![0],
         },
     ];
-    let initial_points = vec![P3BatchPoint {
+    let mut initial_points = vec![P3BatchPoint {
         point: {
             let mut transcript = Sha256Transcript::new("magnetar-rwval-shared");
             for commitment in [
@@ -2125,6 +2089,10 @@ pub fn verify_shared_rwval(
         },
         columns: vec![0],
     }];
+    initial_points.push(P3BatchPoint {
+        point: proof.rw_challenges[cycle_bits..].to_vec(),
+        columns: vec![0, 1],
+    });
     let pcs = linear_pcs(cycles);
     let tables_ok = pcs
         .verify_batch(&proof.tables_opening, &table_points, &proof.table_values)
@@ -2136,7 +2104,10 @@ pub fn verify_shared_rwval(
         .verify_batch(
             &proof.initial_opening,
             &initial_points,
-            &[vec![proof.initial_value]],
+            &[
+                vec![proof.initial_value],
+                vec![proof.final_state_initial, proof.final_state_final],
+            ],
         )
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
     if !(tables_ok && inputs_ok && initial_ok) {
@@ -2201,10 +2172,6 @@ mod shared_rwval_tests {
         let shape = witness_shape(&witness);
         let proof = prove_shared_rwval(&witness).unwrap();
         assert!(verify_shared_rwval(shape, &proof).unwrap());
-        let shared = bincode::serialize(&proof).unwrap().len();
-        let old = bincode::serialize(&prove_rw_pcs(&witness).unwrap()).unwrap().len()
-            + bincode::serialize(&prove_val_pcs(&witness).unwrap()).unwrap().len();
-        eprintln!("shared_rwval={shared} old_rw_val={old}");
     }
 }
 
