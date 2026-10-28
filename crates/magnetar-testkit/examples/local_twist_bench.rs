@@ -45,5 +45,13 @@ fn main() {
     let started = Instant::now();
     assert!(verify_local_twist(&proof).unwrap());
     let verify_time = started.elapsed();
-    println!("rows={rows} bytes={bytes} prove={prove_time:?} verify={verify_time:?}");
+    let components = vec![
+        ("values", bincode::serialize(&proof.values_opening).unwrap().len()),
+        ("endpoints", bincode::serialize(&proof.endpoints_opening).unwrap().len()),
+        ("virtual", bincode::serialize(&proof.virtual_address).unwrap().len()),
+        ("rw_rounds", bincode::serialize(&proof.rw_rounds).unwrap().len()),
+        ("val_rounds", bincode::serialize(&proof.val_rounds).unwrap().len()),
+        ("final_rounds", bincode::serialize(&proof.final_rounds).unwrap().len()),
+    ];
+    println!("rows={rows} bytes={bytes} prove={prove_time:?} verify={verify_time:?} components={components:?}");
 }

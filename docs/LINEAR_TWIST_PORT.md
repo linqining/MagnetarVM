@@ -829,3 +829,19 @@ Paper-mode unified results with the local proof:
 Cumulative: 2^16 paper proof 3,067,123 B -> 1,210,563 B (-61%). The standalone
 local memory proof is 557,624 B / 8 ms verify, close to the paper's 380 KiB /
 8 ms memory target; the remaining paper overhead is logup/selected/claim.
+
+
+### Local proof component breakdown (2^16)
+
+```text
+values opening   243,792 B
+virtual address  296,344 B
+endpoints         12,816 B
+rounds              ~3.9 KB
+total             557,624 B
+```
+
+The two PCS openings dominate. A single shared local opening covering values,
+address bits, and endpoint broadcasts is the next size lever; even then the
+paper's 380 KiB total target also requires compressing logup/selected/claim,
+which currently total ~648 KB at 2^16.
