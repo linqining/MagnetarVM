@@ -379,3 +379,22 @@ with the outer commitment data.
 Full runtime suite: 326 passing. Wiring these claims into the unified verifier
 (and making the linear proof's own commitments the source of truth in the paper
 path) is the next step.
+
+
+## Unified-routing attempt: one-hot P3 failure on RAM witnesses
+
+An optional `linear` field and threshold branch were prototyped in
+`BinaryTwistRamProof`: at >=8192 cycles it would emit the linear proof and bind
+its outer claims to the Access commitment.
+
+The 8192-row RAM witness exposed a P3 one-hot opening failure: the read
+one-hot proof verifies, but the write one-hot proof's own PCS batch
+`verify_batch` returns false, even though its commitment/claims/points are
+produced together. The write matrix has only cell 0 nonzero, so most columns
+are zero (later offset by one; still failing). The same code verifies the
+register witness and the 2^16 standalone example, so this is pattern/table
+dependent, not a general point issue.
+
+The unified-routing branch and test were reverted rather than enabled with an
+unverified one-hot proof. Standalone linear BinaryTwist remains available and
+its 2^16 benchmark is unchanged.
