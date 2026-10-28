@@ -294,3 +294,22 @@ position = sum_b address_bit_b * embed(1<<b) + valid * embed(K)
 
 A tampered reader claim is rejected. This closes one-hot and address-bit binding
 for a standalone committed table. Full runtime suite: 323 passing.
+
+
+## Prototype 8: combined linear Twist proof
+
+`LinearTwistProof` bundles:
+
+```text
+RW PCS proof
+Val PCS proof
+read one-hot/address PCS proof
+write one-hot/address PCS proof
+```
+
+`prove_linear_twist` / `verify_linear_twist` round-trip on the register
+witness; tampering a one-hot reader claim is rejected. This is the integration
+boundary for replacing `binary_twist` history; the sub-proofs still use separate
+commitments and the outer Access commitment is not yet wired.
+
+Full runtime suite: 324 passing.

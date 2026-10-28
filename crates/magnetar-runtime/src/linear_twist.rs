@@ -1095,3 +1095,60 @@ mod onehot_pcs_tests {
         assert!(!verify_onehot_pcs(&witness, false, &tampered).unwrap());
     }
 }
+
+/// Combined standalone linear Twist proof for the read/write history.
+///
+/// This is the integration boundary used by the runtime bench: the RW and Val
+/// relations are PCS-backed, and both address matrices are tied to committed
+/// address bits through the one-hot lookup proofs.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct LinearTwistProof {
+    pub rw: RwPcsProof,
+    pub val: ValPcsProof,
+    pub read_onehot: OneHotPcsProof,
+    pub write_onehot: OneHotPcsProof,
+}
+
+pub fn prove_linear_twist(
+    witness: &BinaryTwistWitness,
+) -> Result<LinearTwistProof, ProofError> {
+    Ok(LinearTwistProof {
+        rw: prove_rw_pcs(witness)?,
+        val: prove_val_pcs(witness)?,
+        read_onehot: prove_onehot_pcs(witness, false)?,
+        write_onehot: prove_onehot_pcs(witness, true)?,
+    })
+}
+
+pub fn verify_linear_twist(
+    witness: &BinaryTwistWitness,
+    proof: &LinearTwistProof,
+) -> Result<bool, ProofError> {
+    Ok(verify_rw_pcs(witness, &proof.rw)?
+        && verify_val_pcs(witness, &proof.val)?
+        && verify_onehot_pcs(witness, false, &proof.read_onehot)?
+        && verify_onehot_pcs(witness, true, &proof.write_onehot)?)
+}
+
+pub fn linear_twist_proof_bytes(proof: &LinearTwistProof) -> Result<usize, ProofError> {
+    bincode::serialize(proof)
+        .map(|bytes| bytes.len())
+        .map_err(|error| ProofError::Pcs(error.to_string()))
+}
+
+#[cfg(test)]
+mod linear_twist_tests {
+    use super::tests::register_witness;
+    use super::*;
+
+    #[test]
+    fn combined_linear_twist_round_trips() {
+        let witness = register_witness();
+        let proof = prove_linear_twist(&witness).unwrap();
+        assert!(verify_linear_twist(&witness, &proof).unwrap());
+        let mut tampered = proof;
+        tampered.write_onehot.claims[0] =
+            tampered.write_onehot.claims[0] + F2_128::from(1u64);
+        assert!(!verify_linear_twist(&witness, &tampered).unwrap());
+    }
+}
