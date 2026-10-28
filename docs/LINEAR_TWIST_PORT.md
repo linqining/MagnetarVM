@@ -525,3 +525,20 @@ Combining the one-hot table and address-bit batches into one PCS commitment
 with two opening points reduced commitment count but the combined
 `verify_batch` rejected the opening. The separate-commitment version was
 restored; the combined version was not committed.
+
+
+## Linear proof component sizes (16384-row class, 1024-row probe)
+
+`linear_binary_twist_bench` now reports sub-proof sizes. At 1024 rows:
+
+```text
+RW            545,288 B
+Val           445,104 B
+read one-hot  473,696 B
+write one-hot 473,696 B
+final state    38,464 B
+total       1,976,264 B
+```
+
+The two one-hot proofs are the largest single contributors; reducing/merging
+them is the main remaining proof-size lever.

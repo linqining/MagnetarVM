@@ -47,7 +47,15 @@ fn main() {
     let started = Instant::now();
     assert!(verify_binary_twist_ram_linear(&witness, &proof).unwrap());
     let verify_time = started.elapsed();
+    let inner = &proof.linear;
+    let components = vec![
+        ("rw", bincode::serialize(&inner.rw).unwrap().len()),
+        ("val", bincode::serialize(&inner.val).unwrap().len()),
+        ("read_onehot", bincode::serialize(&inner.read_onehot).unwrap().len()),
+        ("write_onehot", bincode::serialize(&inner.write_onehot).unwrap().len()),
+        ("final_state", bincode::serialize(&inner.final_state).unwrap().len()),
+    ];
     println!(
-        "rows={rows} bytes={bytes} prove={prove_time:?} verify={verify_time:?}"
+        "rows={rows} bytes={bytes} prove={prove_time:?} verify={verify_time:?} components={components:?}"
     );
 }
