@@ -1217,3 +1217,23 @@ total verify  1.30 s -> 735 ms
 
 The remaining cost is dominated by trace-backed Shout verification (~0.28 s),
 O(T) witness-bit reconstruction, and claim/access reconstruction.
+
+
+### Current 2^16 verify breakdown (735 ms)
+
+Profiled proof-only trace-Shout path:
+
+```text
+trace-backed Shout verify     ~0.28-0.31 s
+claim/access reconstruction  ~0.10 s
+core proof                   ~5 ms
+selected public stage        ~12 ms
+remaining O(T) witness bind  ~0.3 s
+```
+
+The remaining dominant stages all require the reconstructed trace/claims:
+trace-Shout verification needs the BinaryShout witness, claim verification
+reconstructs all rows and the Merkle root, and witness binding builds/reduces
+the full bit vector. Reaching 8 ms requires replacing these with the paper's
+virtual-claim routing and a proof-only Shout reduction, not further micro
+optimization of the current O(T) path.

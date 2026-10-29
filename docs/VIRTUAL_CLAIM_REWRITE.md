@@ -221,3 +221,12 @@ passing, clippy clean.
 Blocked witness-MLE binding uses a precomputed local equality tensor and sparse
 conditional block sums. Full 2^16 proof-only verify: 1.30 s -> 735 ms. Full suite
 339 passing, clippy clean.
+
+
+## Current limitation
+
+At 735 ms the remaining time is dominated by O(T) work: trace-backed Shout
+verification (~0.3 s), claim row/Merkle reconstruction (~0.1 s), witness-bit
+reconstruction and MLE binding (~0.3 s), with the selected public verifier at
+~12 ms. The next requirement is architectural: virtual-claim routing plus a
+proof-only Shout reduction that does not transmit the full pushforward tables.
