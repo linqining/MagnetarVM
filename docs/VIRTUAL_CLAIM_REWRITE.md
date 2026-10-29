@@ -144,3 +144,29 @@ from the virtual claim set.
 the initial register file over the stored PC/word/rd rows. At 2^16 the claim
 proof drops from 183,599 B to 2,410 B and the proof-only trace-Shout total is
 354,979 B compressed, with no verifier trace.
+
+
+## Milestone 2: segment-claim binding (Virtual Spartan-style)
+
+`verify_dynamic_segments_against_rows` now implements the first virtual-claim
+binding step for the selected CPU proof:
+
+```text
+1. verify the public CPU matrices/layout/PCS from the selected proof
+   (no trace-based matrix verifier),
+2. rebuild the expected witness bits from claim rows,
+3. compute the full witness MLE at the proof point,
+4. reconstruct the witness MLE from the proof segment claims via the public
+   segment layout,
+5. require the two values to agree.
+```
+
+A tampered segment claim is rejected by the test
+`virtual_segment_claims_bind_to_dynamic_witness`.
+
+Measured at 2^16 trace-Shout: this path verifies in 3.09 s, slower than the
+current trace-based selected verifier (2.40 s), because step 2-3 are still
+O(T). It is therefore not enabled in the default verifier. The next milestone
+is the actual Virtual Spartan step: replace steps 2-4 with the segment-only
+linear identity and route every virtual segment claim to its auxiliary
+reduction, so the verifier never reconstructs the full witness bits.

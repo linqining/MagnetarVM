@@ -1059,3 +1059,9 @@ parallelize extra-row sums; 2^16 proof-only trace-Shout verify 7.97 s -> 4.48 s
 Fast factorized matrix MLE evaluation: selected lockstep eval_mles 3.2 s -> 43 ms,
 total proof-only verify 4.48 s -> 2.40 s at 2^16. Witness-bit binding still O(n)
 (~1 s); proof size unchanged.
+
+
+Virtual-claim milestone 2: selected verifier can bind proof segment claims to
+the expected witness via public matrices + witness MLE/reconstructed segment
+claims; tamper test passes. It costs 3.09 s at 2^16 and is not the default; next
+step is segment-only Virtual Spartan consistency + auxiliary routing.

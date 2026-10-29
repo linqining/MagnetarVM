@@ -5679,6 +5679,94 @@ pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
     Ok((proof, layout, mask, cycles))
 }
 
+/// Virtual-Spartan-style selected verifier: check the public CPU matrices/PCS
+/// from the proof, reconstruct the expected witness MLE from the claim rows,
+/// and bind the proof segment claims through the layout identity.
+pub fn verify_dynamic_segments_against_rows<B: magnetar_proof::BitPcs + Sync>(
+    trace: &magnetar_spec::Trace,
+    claims: &SelectedCpuClaims<B::Commitment, B::Opening>,
+    backend: &B,
+    width: usize,
+) -> Result<(), RuntimeError>
+where
+    B::Commitment: Sync,
+    B::Opening: Sync,
+{
+    use magnetar_constraint::F2_128 as F2;
+
+    let rows = mixed_alu_branch_rows_from_trace_dynamic(trace, width)?;
+    let final_pc = trace.final_state.pc;
+    let mut mask = mixed_rows_component_mask(&rows);
+    if rows.len() < rows.len().next_power_of_two().max(2) {
+        mask |= MIXED_BRANCH;
+    }
+    if rows.last().map(|(pc, _)| *pc) == Some(final_pc) && mask & MIXED_JUMP == 0 {
+        mask |= MIXED_BRANCH;
+    }
+    let cycles = rows.len().next_power_of_two().max(2);
+    let initial_pc = rows[0].0;
+    let original = DynamicMixedRow::build(mask, width)?;
+    let (row, mapping, layout) = segmented_dynamic_row(mask, width, cycles)?;
+    let (base_cols, _, _) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
+    let mut bits = Vec::with_capacity(cycles * base_cols);
+    for index in 0..cycles {
+        let (pc, mut input) = if index < rows.len() {
+            rows[index]
+        } else {
+            (final_pc, dynamic_padding_input(mask, final_pc))
+        };
+        if index + 1 == rows.len() && final_pc == pc && mask & MIXED_JUMP == 0 {
+            input = MixedAluBranchInput::Fetch {
+                left: 0,
+                right: 0,
+                imm: 0,
+                kind: crate::branch_row::BranchKind::Beq,
+            };
+        }
+        let correction = row_pc_correction(trace.rows.get(index), &input);
+        let source = original.witness_at(pc, &input, correction)?;
+        let mut block = vec![false; base_cols];
+        for (from, to) in mapping.iter().enumerate() {
+            if source[from] {
+                block[*to] = true;
+            }
+        }
+        bits.extend(block);
+    }
+    if bits.len() != layout.total_bits {
+        return Err(RuntimeError::Proof(
+            "dynamic segment layout does not match witness bits".into(),
+        ));
+    }
+    let ry = verify_dynamic_segments_public_point(claims, backend)?;
+    if ry.len() != layout.total_bits.trailing_zeros() as usize {
+        return Err(RuntimeError::Proof("dynamic segment point length".into()));
+    }
+    if claims.proof.segments.len() != layout.segments.len() {
+        return Err(RuntimeError::Proof("dynamic segment claim count".into()));
+    }
+    let values = bits
+        .iter()
+        .map(|bit| F2::from(u64::from(*bit)))
+        .collect::<Vec<_>>();
+    let expected = magnetar_proof::Mle::new(values)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .eval(&ry)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let reconstructed = magnetar_proof::virtual_spartan::reconstruct_segment_claim(
+        &layout,
+        &claims.proof.segments,
+        &ry,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if expected != reconstructed {
+        return Err(RuntimeError::Proof(
+            "dynamic virtual segment claims do not match witness".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Verify a dynamic selected proof from its serialized-mask/layout metadata,
 /// without rebuilding a trace. Segment-to-claim routing is still performed by
 /// the caller; this checks the public CPU matrices, layout and PCS opening.
@@ -6555,6 +6643,49 @@ mod tests {
         let mut bad = proof;
         bad.openings[0].claim.pc ^= 2;
         assert!(!verify_selected_claim_binding(&claims, &bad));
+    }
+
+    #[test]
+    fn virtual_segment_claims_bind_to_dynamic_witness() {
+        use magnetar_executor::execute;
+        use magnetar_pcs::P3SharedPcs;
+        use magnetar_proof::RingSwitchPackedBitPcs;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+        let backend =
+            RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 10,
+            },
+        )
+        .unwrap();
+        let claims = prove_dynamic_cpu_claims(&trace, 8, &backend).unwrap();
+        verify_dynamic_segments_against_rows(&trace, &claims, &backend, 8).unwrap();
+        let mut tampered = claims.clone();
+        tampered.proof.segments[0].value =
+            tampered.proof.segments[0].value + magnetar_constraint::F2_128::from(1u64);
+        assert!(verify_dynamic_segments_against_rows(&trace, &tampered, &backend, 8).is_err());
     }
 
     #[test]
