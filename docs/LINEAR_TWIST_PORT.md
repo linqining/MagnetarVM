@@ -1172,3 +1172,13 @@ Two attempted optimizations:
 
 The selected stage still needs eq-tensor reuse / a specialized pattern
 evaluator to reach single-digit milliseconds.
+
+
+### Specialized PC-chain pattern sum
+
+`LazyExtraRows::eval_sum` now reorders the A/C chain sums by bit and the B chain
+by instance, using precomputed row weights and factorized column weights instead
+of a per-row callback. At 2^14 the selected public verifier improves from
+13.8 ms to 11.1 ms. Full-suite tests and clippy pass. The remaining selected cost
+is dominated by building the row/column eq tensors and the field operations in
+the chain dot products.

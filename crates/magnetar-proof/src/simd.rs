@@ -30,6 +30,90 @@ pub enum LazyExtraRows {
 }
 
 impl LazyExtraRows {
+    /// Evaluate the extra-row sum using precomputed row weights and the
+    /// factorized column-equality vectors.
+    pub fn eval_sum(
+        &self,
+        row_weights: &[F2_128],
+        col_local_eq: &[F2_128],
+        col_instance_eq: &[F2_128],
+        base_cols: usize,
+    ) -> F2_128 {
+        let LazyExtraRows::Gated {
+            part,
+            width,
+            cycles,
+            pc,
+            next_pc,
+            one,
+            statement,
+            ..
+        } = self;
+        let mut sum = F2_128::from(0u64);
+        let chain_instances = cycles.saturating_sub(1);
+        match part {
+            1 => {
+                let local_weight = col_local_eq[*one];
+                for instance in 0..chain_instances {
+                    let mut row_weight = F2_128::from(0u64);
+                    for bit in 0..*width {
+                        row_weight = row_weight + row_weights[instance * width + bit];
+                    }
+                    sum = sum + local_weight * col_instance_eq[instance] * row_weight;
+                }
+            }
+            _ => {
+                let locals = if *part == 0 { next_pc } else { pc };
+                for bit in 0..*width {
+                    let local_weight = col_local_eq[locals[bit]];
+                    let mut dot = F2_128::from(0u64);
+                    for instance in 0..chain_instances {
+                        let weight = row_weights[instance * width + bit];
+                        let column_weight = if *part == 0 {
+                            col_instance_eq[instance]
+                        } else {
+                            col_instance_eq[instance + 1]
+                        };
+                        dot = dot + weight * column_weight;
+                    }
+                    sum = sum + local_weight * dot;
+                }
+            }
+        }
+        if let Some((initial, final_pc)) = statement {
+            let mut offset = chain_instances * width;
+            for instance in [0usize, cycles.saturating_sub(1)] {
+                let pc_value = if instance == 0 { *initial } else { *final_pc };
+                for bit in 0..*width {
+                    let local = match *part {
+                        0 => {
+                            if instance == 0 {
+                                pc[bit]
+                            } else {
+                                next_pc[bit]
+                            }
+                        }
+                        1 => *one,
+                        _ => *one,
+                    };
+                    let coefficient = if *part == 2 && (pc_value >> bit) & 1 == 0 {
+                        F2_128::from(0u64)
+                    } else {
+                        F2_128::from(1u64)
+                    };
+                    let _ = base_cols;
+                    sum = sum
+                        + coefficient
+                            * row_weights[offset]
+                            * col_local_eq[local]
+                            * col_instance_eq[instance];
+                    offset += 1;
+                }
+            }
+        }
+        sum
+    }
+
     pub fn len(&self) -> usize {
         match self {
             LazyExtraRows::Gated {
@@ -313,24 +397,31 @@ impl SharedBlockMatrix {
         let high_index = extra_base >> extra_bits;
         let high_bits = bits(high_index, high_point.len());
         let high_eq = eq(high_point, &high_bits);
+        let row_weights = row_low_eq
+            .iter()
+            .map(|weight| *weight * high_eq)
+            .collect::<Vec<_>>();
         let col_local_eq = eq_vector_tensor(&col_point[..local_col_bits]);
         let col_instance_eq = eq_vector_tensor(&col_point[local_col_bits..]);
-        let add_row = |sum: &mut F2_128, offset: usize, column: usize, coefficient: F2_128| {
-            let instance = column / self.base.cols;
-            let local = column % self.base.cols;
-            *sum = *sum
-                + coefficient
-                    * row_low_eq[offset]
-                    * high_eq
-                    * col_local_eq[local]
-                    * col_instance_eq[instance];
-        };
         if let Some(lazy) = &self.lazy_extra {
-            lazy.for_each(|offset, column, coefficient| add_row(&mut sum, offset, column, coefficient));
+            sum = sum
+                + lazy.eval_sum(
+                    &row_weights,
+                    &col_local_eq,
+                    &col_instance_eq,
+                    self.base.cols,
+                );
         } else {
             for (offset, row) in self.extra.iter().enumerate() {
+                let row_weight = row_weights[offset];
                 for (column, coefficient) in row {
-                    add_row(&mut sum, offset, *column, *coefficient);
+                    let instance = column / self.base.cols;
+                    let local = column % self.base.cols;
+                    sum = sum
+                        + *coefficient
+                            * row_weight
+                            * col_local_eq[local]
+                            * col_instance_eq[instance];
                 }
             }
         }
