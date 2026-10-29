@@ -1148,3 +1148,27 @@ This identifies the next required protocol piece: a proof-only Shout reduction
 that checks the pushforwards without transmitting the full tables (paper's
 fraction GKR output / committed-position approach), plus selected-stage
 optimization from ~46 ms to single-digit ms.
+
+
+### Selected-stage profiling (2^16)
+
+Lazy public selected verifier breakdown:
+
+```text
+base + instance terms   ~3 ms
+eq tensor construction ~15 ms
+lazy PC-chain pattern  ~25 ms
+total                  ~45-59 ms
+```
+
+Two attempted optimizations:
+
+1. Preprocessed verifier context (`DynamicSelectedVerifier`): at 16384 the
+   prebuilt context verifies in 13.4 ms versus 13.8 ms for the one-shot path, so
+   construction is not the bottleneck.
+2. Parallel lazy-pattern chunks: 16384 selected verify 13.8 ms -> 11.3 ms, but
+   the full 2^16 verifier regressed (1.31 s -> 1.47 s) because it oversubscribes
+   threads with the parallel core/Shout workers. Reverted.
+
+The selected stage still needs eq-tensor reuse / a specialized pattern
+evaluator to reach single-digit milliseconds.
