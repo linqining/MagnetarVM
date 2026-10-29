@@ -1043,3 +1043,9 @@ with claim is 526,741 B compressed; committed-Shout proof-only is 712,967 B.
 B compact claim: RS1/RS2 reconstructed from initial registers; claim 183,599 B
 -> 2,410 B at 2^16. Proof-only trace-Shout total 354,979 B compressed (below
 paper 380 KiB); committed Shout proof-only 541,198 B compressed. Full suite 338.
+
+
+Verify performance: profiled 80 s -> 7.97 s at 2^16. Removed full
+UnifiedVerifyContext witness rebuild (68.9 s) by using verify_core_proof;
+optimized Spartan MLE eval (18 s -> 4.8 s). Remaining: selected CPU witness
+commit/matrix eval.

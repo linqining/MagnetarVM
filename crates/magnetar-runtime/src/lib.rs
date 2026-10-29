@@ -2661,9 +2661,18 @@ pub(crate) fn verify_unified_with_plan_impl(
         crate::logup_shout::verify_logup_shout_against_witness(logup_shout, &witness)?;
     }
     if let Some(trace_logup) = &proof.trace_logup_shout {
+        let started = std::time::Instant::now();
         let witness = crate::binary_shout::BinaryShoutWitness::from_trace(trace)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        let witness_time = started.elapsed();
+        let verify_started = std::time::Instant::now();
         crate::logup_shout::verify_trace_logup_shout(trace_logup, &witness)?;
+        if profile {
+            eprintln!(
+                "trace logup witness: {witness_time:?} verify: {:?}",
+                verify_started.elapsed()
+            );
+        }
     }
 
     if proof.virtual_claim_root != [0u8; 32] {
@@ -2681,7 +2690,11 @@ pub(crate) fn verify_unified_with_plan_impl(
             ));
         }
     }
+    let context_started = std::time::Instant::now();
     let mut context = crate::protocol::UnifiedVerifyContext::new(trace, proof, width)?;
+    if profile {
+        eprintln!("unified context: {:?}", context_started.elapsed());
+    }
     for stage in plan.execution() {
         let started = std::time::Instant::now();
         match stage {
@@ -3580,7 +3593,7 @@ pub fn verify_native_claim_layer(
 pub fn verify_native_unified(
     statement: &Statement,
     proof: &UnifiedTraceProof,
-    width: usize,
+    _width: usize,
 ) -> Result<(), RuntimeError> {
     if proof.trace_claim_root != statement.trace_claim_root {
         return Err(RuntimeError::Proof(
@@ -3592,7 +3605,26 @@ pub fn verify_native_unified(
             "trace commitment does not match the public statement".into(),
         ));
     }
+    if proof.virtual_claim_root != [0u8; 32] {
+        let selected = proof
+            .selected_cpu
+            .as_ref()
+            .ok_or_else(|| RuntimeError::Proof("virtual claim root without selected CPU proof".into()))?;
+        let set = crate::virtual_claims::VirtualClaimSet::from_selected(selected)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        if set.root != proof.virtual_claim_root {
+            return Err(RuntimeError::Proof(
+                "virtual claim root does not match selected CPU proof".into(),
+            ));
+        }
+    }
+    let profile = std::env::var_os("MAGNETAR_PROFILE_VERIFY").is_some();
+    let claims_started = std::time::Instant::now();
     let claims = verify_unified_claim_proof_with_statement(statement, proof)?;
+    if profile {
+        eprintln!("verify_native claims: {:?}", claims_started.elapsed());
+    }
+    let access_started = std::time::Instant::now();
     let access = crate::access_statement::AccessStatement::from_claims(
         statement.config.clone(),
         statement.initial_ram.clone(),
@@ -3604,7 +3636,14 @@ pub fn verify_native_unified(
             "claim access statement mismatch".into(),
         ));
     }
+    if profile {
+        eprintln!("verify_native access: {:?}", access_started.elapsed());
+    }
+    let trace_started = std::time::Instant::now();
     let synthetic = crate::trace_claims::claims_to_trace(statement, &claims)?;
+    if profile {
+        eprintln!("verify_native claims_to_trace: {:?}", trace_started.elapsed());
+    }
     if statement.trace_len != synthetic.rows.len() as u64
         || statement.initial_state != synthetic.initial_state
         || statement.final_state != synthetic.final_state
@@ -3630,14 +3669,23 @@ pub fn verify_native_unified(
                 Ok(())
             })
         });
-        let unified = scope.spawn(|| {
-            crate::verify_unified_with_plan_impl(
-                &synthetic,
-                proof,
-                width,
-                &crate::protocol::ProtocolPlan::unified(),
-                false,
-            )
+        let unified = scope.spawn(|| -> Result<(), RuntimeError> {
+            let profile = std::env::var_os("MAGNETAR_PROFILE_VERIFY").is_some();
+            let core_started = std::time::Instant::now();
+            crate::verify_core_proof(proof)?;
+            if profile {
+                eprintln!("verify_native core_proof: {:?}", core_started.elapsed());
+            }
+            let logup_started = std::time::Instant::now();
+            if let Some(trace_logup) = &proof.trace_logup_shout {
+                let witness = crate::binary_shout::BinaryShoutWitness::from_trace(&synthetic)
+                    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+                crate::logup_shout::verify_trace_logup_shout(trace_logup, &witness)?;
+            }
+            if profile {
+                eprintln!("verify_native trace_logup: {:?}", logup_started.elapsed());
+            }
+            Ok(())
         });
         if let Some(selected) = selected {
             selected

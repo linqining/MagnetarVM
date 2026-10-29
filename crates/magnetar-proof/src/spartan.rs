@@ -55,6 +55,16 @@ pub trait SpartanMatrix: Sync {
     fn mul_vec(&self, z: &[F2_128]) -> Result<Vec<F2_128>, SpartanError>;
     fn row_combination(&self, row_point: &[F2_128]) -> Result<Vec<F2_128>, SpartanError>;
     fn eval_mle(&self, row_point: &[F2_128], col_point: &[F2_128]) -> Result<F2_128, SpartanError>;
+
+    fn eval_mle_with_eq(
+        &self,
+        row_point: &[F2_128],
+        col_point: &[F2_128],
+        _row_eq: &[F2_128],
+        _col_eq: &[F2_128],
+    ) -> Result<F2_128, SpartanError> {
+        self.eval_mle(row_point, col_point)
+    }
 }
 
 impl SpartanMatrix for SparseMatrix {
@@ -100,13 +110,28 @@ fn eval_mles_parallel(
             c1.eval_mle(rx, ry)?,
         ]);
     }
+    let compatible = [b0, c0, a1, b1, c1]
+        .iter()
+        .all(|matrix| matrix.rows() == a0.rows() && matrix.cols() == a0.cols());
+    if !compatible {
+        return Ok([
+            a0.eval_mle(rx, ry)?,
+            b0.eval_mle(rx, ry)?,
+            c0.eval_mle(rx, ry)?,
+            a1.eval_mle(rx, ry)?,
+            b1.eval_mle(rx, ry)?,
+            c1.eval_mle(rx, ry)?,
+        ]);
+    }
+    let row_eq = eq_vector_tensor(rx);
+    let col_eq = eq_vector_tensor(ry);
     std::thread::scope(|scope| {
-        let a0h = scope.spawn(|| a0.eval_mle(rx, ry));
-        let b0h = scope.spawn(|| b0.eval_mle(rx, ry));
-        let c0h = scope.spawn(|| c0.eval_mle(rx, ry));
-        let a1h = scope.spawn(|| a1.eval_mle(rx, ry));
-        let b1h = scope.spawn(|| b1.eval_mle(rx, ry));
-        let c1h = scope.spawn(|| c1.eval_mle(rx, ry));
+        let a0h = scope.spawn(|| a0.eval_mle_with_eq(rx, ry, &row_eq, &col_eq));
+        let b0h = scope.spawn(|| b0.eval_mle_with_eq(rx, ry, &row_eq, &col_eq));
+        let c0h = scope.spawn(|| c0.eval_mle_with_eq(rx, ry, &row_eq, &col_eq));
+        let a1h = scope.spawn(|| a1.eval_mle_with_eq(rx, ry, &row_eq, &col_eq));
+        let b1h = scope.spawn(|| b1.eval_mle_with_eq(rx, ry, &row_eq, &col_eq));
+        let c1h = scope.spawn(|| c1.eval_mle_with_eq(rx, ry, &row_eq, &col_eq));
         Ok([
             a0h.join().expect("eval-mle worker")?,
             b0h.join().expect("eval-mle worker")?,
@@ -247,7 +272,7 @@ pub(crate) fn bits(mut index: usize, count: usize) -> Vec<F2_128> {
         .collect()
 }
 
-fn eq_vector_tensor(point: &[F2_128]) -> Vec<F2_128> {
+pub(crate) fn eq_vector_tensor(point: &[F2_128]) -> Vec<F2_128> {
     let mut values = vec![F2_128::from(1u64)];
     for &challenge in point.iter().rev() {
         let mut next = Vec::with_capacity(values.len() * 2);
@@ -1870,12 +1895,18 @@ pub fn verify_lockstep_bits_with_replacements_point<B: BitPcs>(
     if proof.inner.claimed_sum != expected_inner_claim {
         return Err(SpartanError::Verification("lockstep inner claim mismatch"));
     }
+    let profile = std::env::var_os("MAGNETAR_PROFILE_VERIFY").is_some();
+    let sparse_started = std::time::Instant::now();
     let (ry, inner_final) = verify_rounds(
         &proof.inner,
         a0.cols().trailing_zeros() as usize,
         2,
         |round, values| round_challenge(&transcript, "inner-round", round, values),
     )?;
+    if profile {
+        eprintln!("lockstep verify rounds: {:?}", sparse_started.elapsed());
+    }
+    let claim_started = std::time::Instant::now();
     let vw = if replacements.is_empty() {
         reconstruct_segment_claim(layout, &proof.segments, &ry)?
     } else {
@@ -1891,16 +1922,27 @@ pub fn verify_lockstep_bits_with_replacements_point<B: BitPcs>(
         }
         reconstruct_segment_claim(layout, &claims, &ry)?
     };
+    if profile {
+        eprintln!("lockstep verify claims: {:?}", claim_started.elapsed());
+    }
+    let eval_started = std::time::Instant::now();
     let [a0_at, b0_at, c0_at, a1_at, b1_at, c1_at] =
         eval_mles_parallel(a0, b0, c0, a1, b1, c1, &rx, &ry)?;
+    if profile {
+        eprintln!("lockstep verify eval_mles: {:?}", eval_started.elapsed());
+    }
     let expected_inner =
         (a0_at + r0 * b0_at + r0 * r0 * c0_at + alpha * (a1_at + r1 * b1_at + r1 * r1 * c1_at))
             * vw;
     if inner_final != expected_inner {
         return Err(SpartanError::Verification("lockstep inner mismatch"));
     }
+    let pcs_started = std::time::Instant::now();
     if !backend.verify(&proof.commitment, &ry, vw, &proof.opening)? {
         return Err(SpartanError::Verification("lockstep PCS opening rejected"));
+    }
+    if profile {
+        eprintln!("lockstep verify pcs: {:?}", pcs_started.elapsed());
     }
     Ok(ry)
 }

@@ -973,3 +973,42 @@ Proof-only results (no verifier trace):
 
 The trace-Shout proof-only compressed proof is below the paper's 380 KiB total;
 the committed-Shout proof-only proof is 541,198 B compressed.
+
+
+## Verify-time profile and optimization (2^16, proof-only trace Shout)
+
+Before optimization verify was ~80 s. Profiling (`MAGNETAR_PROFILE_VERIFY=1`)
+showed:
+
+```text
+UnifiedVerifyContext::new (rebuilds full witness from trace): 68.90 s
+selected CPU lockstep eval_mles:                              18.04 s
+trace logup verify:                                            0.25 s
+Orchestrator plan stages:                                      0.06 s
+```
+
+Two fixes:
+
+1. Proof-only verifier now uses `verify_core_proof(proof)` instead of rebuilding
+   the full unified witness context; selected CPU and trace Shout are verified
+   separately from the proof/claims.
+2. Spartan matrix MLE evaluation now precomputes `row_eq`/`col_eq` once and
+   shares them across the six matrices, caches instance-eq vectors, and replaces
+   per-row `bits`/`eq` allocation with vector lookups.
+
+New 2^16 profile:
+
+```text
+selected CPU lockstep verify: 4.83 s
+  eval_mles:                  4.83 s
+  PCS verify:                 10 ms
+  witness bits:               75 ms
+  witness commit compare:     1.37 s
+core proof verify:            4.34 ms
+trace logup verify:           0.28 s
+total verify:                 7.97 s
+```
+
+The remaining verify cost is the selected CPU witness recomputation/commitment
+and the Spartan MLE evaluation; the paper's 8 ms target is not reachable with
+the current selected-CPU verifier.

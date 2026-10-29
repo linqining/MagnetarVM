@@ -7,7 +7,7 @@
 
 use magnetar_constraint::{ConstraintSystem, F2_128};
 
-use crate::spartan::{bits, MatrixPart, SparseMatrix, SpartanMatrix};
+use crate::spartan::{bits, eq_vector_tensor, MatrixPart, SparseMatrix, SpartanMatrix};
 use crate::{eq, SpartanError};
 
 #[derive(Clone, Debug)]
@@ -36,6 +36,16 @@ impl SpartanMatrix for SharedBlockMatrix {
 
     fn eval_mle(&self, row_point: &[F2_128], col_point: &[F2_128]) -> Result<F2_128, SpartanError> {
         SharedBlockMatrix::eval_mle(self, row_point, col_point)
+    }
+
+    fn eval_mle_with_eq(
+        &self,
+        row_point: &[F2_128],
+        col_point: &[F2_128],
+        row_eq: &[F2_128],
+        col_eq: &[F2_128],
+    ) -> Result<F2_128, SpartanError> {
+        SharedBlockMatrix::eval_mle_with_eq(self, row_point, col_point, row_eq, col_eq)
     }
 }
 
@@ -130,6 +140,18 @@ impl SharedBlockMatrix {
         row_point: &[F2_128],
         col_point: &[F2_128],
     ) -> Result<F2_128, SpartanError> {
+        let row_eq = eq_vector_tensor(row_point);
+        let col_eq = eq_vector_tensor(col_point);
+        self.eval_mle_with_eq(row_point, col_point, &row_eq, &col_eq)
+    }
+
+    pub fn eval_mle_with_eq(
+        &self,
+        row_point: &[F2_128],
+        col_point: &[F2_128],
+        row_eq: &[F2_128],
+        col_eq: &[F2_128],
+    ) -> Result<F2_128, SpartanError> {
         let row_bits = self.rows().trailing_zeros() as usize;
         let col_bits = self.cols().trailing_zeros() as usize;
         if row_point.len() != row_bits || col_point.len() != col_bits {
@@ -145,20 +167,20 @@ impl SharedBlockMatrix {
         let zero_high = vec![F2_128::from(0u64); block_high.len()];
         let row_instance = &row_point[local_bits..local_bits + instance_bits];
         let col_instance = &col_point[self.base.cols.trailing_zeros() as usize..];
-        let mut sum = F2_128::from(0u64);
+        let row_instance_eq = eq_vector_tensor(row_instance);
+        let col_instance_eq = eq_vector_tensor(col_instance);
+        let block_weight = eq(block_high, &zero_high);
+        let mut instance_sum = F2_128::from(0u64);
         for instance in 0..self.instances {
-            let index = bits(instance, instance_bits);
-            sum = sum
-                + base
-                    * eq(row_instance, &index)
-                    * eq(col_instance, &index)
-                    * eq(block_high, &zero_high);
+            instance_sum =
+                instance_sum + row_instance_eq[instance] * col_instance_eq[instance];
         }
+        let mut sum = base * instance_sum * block_weight;
         for (offset, row) in self.extra.iter().enumerate() {
             let row_index = self.base.rows.len() * self.instances + offset;
-            let row_weight = eq(row_point, &bits(row_index, row_bits));
+            let row_weight = row_eq[row_index];
             for (column, coefficient) in row {
-                sum = sum + *coefficient * row_weight * eq(col_point, &bits(*column, col_bits));
+                sum = sum + *coefficient * row_weight * col_eq[*column];
             }
         }
         Ok(sum)
