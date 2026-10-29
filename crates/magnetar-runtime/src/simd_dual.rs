@@ -673,16 +673,16 @@ fn gated_shared_matrices<R: GatedRowLike>(
             }
         }
     }
-    let zero_rows = vec![Vec::new(); cycles.saturating_sub(1) * row.width() + statement_rows];
+    let zero_count = cycles.saturating_sub(1) * row.width() + statement_rows;
     let a0 = SharedBlockMatrix::from_system(&s1_system, MatrixPart::A, cycles)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?
-        .with_extra_rows(zero_rows.clone());
+        .with_extra_zero_rows(zero_count);
     let b0 = SharedBlockMatrix::from_system(&s1_system, MatrixPart::B, cycles)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?
-        .with_extra_rows(zero_rows.clone());
+        .with_extra_zero_rows(zero_count);
     let c0 = SharedBlockMatrix::from_system(&s1_system, MatrixPart::C, cycles)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?
-        .with_extra_rows(zero_rows);
+        .with_extra_zero_rows(zero_count);
     let a1 = SharedBlockMatrix::from_system(&s2_system, MatrixPart::A, cycles)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?
         .with_extra_rows(extra_a);
@@ -5613,9 +5613,10 @@ pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
     let (row, mapping, layout) = segmented_dynamic_row(mask, width, cycles)?;
     let (base_cols, s1, s2) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
     if layout.total_bits != cycles * base_cols {
-        return Err(RuntimeError::Proof(
-            "dynamic segmented layout mismatch".into(),
-        ));
+        return Err(RuntimeError::Proof(format!(
+            "dynamic segmented layout mismatch: layout={} cycles={} base_cols={}",
+            layout.total_bits, cycles, base_cols
+        )));
     }
     let mut bits = Vec::with_capacity(cycles * base_cols);
     for index in 0..cycles {

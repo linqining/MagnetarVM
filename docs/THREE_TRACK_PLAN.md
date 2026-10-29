@@ -1049,3 +1049,8 @@ Verify performance: profiled 80 s -> 7.97 s at 2^16. Removed full
 UnifiedVerifyContext witness rebuild (68.9 s) by using verify_core_proof;
 optimized Spartan MLE eval (18 s -> 4.8 s). Remaining: selected CPU witness
 commit/matrix eval.
+
+
+Verify performance second pass: skip zero padding rows in gated matrices and
+parallelize extra-row sums; 2^16 proof-only trace-Shout verify 7.97 s -> 4.48 s
+(original ~80 s). Prove 127 s. Proof size unchanged.

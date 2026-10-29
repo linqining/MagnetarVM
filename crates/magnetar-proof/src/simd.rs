@@ -15,6 +15,7 @@ pub struct SharedBlockMatrix {
     base: SparseMatrix,
     instances: usize,
     extra: Vec<Vec<(usize, F2_128)>>,
+    extra_zero_rows: usize,
 }
 
 impl SpartanMatrix for SharedBlockMatrix {
@@ -62,6 +63,7 @@ impl SharedBlockMatrix {
             base: SparseMatrix::from_system(system, part)?,
             instances,
             extra: Vec::new(),
+            extra_zero_rows: 0,
         })
     }
 
@@ -74,12 +76,25 @@ impl SharedBlockMatrix {
     pub fn with_extra_rows(mut self, mut extra: Vec<Vec<(usize, F2_128)>>) -> Self {
         let total = (self.base.rows.len() * self.instances + extra.len()).next_power_of_two();
         extra.resize(total - self.base.rows.len() * self.instances, Vec::new());
+        let mut zero_tail = 0;
+        while extra.last().is_some_and(|row| row.is_empty()) {
+            extra.pop();
+            zero_tail += 1;
+        }
         self.extra = extra;
+        self.extra_zero_rows = zero_tail;
+        self
+    }
+
+    pub fn with_extra_zero_rows(mut self, rows: usize) -> Self {
+        let total = (self.base.rows.len() * self.instances + rows).next_power_of_two();
+        self.extra = Vec::new();
+        self.extra_zero_rows = total - self.base.rows.len() * self.instances;
         self
     }
 
     pub fn rows(&self) -> usize {
-        self.base.rows.len() * self.instances + self.extra.len()
+        self.base.rows.len() * self.instances + self.extra.len() + self.extra_zero_rows
     }
 
     pub fn cols(&self) -> usize {
@@ -103,6 +118,7 @@ impl SharedBlockMatrix {
                     }),
             );
         }
+        result.resize(self.rows(), F2_128::from(0u64));
         Ok(result)
     }
 
@@ -176,12 +192,48 @@ impl SharedBlockMatrix {
                 instance_sum + row_instance_eq[instance] * col_instance_eq[instance];
         }
         let mut sum = base * instance_sum * block_weight;
-        for (offset, row) in self.extra.iter().enumerate() {
-            let row_index = self.base.rows.len() * self.instances + offset;
-            let row_weight = row_eq[row_index];
-            for (column, coefficient) in row {
-                sum = sum + *coefficient * row_weight * col_eq[*column];
+        let extra_base = self.base.rows.len() * self.instances;
+        let chunks = if self.extra.len() >= 1 << 16 {
+            std::thread::available_parallelism()
+                .map(|count| count.get().min(4))
+                .unwrap_or(2)
+        } else {
+            1
+        };
+        if chunks <= 1 {
+            for (offset, row) in self.extra.iter().enumerate() {
+                let row_weight = row_eq[extra_base + offset];
+                for (column, coefficient) in row {
+                    sum = sum + *coefficient * row_weight * col_eq[*column];
+                }
             }
+        } else {
+            let extra = &self.extra;
+            let partial = std::thread::scope(|scope| {
+                let handles = (0..chunks)
+                    .map(|chunk| {
+                        scope.spawn(move || {
+                            let start = extra.len() * chunk / chunks;
+                            let end = extra.len() * (chunk + 1) / chunks;
+                            let mut partial = F2_128::from(0u64);
+                            for offset in start..end {
+                                let row_weight = row_eq[extra_base + offset];
+                                for (column, coefficient) in &extra[offset] {
+                                    partial =
+                                        partial + *coefficient * row_weight * col_eq[*column];
+                                }
+                            }
+                            partial
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                handles
+                    .into_iter()
+                    .fold(F2_128::from(0u64), |sum, handle| {
+                        sum + handle.join().expect("extra-row worker")
+                    })
+            });
+            sum = sum + partial;
         }
         Ok(sum)
     }

@@ -2878,13 +2878,15 @@ pub fn prove_unified_trace_dynamic_native_profile(
             proof.trace_logup_shout = Some(
                 trace_logup_shout
                     .join()
-                    .map_err(|_| RuntimeError::Proof("logup Shout worker panicked".into()))??,
+                    .map_err(|_| RuntimeError::Proof("logup Shout worker panicked".into()))?
+                    .map_err(|error| RuntimeError::Proof(format!("trace logup prover: {error}")))?,
             );
         }
         proof.selected_cpu = Some(
             selected
                 .join()
-                .map_err(|_| RuntimeError::Proof("selected CPU worker panicked".into()))??,
+                .map_err(|_| RuntimeError::Proof("selected CPU worker panicked".into()))?
+                .map_err(|error| RuntimeError::Proof(format!("selected prover: {error}")))?,
         );
         if let Some(selected) = &proof.selected_cpu {
             if let Ok(set) = crate::virtual_claims::VirtualClaimSet::from_selected(selected) {
@@ -3662,9 +3664,11 @@ pub fn verify_native_unified(
                 crate::simd_dual::verify_selected_claim_consistency(selected, claims)?;
                 let backend = crate::protocol::selected_backend();
                 if selected.op == crate::simd_dual::SelectedOp::Dynamic {
-                    crate::simd_dual::verify_dynamic_cpu_claims(synthetic, selected, &backend)?;
+                    crate::simd_dual::verify_dynamic_cpu_claims(synthetic, selected, &backend)
+                        .map_err(|error| RuntimeError::Proof(format!("selected verifier: {error}")))?;
                 } else {
-                    crate::simd_dual::verify_selected_cpu_claims(selected, &backend)?;
+                    crate::simd_dual::verify_selected_cpu_claims(selected, &backend)
+                        .map_err(|error| RuntimeError::Proof(format!("selected verifier: {error}")))?;
                 }
                 Ok(())
             })
@@ -3672,7 +3676,8 @@ pub fn verify_native_unified(
         let unified = scope.spawn(|| -> Result<(), RuntimeError> {
             let profile = std::env::var_os("MAGNETAR_PROFILE_VERIFY").is_some();
             let core_started = std::time::Instant::now();
-            crate::verify_core_proof(proof)?;
+            crate::verify_core_proof(proof)
+                .map_err(|error| RuntimeError::Proof(format!("core verifier: {error}")))?;
             if profile {
                 eprintln!("verify_native core_proof: {:?}", core_started.elapsed());
             }

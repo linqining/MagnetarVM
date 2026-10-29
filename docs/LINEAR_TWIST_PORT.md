@@ -1012,3 +1012,26 @@ total verify:                 7.97 s
 The remaining verify cost is the selected CPU witness recomputation/commitment
 and the Spartan MLE evaluation; the paper's 8 ms target is not reachable with
 the current selected-CPU verifier.
+
+
+### Further verify optimization: sparse extra rows
+
+`SharedBlockMatrix` no longer materializes or iterates the empty padding rows in
+the gated matrices. Zero-only rows are stored as a count, and extra-row sums are
+split across workers. `mul_vec` pads its result back to the logical power-of-two
+row count.
+
+2^16 proof-only trace-Shout profile:
+
+```text
+total verify                 4.48 s
+selected CPU lockstep        3.18 s
+  eval_mles                  3.18 s
+  witness commit compare     1.29 s
+core proof verify            4.17 ms
+trace logup verify           0.29 s
+```
+
+Compared with the original ~80 s profile this is ~18x faster; the remaining
+cost is the selected-CPU witness recomputation/commitment and Spartan MLE
+evaluation. Proof bytes are unchanged: 492,966 raw / 354,979 B DEFLATE.
