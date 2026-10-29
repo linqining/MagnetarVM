@@ -196,3 +196,13 @@ verifier now uses the lazy public matrices and this blocked binding. Full 2^16
 proof-only trace-Shout verify: 3.09 s -> 1.31 s (selected public stage 53.6 ms).
 Next: remove the remaining O(T) witness bits/MLE by virtual claim routing and a
 single Mosaic commitment for CPU direct segments.
+
+
+## Milestone 3.5: component timing and Shout size tradeoff
+
+Fast proof-only components at 2^16: core 3.8 ms, public selected 45.6 ms,
+committed Shout 11.8 ms (~61 ms total). Keeping logup pushforwards for
+witness-free Shout verification makes the Shout proof 1.29 MB and total proof
+1.78 MB, so the compact 380 KiB target requires a different proof-only Shout
+reduction (no transmitted pushforward tables). This path is not committed as
+the default verifier.

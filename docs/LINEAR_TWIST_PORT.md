@@ -1125,3 +1125,26 @@ Down from 3.09 s. The remaining ~0.9 s is still the O(T) witness bit generation
 and blocked MLE binding; eliminating it requires committing the CPU witness in
 the same Mosaic commitment / routing segment claims through the auxiliary
 reductions, as in the paper.
+
+
+### Proof-only component measurements and the Shout tradeoff
+
+A fast proof-only component prototype measured at 2^16:
+
+```text
+core proof verify          3.8 ms
+public selected CPU verify 45.6 ms
+committed Shout verify     11.8 ms
+sum                       ~61 ms
+```
+
+However, proof-only committed Shout verification requires the logup* pushforward
+tables: retaining them grows the Shout proof from ~245 KB to ~1.29 MB and the
+total proof to 1.78 MB (1.64 MB compressed), far above the 380 KiB target.
+Clearing pushforwards (the compact mode) needs the trace witness to rebuild
+them, so it is not proof-only.
+
+This identifies the next required protocol piece: a proof-only Shout reduction
+that checks the pushforwards without transmitting the full tables (paper's
+fraction GKR output / committed-position approach), plus selected-stage
+optimization from ~46 ms to single-digit ms.
