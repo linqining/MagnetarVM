@@ -1237,3 +1237,16 @@ reconstructs all rows and the Merkle root, and witness binding builds/reduces
 the full bit vector. Reaching 8 ms requires replacing these with the paper's
 virtual-claim routing and a proof-only Shout reduction, not further micro
 optimization of the current O(T) path.
+
+
+### Benchmark width correction
+
+`paper_unified_bench` previously passed `width = 8` to the prover/verifier. In
+the selected dynamic row, `width` is the number of bits of the ALU/PC variables,
+so that benchmark was effectively an 8-bit machine, not RV64. It also produced
+the loop PC-chain failure once a loop counter exceeded 8 bits.
+
+The benchmark now defaults to `WIDTH=64` (RV64) and exposes `WIDTH` for
+experiments. Early 2^16 numbers in this document (735 ms, 11.8 ms selected,
+354,979 B compressed) were measured at width 8 and must be re-baselined at
+width 64.

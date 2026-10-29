@@ -7,6 +7,13 @@ use magnetar_runtime::{
 };
 use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 
+fn width() -> usize {
+    std::env::var("WIDTH")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(64)
+}
+
 fn main() {
     let adds = std::env::var("ADDS")
         .ok()
@@ -58,7 +65,7 @@ fn main() {
     let started = Instant::now();
     let proof = if use_trace_shout {
         let mut proof =
-            magnetar_runtime::prove_unified_trace_dynamic_native(&trace, 8).unwrap();
+            magnetar_runtime::prove_unified_trace_dynamic_native(&trace, width()).unwrap();
         proof.claim_proof = if no_claim {
             None
         } else {
@@ -66,7 +73,7 @@ fn main() {
         };
         proof
     } else {
-        prove_unified_trace_paper(&trace, 8).unwrap()
+        prove_unified_trace_paper(&trace, width()).unwrap()
     };
     let prove = started.elapsed();
     let sizes = unified_proof_sizes(&proof).unwrap();
@@ -96,9 +103,9 @@ fn main() {
     }
     let started = Instant::now();
     if no_claim {
-        magnetar_runtime::verify_unified_trace(&trace, &proof, 8).unwrap();
+        magnetar_runtime::verify_unified_trace(&trace, &proof, width()).unwrap();
     } else {
-        verify_native_unified(&statement, &proof, 8).unwrap();
+        verify_native_unified(&statement, &proof, width()).unwrap();
     }
     let verify = started.elapsed();
     eprintln!("{sizes:?}");
