@@ -1054,3 +1054,8 @@ commit/matrix eval.
 Verify performance second pass: skip zero padding rows in gated matrices and
 parallelize extra-row sums; 2^16 proof-only trace-Shout verify 7.97 s -> 4.48 s
 (original ~80 s). Prove 127 s. Proof size unchanged.
+
+
+Fast factorized matrix MLE evaluation: selected lockstep eval_mles 3.2 s -> 43 ms,
+total proof-only verify 4.48 s -> 2.40 s at 2^16. Witness-bit binding still O(n)
+(~1 s); proof size unchanged.

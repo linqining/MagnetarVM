@@ -1035,3 +1035,34 @@ trace logup verify           0.29 s
 Compared with the original ~80 s profile this is ~18x faster; the remaining
 cost is the selected-CPU witness recomputation/commitment and Spartan MLE
 evaluation. Proof bytes are unchanged: 492,966 raw / 354,979 B DEFLATE.
+
+
+### Fast factorized matrix MLE evaluation
+
+The gated matrices have `base.rows * instances` base rows plus a small structured
+extra-row block. Building full `row_eq`/`col_eq` tensors for the padded row space
+dominated verification. `SharedBlockMatrix::eval_mle_fast` now
+
+- factors the extra-row block as aligned low/high index groups,
+- factors columns as `instance * base.cols + local`,
+- builds only the small base/local/instance eq tensors,
+- keeps the full-tensor path as a fallback.
+
+It also replaces the selected-witness commitment recomputation with a random
+point witness-MLE check (`verify_lockstep_bits_with_witness`).
+
+2^16 proof-only trace-Shout profile:
+
+```text
+selected CPU lockstep eval_mles   3.2 s -> 43 ms
+selected CPU lockstep total       3.2 s -> 1.06 s
+selected verify bits              89 ms
+core proof verify                 4.3 ms
+trace logup verify                0.29 s
+total verify                      2.40 s
+```
+
+Proof bytes unchanged: 492,966 raw / 354,979 B DEFLATE. The remaining verify
+cost is the O(witness) bit reconstruction/evaluation needed to bind selected CPU
+segments to claim rows; removing it needs a succinct segment-claim binding
+(virtual claims), not faster matrix evaluation.

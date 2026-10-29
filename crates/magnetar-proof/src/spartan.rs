@@ -65,6 +65,14 @@ pub trait SpartanMatrix: Sync {
     ) -> Result<F2_128, SpartanError> {
         self.eval_mle(row_point, col_point)
     }
+
+    fn eval_mle_fast(
+        &self,
+        _row_point: &[F2_128],
+        _col_point: &[F2_128],
+    ) -> Result<Option<F2_128>, SpartanError> {
+        Ok(None)
+    }
 }
 
 impl SpartanMatrix for SparseMatrix {
@@ -122,6 +130,30 @@ fn eval_mles_parallel(
             b1.eval_mle(rx, ry)?,
             c1.eval_mle(rx, ry)?,
         ]);
+    }
+    let fast = std::thread::scope(|scope| {
+        let a0h = scope.spawn(|| a0.eval_mle_fast(rx, ry));
+        let b0h = scope.spawn(|| b0.eval_mle_fast(rx, ry));
+        let c0h = scope.spawn(|| c0.eval_mle_fast(rx, ry));
+        let a1h = scope.spawn(|| a1.eval_mle_fast(rx, ry));
+        let b1h = scope.spawn(|| b1.eval_mle_fast(rx, ry));
+        let c1h = scope.spawn(|| c1.eval_mle_fast(rx, ry));
+        let values = [
+            a0h.join().expect("fast-eval worker"),
+            b0h.join().expect("fast-eval worker"),
+            c0h.join().expect("fast-eval worker"),
+            a1h.join().expect("fast-eval worker"),
+            b1h.join().expect("fast-eval worker"),
+            c1h.join().expect("fast-eval worker"),
+        ];
+        values.into_iter().collect::<Result<Vec<_>, _>>().ok()
+    });
+    if let Some(values) = fast {
+        if let [Some(a0_at), Some(b0_at), Some(c0_at), Some(a1_at), Some(b1_at), Some(c1_at)] =
+            values.as_slice()
+        {
+            return Ok([*a0_at, *b0_at, *c0_at, *a1_at, *b1_at, *c1_at]);
+        }
     }
     let row_eq = eq_vector_tensor(rx);
     let col_eq = eq_vector_tensor(ry);
@@ -1844,6 +1876,63 @@ pub fn verify_lockstep_bits_with_replacements_point<B: BitPcs>(
     backend: &B,
     replacements: &[Option<F2_128>],
 ) -> Result<Vec<F2_128>, SpartanError> {
+    verify_lockstep_bits_with_replacements_point_inner(
+        a0,
+        b0,
+        c0,
+        a1,
+        b1,
+        c1,
+        layout,
+        proof,
+        backend,
+        replacements,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn verify_lockstep_bits_with_witness<B: BitPcs>(
+    a0: &dyn SpartanMatrix,
+    b0: &dyn SpartanMatrix,
+    c0: &dyn SpartanMatrix,
+    a1: &dyn SpartanMatrix,
+    b1: &dyn SpartanMatrix,
+    c1: &dyn SpartanMatrix,
+    layout: &WitnessLayout,
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    backend: &B,
+    witness_bits: &[bool],
+) -> Result<Vec<F2_128>, SpartanError> {
+    verify_lockstep_bits_with_replacements_point_inner(
+        a0,
+        b0,
+        c0,
+        a1,
+        b1,
+        c1,
+        layout,
+        proof,
+        backend,
+        &[],
+        Some(witness_bits),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_lockstep_bits_with_replacements_point_inner<B: BitPcs>(
+    a0: &dyn SpartanMatrix,
+    b0: &dyn SpartanMatrix,
+    c0: &dyn SpartanMatrix,
+    a1: &dyn SpartanMatrix,
+    b1: &dyn SpartanMatrix,
+    c1: &dyn SpartanMatrix,
+    layout: &WitnessLayout,
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    backend: &B,
+    replacements: &[Option<F2_128>],
+    witness_bits: Option<&[bool]>,
+) -> Result<Vec<F2_128>, SpartanError> {
     if a0.rows() != a1.rows()
         || b0.rows() != a1.rows()
         || c0.rows() != a1.rows()
@@ -1936,6 +2025,16 @@ pub fn verify_lockstep_bits_with_replacements_point<B: BitPcs>(
             * vw;
     if inner_final != expected_inner {
         return Err(SpartanError::Verification("lockstep inner mismatch"));
+    }
+    if let Some(bits) = witness_bits {
+        let values = bits
+            .iter()
+            .map(|bit| F2_128::from(u64::from(*bit)))
+            .collect::<Vec<_>>();
+        let mle = Mle::new(values)?;
+        if mle.eval(&ry)? != vw {
+            return Err(SpartanError::Verification("lockstep witness eval mismatch"));
+        }
     }
     let pcs_started = std::time::Instant::now();
     if !backend.verify(&proof.commitment, &ry, vw, &proof.opening)? {

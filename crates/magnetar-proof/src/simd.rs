@@ -48,6 +48,14 @@ impl SpartanMatrix for SharedBlockMatrix {
     ) -> Result<F2_128, SpartanError> {
         SharedBlockMatrix::eval_mle_with_eq(self, row_point, col_point, row_eq, col_eq)
     }
+
+    fn eval_mle_fast(
+        &self,
+        row_point: &[F2_128],
+        col_point: &[F2_128],
+    ) -> Result<Option<F2_128>, SpartanError> {
+        SharedBlockMatrix::eval_mle_fast(self, row_point, col_point)
+    }
 }
 
 impl SharedBlockMatrix {
@@ -149,6 +157,74 @@ impl SharedBlockMatrix {
             }
         }
         Ok(result)
+    }
+
+    pub fn eval_mle_fast(
+        &self,
+        row_point: &[F2_128],
+        col_point: &[F2_128],
+    ) -> Result<Option<F2_128>, SpartanError> {
+        let row_bits = self.rows().trailing_zeros() as usize;
+        let col_bits = self.cols().trailing_zeros() as usize;
+        if row_point.len() != row_bits || col_point.len() != col_bits {
+            return Err(SpartanError::Dimensions);
+        }
+        if !self.rows().is_power_of_two()
+            || !self.cols().is_power_of_two()
+            || !self.base.rows.len().is_power_of_two()
+            || !self.base.cols.is_power_of_two()
+            || !self.instances.is_power_of_two()
+        {
+            return Ok(None);
+        }
+        let local_bits = self.base.rows.len().trailing_zeros() as usize;
+        let local_col_bits = self.base.cols.trailing_zeros() as usize;
+        let base = self.base.eval_mle(
+            &row_point[..local_bits],
+            &col_point[..local_col_bits],
+        )?;
+        let instance_bits = self.instances.trailing_zeros() as usize;
+        let row_instance = &row_point[local_bits..local_bits + instance_bits];
+        let col_instance = &col_point[local_col_bits..];
+        let row_instance_eq = eq_vector_tensor(row_instance);
+        let col_instance_eq = eq_vector_tensor(col_instance);
+        let block_high = &row_point[local_bits + instance_bits..];
+        let zero_high = vec![F2_128::from(0u64); block_high.len()];
+        let block_weight = eq(block_high, &zero_high);
+        let mut instance_sum = F2_128::from(0u64);
+        for instance in 0..self.instances {
+            instance_sum =
+                instance_sum + row_instance_eq[instance] * col_instance_eq[instance];
+        }
+        let mut sum = base * instance_sum * block_weight;
+        if self.extra.is_empty() {
+            return Ok(Some(sum));
+        }
+        let extra_bits = self.extra.len().next_power_of_two().trailing_zeros() as usize;
+        let extra_base = self.base.rows.len() * self.instances;
+        if !extra_base.is_multiple_of(1usize << extra_bits) {
+            return Ok(None);
+        }
+        let row_low_eq = eq_vector_tensor(&row_point[..extra_bits]);
+        let high_point = &row_point[extra_bits..];
+        let high_index = extra_base >> extra_bits;
+        let high_bits = bits(high_index, high_point.len());
+        let high_eq = eq(high_point, &high_bits);
+        let col_local_eq = eq_vector_tensor(&col_point[..local_col_bits]);
+        let col_instance_eq = eq_vector_tensor(&col_point[local_col_bits..]);
+        for (offset, row) in self.extra.iter().enumerate() {
+            let row_weight = row_low_eq[offset] * high_eq;
+            for (column, coefficient) in row {
+                let instance = column / self.base.cols;
+                let local = column % self.base.cols;
+                sum = sum
+                    + *coefficient
+                        * row_weight
+                        * col_local_eq[local]
+                        * col_instance_eq[instance];
+            }
+        }
+        Ok(Some(sum))
     }
 
     pub fn eval_mle(
