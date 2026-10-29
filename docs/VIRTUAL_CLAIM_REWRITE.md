@@ -170,3 +170,11 @@ O(T). It is therefore not enabled in the default verifier. The next milestone
 is the actual Virtual Spartan step: replace steps 2-4 with the segment-only
 linear identity and route every virtual segment claim to its auxiliary
 reduction, so the verifier never reconstructs the full witness bits.
+
+
+## Milestone 2.5: measured public selected verifier
+
+`FAST_SELECTED=1` benchmark mode measures the trace-free public selected
+verifier at 2^16: 646 ms. This is the lower bound before adding aux-claim
+routing; it is dominated by gated-matrix construction/allocation, not PCS.
+Next: lazy structured extra rows for the verifier path.

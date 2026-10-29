@@ -1066,3 +1066,19 @@ Proof bytes unchanged: 492,966 raw / 354,979 B DEFLATE. The remaining verify
 cost is the O(witness) bit reconstruction/evaluation needed to bind selected CPU
 segments to claim rows; removing it needs a succinct segment-claim binding
 (virtual claims), not faster matrix evaluation.
+
+
+### Virtual-claim verifier lower bound at 2^16
+
+`FAST_SELECTED=1` measures the public selected verifier
+(`verify_dynamic_segments_public`, no trace/witness reconstruction):
+
+```text
+public selected CPU verify: 646 ms
+```
+
+This is the current lower bound for the selected stage. It is dominated by
+constructing the gated matrices (the extra-row vector is materialized even though
+the fast MLE path does not need it); the next step is a lazy/structured extra-row
+representation so the verifier can evaluate the matrix MLE without building the
+O(cycles * width) row vector.

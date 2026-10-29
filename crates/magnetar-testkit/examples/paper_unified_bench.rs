@@ -82,6 +82,18 @@ fn main() {
     let decoded =
         magnetar_runtime::deserialize_unified_proof_compressed(&compressed_bytes).unwrap();
     assert_eq!(decoded.trace_commitment, proof.trace_commitment);
+    if std::env::var_os("FAST_SELECTED").is_some() {
+        if let Some(selected) = &proof.selected_cpu {
+            let backend = magnetar_runtime::protocol::selected_backend();
+            let selected_started = Instant::now();
+            magnetar_runtime::simd_dual::verify_dynamic_segments_public(selected, &backend)
+                .unwrap();
+            eprintln!(
+                "fast selected public verify: {:?}",
+                selected_started.elapsed()
+            );
+        }
+    }
     let started = Instant::now();
     if no_claim {
         magnetar_runtime::verify_unified_trace(&trace, &proof, 8).unwrap();
