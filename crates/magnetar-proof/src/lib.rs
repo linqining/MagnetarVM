@@ -39,21 +39,21 @@ pub fn eval_bits_mle(bits: &[bool], point: &[F2_128]) -> Result<F2_128, ProofErr
     let local_bits = 16.min(point.len());
     let block = 1usize << local_bits;
     let high_len = point.len() - local_bits;
+    let local_eq = crate::spartan::eq_vector_tensor(&point[..local_bits]);
     let high_eq = crate::spartan::eq_vector_tensor(&point[local_bits..]);
-    let mut sum = F2_128::from(0u64);
-    let mut start = 0usize;
-    for (index, weight) in high_eq.iter().enumerate() {
-        let _ = index;
-        let values = bits[start..start + block]
-            .iter()
-            .map(|bit| F2_128::from(u64::from(*bit)))
-            .collect::<Vec<_>>();
-        let local = Mle::new(values)?.eval(&point[..local_bits])?;
-        sum = sum + local * *weight;
-        start += block;
-    }
-    if start != bits.len() || high_eq.len() != 1usize << high_len {
+    if high_eq.len() * block != bits.len() || high_eq.len() != 1usize << high_len {
         return Err(ProofError::NotPowerOfTwo(bits.len()));
+    }
+    let mut sum = F2_128::from(0u64);
+    for (index, high_weight) in high_eq.iter().enumerate() {
+        let start = index * block;
+        let mut block_sum = F2_128::from(0u64);
+        for (bit, weight) in bits[start..start + block].iter().zip(&local_eq) {
+            if *bit {
+                block_sum = block_sum + *weight;
+            }
+        }
+        sum = sum + block_sum * *high_weight;
     }
     Ok(sum)
 }

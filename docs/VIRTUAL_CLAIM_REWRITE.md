@@ -214,3 +214,10 @@ The lazy gated extra-row sums factor into independent instance and bit parts for
 power-of-two widths, reducing O(cycles*width) to O(cycles+width). Public selected
 verify: 45.6 ms -> 11.8 ms at 2^16, 13.8 ms -> 5.1 ms at 2^14. Full suite 339
 passing, clippy clean.
+
+
+## Milestone 3.7: dot-product witness MLE
+
+Blocked witness-MLE binding uses a precomputed local equality tensor and sparse
+conditional block sums. Full 2^16 proof-only verify: 1.30 s -> 735 ms. Full suite
+339 passing, clippy clean.

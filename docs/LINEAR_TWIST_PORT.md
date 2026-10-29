@@ -1201,3 +1201,19 @@ This collapses each chain from O(cycles * width) to O(cycles + width) field
 operations. 2^16 public selected verify: 45.6 ms -> 11.8 ms; 2^14: 13.8 ms ->
 5.1 ms. The remaining selected cost is base/instance terms, eq tensors, and the
 ~3 ms PCS opening verification.
+
+
+### Dot-product blocked witness MLE
+
+`eval_bits_mle` now precomputes the local block equality tensor once and
+evaluates each block as a sparse conditional sum over the bit vector, instead of
+folding a field vector through 16 sum-check-style rounds.
+
+2^16 proof-only trace-Shout:
+
+```text
+total verify  1.30 s -> 735 ms
+```
+
+The remaining cost is dominated by trace-backed Shout verification (~0.28 s),
+O(T) witness-bit reconstruction, and claim/access reconstruction.
