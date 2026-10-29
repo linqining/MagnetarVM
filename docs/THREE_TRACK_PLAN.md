@@ -1038,3 +1038,8 @@ access/Shout binding. Full suite 338 passing.
 B frontier: native-trace trace-Shout no-claim 2^16 is 490,557 B raw / 354,584 B
 DEFLATE (below paper 380 KiB, but verifier has trace). Proof-only trace-Shout
 with claim is 526,741 B compressed; committed-Shout proof-only is 712,967 B.
+
+
+B compact claim: RS1/RS2 reconstructed from initial registers; claim 183,599 B
+-> 2,410 B at 2^16. Proof-only trace-Shout total 354,979 B compressed (below
+paper 380 KiB); committed Shout proof-only 541,198 B compressed. Full suite 338.

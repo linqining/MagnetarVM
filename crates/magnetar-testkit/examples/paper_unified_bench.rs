@@ -62,7 +62,7 @@ fn main() {
         proof.claim_proof = if no_claim {
             None
         } else {
-            Some(magnetar_runtime::trace_claims::ClaimProof::from_trace(&trace))
+            Some(magnetar_runtime::trace_claims::ClaimProof::from_trace_reg(&trace))
         };
         proof
     } else {
@@ -90,6 +90,10 @@ fn main() {
     }
     let verify = started.elapsed();
     eprintln!("{sizes:?}");
+    if let Some(claim) = &proof.claim_proof {
+        eprintln!("claim_fields={:?}", claim.compact_field_sizes());
+        eprintln!("claim_rom_probe={:?}", claim.compact_rom_probe());
+    }
     println!(
         "adds={adds} rows={} proof={bytes}B varint={varint}B compressed={compressed}B access={}B logup={}B selected={}B claim={}B shape={}B prove={prove:?} verify={verify:?}",
         trace.rows.len(),

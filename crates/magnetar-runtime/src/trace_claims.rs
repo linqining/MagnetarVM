@@ -333,11 +333,18 @@ pub struct ClaimProof {
     pub root: [u8; 32],
     pub complete: bool,
     pub openings: Vec<TraceClaimOpening>,
+    /// Compact blob with rs1/rs2 columns omitted (reconstructed from the
+    /// statement's initial registers).
+    pub reg_blob: Option<Vec<u8>>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 enum ClaimProofWire {
     Compact {
+        root: [u8; 32],
+        blob: Vec<u8>,
+    },
+    CompactRegs {
         root: [u8; 32],
         blob: Vec<u8>,
     },
@@ -470,6 +477,13 @@ fn encode_claim_columns(claims: &[TraceClaim]) -> Vec<u8> {
 }
 
 fn decode_claim_columns(blob: &[u8]) -> Result<Vec<TraceClaim>, Box<bincode::ErrorKind>> {
+    decode_claim_columns_with_regs(blob, None)
+}
+
+fn decode_claim_columns_with_regs(
+    blob: &[u8],
+    initial_regs: Option<[magnetar_spec::Word; magnetar_spec::NUM_REGS]>,
+) -> Result<Vec<TraceClaim>, Box<bincode::ErrorKind>> {
     let columns: ClaimColumns = bincode::DefaultOptions::new()
         .with_varint_encoding()
         .deserialize(blob)?;
@@ -483,10 +497,19 @@ fn decode_claim_columns(blob: &[u8]) -> Result<Vec<TraceClaim>, Box<bincode::Err
     }
     let flags = expand_runs(&columns.flags, count)
         .ok_or_else(|| Box::new(bincode::ErrorKind::Custom("claim flag runs".into())))?;
-    let rs1_values = expand_runs(&columns.rs1_values, count)
-        .ok_or_else(|| Box::new(bincode::ErrorKind::Custom("claim rs1 runs".into())))?;
-    let rs2_values = expand_runs(&columns.rs2_values, count)
-        .ok_or_else(|| Box::new(bincode::ErrorKind::Custom("claim rs2 runs".into())))?;
+    let mut regs = initial_regs;
+    let rs1_values = if regs.is_some() {
+        Vec::new()
+    } else {
+        expand_runs(&columns.rs1_values, count)
+            .ok_or_else(|| Box::new(bincode::ErrorKind::Custom("claim rs1 runs".into())))?
+    };
+    let rs2_values = if regs.is_some() {
+        Vec::new()
+    } else {
+        expand_runs(&columns.rs2_values, count)
+            .ok_or_else(|| Box::new(bincode::ErrorKind::Custom("claim rs2 runs".into())))?
+    };
     let delta_deltas = expand_runs(&columns.rd_delta_deltas, count.saturating_sub(2))
         .ok_or_else(|| Box::new(bincode::ErrorKind::Custom("claim rd delta runs".into())))?;
     let mut rd_values = Vec::with_capacity(count);
@@ -562,18 +585,47 @@ fn decode_claim_columns(blob: &[u8]) -> Result<Vec<TraceClaim>, Box<bincode::Err
             rs1_present: row_flags & 2 != 0,
             rs2_present: row_flags & 4 != 0,
             rd_value: rd_values[index],
-            rs1_value: rs1_values[index],
-            rs2_value: rs2_values[index],
+            rs1_value: match &regs {
+                Some(regs) => {
+                    if row_flags & 2 != 0 {
+                        regs[usize::from(instruction.rs1)]
+                    } else {
+                        0
+                    }
+                }
+                None => rs1_values[index],
+            },
+            rs2_value: match &regs {
+                Some(regs) => {
+                    if row_flags & 4 != 0 {
+                        regs[usize::from(instruction.rs2)]
+                    } else {
+                        0
+                    }
+                }
+                None => rs2_values[index],
+            },
             memory: std::mem::take(&mut memory[index]),
             syscall: syscalls[index],
         });
+        if let Some(regs) = &mut regs {
+            if row_flags & 1 != 0 && instruction.rd != 0 {
+                regs[usize::from(instruction.rd)] = rd_values[index];
+            }
+        }
     }
     Ok(claims)
 }
 
 impl serde::Serialize for ClaimProof {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if self.complete {
+        if let Some(blob) = &self.reg_blob {
+            ClaimProofWire::CompactRegs {
+                root: self.root,
+                blob: blob.clone(),
+            }
+            .serialize(serializer)
+        } else if self.complete {
             let claims = self
                 .openings
                 .iter()
@@ -617,6 +669,7 @@ impl<'de> serde::Deserialize<'de> for ClaimProof {
                             siblings: Vec::new(),
                         })
                         .collect(),
+                    reg_blob: None,
                 })
             }
             ClaimProofWire::Full {
@@ -627,6 +680,13 @@ impl<'de> serde::Deserialize<'de> for ClaimProof {
                 root,
                 complete,
                 openings,
+                reg_blob: None,
+            }),
+            ClaimProofWire::CompactRegs { root, blob } => Ok(Self {
+                root,
+                complete: true,
+                openings: Vec::new(),
+                reg_blob: Some(blob),
             }),
         }
     }
@@ -650,7 +710,61 @@ impl ClaimProof {
             root: tree.root(),
             complete: true,
             openings,
+            reg_blob: None,
         }
+    }
+
+    /// Compact ROM/register-derived encoding: rows are rebuilt from the
+    /// statement's initial registers; rs1/rs2 columns are omitted.
+    pub fn from_trace_reg(trace: &Trace) -> Self {
+        let tree = TraceClaimTree::build(trace);
+        let claims = tree.claims.clone();
+        let encoded = encode_claim_columns(&claims);
+        let mut columns: ClaimColumns = bincode::DefaultOptions::new()
+            .with_varint_encoding()
+            .deserialize(&encoded)
+            .expect("claim columns round-trip");
+        columns.rs1_values.clear();
+        columns.rs2_values.clear();
+        let blob = bincode::DefaultOptions::new()
+            .with_varint_encoding()
+            .serialize(&columns)
+            .expect("claim columns serialize");
+        let blob = miniz_oxide::deflate::compress_to_vec(&blob, 6);
+        Self {
+            root: tree.root(),
+            complete: true,
+            openings: Vec::new(),
+            reg_blob: Some(blob),
+        }
+    }
+
+    /// Verify a compact register-derived claim proof against the statement's
+    /// initial registers.
+    pub fn verify_reg(
+        &self,
+        initial: &magnetar_spec::MachineState,
+    ) -> Option<Vec<TraceClaim>> {
+        let Some(blob) = self.reg_blob.as_ref() else {
+            return self.verify();
+        };
+        let blob =
+            miniz_oxide::inflate::decompress_to_vec(blob).ok()?;
+        let claims = decode_claim_columns_with_regs(&blob, Some(initial.regs)).ok()?;
+        if claims.first().map(|claim| claim.pc) != Some(initial.pc) {
+            return None;
+        }
+        let openings = claims
+            .iter()
+            .enumerate()
+            .map(|(index, claim)| TraceClaimOpening {
+                index,
+                claim: claim.clone(),
+                leaf: claim.leaf(),
+                siblings: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        verify_complete_claims(self.root, &openings)
     }
 
     pub fn verify(&self) -> Option<Vec<TraceClaim>> {
@@ -678,6 +792,7 @@ impl ClaimProof {
             root: tree.root(),
             complete: false,
             openings,
+            reg_blob: None,
         })
     }
 
@@ -689,6 +804,83 @@ impl ClaimProof {
             });
         }
         verify_indexed_claims(self.root, &self.openings)
+    }
+}
+
+impl ClaimProof {
+    /// Diagnostic: compare compact encoding with ROM-derived words and
+    /// register simulation omitted.
+    pub fn compact_rom_probe(&self) -> Option<(usize, usize, usize, usize)> {
+        if !self.complete || self.openings.is_empty() {
+            return None;
+        }
+        let claims = self
+            .openings
+            .iter()
+            .map(|opening| opening.claim.clone())
+            .collect::<Vec<_>>();
+        let encoded = encode_claim_columns(&claims);
+        let current = encoded.len();
+        let current_deflate = miniz_oxide::deflate::compress_to_vec(&encoded, 6).len();
+        let mut no_rs1: ClaimColumns = bincode::DefaultOptions::new()
+            .with_varint_encoding()
+            .deserialize(&encoded)
+            .ok()?;
+        no_rs1.rs1_values.clear();
+        let no_rs1_bytes = bincode::DefaultOptions::new()
+            .with_varint_encoding()
+            .serialize(&no_rs1)
+            .ok()?;
+        let no_rs1_deflate = miniz_oxide::deflate::compress_to_vec(&no_rs1_bytes, 6).len();
+        let mut no_words = no_rs1;
+        no_words.words.clear();
+        let no_words_bytes = bincode::DefaultOptions::new()
+            .with_varint_encoding()
+            .serialize(&no_words)
+            .ok()?;
+        let no_words_deflate = miniz_oxide::deflate::compress_to_vec(&no_words_bytes, 6).len();
+        Some((current, current_deflate, no_rs1_deflate, no_words_deflate))
+    }
+}
+
+impl ClaimProof {
+    /// Diagnostic: serialized size of each compact claim column.
+    pub fn compact_field_sizes(&self) -> Option<Vec<(&'static str, usize)>> {
+        if !self.complete || self.openings.is_empty() {
+            return None;
+        }
+        let claims = self
+            .openings
+            .iter()
+            .map(|opening| opening.claim.clone())
+            .collect::<Vec<_>>();
+        let blob = encode_claim_columns(&claims);
+        let columns: ClaimColumns = bincode::DefaultOptions::new()
+            .with_varint_encoding()
+            .deserialize(&blob)
+            .ok()?;
+        let size = |bytes: usize| bytes;
+        let mut sizes = Vec::new();
+        macro_rules! push {
+            ($name:literal, $value:expr) => {
+                sizes.push(($name, size(bincode::serialize(&$value).ok()?.len())));
+            };
+        }
+        push!("first_pc", columns.first_pc);
+        push!("pc_deltas", columns.pc_deltas);
+        push!("next_deltas", columns.next_deltas);
+        push!("words", columns.words);
+        push!("flags", columns.flags);
+        push!("first_rd_value", columns.first_rd_value);
+        push!("first_rd_delta", columns.first_rd_delta);
+        push!("rd_delta_deltas", columns.rd_delta_deltas);
+        push!("rs1_values", columns.rs1_values);
+        push!("rs2_values", columns.rs2_values);
+        push!("memory_rows", columns.memory_rows);
+        push!("memory", columns.memory);
+        push!("syscall_rows", columns.syscall_rows);
+        push!("syscalls", columns.syscalls);
+        Some(sizes)
     }
 }
 

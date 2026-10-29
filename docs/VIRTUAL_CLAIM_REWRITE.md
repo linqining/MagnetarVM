@@ -136,3 +136,11 @@ tampering the virtual claim root is rejected. This does not yet remove ClaimProo
 the access statement digest and Shout row binding still come from the full row
 claims, so proof size is unchanged. Next milestone: virtual Shout binding derived
 from the virtual claim set.
+
+
+## Milestone 1.5: compact claim by register reconstruction
+
+`ClaimProof::from_trace_reg` omits the rs1/rs2 columns; `verify_reg` simulates
+the initial register file over the stored PC/word/rd rows. At 2^16 the claim
+proof drops from 183,599 B to 2,410 B and the proof-only trace-Shout total is
+354,979 B compressed, with no verifier trace.

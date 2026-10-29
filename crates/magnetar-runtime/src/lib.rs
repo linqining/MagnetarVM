@@ -2804,6 +2804,7 @@ pub fn prove_unified_trace_paper(
     logup.logup.pushforwards.clear();
     proof.logup_shout = Some(logup);
     proof.trace_logup_shout = None;
+    proof.claim_proof = Some(crate::trace_claims::ClaimProof::from_trace_reg(trace));
     if let Some(selected) = &proof.selected_cpu {
         if let Ok(set) = crate::virtual_claims::VirtualClaimSet::from_selected(selected) {
             proof.virtual_claim_root = set.root;
@@ -3509,6 +3510,26 @@ pub fn verify_unified_claim_proof(
         .ok_or_else(|| RuntimeError::Proof("claim proof opening mismatch".into()))
 }
 
+/// Verify the compact claim proof against the statement, reconstructing
+/// register-read columns from the initial machine state.
+pub fn verify_unified_claim_proof_with_statement(
+    statement: &Statement,
+    proof: &UnifiedTraceProof,
+) -> Result<Vec<crate::trace_claims::TraceClaim>, RuntimeError> {
+    let claims = proof
+        .claim_proof
+        .as_ref()
+        .ok_or_else(|| RuntimeError::Proof("missing claim proof".into()))?;
+    if claims.root != proof.trace_claim_root {
+        return Err(RuntimeError::Proof(
+            "claim proof root mismatch".into(),
+        ));
+    }
+    claims
+        .verify_reg(&statement.initial_state)
+        .ok_or_else(|| RuntimeError::Proof("claim proof opening mismatch".into()))
+}
+
 /// Proof-only claim-layer verifier: authenticate row claims and, when a
 /// dynamic selected CPU proof is present, bind it to the same claim proof and
 /// check the PC statement.
@@ -3526,7 +3547,7 @@ pub fn verify_native_claim_layer(
             "trace commitment does not match the public statement".into(),
         ));
     }
-    let claims = verify_unified_claim_proof(proof)?;
+    let claims = verify_unified_claim_proof_with_statement(statement, proof)?;
     let access = crate::access_statement::AccessStatement::from_claims(
         statement.config.clone(),
         statement.initial_ram.clone(),
@@ -3571,7 +3592,7 @@ pub fn verify_native_unified(
             "trace commitment does not match the public statement".into(),
         ));
     }
-    let claims = verify_unified_claim_proof(proof)?;
+    let claims = verify_unified_claim_proof_with_statement(statement, proof)?;
     let access = crate::access_statement::AccessStatement::from_claims(
         statement.config.clone(),
         statement.initial_ram.clone(),

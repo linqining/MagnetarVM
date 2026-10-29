@@ -949,3 +949,27 @@ The native-trace compressed proof is below the paper's 380 KiB total, but the
 verifier is given the trace. The proof-only model still needs the full claim
 proof for Shout/access row binding; reaching <380 KiB without a trace requires
 virtual claims + virtual Shout.
+
+
+## Compact claim proof: RS1/RS2 columns reconstructed
+
+`ClaimProof` now supports a compact wire format (`CompactRegs`) that omits the
+`rs1_values`/`rs2_values` columns. The verifier rebuilds those columns by
+simulating the public initial registers over the stored PC/word/rd-delta rows.
+No trace is required.
+
+2^16 effect:
+
+```text
+claim proof   183,599 B -> 2,410 B
+```
+
+Proof-only results (no verifier trace):
+
+| model | raw | varint | varint+DEFLATE |
+|---|---:|---:|---:|
+| committed Shout + compact claim | 728,894 | 617,582 | 541,198 |
+| trace Shout + compact claim | 492,966 | 416,213 | **354,979** |
+
+The trace-Shout proof-only compressed proof is below the paper's 380 KiB total;
+the committed-Shout proof-only proof is 541,198 B compressed.
