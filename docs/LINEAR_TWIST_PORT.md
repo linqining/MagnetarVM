@@ -1103,3 +1103,25 @@ public selected CPU verify
 The remaining selected-verifier cost is the matrix/PCS work plus the current
 witness-binding step when the full verifier is used; the trace-free public
 selected verifier is now close to the ms range.
+
+
+### Blocked witness-MLE binding
+
+`eval_bits_mle` evaluates the witness MLE in 2^16-bit blocks, avoiding the
+full field-valued witness vector (GB-scale) while keeping the exact random-point
+binding. The default selected verifier now uses the lazy public matrices plus
+this blocked witness-MLE check.
+
+2^16 proof-only trace-Shout:
+
+```text
+total verify                1.31 s
+public selected stage        53.6 ms
+trace logup verify           0.28 s
+claim/access reconstruction  0.10 s
+```
+
+Down from 3.09 s. The remaining ~0.9 s is still the O(T) witness bit generation
+and blocked MLE binding; eliminating it requires committing the CPU witness in
+the same Mosaic commitment / routing segment claims through the auxiliary
+reductions, as in the paper.

@@ -3595,7 +3595,7 @@ pub fn verify_native_claim_layer(
 pub fn verify_native_unified(
     statement: &Statement,
     proof: &UnifiedTraceProof,
-    _width: usize,
+    width: usize,
 ) -> Result<(), RuntimeError> {
     if proof.trace_claim_root != statement.trace_claim_root {
         return Err(RuntimeError::Proof(
@@ -3664,8 +3664,10 @@ pub fn verify_native_unified(
                 crate::simd_dual::verify_selected_claim_consistency(selected, claims)?;
                 let backend = crate::protocol::selected_backend();
                 if selected.op == crate::simd_dual::SelectedOp::Dynamic {
-                    crate::simd_dual::verify_dynamic_cpu_claims(synthetic, selected, &backend)
-                        .map_err(|error| RuntimeError::Proof(format!("selected verifier: {error}")))?;
+                    crate::simd_dual::verify_dynamic_segments_against_rows(
+                        synthetic, selected, &backend, width,
+                    )
+                    .map_err(|error| RuntimeError::Proof(format!("selected verifier: {error}")))?;
                 } else {
                     crate::simd_dual::verify_selected_cpu_claims(selected, &backend)
                         .map_err(|error| RuntimeError::Proof(format!("selected verifier: {error}")))?;

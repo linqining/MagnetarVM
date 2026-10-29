@@ -28,6 +28,36 @@ pub trait Pcs {
     fn commitment_bytes(&self, commitment: &Self::Commitment) -> Vec<u8>;
 }
 
+/// Evaluate the multilinear extension of a bit vector at `point` without
+/// materializing the full field-valued evaluation vector. The vector is split
+/// into power-of-two blocks; each block is evaluated locally and combined with
+/// the high-coordinate equality weights.
+pub fn eval_bits_mle(bits: &[bool], point: &[F2_128]) -> Result<F2_128, ProofError> {
+    if bits.len() != 1usize << point.len() {
+        return Err(ProofError::NotPowerOfTwo(bits.len()));
+    }
+    let local_bits = 16.min(point.len());
+    let block = 1usize << local_bits;
+    let high_len = point.len() - local_bits;
+    let high_eq = crate::spartan::eq_vector_tensor(&point[local_bits..]);
+    let mut sum = F2_128::from(0u64);
+    let mut start = 0usize;
+    for (index, weight) in high_eq.iter().enumerate() {
+        let _ = index;
+        let values = bits[start..start + block]
+            .iter()
+            .map(|bit| F2_128::from(u64::from(*bit)))
+            .collect::<Vec<_>>();
+        let local = Mle::new(values)?.eval(&point[..local_bits])?;
+        sum = sum + local * *weight;
+        start += block;
+    }
+    if start != bits.len() || high_eq.len() != 1usize << high_len {
+        return Err(ProofError::NotPowerOfTwo(bits.len()));
+    }
+    Ok(sum)
+}
+
 /// A multilinear polynomial given by its evaluations on the Boolean hypercube.
 #[derive(Clone, Debug)]
 pub struct Mle<F: Field> {

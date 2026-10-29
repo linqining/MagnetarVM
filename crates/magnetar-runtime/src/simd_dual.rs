@@ -5751,8 +5751,6 @@ where
     B::Commitment: Sync,
     B::Opening: Sync,
 {
-    use magnetar_constraint::F2_128 as F2;
-
     let rows = mixed_alu_branch_rows_from_trace_dynamic(trace, width)?;
     let final_pc = trace.final_state.pc;
     let mut mask = mixed_rows_component_mask(&rows);
@@ -5804,13 +5802,7 @@ where
     if claims.proof.segments.len() != layout.segments.len() {
         return Err(RuntimeError::Proof("dynamic segment claim count".into()));
     }
-    let values = bits
-        .iter()
-        .map(|bit| F2::from(u64::from(*bit)))
-        .collect::<Vec<_>>();
-    let expected = magnetar_proof::Mle::new(values)
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?
-        .eval(&ry)
+    let expected = magnetar_proof::eval_bits_mle(&bits, &ry)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let reconstructed = magnetar_proof::virtual_spartan::reconstruct_segment_claim(
         &layout,

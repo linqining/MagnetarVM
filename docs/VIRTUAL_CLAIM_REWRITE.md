@@ -187,3 +187,12 @@ builds the A/B/C extra rows from the PC-chain pattern instead of materializing
 them. 2^16 public selected verify: 646 ms -> 53.6 ms. Full suite 339 passing.
 Next: remove the O(T) witness-binding from the default verifier and route
 segment claims through the auxiliary reductions.
+
+
+## Milestone 3: blocked witness binding + public selected verifier by default
+
+`eval_bits_mle` computes the expected witness MLE in blocks; the default selected
+verifier now uses the lazy public matrices and this blocked binding. Full 2^16
+proof-only trace-Shout verify: 3.09 s -> 1.31 s (selected public stage 53.6 ms).
+Next: remove the remaining O(T) witness bits/MLE by virtual claim routing and a
+single Mosaic commitment for CPU direct segments.
