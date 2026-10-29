@@ -930,6 +930,7 @@ dependencies = [
  "magnetar-runtime",
  "magnetar-spec",
  "magnetar-transcript",
+ "miniz_oxide",
  "p3-binary-field",
  "p3-challenger",
  "p3-field",
