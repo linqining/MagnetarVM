@@ -1182,3 +1182,22 @@ of a per-row callback. At 2^14 the selected public verifier improves from
 13.8 ms to 11.1 ms. Full-suite tests and clippy pass. The remaining selected cost
 is dominated by building the row/column eq tensors and the field operations in
 the chain dot products.
+
+
+### Factorized PC-chain sum: selected verify 45 ms -> 11.8 ms
+
+For a power-of-two row width the extra-row index is
+`extra_base + (instance << log_width | bit)`, so the row equality factors into a
+bit part and an instance part. The A/B/C PC-chain sums are separable:
+
+```text
+A/C:  (Σ_i instance_eq[i] · column_instance_eq[i+offset])
+       · (Σ_b bit_eq[b] · column_local_eq[pc/next_pc[b]])
+B:    (Σ_i instance_eq[i] · column_instance_eq[i])
+       · (Σ_b bit_eq[b]) · column_local_eq[one]
+```
+
+This collapses each chain from O(cycles * width) to O(cycles + width) field
+operations. 2^16 public selected verify: 45.6 ms -> 11.8 ms; 2^14: 13.8 ms ->
+5.1 ms. The remaining selected cost is base/instance terms, eq tensors, and the
+~3 ms PCS opening verification.

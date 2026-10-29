@@ -206,3 +206,11 @@ witness-free Shout verification makes the Shout proof 1.29 MB and total proof
 1.78 MB, so the compact 380 KiB target requires a different proof-only Shout
 reduction (no transmitted pushforward tables). This path is not committed as
 the default verifier.
+
+
+## Milestone 3.6: separability of the PC-chain pattern
+
+The lazy gated extra-row sums factor into independent instance and bit parts for
+power-of-two widths, reducing O(cycles*width) to O(cycles+width). Public selected
+verify: 45.6 ms -> 11.8 ms at 2^16, 13.8 ms -> 5.1 ms at 2^14. Full suite 339
+passing, clippy clean.

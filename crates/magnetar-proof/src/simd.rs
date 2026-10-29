@@ -114,6 +114,109 @@ impl LazyExtraRows {
         sum
     }
 
+    /// Factorized chain evaluation: for a power-of-two width the PC-chain row
+    /// index is `(instance << log_width) | bit`, so the row equality factors into
+    /// bit and instance parts. The chain contribution then collapses from
+    /// O(cycles * width) to O(cycles + width).
+    #[allow(clippy::too_many_arguments)]
+    pub fn eval_sum_factorized(
+        &self,
+        row_point: &[F2_128],
+        extra_base: usize,
+        extra_bits: usize,
+        high_eq: F2_128,
+        col_local_eq: &[F2_128],
+        col_instance_eq: &[F2_128],
+        base_cols: usize,
+    ) -> Option<F2_128> {
+        let LazyExtraRows::Gated {
+            part,
+            width,
+            cycles,
+            pc,
+            next_pc,
+            one,
+            statement,
+            ..
+        } = self;
+        if !width.is_power_of_two() || !extra_base.is_multiple_of(1usize << extra_bits) {
+            return None;
+        }
+        let log_width = width.trailing_zeros() as usize;
+        if log_width > extra_bits {
+            return None;
+        }
+        let chain_instances = cycles.saturating_sub(1);
+        if chain_instances > (1usize << (extra_bits - log_width)) {
+            return None;
+        }
+        let bit_eq = eq_vector_tensor(&row_point[..log_width]);
+        let instance_eq = eq_vector_tensor(&row_point[log_width..extra_bits]);
+        let high = high_eq;
+        let mut sum = F2_128::from(0u64);
+        match part {
+            1 => {
+                let mut instance_dot = F2_128::from(0u64);
+                for instance in 0..chain_instances {
+                    instance_dot = instance_dot + instance_eq[instance] * col_instance_eq[instance];
+                }
+                let bit_sum = bit_eq.iter().copied().fold(F2_128::from(0u64), |acc, value| acc + value);
+                sum = sum + instance_dot * bit_sum * col_local_eq[*one] * high;
+            }
+            _ => {
+                let locals = if *part == 0 { next_pc } else { pc };
+                let mut instance_dot = F2_128::from(0u64);
+                for instance in 0..chain_instances {
+                    let column_weight = if *part == 0 {
+                        col_instance_eq[instance]
+                    } else {
+                        col_instance_eq[instance + 1]
+                    };
+                    instance_dot = instance_dot + instance_eq[instance] * column_weight;
+                }
+                let mut bit_sum = F2_128::from(0u64);
+                for bit in 0..*width {
+                    bit_sum = bit_sum + bit_eq[bit] * col_local_eq[locals[bit]];
+                }
+                sum = sum + instance_dot * bit_sum * high;
+            }
+        }
+        if let Some((initial, final_pc)) = statement {
+            let mut offset = chain_instances * width;
+            for instance in [0usize, cycles.saturating_sub(1)] {
+                let pc_value = if instance == 0 { *initial } else { *final_pc };
+                for bit in 0..*width {
+                    let local = match *part {
+                        0 => {
+                            if instance == 0 {
+                                pc[bit]
+                            } else {
+                                next_pc[bit]
+                            }
+                        }
+                        1 => *one,
+                        _ => *one,
+                    };
+                    let coefficient = if *part == 2 && (pc_value >> bit) & 1 == 0 {
+                        F2_128::from(0u64)
+                    } else {
+                        F2_128::from(1u64)
+                    };
+                    let row_index = extra_base + offset;
+                    let row_weight = eq(row_point, &bits(row_index, row_point.len()));
+                    let _ = base_cols;
+                    sum = sum
+                        + coefficient
+                            * row_weight
+                            * col_local_eq[local]
+                            * col_instance_eq[instance];
+                    offset += 1;
+                }
+            }
+        }
+        Some(sum)
+    }
+
     pub fn len(&self) -> usize {
         match self {
             LazyExtraRows::Gated {
@@ -392,17 +495,31 @@ impl SharedBlockMatrix {
         if !extra_base.is_multiple_of(1usize << extra_bits) {
             return Ok(None);
         }
-        let row_low_eq = eq_vector_tensor(&row_point[..extra_bits]);
         let high_point = &row_point[extra_bits..];
         let high_index = extra_base >> extra_bits;
         let high_bits = bits(high_index, high_point.len());
         let high_eq = eq(high_point, &high_bits);
+        let col_local_eq = eq_vector_tensor(&col_point[..local_col_bits]);
+        let col_instance_eq = eq_vector_tensor(&col_point[local_col_bits..]);
+        if let Some(lazy) = &self.lazy_extra {
+            if let Some(extra_sum) = lazy.eval_sum_factorized(
+                row_point,
+                extra_base,
+                extra_bits,
+                high_eq,
+                &col_local_eq,
+                &col_instance_eq,
+                self.base.cols,
+            ) {
+                sum = sum + extra_sum;
+                return Ok(Some(sum));
+            }
+        }
+        let row_low_eq = eq_vector_tensor(&row_point[..extra_bits]);
         let row_weights = row_low_eq
             .iter()
             .map(|weight| *weight * high_eq)
             .collect::<Vec<_>>();
-        let col_local_eq = eq_vector_tensor(&col_point[..local_col_bits]);
-        let col_instance_eq = eq_vector_tensor(&col_point[local_col_bits..]);
         if let Some(lazy) = &self.lazy_extra {
             sum = sum
                 + lazy.eval_sum(
