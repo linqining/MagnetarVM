@@ -1082,3 +1082,24 @@ constructing the gated matrices (the extra-row vector is materialized even thoug
 the fast MLE path does not need it); the next step is a lazy/structured extra-row
 representation so the verifier can evaluate the matrix MLE without building the
 O(cycles * width) row vector.
+
+
+### Lazy gated extra rows
+
+The verifier path now uses a structured `LazyExtraRows::Gated` representation for
+the A/B/C extra rows of the gated matrices instead of materializing the
+`O(cycles * width)` row vectors. `SharedBlockMatrix::eval_mle_fast` evaluates the
+row weights through the aligned row/column factorization and the lazy PC-chain
+pattern.
+
+`FAST_SELECTED=1` at 2^16:
+
+```text
+public selected CPU verify
+  eager matrix construction: 646 ms
+  lazy structured extra rows: 53.6 ms
+```
+
+The remaining selected-verifier cost is the matrix/PCS work plus the current
+witness-binding step when the full verifier is used; the trace-free public
+selected verifier is now close to the ms range.

@@ -11,11 +11,101 @@ use crate::spartan::{bits, eq_vector_tensor, MatrixPart, SparseMatrix, SpartanMa
 use crate::{eq, SpartanError};
 
 #[derive(Clone, Debug)]
+pub enum LazyExtraRows {
+    /// PC-chain + statement rows for one part of the gated matrices.
+    ///
+    /// `part` is 0 for A, 1 for B and 2 for C. A/B rows always have coefficient
+    /// one; C has a zero coefficient for statement rows whose public PC bit is
+    /// zero.
+    Gated {
+        part: u8,
+        width: usize,
+        cycles: usize,
+        base_cols: usize,
+        pc: Vec<usize>,
+        next_pc: Vec<usize>,
+        one: usize,
+        statement: Option<(u64, u64)>,
+    },
+}
+
+impl LazyExtraRows {
+    pub fn len(&self) -> usize {
+        match self {
+            LazyExtraRows::Gated {
+                width,
+                cycles,
+                statement,
+                ..
+            } => {
+                cycles.saturating_sub(1) * width
+                    + if statement.is_some() { 2 * width } else { 0 }
+            }
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn for_each(&self, mut f: impl FnMut(usize, usize, F2_128)) {
+        let LazyExtraRows::Gated {
+            part,
+            width,
+            cycles,
+            base_cols,
+            pc,
+            next_pc,
+            one,
+            statement,
+        } = self;
+        let mut offset = 0usize;
+        for instance in 0..cycles.saturating_sub(1) {
+            for bit in 0..*width {
+                let column = match part {
+                    0 => instance * base_cols + next_pc[bit],
+                    1 => instance * base_cols + one,
+                    _ => (instance + 1) * base_cols + pc[bit],
+                };
+                f(offset, column, F2_128::from(1u64));
+                offset += 1;
+            }
+        }
+        if let Some((initial, final_pc)) = statement {
+            for instance in [0usize, cycles.saturating_sub(1)] {
+                let pc_value = if instance == 0 { *initial } else { *final_pc };
+                for bit in 0..*width {
+                    let column = match part {
+                        0 => {
+                            let variable = if instance == 0 {
+                                pc[bit]
+                            } else {
+                                next_pc[bit]
+                            };
+                            instance * base_cols + variable
+                        }
+                        1 => instance * base_cols + one,
+                        _ => instance * base_cols + one,
+                    };
+                    let coefficient = match part {
+                        2 if (pc_value >> bit) & 1 == 0 => F2_128::from(0u64),
+                        _ => F2_128::from(1u64),
+                    };
+                    f(offset, column, coefficient);
+                    offset += 1;
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct SharedBlockMatrix {
     base: SparseMatrix,
     instances: usize,
     extra: Vec<Vec<(usize, F2_128)>>,
     extra_zero_rows: usize,
+    lazy_extra: Option<LazyExtraRows>,
 }
 
 impl SpartanMatrix for SharedBlockMatrix {
@@ -72,6 +162,7 @@ impl SharedBlockMatrix {
             instances,
             extra: Vec::new(),
             extra_zero_rows: 0,
+            lazy_extra: None,
         })
     }
 
@@ -91,6 +182,14 @@ impl SharedBlockMatrix {
         }
         self.extra = extra;
         self.extra_zero_rows = zero_tail;
+        self
+    }
+
+    pub fn with_lazy_extra(mut self, lazy: LazyExtraRows) -> Self {
+        self.extra.clear();
+        let base_rows = self.base.rows.len() * self.instances;
+        self.extra_zero_rows = (base_rows + lazy.len()).next_power_of_two() - base_rows;
+        self.lazy_extra = Some(lazy);
         self
     }
 
@@ -197,10 +296,14 @@ impl SharedBlockMatrix {
                 instance_sum + row_instance_eq[instance] * col_instance_eq[instance];
         }
         let mut sum = base * instance_sum * block_weight;
-        if self.extra.is_empty() {
+        let extra_len = self
+            .lazy_extra
+            .as_ref()
+            .map_or(self.extra.len(), LazyExtraRows::len);
+        if extra_len == 0 {
             return Ok(Some(sum));
         }
-        let extra_bits = self.extra.len().next_power_of_two().trailing_zeros() as usize;
+        let extra_bits = extra_len.next_power_of_two().trailing_zeros() as usize;
         let extra_base = self.base.rows.len() * self.instances;
         if !extra_base.is_multiple_of(1usize << extra_bits) {
             return Ok(None);
@@ -212,16 +315,23 @@ impl SharedBlockMatrix {
         let high_eq = eq(high_point, &high_bits);
         let col_local_eq = eq_vector_tensor(&col_point[..local_col_bits]);
         let col_instance_eq = eq_vector_tensor(&col_point[local_col_bits..]);
-        for (offset, row) in self.extra.iter().enumerate() {
-            let row_weight = row_low_eq[offset] * high_eq;
-            for (column, coefficient) in row {
-                let instance = column / self.base.cols;
-                let local = column % self.base.cols;
-                sum = sum
-                    + *coefficient
-                        * row_weight
-                        * col_local_eq[local]
-                        * col_instance_eq[instance];
+        let add_row = |sum: &mut F2_128, offset: usize, column: usize, coefficient: F2_128| {
+            let instance = column / self.base.cols;
+            let local = column % self.base.cols;
+            *sum = *sum
+                + coefficient
+                    * row_low_eq[offset]
+                    * high_eq
+                    * col_local_eq[local]
+                    * col_instance_eq[instance];
+        };
+        if let Some(lazy) = &self.lazy_extra {
+            lazy.for_each(|offset, column, coefficient| add_row(&mut sum, offset, column, coefficient));
+        } else {
+            for (offset, row) in self.extra.iter().enumerate() {
+                for (column, coefficient) in row {
+                    add_row(&mut sum, offset, *column, *coefficient);
+                }
             }
         }
         Ok(Some(sum))

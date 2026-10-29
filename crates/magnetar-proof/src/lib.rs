@@ -543,7 +543,7 @@ pub use bit_pcs::{
     BitPcs, DirectBitPcs, PackedBitPcs, PackedOpening, PackedTableOpening, RevealingPackedBitPcs,
     RingSwitchOpening, RingSwitchPackedBitPcs,
 };
-pub use simd::SharedBlockMatrix;
+pub use simd::{LazyExtraRows, SharedBlockMatrix};
 pub use spartan::{
     prove_lockstep, prove_lockstep_bits, prove_lockstep_bits_with_point, prove_lockstep_claims,
     prove_lockstep_with_matrices, prove_shared_simd_spartan, prove_spartan, prove_spartan_bits,

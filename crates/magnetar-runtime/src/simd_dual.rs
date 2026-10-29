@@ -695,6 +695,65 @@ fn gated_shared_matrices<R: GatedRowLike>(
     Ok((base_cols, [a0, b0, c0], [a1, b1, c1]))
 }
 
+#[allow(clippy::type_complexity)]
+fn gated_shared_matrices_lazy<R: GatedRowLike>(
+    row: &R,
+    cycles: usize,
+    statement: Option<(u64, u64)>,
+) -> Result<
+    (
+        usize,
+        [magnetar_proof::SharedBlockMatrix; 3],
+        [magnetar_proof::SharedBlockMatrix; 3],
+    ),
+    RuntimeError,
+> {
+    use magnetar_proof::spartan::MatrixPart;
+    use magnetar_proof::{LazyExtraRows, SharedBlockMatrix};
+
+    let s1_system = row.relation().to_system();
+    let mut s2_system = row.packed_companion_system();
+    for _ in s2_system.constraints.len()..s1_system.constraints.len() {
+        s2_system.add_constraint(
+            magnetar_constraint::Expr::constant(0u64),
+            magnetar_constraint::Expr::constant(1u64),
+            magnetar_constraint::Expr::constant(0u64),
+        );
+    }
+    let base_cols = (row.relation().num_vars + 1).next_power_of_two();
+    let statement_rows = if statement.is_some() { 2 * row.width() } else { 0 };
+    let extra_count = cycles.saturating_sub(1) * row.width() + statement_rows;
+    let a0 = SharedBlockMatrix::from_system(&s1_system, MatrixPart::A, cycles)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_zero_rows(extra_count);
+    let b0 = SharedBlockMatrix::from_system(&s1_system, MatrixPart::B, cycles)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_zero_rows(extra_count);
+    let c0 = SharedBlockMatrix::from_system(&s1_system, MatrixPart::C, cycles)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_extra_zero_rows(extra_count);
+    let pattern = |part: u8| LazyExtraRows::Gated {
+        part,
+        width: row.width(),
+        cycles,
+        base_cols,
+        pc: row.pc().to_vec(),
+        next_pc: row.next_pc().to_vec(),
+        one: row.one(),
+        statement,
+    };
+    let a1 = SharedBlockMatrix::from_system(&s2_system, MatrixPart::A, cycles)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_lazy_extra(pattern(0));
+    let b1 = SharedBlockMatrix::from_system(&s2_system, MatrixPart::B, cycles)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_lazy_extra(pattern(1));
+    let c1 = SharedBlockMatrix::from_system(&s2_system, MatrixPart::C, cycles)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        .with_lazy_extra(pattern(2));
+    Ok((base_cols, [a0, b0, c0], [a1, b1, c1]))
+}
+
 #[allow(dead_code)]
 #[allow(clippy::type_complexity)]
 pub(crate) fn gated_claim_inputs(
@@ -5802,7 +5861,7 @@ where
         claims.matrix_cycles
     };
     let (row, _mapping, layout) = segmented_dynamic_row(claims.mask, claims.width, matrix_cycles)?;
-    let (_, s1, s2) = gated_shared_matrices(
+    let (_, s1, s2) = gated_shared_matrices_lazy(
         &row,
         matrix_cycles,
         Some((claims.initial_pc, claims.final_pc)),

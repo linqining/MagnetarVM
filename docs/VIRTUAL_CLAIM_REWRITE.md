@@ -178,3 +178,12 @@ reduction, so the verifier never reconstructs the full witness bits.
 verifier at 2^16: 646 ms. This is the lower bound before adding aux-claim
 routing; it is dominated by gated-matrix construction/allocation, not PCS.
 Next: lazy structured extra rows for the verifier path.
+
+
+## Milestone 2.6: lazy gated matrices
+
+Added `LazyExtraRows::Gated` to `SharedBlockMatrix`; the public selected verifier
+builds the A/B/C extra rows from the PC-chain pattern instead of materializing
+them. 2^16 public selected verify: 646 ms -> 53.6 ms. Full suite 339 passing.
+Next: remove the O(T) witness-binding from the default verifier and route
+segment claims through the auxiliary reductions.
