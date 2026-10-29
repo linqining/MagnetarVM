@@ -1033,3 +1033,8 @@ varint+DEFLATE 712,967 B.
 B virtual claims milestone 1: verify_virtual_cpu_layer authenticates selected CPU
 + virtual claim root without full row claims; ClaimProof remains needed for
 access/Shout binding. Full suite 338 passing.
+
+
+B frontier: native-trace trace-Shout no-claim 2^16 is 490,557 B raw / 354,584 B
+DEFLATE (below paper 380 KiB, but verifier has trace). Proof-only trace-Shout
+with claim is 526,741 B compressed; committed-Shout proof-only is 712,967 B.

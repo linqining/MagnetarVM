@@ -931,3 +931,21 @@ varint+DEFLATE    712,967 B
 
 Varint encoding removes ~12% without changing proof content; the bench
 round-trips the decoded proof.
+
+
+## B frontier: three verification models
+
+The benchmark now supports `TRACE_SHOUT=1` (trace-backed Shout instead of the
+committed Shout proof) and `NO_CLAIM=1` (native trace mode, verifier has the
+trace). 2^16 results:
+
+| model | raw | varint | varint+DEFLATE |
+|---|---:|---:|---:|
+| proof-only, committed Shout + claim | 910,083 | 798,773 | 712,967 |
+| proof-only, trace Shout + claim | 674,155 | 597,404 | 526,741 |
+| native trace, trace Shout, no claim | 490,557 | 413,812 | **354,584** |
+
+The native-trace compressed proof is below the paper's 380 KiB total, but the
+verifier is given the trace. The proof-only model still needs the full claim
+proof for Shout/access row binding; reaching <380 KiB without a trace requires
+virtual claims + virtual Shout.

@@ -53,8 +53,21 @@ fn main() {
         halted: trace.halted,
         exit_code: trace.exit_code,
     };
+    let use_trace_shout = std::env::var_os("TRACE_SHOUT").is_some();
+    let no_claim = std::env::var_os("NO_CLAIM").is_some();
     let started = Instant::now();
-    let proof = prove_unified_trace_paper(&trace, 8).unwrap();
+    let proof = if use_trace_shout {
+        let mut proof =
+            magnetar_runtime::prove_unified_trace_dynamic_native(&trace, 8).unwrap();
+        proof.claim_proof = if no_claim {
+            None
+        } else {
+            Some(magnetar_runtime::trace_claims::ClaimProof::from_trace(&trace))
+        };
+        proof
+    } else {
+        prove_unified_trace_paper(&trace, 8).unwrap()
+    };
     let prove = started.elapsed();
     let sizes = unified_proof_sizes(&proof).unwrap();
     let serialized = bincode::serialize(&proof).unwrap();
@@ -70,7 +83,11 @@ fn main() {
         magnetar_runtime::deserialize_unified_proof_compressed(&compressed_bytes).unwrap();
     assert_eq!(decoded.trace_commitment, proof.trace_commitment);
     let started = Instant::now();
-    verify_native_unified(&statement, &proof, 8).unwrap();
+    if no_claim {
+        magnetar_runtime::verify_unified_trace(&trace, &proof, 8).unwrap();
+    } else {
+        verify_native_unified(&statement, &proof, 8).unwrap();
+    }
     let verify = started.elapsed();
     eprintln!("{sizes:?}");
     println!(
