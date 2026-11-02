@@ -748,6 +748,81 @@ prover that the classic trace path already uses (O(cycles log cycles)):
 - **prover**：pushforward 提交/打开对 ROM-size 敏感（合成 bench 2^16：~2^17 输入，~10 ms 级；
   论文 ROM 更小）；logup prover 本身 O(cycles log cycles)。
 
+#### C.9.1-R 修订（Lead 拍板后的落地版，2026-11-03）
+
+Lead 对 §C.9.1 四个问题的拍板结果及落地调整：
+
+**(a) vendor p3 `logup_star` 改动：批准**。落地时采用比「加 serde 字段」更强的方案：
+**完全不改任何 p3 proof/output 结构体**（`LogupStarProof`/`LogupStarOutput` 字节不变），
+新能力全部通过**新增函数**提供，bindings/evals 作为参数/返回值在 runtime 层携带：
+
+- `transcript.rs`：`LogupStarShape::pattern_committed_pushforwards` /
+  `domain_separator_committed`（协议名 `p3-multi-stark-logup-star-committed`，
+  pushforward 步骤 = 32-byte binding message）+ prover/verifier transcript 的
+  `new_committed` / `pushforward_binding`；
+- `prover.rs`：`LogupStarProof::prove_committed(lookups, witness, challenger, binder)`
+  → `(proof, bindings, reduction_evals, product_evals)`；proof 的
+  `pushforwards` 置空，binder 在 FS 顺序中原 pushforward 位置被调用（先提交后抽 challenge）；
+- `verifier.rs`：`verify_committed(lookups, challenger, bindings, reduction_evals,
+  product_evals)` → `(output, pushforward_claims)`；`check_shape_committed` /
+  `rebuild_opening_committed` / `final_value_committed` 用外部 evals 替代
+  `Poly::eval`，并把 verifier 需要 PCS 打开的 `(point, value)` 返回给 runtime。
+- 旧 `prove`/`verify`/`rebuild_pushforwards` 与全部结构体**一行未动**（vendor diff：
+  664 insertions / 0 deletions），因此 `linear_twist` 及旧路径 proof **编码字节完全不变**
+  （不是"语义不变"）。回归测试仍按 Lead 要求加：在 `magnetar-runtime` 里用旧入口编一份
+  proof 并断言其编码 hash 与改动前一致（结构体未动 → 恒等，但保留 golden 断言防回归）。
+
+**(b) word-only reader：批准** → M4 新路径 `columns = 1`（reader = claim word 列），
+paper 路径的 12 列 reader 留 M4b。
+
+**(c) link 列：不提交**。依据（写入验收）：
+- Logup* claimed-sum 的三类项：reader claims（`product::claimed_sum` 的 reader 侧）、
+  position claims（`rebuild_opening` 的 denominator 侧）、pushforward（table 侧）——
+  **没有任何一项引用 link 列**；verifier 的 `position_claims` 也不含 link；
+- `logup_shout` 里 link claims 只被 `logup_shout_router_link_claims` 用于 shift/store
+  router 折叠；dynamic native 路径没有 router 表（`shift_router_index`/`store_router_index`
+  均为 None），verifier 无消费者；
+- 因此 link 列**从 T 布局与 proof 中删除**（不预留 future 占位）。同理 `valid`/`is_32`
+  也不需要提交：`positions()` 对 padding cycle 取 0（即合法读取 ROM[0]），word mode
+  `is_32≡0`，二者只在 prover witness 内部影响 reader claim 的值，而 reader claim 本身
+  由 T_field 打开值 + logup 恒等式 + position 关系绑定，无需单独列。
+- ~~修订后的 T 扩展 = 仅 `T_field`（reader word 列，dense）~~ **已被 §C.9.1-S 取代**：
+  健全性复核发现表侧/位置侧需要 host-derived 的 `T_word` + `T_pos` 两列（不扩 T_bits、
+  不扩 slot 布局，不做 pc 位线性关系），见下一节。
+
+statement root v3 简化为 `H(v1 binding || field root)`；verifier 侧 PCS 校验：
+`T_field` 打开（reader claim）→ logup committed 验证（bindings + pushforward PCS 打开）→
+position claim 对 claim 表 pc 位的关系证明 → 公开 ROM word 列 O(rom) 检查。
+
+#### C.9.1-S 健全性义务表（修订：保留 T_shout，两列 host-derived）
+
+结论先行：**需要 T_shout**，但形态比 M4a 小得多——只提交 logup 论证真正消费的两列
+（reader word、position embed），且它们是 **statement 构造时 host 从 trace 派生**的，
+与 M2/M3 claim 表同一信任模型（statement 是公开输入，root 绑定后 prover 不能偏离）。
+不提交 link/valid/is_32/pc 关系（(c) 的结论保持）。
+
+| # | 验证器要的值 | 从哪里拿 | 被什么绑定 | 复杂度 |
+|---|---|---|---|---|
+| 1 | **reader claim**（word 列 MLE @ reader point） | `T_word` PCS opening @ reader point；reader point = H(field commitment) 的 FS 抽样 | `T_word` 是 host 从 claim 行 `instruction_word` 派生（padding cycle 用 ROM[0]，与 prover 的 `reader_columns` 构造一致），commitment root 进 statement v3 root | O(log) opening + O(1) absorb |
+| 2 | **position claim**（embed(position) MLE @ position point） | `T_pos` PCS opening @ logup `output.position_point`，值 = `output.tables[0].position_claims[0]` | `T_pos` 是 host 用 `positions()` 同款语义派生：cycle<trace_len → (pc−rom_base)/4，padding → 0（trace_len 公开）；root 进 v3。**不需要 pc 位线性关系**（避免 `pc = rom_base + 4·pos` 的进位非线性），也避免 M4a 里 pc 位直接当 position 的隐含假设 | O(log) opening |
+| 3 | **table 侧（ROM 列 claim）** | 不提交 table 列；verifier 用**公开 ROM** 现算：`expected = eval_mle(public_rom_word_column, output.table_point)`，与 `output.tables[0].column_claims[0]` 比较 | 公开 ROM 是 statement 的一部分（program hash/rom 公开）；`table_point` 来自 product sumcheck（后续被 fraction/product 校验约束） | **O(rom)=O(2^address_bits)**（word-only 单列，合成 2^16 ≈ 0.3–1 ms；论文 ec20 ROM 更小） |
+| 4 | **pushforward（多重集函数）** | prover 提交 pushforward 表（P3），proof 只带 verifier 需要的点求值 + opening；transcript 吸收 `H(commitment)` | **不是"提交即正确"**：fraction reduction 把 pushforward 与 position 列绑成同一多重集（reader 侧 weights vs table 侧 `position::eval`，随机 entry challenge 下 w.h.p.），product sumcheck 再把 reader claims ↔ Σ pushforward·ROM 列绑起来（`product::claimed_sum` 来自 statement 的 reader claims）；verifier 对 pushforward 的 2–3 个 (point,value) 做 PCS opening | O(log) opening ×2–3 + O(log²) 归约校验 |
+| 5 | **padding / valid** | 不需要 verifier 重算：`T_pos` 把 padding 固定为 0（=合法读 ROM[0]，与 `positions()` 语义一致），real row 的 (pc−rom_base)/4 由 host 写入；trace_len 公开且参与 statement 构造。若 prover 把 real row 标成 padding，则它用的 position 列与 `T_pos` opening 不符（PCS 拒绝）；reader 列同理被 `T_word` 钉死 | — | — |
+| 6 | **paper 路径「Shout 未校验」缺口** | 由本设计的完整链闭合：reader claim ← `T_word` 打开；position ← `T_pos` 打开；ROM ← O(rom) 现算；多重集 ← fraction+product 归约。verifier 每次都会跑 logup reduction，不再有「只 carried 不消费」的 proof 字段 | — | 总计 O(rom) + O(log²)，无 O(cycles) witness 重建 |
+
+关键正/负向理由（为何不再需要 pc→index 关系或 T_bits 扩展）：
+- `pc = rom_base + 4·position` 减去常数再取位在 GF(2) 上带进位、非线性；若用 pc 位推
+  position 需要提交进位列并做二次关系（CPU-relation 级复杂度），收益为零。改为 host
+  直接提交 position embed（statement 信任模型与 M2/M3 完全一致），verifier 只做 PCS 打开；
+- `link`/`valid`/`is_32` 在 logup verifier 侧没有消费者（C.9.1-R 已论证），不提交；
+- 代价：+1 个 dense 列提交/打开（position embed），proof 约 +1–3 KB，verify 约 +0.3–0.8 ms，
+  远小于放弃健全性换来的收益。
+
+更新后的 T 扩展 = **`T_word`（reader word 列）+ `T_pos`（position embed 列）**，两列均
+host-derived、root 进 statement v3 `H(v1 binding ‖ word root ‖ pos root ‖ pushforward root)`；
+link/valid/is_32 不提交。其余（提交 pushforward、FS 抽点开、verifier 无 witness）按
+§C.9.1-R。
+
 #### 实施顺序与 open decisions
 
 1. Lead 批准 vendor p3 committed-pushforward 改动（或选 fork 备选）；

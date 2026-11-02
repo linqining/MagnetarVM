@@ -54,6 +54,36 @@ pub fn profile() -> bool {
     std::env::var_os("MAGNETAR_PROFILE_STREAM").is_some()
 }
 
+/// A/B switch: route the packed-CSR scan back to the shipped entry layout.
+///
+/// Timing only; the two layouts produce exactly the same six row values.
+fn p6_legacy_csr() -> bool {
+    static LEGACY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
+    match LEGACY.load(std::sync::atomic::Ordering::Relaxed) {
+        2 => {
+            let value = u8::from(std::env::var_os("MAGNETAR_P6_LEGACY_CSR").is_some());
+            LEGACY.store(value, std::sync::atomic::Ordering::Relaxed);
+            value == 1
+        }
+        value => value == 1,
+    }
+}
+
+/// A/B switch: route the outer round polynomial back to the four-multiply
+/// equality handling and the unreduced `p1`. Timing only; the coefficients are
+/// algebraically identical.
+fn p6_legacy_pair() -> bool {
+    static LEGACY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
+    match LEGACY.load(std::sync::atomic::Ordering::Relaxed) {
+        2 => {
+            let value = u8::from(std::env::var_os("MAGNETAR_P6_LEGACY_PAIR").is_some());
+            LEGACY.store(value, std::sync::atomic::Ordering::Relaxed);
+            value == 1
+        }
+        value => value == 1,
+    }
+}
+
 fn workers() -> usize {
     if let Some(count) = std::env::var("MAGNETAR_STREAM_WORKERS")
         .ok()
@@ -217,6 +247,26 @@ impl EqTable {
         }
     }
 
+    /// The low half's equality value at `index`, without the high-half multiply.
+    #[inline]
+    fn low_at(&self, index: usize) -> F {
+        self.low[index & self.low_mask]
+    }
+
+    /// The high half scaled by `scale` and by `scale * f0`.
+    ///
+    /// The outer round polynomial needs, per block, the equality value
+    /// `high = at * scale` and the even/odd coefficients `eq0 = high * f0`,
+    /// `eq1 = high * f1`. Because `f0 + f1 = 1` and `f1 - f0 = 1` in
+    /// characteristic two, `eq1 - eq0 = high` exactly, so `eq1` itself is never
+    /// needed. Scaling the short high table once per round removes two
+    /// per-block multiplies; `high` and `eq0` then cost one multiply each.
+    fn scaled_highs(&self, scale: F, f0: F) -> (Vec<F>, Vec<F>) {
+        let high: Vec<F> = self.high.iter().map(|value| *value * scale).collect();
+        let eq0: Vec<F> = high.iter().map(|value| *value * f0).collect();
+        (high, eq0)
+    }
+
     fn len(&self) -> usize {
         self.high.len() * self.low.len()
     }
@@ -253,6 +303,11 @@ pub struct LockstepRows<'a> {
     /// empty, so one flat pass beats six sparse-row probes per row.
     base_offsets: Vec<u32>,
     base_entries: Vec<(u8, u32, F)>,
+    /// Packed CSR entries for the hot scan when every coefficient is one:
+    /// `word_off: u16 | shift: u6 | slot: u3`, one `u32` per entry, in the same
+    /// per-local-row order as `base_entries` (so `base_offsets` indexes both).
+    /// Empty when the fallback layout is in use.
+    packed_entries: Vec<u32>,
 }
 
 impl<'a> LockstepRows<'a> {
@@ -330,10 +385,36 @@ impl<'a> LockstepRows<'a> {
                 }
             }
         }
+        // Pack the CSR entries into one u32 each for the hot scan. The packed
+        // layout reproduces the six row values exactly: addition in the binary
+        // tower field is XOR and every coefficient is one, so an entry only
+        // needs its bit position and slot. Shapes with non-one coefficients or a
+        // non-word-aligned base block keep the general layout (`packed` empty).
+        let unit_coefficients = sorted.iter().all(|(_, _, coefficient)| *coefficient == one());
+        let packable = unit_coefficients
+            && base_cols % 64 == 0
+            && base_cols / 64 <= u16::MAX as usize
+            && !p6_legacy_csr();
+        let mut packed_entries: Vec<u32> = Vec::new();
+        if packable {
+            packed_entries.reserve(total);
+            for local in 0..base_rows {
+                let start = counts[local] as usize;
+                let end = counts[local + 1] as usize;
+                for &(slot, column, _) in &sorted[start..end] {
+                    let column = column as usize;
+                    let entry = ((column >> 6) as u32)
+                        | (((column & 63) as u32) << 16)
+                        | ((slot as u32) << 22);
+                    packed_entries.push(entry);
+                }
+            }
+            debug_assert_eq!(packed_entries.len(), total);
+        }
         if profile() {
             let live = (instance_rows + extra_len).min(rows);
             eprintln!(
-                "lockstep rows: base_rows={base_rows} base_cols={base_cols} entries={total} per_row={:.2} instance_rows={instance_rows} extra_rows={extra_len} live_rows={live} rows={rows} padding={:.1}%",
+                "lockstep rows: base_rows={base_rows} base_cols={base_cols} entries={total} per_row={:.2} instance_rows={instance_rows} extra_rows={extra_len} live_rows={live} rows={rows} padding={:.1}% unit_coefficients={unit_coefficients} packed={packable}",
                 total as f64 / base_rows as f64,
                 (rows - live) as f64 * 100.0 / rows as f64
             );
@@ -355,6 +436,7 @@ impl<'a> LockstepRows<'a> {
             words_per_base_block: if base_cols % 64 == 0 { base_cols / 64 } else { 0 },
             base_offsets: counts,
             base_entries: sorted,
+            packed_entries,
         })
     }
 
@@ -482,15 +564,71 @@ impl<'a> LockstepRows<'a> {
             && first + block <= self.instance_rows
             && local0 + block <= self.base_rows;
         if fast {
-            for (slot, weight) in weights.iter().enumerate() {
-                self.accumulate_row_words(first + slot, *weight, even);
-                self.accumulate_row_words(first + half + slot, *weight, odd);
+            if self.packed_entries.is_empty() {
+                for (slot, weight) in weights.iter().enumerate() {
+                    self.accumulate_row_words(first + slot, *weight, even);
+                    self.accumulate_row_words(first + half + slot, *weight, odd);
+                }
+            } else {
+                self.accumulate_block_packed(first, block, weights, even, odd);
             }
         } else {
             for (slot, weight) in weights.iter().enumerate() {
                 self.accumulate_row_general(first + slot, *weight, even);
                 self.accumulate_row_general(first + half + slot, *weight, odd);
             }
+        }
+    }
+
+    /// Fast path over the packed CSR: the whole block lies inside one instance
+    /// and one base block, so the word-window offset `base` and the first local
+    /// row are constant and each row's position is an increment.
+    #[inline]
+    fn accumulate_block_packed(
+        &self,
+        first: usize,
+        block: usize,
+        weights: &[F],
+        even: &mut [F; 6],
+        odd: &mut [F; 6],
+    ) {
+        debug_assert_eq!(weights.len() * 2, block);
+        let half = weights.len();
+        let instance = first >> self.log_base_rows;
+        let base = instance * self.words_per_base_block;
+        let local0 = first & (self.base_rows - 1);
+        let words = self.bits.words();
+        for (offset, weight) in weights.iter().enumerate() {
+            let weight = weight.value();
+            self.accumulate_row_packed(words, base, local0 + offset, weight, even);
+            self.accumulate_row_packed(words, base, local0 + half + offset, weight, odd);
+        }
+    }
+
+    /// Accumulate one row's packed entries into `out`.
+    ///
+    /// The packed entry is `word_off | shift << 16 | slot << 22`: one `u32` load
+    /// instead of the 32-byte `(u8, u32, F)` tuple, no coefficient test (the
+    /// layout is only built when every coefficient is one), and the bit test is
+    /// still one word load plus an all-ones mask.
+    #[inline]
+    fn accumulate_row_packed(
+        &self,
+        words: &[u64],
+        base: usize,
+        local: usize,
+        weight: u128,
+        out: &mut [F; 6],
+    ) {
+        let first = self.base_offsets[local] as usize;
+        let last = self.base_offsets[local + 1] as usize;
+        for &entry in &self.packed_entries[first..last] {
+            let word = words[base + (entry & 0xffff) as usize];
+            let shift = (entry >> 16) & 63;
+            let slot = ((entry >> 22) & 7) as usize;
+            let mask = 0u128.wrapping_sub(((word >> shift) & 1) as u128);
+            let entry = &mut out[slot];
+            *entry = F::from_bits(entry.value() ^ (weight & mask));
         }
     }
 
@@ -529,6 +667,55 @@ fn product6_pair(even: &[F; 6], odd: &[F; 6], eq0: F, eq1: F, alpha: F) -> [F; 4
     values[1] = eq0 * p1 + eqd * p0;
     values[2] = eq0 * p2 + eqd * p1;
     values[3] = eqd * p2;
+    values
+}
+
+/// Coefficients of the `t^0..t^3` round polynomial contributed by one pair of
+/// rows, with the products `p0`/`p2` already need reused by `p1` and the
+/// equality difference folded into `high`.
+///
+/// Derivation (all additions are XOR in characteristic two):
+///
+/// * `eq1 = high * f1`, `eq0 = high * f0`, and `f0 + f1 = 1` (the two point
+///   weights sum to one), so `eqd = eq1 - eq0 = high * (f1 - f0) = high * 1`.
+///   `product6_pair_fast` therefore never forms `eq1`.
+/// * With `da = odd - even`, `odd0 * odd1 = a0*b0 + a0*db0 + da0*b0 + da0*db0`
+///   (Karatsuba's middle term), so
+///   `a0*db0 + da0*b0 = odd0*odd1 + a0*b0 + da0*db0` — one product instead of
+///   two, reusing the products `p0` and `p2` already compute. The same identity
+///   applies to slots `a1/b1`.
+/// * `-c` and `-dc` are `+c` and `+dc` in characteristic two.
+#[inline]
+fn product6_pair_fast(even: &[F; 6], odd: &[F; 6], high: F, eq0: F, f1: F, alpha: F) -> [F; 4] {
+    // Pin the equality identity: `eqd = eq1 - eq0 = high`.
+    debug_assert_eq!(high * f1 - eq0, high);
+    let a0 = even[0];
+    let b0 = even[1];
+    let c0 = even[2];
+    let a1 = even[3];
+    let b1 = even[4];
+    let c1 = even[5];
+    let da0 = odd[0] + a0;
+    let db0 = odd[1] + b0;
+    let dc0 = odd[2] + c0;
+    let da1 = odd[3] + a1;
+    let db1 = odd[4] + b1;
+    let dc1 = odd[5] + c1;
+    let ab0 = a0 * b0;
+    let dab0 = da0 * db0;
+    let ab1 = a1 * b1;
+    let dab1 = da1 * db1;
+    // Karatsuba middle terms: `odd0*odd1 = ab0 + a0*db0 + da0*b0 + dab0`.
+    let cross0 = odd[0] * odd[1] + ab0 + dab0;
+    let cross1 = odd[3] * odd[4] + ab1 + dab1;
+    let p0 = ab0 + c0 + alpha * (ab1 + c1);
+    let p1 = cross0 + dc0 + alpha * (cross1 + dc1);
+    let p2 = dab0 + alpha * dab1;
+    let mut values = [zero(); 4];
+    values[0] = eq0 * p0;
+    values[1] = eq0 * p1 + high * p0;
+    values[2] = eq0 * p2 + high * p1;
+    values[3] = high * p2;
     values
 }
 
@@ -609,6 +796,21 @@ where
         let weights = fold_weights(&challenges[..]);
         let weights = &weights;
         let eq_table = &eq_table;
+        // Pre-scale the equality table's short high half once per round. With
+        // `eqd = eq1 - eq0 = high` (characteristic two, `f1 - f0 = 1`), a block
+        // then costs one multiply for `high` and one for `eq0` instead of
+        // `at * scale`, `high * f0` and `high * f1`.
+        let legacy_pair = p6_legacy_pair();
+        let (high_h, high_eq0) = if legacy_pair {
+            (Vec::new(), Vec::new())
+        } else {
+            eq_table.scaled_highs(scale, f0)
+        };
+        let high_h = &high_h;
+        let high_eq0 = &high_eq0;
+        let eq_high_bits = eq_table.low_bits;
+        let round_started = std::time::Instant::now();
+        let round_cpu = crate::process_cpu_seconds();
         let stored_ptr = SharedPtr(stored.as_mut_ptr());
         let partials = parallel_chunks(
             blocks,
@@ -619,11 +821,22 @@ where
                     let mut even = [zero(); 6];
                     let mut odd = [zero(); 6];
                     rows.accumulate_block(first, block, weights, &mut even, &mut odd);
-                    let high = eq_table.at(block_index) * scale;
-                    add_poly(
-                        polynomial,
-                        &product6_pair(&even, &odd, high * f0, high * f1, alpha),
-                    );
+                    if legacy_pair {
+                        let high = eq_table.at(block_index) * scale;
+                        add_poly(
+                            polynomial,
+                            &product6_pair(&even, &odd, high * f0, high * f1, alpha),
+                        );
+                    } else {
+                        let low = eq_table.low_at(block_index);
+                        let high_index = block_index >> eq_high_bits;
+                        let high = low * high_h[high_index];
+                        let eq0 = low * high_eq0[high_index];
+                        add_poly(
+                            polynomial,
+                            &product6_pair_fast(&even, &odd, high, eq0, f1, alpha),
+                        );
+                    }
                     if store {
                         // SAFETY: the shared counter hands every block index to
                         // exactly one worker, so the two slots written per block
@@ -645,6 +858,14 @@ where
         let r = challenge(round, &evaluated);
         challenges.push(r);
         round_polys.push(evaluated.to_vec());
+        if profile() {
+            eprintln!(
+                "stream outer round {round}: blocks={blocks} weights={} wall={:?} cpu={:.2}s",
+                weights.len(),
+                round_started.elapsed(),
+                crate::process_cpu_seconds() - round_cpu,
+            );
+        }
         eq_factor = eq_factor * ((one() - r) * (one() - tau[round]) + r * tau[round]);
     }
     if profile() {
@@ -1541,4 +1762,152 @@ where
         left: left[0],
         right: right[0],
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simd::SharedBlockMatrix;
+    use crate::spartan::MatrixPart;
+    use magnetar_constraint::{ConstraintSystem, Expr};
+
+    fn sample(seed: u128) -> F {
+        F::from(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15).rotate_left(17) | 1)
+    }
+
+    /// The reduced pair algebra must equal the shipped four-multiply form,
+    /// coefficient for coefficient. This pins `eqd = high` and the Karatsuba
+    /// middle-term identity without needing a proof run.
+    #[test]
+    fn product6_pair_fast_matches_reference() {
+        for seed in 0..64u128 {
+            let mut even = [zero(); 6];
+            let mut odd = [zero(); 6];
+            for slot in 0..6 {
+                even[slot] = sample(seed * 32 + slot as u128);
+                odd[slot] = sample(seed * 32 + 100 + slot as u128);
+            }
+            let tau = sample(seed + 7);
+            let alpha = sample(seed + 11);
+            let high = sample(seed + 13);
+            let f0 = one() + tau;
+            let f1 = tau;
+            let eq0 = high * f0;
+            let eq1 = high * f1;
+            let reference = product6_pair(&even, &odd, eq0, eq1, alpha);
+            let fast = product6_pair_fast(&even, &odd, high, eq0, f1, alpha);
+            assert_eq!(reference, fast, "seed {seed}");
+        }
+    }
+
+    fn unit_system(num_vars: usize) -> ConstraintSystem {
+        let mut system = ConstraintSystem::new(num_vars);
+        // Every linear part has coefficient one so the packed CSR layout is
+        // valid; the rows cover empty, one-term and multi-term combinations.
+        system.add_constraint(
+            Expr::var(0).add(Expr::var(3)),
+            Expr::var(1),
+            Expr::var(2).add(Expr::constant(1u64)),
+        );
+        system.add_constraint(Expr::var(4), Expr::var(5).add(Expr::var(7)), Expr::constant(0u64));
+        system.add_constraint(Expr::constant(1u64), Expr::var(6), Expr::var(8));
+        system.add_constraint(Expr::var(9).add(Expr::var(10)).add(Expr::var(11)), Expr::var(12), Expr::var(13));
+        system
+    }
+
+    fn scaled_system(num_vars: usize) -> ConstraintSystem {
+        let mut system = ConstraintSystem::new(num_vars);
+        system.add_constraint(
+            Expr::var(0).mul(Expr::constant(3u64)).add(Expr::var(3)),
+            Expr::var(1),
+            Expr::var(2),
+        );
+        system
+    }
+
+    fn bits_for(cols: usize) -> crate::PackedBits {
+        let pattern = (0..cols)
+            .map(|index| (index.wrapping_mul(0x9e37).rotate_left(5) & 7) < 3)
+            .collect::<Vec<_>>();
+        crate::PackedBits::from_bools(&pattern)
+    }
+
+    fn matrices(
+        system: &ConstraintSystem,
+        instances: usize,
+    ) -> Vec<SharedBlockMatrix> {
+        [
+            MatrixPart::A,
+            MatrixPart::B,
+            MatrixPart::C,
+            MatrixPart::A,
+            MatrixPart::B,
+            MatrixPart::C,
+        ]
+        .into_iter()
+        .map(|part| SharedBlockMatrix::from_system(system, part, instances).unwrap())
+        .collect()
+    }
+
+    /// The packed scan must reproduce the six row values exactly: every slot of
+    /// `even`/`odd` is checked against a weighted XOR of `row_values`, which
+    /// still walks the original `(slot, column, coefficient)` layout.
+    fn check_packed_scan(
+        system: &ConstraintSystem,
+        instances: usize,
+        expect_packed: bool,
+    ) {
+        let owned = matrices(system, instances);
+        let rows = LockstepRows::new(
+            Box::leak(Box::new(bits_for(owned[0].cols()))),
+            [
+                &owned[0], &owned[1], &owned[2], &owned[3], &owned[4], &owned[5],
+            ],
+        )
+        .unwrap();
+        assert_eq!(rows.packed_entries.is_empty(), !expect_packed);
+        let total_rows = rows.rows();
+        let mut values = vec![[zero(); 6]; total_rows];
+        for (row, value) in values.iter_mut().enumerate() {
+            rows.row_values(row, value);
+        }
+        let base_rows = owned[0].base_row_count();
+        let instance_rows = base_rows * instances;
+        for block in [2usize, 4, 8] {
+            for first in (0..instance_rows).step_by(block) {
+                if (first & (base_rows - 1)) + block > base_rows {
+                    continue;
+                }
+                let half = block / 2;
+                let weights = (0..half).map(|index| sample(first as u128 + index as u128)).collect::<Vec<_>>();
+                let mut even = [zero(); 6];
+                let mut odd = [zero(); 6];
+                rows.accumulate_block(first, block, &weights, &mut even, &mut odd);
+                for slot in 0..6 {
+                    let mut reference_even = zero();
+                    let mut reference_odd = zero();
+                    for (offset, weight) in weights.iter().enumerate() {
+                        reference_even = reference_even + *weight * values[first + offset][slot];
+                        reference_odd = reference_odd + *weight * values[first + half + offset][slot];
+                    }
+                    assert_eq!(even[slot], reference_even, "block {block} first {first} slot {slot}");
+                    assert_eq!(odd[slot], reference_odd, "block {block} first {first} slot {slot}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn packed_scan_matches_row_values() {
+        let system = unit_system(63);
+        check_packed_scan(&system, 4, true);
+    }
+
+    /// A shape with a non-one coefficient must keep the general layout and
+    /// still produce exactly the right row values.
+    #[test]
+    fn non_unit_coefficients_fall_back() {
+        let system = scaled_system(63);
+        check_packed_scan(&system, 4, false);
+    }
 }
