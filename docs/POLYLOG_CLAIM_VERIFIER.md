@@ -652,3 +652,108 @@ prover that the classic trace path already uses (O(cycles log cycles)):
    (or delete it), implement the logup-based path behind a new switch, and only
    flip the default after the four-metric A/B (verify wall/CPU, proof size,
    peak) passes at 2^14 and 2^16.
+
+### C.9.1 M4 修订版实施设计（线性 logup_shout + 已提交 pushforward）
+
+状态：设计稿，未动代码（等 Lead review）。M4a（`7c55772`）因 reference BinaryShout 的
+`cells×cycles` 物化而不可扩展，冻结为 opt-in/dead code；本设计基于**线性**的
+`logup_shout`（`O(cycles log cycles)` prover，`crates/magnetar-runtime/src/logup_shout.rs`）。
+
+#### 目标与现状差距
+
+- paper 路径的 `LogupShoutProof` 已经携带 committed reader/link/position 列（25 列 dense
+  P3 batch opening，2^16 时约 245 KB），但 native verifier **完全不校验它**（§9.6）；
+- native `TRACE_SHOUT` 路径用 `trace_logup_shout`：verifier 从 claim 行重建 witness
+  （21.9–29.6 ms）并重算 pushforwards；
+- `LogupStarProof.pushforwards` 是长度 `2^address_bits` 的向量：合成 bench ROM=2^16 时
+  **1 MB**，直接塞进 proof 不可接受；不塞又无法在不重建 witness 的情况下验证 logup 恒等式。
+
+#### 架构（三步）
+
+1. **列进 claim 表（复用 M2/M3 的 T）**：把 logup_shout prover 构造的 per-cycle 列提交进
+   扩展 claim 表 `T`：
+   - `T_bits` 追加 packed 布尔列：position 位（`address_bits`）、`is_32`、`valid`、
+     link 12 位（slot 布局：schema 列后按固定顺序；2^16 时 512→1024 slots）；
+   - `T_field`（dense，P3BinaryPcs rate 1/8）追加 **reader word 列**（word mode 下 1 列：
+     每 cycle 的 claim instruction word）；
+   - statement 组合 root 扩为 v3：`H("claim-shout-v3" || v1 binding || shout root ||
+     field root || pushforward root)`；`MAGNETAR_LINEAR_SHOUT=1` 时生效，默认路径零改动。
+2. **pushforward 作为已提交表**：prover 在 logup prover 前先构造 pushforward 向量
+   （长度 `2^address_bits`）并用 `P3BinaryPcs`（rate 1/8）提交；把**承诺绑定哈希**
+   作为 transcript 消息、把 verifier 需要的**点求值**放进 proof（见下）；verifier 在
+   challenge 抽完后用 PCS opening 校验这些点求值。proof 里不再出现 2^address_bits 个元素。
+3. **verifier 无 witness**：
+   - `reader_claims` = `T_field.word` 在 reader point 的 PCS 打开值（word-only columns=1）；
+   - `position_claim` = position 位在 logup `position_point` 的**线性组合**（embed 是各位的
+     线性函数：`embed(pos)=Σ_b node_b·pos_b`），用一条 claim relation（公开系数）认证；
+   - `is_32/valid/link`：valid=公开前缀模式、is_32≡0（word mode）、link 若 router 表存在才
+     使用（dynamic 路径没有，提交但本路径不消费）；
+   - logup 恒等式校验：`LogupStarProof::verify` + committed pushforward 的点求值校验；
+   - 公开 ROM：`column_evals[0]` 对 `statement.rom` 的 word 列做 O(rom) 检查（合成 bench
+     ~0.3–1 ms，论文 ec20 ROM 小则更少）。
+
+#### 需要的 vendor 改动（**需 Lead 批准**）
+
+`vendor/plonky3/multi-stark/src/logup_star/`（仅该模块；repo 内唯一使用者是
+`magnetar-runtime/logup_shout.rs`，无其它 crate 依赖）：
+
+- `proof.rs`：`LogupStarProof { pushforwards: Vec<Vec<EF>>, .. }` →
+  `pushforward_bindings: Vec<[u8;32]>`（已提交向量的绑定哈希，长度 = tables）+
+  `pushforward_evals: Vec<EF>`（每个 `BlockRole::Table` block 一个点求值，顺序同
+  `plan.blocks`）；
+- `transcript.rs`：`pushforward(&[EF])` → `pushforward_binding(&[u8])`（吸收哈希，而不是
+  整个向量）；**prover 与 verifier 同步改**，其余 transcript 消息顺序不变，因此所有已测
+  证明的字节等价语义只在不含 committed-pushforward 的旧路径上保持不变（旧路径仍可保留
+  原 API 或在调用处包一层：见风险）；
+- `prover.rs`：新增 `prove_with_pushforward_binder(..., binder)`：在构造 `Weights` 后、
+  吸收 pushforward 之前回调 `binder(&pushforwards) -> Vec<[u8;32]>`（runtime 在回调里
+  P3 提交向量并返回 `H(commitment)`），然后吸收 binding、记录 evals；
+- `verifier.rs`：`verify_with_pushforward_bindings(...)`：check_shape 改校验
+  bindings/evals 数量；吸收 binding；`rebuild_opening` 的 Table block 用
+  `pushforward_evals[k]` 替代 `Poly::eval_ext`；`LogupStarOutput` 增加
+  `pushforward_claims: Vec<(Vec<EF>, EF)>`（table cube 点 + 值），供 runtime 做 PCS opening
+  校验。
+- 注意 `logup_star` 还有第二个使用者 **`crates/magnetar-runtime/src/linear_twist.rs`**
+  （Access 层 register twist 的两处 logup）。为把爆炸半径压到最小，**保留旧 API**：
+  `LogupStarProof` 增加 `#[serde(default)] pushforward_bindings/pushforward_evals` 与新入口
+  `prove_with_pushforward_binder` / `verify_with_pushforward_bindings`；旧
+  `prove`/`verify`（内部仍用 `pushforwards` 向量 + 现有 transcript）完全不动，
+  `linear_twist` 与所有旧路径行为/字节不变。只有新的 M4 路径走 committed 版本。
+- 预计 ~150–200 行 vendor diff；不改 p3 其它模块，不动 `binary_twist`/`stream`/`spartan`。
+- **备选（若 vendor 改动不被批准）**：把 `logup_star` 整模块 copy 到
+  `crates/magnetar-proof/src/logup_star_committed/`（~1k 行）再改，缺点是 vendored 代码
+  分叉、升级成本高；不建议，除非必须零 vendor 改动。
+
+#### 新类型 / 文件清单
+
+| 文件 | 改动 |
+| --- | --- |
+| `vendor/plonky3/multi-stark/src/logup_star/{proof,transcript,prover,verifier}.rs` | committed-pushforward API（上述，需批准） |
+| `crates/magnetar-runtime/src/logup_shout.rs` | 新增 `CommittedLogupShoutProof { columns: usize, address_bits, cycle_bits, cycles, reader_point, reader_claim: F2_128, link_claims, position_claim, logup: LogupStarProof, pushforward_commitment: P3Commitment, pushforward_openings: Vec<P3Opening>, field_commitment/opening..., claim_relations: Vec<ClaimRelationProof> }`；`prove_committed_logup_shout(witness)` / `verify_committed_logup_shout(proof, statement, claim_table)`；旧的 `prove_logup_shout`/`verify_logup_shout_*` 保留（legacy/参考路径） |
+| `crates/magnetar-runtime/src/claim_table.rs` | T 布局扩展入口（v3 root 组合、shout 列 slot 映射、dense reader 列）——与 M2/M3 表共享 slot 布局，扩 slot 数 512→1024 |
+| `crates/magnetar-runtime/src/claim_shout.rs` | 复用 M4a 已实现的 claim relation 原语（multi-point/线性关系）与 synthetic commitment 思路；删除 BinaryShout 相关路径（M4a 冻结后不再新增引用） |
+| `crates/magnetar-runtime/src/lib.rs` | native/paper prover 在 `MAGNETAR_LINEAR_SHOUT=1` 时构造新证明并附加到 `ClaimProof.committed_logup_shout`；verifier 分支替换 `trace_logup_shout` 重建；statement root v3；默认路径不变 |
+| `crates/magnetar-runtime/src/trace_claims.rs` | `ClaimProof` 增加 `committed_logup_shout`（serde default）；`MAGNETAR_CLASSIC_LOGUP=1` 保旧路径 |
+| `crates/magnetar-runtime/src/simd_dual.rs` | 末尾纯追加（如需要）：logup reader/link/position 列所需的 claim 表 slot 映射（复用 M4a 的 frame 列已够） |
+| `docs/HANDOFF.md` §6 | M4 v3 transition rules（新 wire 字段、旧 proof 拒绝策略、env 开关） |
+
+#### 成本估计（2^16，待 A/B 验证）
+
+- **proof**：删 25 列 logup PCS opening（~245 KB）→ 改 reader 1 列 + pushforward 承诺/打开
+  （~5–15 KB）+ position 关系（~2–4 KB）≈ **净减 150–200 KB**，落在 850 KB 以下；
+- **verify**：logup reduction ~3.9 ms + reader 打开 ~0.3–0.8 + position/link 关系 ~2–3 +
+  pushforward 打开 ~0.3–0.8 + public ROM O(rom) ~0.3–1（2^16 合成 ROM）≈ **5–7 ms**
+  （对比 native 路径 21.9–29.6 ms 重建；paper 路径则是从 0 校验→健全校验，但可同时删行 blob
+  后由 M5 抵消）；
+- **prover**：pushforward 提交/打开对 ROM-size 敏感（合成 bench 2^16：~2^17 输入，~10 ms 级；
+  论文 ROM 更小）；logup prover 本身 O(cycles log cycles)。
+
+#### 实施顺序与 open decisions
+
+1. Lead 批准 vendor p3 committed-pushforward 改动（或选 fork 备选）；
+2. 先做 `logup_shout` 层（新 prover/verifier + 单测，用现有 trace 路径验证字节/语义），
+   默认路径不动；
+3. T 扩展 + 关系（复用 `claim_shout` 的 relation 原语）+ statement root v3；
+4. lib 接线 + `MAGNETAR_LINEAR_SHOUT`/`MAGNETAR_CLASSIC_LOGUP` A/B；
+5. 统一窗口四项测量后，达标（2^16 verify ≤25 ms、proof ≤~820 KB、peak ≤2.6 GiB）才考虑
+   切默认，否则保持 opt-in 并写进 docs。

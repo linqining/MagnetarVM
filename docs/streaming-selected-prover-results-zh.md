@@ -967,10 +967,10 @@ cargo test --release --offline -p magnetar-runtime --lib streaming_lockstep_proo
 
 | | 本轮之前（§1） | 本轮之后 |
 | --- | --- | --- |
-| prove wall | 70.4 s | **53.8–59.3 s**（宿主 load 14–72） |
-| prove CPU（user+sys） | ≈800 s | **421.6–434.9 s** |
-| verify wall | 29.6 ms | **27.4 ms**（claim 表开）/ **46.0 ms**（legacy 行路径，§11.6） |
-| 峰值 RSS | 2.26 GiB | **2.38 GiB**（claim 表开；关时 2.19 GiB） |
+| prove wall | 70.4 s | **38.3–38.6 s**（宿主 load 14–66；chunk 前为 53.8–59.3 s） |
+| prove CPU（user+sys） | ≈800 s | **320.7–325.4 s**（chunk 前 421.6–434.9 s） |
+| verify wall | 29.6 ms | **24.7–25.1 ms**（首轮 A/B 为 27.4 ms；legacy 行路径 46.0 ms，§11.6） |
+| 峰值 RSS | 2.26 GiB | **2.03 GiB**（chunk 前 2.38 GiB） |
 | proof 字节 | 861,407 B | **1,018,152 B**（claim 表格式，见 §11.6） |
 
 claim 表现在是默认开启：同一个 2^16 二进制上，它替掉 `O(rows)` 的 claim 行和，

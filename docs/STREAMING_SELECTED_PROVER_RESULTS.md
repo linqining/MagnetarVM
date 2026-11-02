@@ -1284,10 +1284,10 @@ equality gate stays green. Branch `virtual-claims-rewrite`.
 
 | | before round (§1) | after round |
 | --- | --- | --- |
-| prove wall | 70.4 s | **53.8–59.3 s** (host load 14–72) |
-| prove CPU (user+sys) | ≈800 s | **421.6–434.9 s** |
-| verify wall | 29.6 ms | **27.4 ms** with the claim table, **46.0 ms** on the legacy row path (§11.6) |
-| peak RSS | 2.26 GiB | **2.38 GiB** (claim table on; 2.19 GiB with it off) |
+| prove wall | 70.4 s | **38.3–38.6 s** (host load 14–66; 53.8–59.3 s before §11.3 item 8) |
+| prove CPU (user+sys) | ≈800 s | **320.7–325.4 s** (421.6–434.9 s before item 8) |
+| verify wall | 29.6 ms | **24.7–25.1 ms** (27.4 ms measured in the first A/B run; legacy row path 46.0 ms, §11.6) |
+| peak RSS | 2.26 GiB | **2.03 GiB** (2.38 GiB before item 8's chunk buffers shrank the products) |
 | proof bytes | 861,407 B | **1,018,152 B** (claim-table format, §11.6) |
 
 The claim table is now the default: on the same `2^16` binary it replaces the
@@ -1313,7 +1313,7 @@ environment switches described in §11.4).
 | selected setup | 0.48 s | 0.40 s (`setup fill+check`) |
 | selected witness commit | 0.95 s | **0.32 s** |
 | `product6` (outer scan) | 43.2 s | **24.5 s** (probe run: 24.5 s at load 74; 27.2 s inside the full pipeline) |
-| `product2` (inner scan) | 23.4 s | **24.5 s** before item 8's chunked fill, which halves the stage CPU again (§11.3 item 8) |
+| `product2` (inner scan) | 23.4 s | **10.6–11.2 s** after item 8's chunked fill (24.5 s before it) |
 | selected segments | 1.17 s | **0.009 s** (rewritten, §11.3 item 7) |
 | selected open | 0.92 s | **0.84 s** |
 
@@ -1385,7 +1385,10 @@ p3 hash fix (§11.5): `Commit` and `Opening` roughly halved.
    the inner recompute drops from 226 to **108 CPU-s (-52 %)**, i.e. `product2`
    should fall from 24.5 to ~12 s on a quiet host (the 2^16 wall could not be
    re-measured: the host was giving the process ~2.8 of 12 cores during the
-   run, so only CPU is comparable).
+   run, so only CPU is comparable). Re-measured on a quieter host (load 14):
+   **prove 38.31/38.64 s, prove CPU 320.7/325.4 s, verify 24.71/25.12 ms, peak
+   2.03 GiB, product6 24.90/24.98 s, product2 11.16/10.61 s**, proof unchanged
+   at 1,018,153 B.
 
 Peripheral stages (teammate track, same tree): `Keccak256Hash16` in the
 vendored p3 code did not forward `hash_many`, so the Merkle trees fell back to

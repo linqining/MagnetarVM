@@ -9,8 +9,8 @@
 实测数据与逐轮记录：[STREAMING_SELECTED_PROVER_RESULTS.md](STREAMING_SELECTED_PROVER_RESULTS.md)
 （[中文](streaming-selected-prover-results-zh.md)）。早期设计：[STREAMING_SELECTED_PROVER_HANDOFF.md](STREAMING_SELECTED_PROVER_HANDOFF.md)。
 
-RV64 `2^16` 头部数字（2026-11-03 轮，宿主 load 14–72）：**prove 55.5–59.3 s
-（prove CPU 421.6–434.9 s，之前 ≈800 s）、verify 27.4 ms、峰值 2.38 GiB**。
+RV64 `2^16` 头部数字（2026-11-03 轮，宿主 load 14–66）：**prove 38.3–38.6 s
+（prove CPU 320.7–325.4 s，之前 ≈800 s）、verify 24.7–25.1 ms、峰值 2.03 GiB**。
 streaming 证明器仍与 eager 路径逐字节一致；*proof 文件*是 1,018,152 B，因为 polylog
 claim 层（结果文档 §11.6）把 claim 表提交并挂到 `ClaimProof` 上——同一二进制关掉
 claim 表时 verify 46.0 ms、proof 861,408 B，所以表的净收益是「+157 KB proof 换
@@ -61,7 +61,8 @@ target/release/examples/protocol_determinism   # 默认 20 组并发 pair（PROT
 
 | cycles | prove | verify | 峰值 RSS | proof |
 | --- | --- | --- | --- | --- |
-| `2^16`（2026-11-03，load 14–72） | **53.8–59.3 s** | **27.3–27.4 ms** | **2.04–2.38 GiB** | 1,018,152 B† |
+| `2^16`（2026-11-03，chunk 内层扫描后） | **38.3–38.6 s** | **24.7–25.1 ms** | **2.03 GiB** | 1,018,153 B† |
+| `2^16`（2026-11-03，chunk 前） | 53.8–59.3 s | 27.3–27.4 ms | 2.04–2.38 GiB | 1,018,152 B† |
 | `2^16`（2026-10-31） | 70.4 s | 29.6 ms | 2.26 GiB | 861,407 B |
 | `2^17` | **147.6 s** | 55.8 ms | 4.60 GiB | 942,535 B |
 | `2^18` | 321.5 s（融合前） | 161.5 ms | 7.73 GiB | 1,050,900 B |
@@ -73,13 +74,14 @@ target/release/examples/protocol_determinism   # 默认 20 组并发 pair（PROT
 
 † proof 大小是 claim 表格式；streaming proof 本身仍与 eager 逐字节一致，见结果文档 §11.6。
 
-`2^16` 阶段分解（2026-11-03 轮，load 37–72）：unified context 0.31、Commit 0.52、
-Access 2.63（register twist）、Opening 1.99；selected setup 0.40、见证 commit 0.30、
-`product6` **26.0**、`product2` **24.9**（内层 level budget 24，见结果文档 §11.3）、
-segments **0.009**、selected open 1.06。两个 streaming product 仍占 ≈90 %，且 `product2`
-现在已是最大单项。上一轮（load 70–90）的分解：context 0.48、Commit 1.19、Access 2.56、
-Opening 3.38；setup 0.48、见证 commit 0.95、`product6` 43.2、`product2` 23.4、
-segments 1.17、selected open 0.92。
+`2^16` 阶段分解（chunk 内层扫描后，load 14–66）：unified Access 2.05/1.97、
+Opening 2.11/2.18；selected `product6` **24.90/24.98**、`product2`
+**11.16/10.61**（chunk 前 24.5，见结果文档 §11.3 第 8 条）、segments **0.009**、
+selected open ~0.85。`product6` 现在占 prove 的 ~65 %，是最大单项。早先的分解：
+（load 37–72）context 0.31、Commit 0.52、Access 2.63、Opening 1.99、见证 commit
+0.30、`product6` 26.0、`product2` 24.9；（load 70–90）context 0.48、Commit 1.19、
+Access 2.56、Opening 3.38、setup 0.48、见证 commit 0.95、`product6` 43.2、
+`product2` 23.4、segments 1.17、selected open 0.92。
 
 `2^16` 验证器（5 次迭代 wall 30.3 ms、CPU 188 ms/次）：trace Logup-Shout
 21.9–29.6（claim 派生 trace 一就绪就启动，与两波重叠）、claim 行和 11.5–12.4、

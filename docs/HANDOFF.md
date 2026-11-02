@@ -10,8 +10,8 @@ Chinese sibling: [handoff-zh.md](handoff-zh.md).
 Measurements and per-round history: [STREAMING_SELECTED_PROVER_RESULTS.md](STREAMING_SELECTED_PROVER_RESULTS.md)
 ([中文](streaming-selected-prover-results-zh.md)). Background design: [STREAMING_SELECTED_PROVER_HANDOFF.md](STREAMING_SELECTED_PROVER_HANDOFF.md).
 
-Headline at RV64 `2^16` (2026-11-03 round, host load 14–72): **prove 55.5–59.3 s
-(prove CPU 421.6–434.9 s vs ≈800 s before), verify 27.4 ms, peak 2.38 GiB**. The
+Headline at RV64 `2^16` (2026-11-03 round, host load 14–66): **prove 38.3–38.6 s
+(prove CPU 320.7–325.4 s vs ≈800 s before), verify 24.7–25.1 ms, peak 2.03 GiB**. The
 streaming prover is still byte-identical to the eager path; the *proof file* is
 1,018,152 B because the polylog claim layer (results §11.6) now commits the
 claim table and attaches it to `ClaimProof` -- with the claim table off the same
@@ -66,7 +66,8 @@ core count is low.
 
 | cycles | prove | verify | peak RSS | proof |
 | --- | --- | --- | --- | --- |
-| `2^16` (2026-11-03, load 14–72) | **53.8–59.3 s** | **27.3–27.4 ms** | **2.04–2.38 GiB** | 1,018,152 B† |
+| `2^16` (2026-11-03, chunked inner scan) | **38.3–38.6 s** | **24.7–25.1 ms** | **2.03 GiB** | 1,018,153 B† |
+| `2^16` (2026-11-03, before chunked inner scan) | 53.8–59.3 s | 27.3–27.4 ms | 2.04–2.38 GiB | 1,018,152 B† |
 | `2^16` (2026-10-31) | 70.4 s | 29.6 ms | 2.26 GiB | 861,407 B |
 | `2^17` | **147.6 s** | 55.8 ms | 4.60 GiB | 942,535 B |
 | `2^18` | 321.5 s (pre-fusion) | 161.5 ms | 7.73 GiB | 1,050,900 B |
@@ -79,14 +80,15 @@ gave 335 s and 437 s with 5.7–7.8 GiB peak and were discarded. A linear fit
 through the measured points projects ≈20 GiB at `2^22` (supersedes the earlier
 55–60 GiB model, which came from the 32-byte-digest build).
 
-`2^16` stage split (2026-11-03 round, load 37–72): unified context 0.31,
-Commit 0.52, Access 2.63 (register twist), Opening 1.99; selected setup 0.40,
-witness commit 0.30, `product6` **26.0**, `product2` **24.9** (inner level
-budget 24, see results §11.3), segments **0.009**, selected open 1.06. The two
-streaming products are still ≈90 % of the prover, and `product2` is now the
-largest single term. The previous split (load 70–90) was: context 0.48,
-Commit 1.19, Access 2.56, Opening 3.38; setup 0.48, witness commit 0.95,
-`product6` 43.2, `product2` 23.4, segments 1.17, selected open 0.92.
+`2^16` stage split after the chunked inner scan (load 14–66): unified Access
+2.05/1.97, Opening 2.11/2.18; selected `product6` **24.90/24.98**, `product2`
+**11.16/10.61** (was 24.5 before results §11.3 item 8), segments **0.009**,
+selected open ~0.85. `product6` is now ~65 % of prove and the largest single
+term. The earlier splits were: (load 37–72) context 0.31, Commit 0.52, Access
+2.63, Opening 1.99, witness commit 0.30, `product6` 26.0, `product2` 24.9;
+(load 70–90) context 0.48, Commit 1.19, Access 2.56, Opening 3.38, setup 0.48,
+witness commit 0.95, `product6` 43.2, `product2` 23.4, segments 1.17, selected
+open 0.92.
 
 Verifier at `2^16` (30.3 ms wall over 5 iterations, 188 ms CPU/iter): trace
 Logup-Shout 21.9–29.6 (starts as soon as the claim-derived trace exists and
