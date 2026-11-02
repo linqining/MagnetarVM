@@ -621,3 +621,34 @@ stays opt-in and default off. The next M4 revision should reuse the *linear*
 open it at the verifier's point instead of shipping `2^address_bits` field
 elements). The 1 MB pushforward that the plan tried to avoid is three orders of
 magnitude cheaper than the quadratic factor materialisation it replaced.
+
+### C.9 M4 revision sketch: linear logup_shout with committed pushforwards
+
+The M4a skeleton (C.8) cannot scale because it reuses the quadratic reference
+`binary_shout`. The revision should be built on the *linear* `logup_shout`
+prover that the classic trace path already uses (O(cycles log cycles)):
+
+1. **Columns**: keep the current `logup_shout` witness construction, but commit
+   the per-cycle columns it rebuilds in the verifier (position bits, `is_32`,
+   `valid`, the 12 link columns) as packed bit tables in the extended claim
+   table `T`, exactly like M2/M3 commit the claim columns. The reader claims
+   then come from `T` openings instead of re-deriving them from the trace.
+2. **Pushforwards**: `logup_shout` proves the log-derivative identity with a
+   pushforward vector of length `2^address_bits` (1 MB of F2^128 at the
+   synthetic bench's ROM = 2^16, i.e. it would double the current 1.0 MB proof).
+   Ship it as a *committed* table in the same PCS instead: commit, then open at
+   the verifier's evaluation points (the points are derived after the commit, so
+   Fiat-Shamir order still works). The opening is O(log) + queries, which is
+   what keeps the proof at its current size; the alternative of serialising the
+   vector is acceptable only for small ROMs (2^12 or less).
+3. **Soundness binding**: the committed position/link columns must be tied to
+   the authenticated claim rows (the composed `trace_claim_root` already binds
+   the claim table; extend it with the shout/field roots as M4a did) and the
+   public ROM is checked O(rom) against `column_evals[0]` as today.
+4. **Verifier cost**: replacing the 21.9-29.6 ms `Shout` witness rebuild with
+   openings should land the trace check at ~3-5 ms; combined with the M2/M3
+   claim table that is the 8-12 ms path.
+5. **Order**: keep M4a dead code behind `MAGNETAR_COMMITTED_SHOUT` for reference
+   (or delete it), implement the logup-based path behind a new switch, and only
+   flip the default after the four-metric A/B (verify wall/CPU, proof size,
+   peak) passes at 2^14 and 2^16.
