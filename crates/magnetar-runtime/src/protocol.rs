@@ -455,6 +455,7 @@ impl ProofBundle {
             packed_shout: self.packed_shout,
             logup_shout: None,
             trace_logup_shout: None,
+            committed_logup_shout: None,
             cpu,
             shout: None,
             shift_router,
@@ -2690,6 +2691,7 @@ impl<'a> UnifiedProveContext<'a> {
             packed_shout,
             logup_shout: None,
             trace_logup_shout: None,
+            committed_logup_shout: None,
             access: self
                 .access
                 .ok_or_else(|| RuntimeError::Proof("missing access proof".into()))?,

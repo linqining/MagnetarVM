@@ -310,6 +310,21 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
   without the field ("pre-M4 proof"). Opt-in path has no A/B measurement yet; do not
   enable it in the default benchmark until the unified window.
 
+- **M4 v3 committed-pushforward linear Shout (uncommitted WIP).** `UnifiedTraceProof`
+  gains a `committed_logup_shout` field (`#[serde(default)]`, `None` on the default
+  path), so pre-M4v3 unified-proof bytes differ (trailing serde field only; no
+  stored goldens depend on it). Opt-in switch: `MAGNETAR_LINEAR_SHOUT=1`;
+  `MAGNETAR_CLASSIC_LOGUP=1` forces the legacy witnessed trace Logup-Shout path.
+  When enabled, a verifier that receives a proof without the field rejects it
+  ("pre-M4v3 proof"). The statement root becomes
+  `H("claim-shout-v3" || v1 claim binding || word root || pos root || pushforward root)`
+  so the committed `T_word`/`T_pos`/pushforward tables are bound by the public
+  statement (same host-derived trust model as the M2/M3 claim table). The classic
+  `logup_shout` prover/verifier and every p3 structure are untouched; a golden
+  hash (`GOLDEN_OLD_LOGUP_ENCODING`) pins the classic proof encoding. Opt-in path
+  has no A/B measurement yet; do not enable it in the default benchmark until the
+  unified window.
+
 - **Width-8 unit tests are deliberate**: ~63 call sites in `magnetar-cpu`,
   `simd_dual`, `simd_f2` and the row modules assert 8-bit arithmetic
   (`0xff` wrap, `Sra(248,1)`, `u8`/`i8` proptests). Everything that runs a proof

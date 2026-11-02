@@ -244,7 +244,31 @@ pub fn claim_table_enabled() -> bool {
 /// statement constructor: the composed claim-table binding when the claim
 /// table is enabled (falling back to the legacy row root for traces the
 /// dynamic claim layer cannot represent), the legacy row root otherwise.
+/// Domain of the M4 v3 composed statement root.
+const CLAIM_SHOUT_V3_DOMAIN: &[u8] = b"claim-shout-v3";
+
+/// M4 v3 composed root: binds the M2/M3 claim table plus the committed Shout
+/// tables (`T_word`, `T_pos`) and the committed pushforward table.
+pub fn claim_shout_v3_root(
+    claim_binding_v1: &[u8; 32],
+    word_root: &[u8; 32],
+    pos_root: &[u8; 32],
+    pushforward_root: &[u8; 32],
+) -> [u8; 32] {
+    let mut bytes = CLAIM_SHOUT_V3_DOMAIN.to_vec();
+    bytes.extend_from_slice(claim_binding_v1);
+    bytes.extend_from_slice(word_root);
+    bytes.extend_from_slice(pos_root);
+    bytes.extend_from_slice(pushforward_root);
+    magnetar_transcript::sha256(&bytes)
+}
+
 pub fn statement_claim_root(trace: &magnetar_spec::Trace) -> [u8; 32] {
+    if claim_table_enabled() && crate::logup_shout::linear_shout_enabled() {
+        if let Ok(data) = crate::logup_shout::committed_statement_data(trace) {
+            return data.statement_root;
+        }
+    }
     if claim_table_enabled() {
         // M4a: when the committed-Shout path is enabled the statement binds the
         // Shout/claim-word tables too (composed root); default off keeps the v1

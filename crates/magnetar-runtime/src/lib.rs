@@ -1208,6 +1208,10 @@ pub struct UnifiedTraceProof {
     pub logup_shout: Option<crate::logup_shout::LogupShoutProof>,
     #[serde(default)]
     pub trace_logup_shout: Option<crate::logup_shout::TraceLogupShoutProof>,
+    /// M4 v3 committed-pushforward linear Shout (opt-in, see
+    /// `docs/POLYLOG_CLAIM_VERIFIER.md` §C.9.1-S).
+    #[serde(default)]
+    pub committed_logup_shout: Option<crate::logup_shout::CommittedLogupShoutProof>,
 }
 
 /// Serialize a unified proof with varint bincode encoding.
@@ -2673,7 +2677,25 @@ pub(crate) fn verify_unified_with_plan_impl(
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         crate::logup_shout::verify_logup_shout_against_witness(logup_shout, &witness)?;
     }
-    if let Some(trace_logup) = &proof.trace_logup_shout {
+    if let Some(committed) = &proof.committed_logup_shout {
+        let started = std::time::Instant::now();
+        let data = crate::logup_shout::committed_statement_data(trace)?;
+        if data.statement_root != proof.trace_claim_root {
+            return Err(RuntimeError::Proof(
+                "committed logup Shout statement root mismatch".into(),
+            ));
+        }
+        crate::logup_shout::verify_committed_logup_shout(committed, &trace.rom)?;
+        if profile {
+            eprintln!("committed logup Shout verify: {:?}", started.elapsed());
+        }
+    } else if crate::logup_shout::linear_shout_enabled()
+        && !crate::logup_shout::classic_logup_enabled()
+    {
+        return Err(RuntimeError::Proof(
+            crate::logup_shout::PRE_M4V3_ERROR.into(),
+        ));
+    } else if let Some(trace_logup) = &proof.trace_logup_shout {
         let started = std::time::Instant::now();
         let witness = crate::binary_shout::BinaryShoutWitness::from_trace(trace)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
@@ -2901,6 +2923,11 @@ fn prove_unified_trace_dynamic_native_profile_inner(
     } else {
         None
     };
+    // M4 v3 opt-in: committed-pushforward linear Shout replaces the witnessed
+    // trace Logup-Shout path (default off; `MAGNETAR_CLASSIC_LOGUP=1` forces the
+    // legacy path for the A/B).
+    let linear_shout = crate::logup_shout::linear_shout_enabled()
+        && !crate::logup_shout::classic_logup_enabled();
     std::thread::scope(|scope| {
         // Hold the selected witness commit until the mosaic commit is done:
         // two codeword+Merkle transients would otherwise overlap and double
@@ -2909,11 +2936,23 @@ fn prove_unified_trace_dynamic_native_profile_inner(
         let selected = scope.spawn(move || {
             crate::simd_dual::prove_dynamic_cpu_claims_after(trace, width, &backend, commit_gate)
         });
-        let mut trace_logup_shout = packed_witness.as_ref().map(|witness| {
-            scope.spawn(|| {
-                crate::logup_shout::prove_trace_logup_shout(witness, crate::rom_hash(&trace.rom))
+        let mut committed_logup_shout = if linear_shout {
+            packed_witness.as_ref().map(|witness| {
+                scope.spawn(|| crate::logup_shout::prove_committed_logup_shout(witness))
             })
-        });
+        } else {
+            None
+        };
+        let mut trace_logup_shout = if linear_shout {
+            None
+        } else {
+            packed_witness.as_ref().map(|witness| {
+                scope.spawn(|| {
+                    crate::logup_shout::prove_trace_logup_shout(witness, crate::rom_hash(&trace.rom))
+                })
+            })
+        };
+        let mut committed_logup = None;
         let plan = crate::protocol::ProtocolPlan::unified();
         let context_started = std::time::Instant::now();
         // The dynamic selected proof replaces the unified CPU/gated claims and
@@ -2947,6 +2986,17 @@ fn prove_unified_trace_dynamic_native_profile_inner(
                 crate::protocol::ExecutionStage::Opening => {
                     // The trace Logup-Shout ROM claim is opened together with
                     // the other mosaic claims, so bind it before opening.
+                    if let Some(handle) = committed_logup_shout.take() {
+                        let (committed, _word_root, _pos_root, _pushforward_root) = handle
+                            .join()
+                            .map_err(|_| {
+                                RuntimeError::Proof("committed logup Shout worker panicked".into())
+                            })?
+                            .map_err(|error| {
+                                RuntimeError::Proof(format!("committed logup prover: {error}"))
+                            })?;
+                        committed_logup = Some(committed);
+                    }
                     if let Some(handle) = trace_logup_shout.take() {
                         let logup = handle
                             .join()
@@ -2989,6 +3039,7 @@ fn prove_unified_trace_dynamic_native_profile_inner(
         proof.cpu = None;
         proof.e5_opening = None;
         proof.trace_logup_shout = trace_logup;
+        proof.committed_logup_shout = committed_logup;
         proof.selected_cpu = Some(
             selected
                 .join()
@@ -3031,6 +3082,14 @@ fn prove_unified_trace_dynamic_native_profile_inner(
                     claims.committed_shout = Some(committed);
                 }
                 proof.trace_claim_root = shout_root;
+            }
+            // M4 v3: the statement root binds the committed Shout tables and the
+            // committed pushforward table on top of the M2/M3 claim binding.
+            if let Some(committed) = proof.committed_logup_shout.as_ref() {
+                proof.trace_claim_root = crate::logup_shout::statement_root_from_commitments(
+                    &proof.trace_claim_root,
+                    committed,
+                );
             }
         }
         timings.push(StageTiming {
@@ -3972,7 +4031,30 @@ pub fn verify_native_unified(
             let synthetic = trace
                 .join()
                 .map_err(|_| RuntimeError::Proof("claim trace panicked".into()))??;
-            if let Some(trace_logup) = &proof.trace_logup_shout {
+            if let Some(committed) = &proof.committed_logup_shout {
+                let claims = proof
+                    .claim_proof
+                    .as_ref()
+                    .ok_or_else(|| RuntimeError::Proof("committed logup Shout without claim proof".into()))?;
+                let table = claims
+                    .table
+                    .as_ref()
+                    .ok_or_else(|| RuntimeError::Proof("committed logup Shout without claim table".into()))?;
+                let claim_binding_v1 =
+                    crate::claim_table::claim_binding_root_from_parts(claims.root, &table.root);
+                crate::logup_shout::verify_committed_statement_binding(
+                    committed,
+                    &claim_binding_v1,
+                    &statement.trace_claim_root,
+                )?;
+                crate::logup_shout::verify_committed_logup_shout(committed, &statement.rom)?;
+            } else if crate::logup_shout::linear_shout_enabled()
+                && !crate::logup_shout::classic_logup_enabled()
+            {
+                return Err(RuntimeError::Proof(
+                    crate::logup_shout::PRE_M4V3_ERROR.into(),
+                ));
+            } else if let Some(trace_logup) = &proof.trace_logup_shout {
                 let witness_started = std::time::Instant::now();
                 let witness = crate::binary_shout::BinaryShoutWitness::from_trace(&synthetic)
                     .map_err(|error| RuntimeError::Proof(error.to_string()))?;
@@ -4138,6 +4220,7 @@ pub struct UnifiedProofSizes {
     pub packed_shout: usize,
     pub logup_shout: usize,
     pub trace_logup_shout: usize,
+    pub committed_logup_shout: usize,
     pub shift_router: usize,
     pub store_router: usize,
     pub trace_claims: usize,
@@ -4165,6 +4248,7 @@ impl UnifiedProofSizes {
                 + self.packed_shout
                 + self.logup_shout
                 + self.trace_logup_shout
+                + self.committed_logup_shout
                 + self.shift_router
                 + self.store_router
                 + self.trace_claims
@@ -4197,6 +4281,7 @@ pub fn unified_proof_sizes(proof: &UnifiedTraceProof) -> Result<UnifiedProofSize
         packed_shout: size(bincode::serialize(&proof.packed_shout))?,
         logup_shout: size(bincode::serialize(&proof.logup_shout))?,
         trace_logup_shout: size(bincode::serialize(&proof.trace_logup_shout))?,
+        committed_logup_shout: size(bincode::serialize(&proof.committed_logup_shout))?,
         shift_router: size(bincode::serialize(&proof.shift_router))?,
         store_router: size(bincode::serialize(&proof.store_router))?,
         trace_claims: size(bincode::serialize(&proof.trace_claims))?,

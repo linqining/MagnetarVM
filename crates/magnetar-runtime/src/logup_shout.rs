@@ -13,8 +13,10 @@ use p3_binary_field::{BinaryChallenger, BinaryField128, TowerLevel};
 use p3_challenger::HashChallenger;
 use p3_field::Field as P3Field;
 use p3_keccak::Keccak256Hash;
+use p3_multi_stark::logup_star::transcript::{LogupStarProverTranscript, LogupStarShape};
 use p3_multi_stark::logup_star::{
-    LogupStarOutput, LogupStarProof, Reader, ReaderWitness, TableLookup, TableWitness,
+    LogupStarOutput, LogupStarPlan, LogupStarProof, Reader, ReaderWitness, TableLookup,
+    TableWitness,
 };
 use p3_multilinear_util::point::Point;
 use serde::{Deserialize, Serialize};
@@ -1075,7 +1077,183 @@ pub const GOLDEN_OLD_LOGUP_ENCODING: Option<[u8; 32]> = Some([
     0xce, 0x45, 0x47, 0x23, 0x31, 0x74, 0x00, 0xa7, 0xe0, 0x29, 0x30, 0xdd, 0x80, 0x40, 0x25, 0xaf,
 ]);
 
+/// Rejection message when a verifier expects M4 v3 but the proof predates it.
+pub const PRE_M4V3_ERROR: &str =
+    "pre-M4v3 proof: committed logup-Shout proof missing (set MAGNETAR_CLASSIC_LOGUP=1 for the legacy path)";
+
+/// M4 v3 opt-in switch: use the committed-pushforward linear Shout.
+pub fn linear_shout_enabled() -> bool {
+    matches!(
+        std::env::var("MAGNETAR_LINEAR_SHOUT").ok().as_deref(),
+        Some("1" | "on" | "true" | "yes")
+    )
+}
+
+/// Force the classic trace Logup-Shout path (A/B regression switch).
+pub fn classic_logup_enabled() -> bool {
+    matches!(
+        std::env::var("MAGNETAR_CLASSIC_LOGUP").ok().as_deref(),
+        Some("1" | "on" | "true" | "yes")
+    )
+}
+
+/// Composed statement root for M4 v3: `H("claim-shout-v3" || v1 || word || pos || pushforward)`.
+pub fn statement_root_from_commitments(
+    claim_binding_v1: &[u8; 32],
+    proof: &CommittedLogupShoutProof,
+) -> [u8; 32] {
+    crate::claim_table::claim_shout_v3_root(
+        claim_binding_v1,
+        &committed_word_root(&proof.word_commitment),
+        &committed_pos_root(&proof.pos_commitment),
+        &committed_pushforward_root(&proof.pushforward_commitment),
+    )
+}
+
+/// Host-side statement data for M4 v3 (statement construction; same trust model
+/// as the M2/M3 claim table: the statement is a public input built from the
+/// trace, and its root fixes these commitments).
+pub struct CommittedShoutStatementData {
+    pub word_commitment: P3Commitment,
+    pub pos_commitment: P3Commitment,
+    pub pushforward_commitment: P3Commitment,
+    pub word_root: [u8; 32],
+    pub pos_root: [u8; 32],
+    pub pushforward_root: [u8; 32],
+    pub statement_root: [u8; 32],
+}
+
+/// Derive the committed Shout tables at statement construction and compose the
+/// v3 statement root.
+///
+/// The pushforward table is fixed by the statement too: its entries are the
+/// equality weights the reader point induces (`Y[v] = sum_{i : pos_i = v} eq_r(i)`),
+/// with the single-reader scale `reader_batching^0 = 1`. The reader batching
+/// challenge is replayed from the same committed transcript the prover uses, so
+/// prover and statement builder derive the same table byte for byte.
+pub fn committed_statement_data(
+    trace: &magnetar_spec::Trace,
+) -> Result<CommittedShoutStatementData, RuntimeError> {
+    let witness = BinaryShoutWitness::from_trace(trace)
+        .map_err(|error| RuntimeError::Proof(format!("committed logup witness: {error}")))?;
+    let (word_values, pos_values) = committed_columns_from_trace(trace)?;
+    let (witness_word, witness_pos) = committed_columns_from_witness(&witness)?;
+    if word_values != witness_word || pos_values != witness_pos {
+        return Err(RuntimeError::Proof(
+            "committed logup Shout host columns disagree with the witness".into(),
+        ));
+    }
+    let pcs = committed_pcs();
+    let word_commitment = pcs
+        .commit(&word_values)
+        .map_err(|error| RuntimeError::Proof(format!("word commit: {error}")))?;
+    let pos_commitment = pcs
+        .commit(&pos_values)
+        .map_err(|error| RuntimeError::Proof(format!("position commit: {error}")))?;
+    let word_bytes = bincode::serialize(&word_commitment)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let point = reader_point(&word_bytes, witness.cycle_bits);
+    let word_b = word_values
+        .iter()
+        .map(|value| to_b(*value))
+        .collect::<Vec<_>>();
+    let reader_claim = eval_mle(&word_b, &point);
+
+    // Replay the committed transcript up to the reader batching challenge, just
+    // like the prover's `Weights::build` input does.
+    let readers = [Reader {
+        point: &point,
+        claims: &[reader_claim],
+    }];
+    let lookups = [TableLookup {
+        num_variables: witness.address_bits,
+        readers: &readers,
+    }];
+    let plan = LogupStarPlan::new::<B, B>(&lookups);
+    let shape = LogupStarShape::new(&plan);
+    let mut replay_challenger = challenger();
+    let mut replay = LogupStarProverTranscript::<Challenger, B, B>::new_committed(
+        &mut replay_challenger,
+        &shape,
+    );
+    let statement_values = point
+        .as_slice()
+        .iter()
+        .copied()
+        .chain(core::iter::once(reader_claim))
+        .collect::<Vec<_>>();
+    replay.statement(&statement_values);
+    let reader_batching = replay.reader_batching();
+    replay.abandon();
+    let _ = reader_batching;
+
+    // Pushforward of the single reader: `Y[v] = sum_{i : pos_i = v} eq_r(i)`.
+    let positions = positions(&witness)?;
+    let cells = 1usize << witness.address_bits;
+    let mut pushforward = vec![B::from_repr(0); cells];
+    for (row, position) in positions.iter().enumerate() {
+        let mut weight = B::from_repr(1);
+        // p3's equality tables (and this crate's `fold_in_place`) iterate the
+        // coordinates in reverse, so bit `b` of the row index pairs with
+        // `point[cycle_bits - 1 - b]`.
+        for (bit, coordinate) in point.as_slice().iter().rev().enumerate() {
+            if (row >> bit) & 1 == 1 {
+                weight *= *coordinate;
+            } else {
+                weight *= B::from_repr(1) + *coordinate;
+            }
+        }
+        pushforward[*position] += weight;
+    }
+    let pushforward_f2 = pushforward
+        .iter()
+        .map(|value| to_f2(*value))
+        .collect::<Vec<_>>();
+    let pushforward_commitment = pcs
+        .commit(&pushforward_f2)
+        .map_err(|error| RuntimeError::Proof(format!("pushforward commit: {error}")))?;
+    let word_root = committed_word_root(&word_commitment);
+    let pos_root = committed_pos_root(&pos_commitment);
+    let pushforward_root = committed_pushforward_root(&pushforward_commitment);
+    let claim_binding_v1 = crate::claim_table::claim_binding_root(trace)?;
+    let statement_root = crate::claim_table::claim_shout_v3_root(
+        &claim_binding_v1,
+        &word_root,
+        &pos_root,
+        &pushforward_root,
+    );
+    Ok(CommittedShoutStatementData {
+        word_commitment,
+        pos_commitment,
+        pushforward_commitment,
+        word_root,
+        pos_root,
+        pushforward_root,
+        statement_root,
+    })
+}
+
+/// Verifier-side statement binding: recompose the v3 root from the proof's
+/// commitments and compare it with the statement the verifier was handed.
+pub fn verify_committed_statement_binding(
+    proof: &CommittedLogupShoutProof,
+    claim_binding_v1: &[u8; 32],
+    statement_root: &[u8; 32],
+) -> Result<(), RuntimeError> {
+    let expected = statement_root_from_commitments(claim_binding_v1, proof);
+    if expected != *statement_root {
+        return Err(RuntimeError::Proof(
+            "committed logup Shout statement binding mismatch".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Linear Shout proof with committed pushforwards (M4 v3).
+///
+/// `proof` carries the two host-derived column openings and the committed
+/// pushforward openings; the caller checks [`verify_committed_statement_binding`]
+/// against the statement root before calling [`verify_committed_logup_shout`].
 ///
 /// The reader word/position columns and the pushforward table are committed; the
 /// proof carries only openings/values, never the table-wide vector.
@@ -1564,6 +1742,53 @@ mod committed_logup_tests {
             Some(expected) => assert_eq!(hash, expected),
             None => eprintln!("golden old logup proof encoding sha256 = {hash:02x?}"),
         }
+    }
+
+    #[test]
+    fn committed_statement_binding_matches_the_proof() {
+        let trace = committed_trace();
+        let witness = BinaryShoutWitness::from_trace(&trace).unwrap();
+        let (proof, word_root, pos_root, pushforward_root) =
+            prove_committed_logup_shout(&witness).unwrap();
+        let statement = committed_statement_data(&trace).unwrap();
+        // `P3Commitment` has no `PartialEq`; compare canonical encodings.
+        let commit_eq = |a: &P3Commitment, b: &P3Commitment| {
+            bincode::serialize(a).ok() == bincode::serialize(b).ok()
+        };
+        assert!(commit_eq(&statement.word_commitment, &proof.word_commitment));
+        assert!(commit_eq(&statement.pos_commitment, &proof.pos_commitment));
+        assert!(commit_eq(
+            &statement.pushforward_commitment,
+            &proof.pushforward_commitment
+        ));
+        assert_eq!(statement.word_root, word_root);
+        assert_eq!(statement.pos_root, pos_root);
+        assert_eq!(statement.pushforward_root, pushforward_root);
+        let claim_binding_v1 = crate::claim_table::claim_binding_root(&trace).unwrap();
+        crate::logup_shout::verify_committed_statement_binding(
+            &proof,
+            &claim_binding_v1,
+            &statement.statement_root,
+        )
+        .unwrap();
+        // A statement root missing the committed tables is rejected.
+        let mut tampered = statement.statement_root;
+        tampered[0] ^= 1;
+        assert!(crate::logup_shout::verify_committed_statement_binding(
+            &proof,
+            &claim_binding_v1,
+            &tampered
+        )
+        .is_err());
+        // A tampered commitment breaks the statement binding too.
+        let mut bad = proof.clone();
+        bad.pos_commitment = proof.word_commitment.clone();
+        assert!(crate::logup_shout::verify_committed_statement_binding(
+            &bad,
+            &claim_binding_v1,
+            &statement.statement_root
+        )
+        .is_err());
     }
 
     #[test]
