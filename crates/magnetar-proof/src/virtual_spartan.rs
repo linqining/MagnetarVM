@@ -201,8 +201,85 @@ pub fn eval_bits_slice_mle(
     total
 }
 
+/// The equality tensors one segment width needs.
+///
+/// `low` covers the segment's low `low_bits` coordinates (capped at 16, which
+/// keeps the table within a megabyte); `high` covers the remaining coordinates.
+/// Both depend only on the width and the point, never on the segment's offset,
+/// so every segment of the same width shares them.
+struct SegmentTensors {
+    low_bits: usize,
+    low: Vec<F2_128>,
+    high: Vec<F2_128>,
+}
+
+impl SegmentTensors {
+    fn build(size_bits: usize, point: &[F2_128]) -> Self {
+        let low_bits = size_bits.min(16);
+        let low = crate::spartan::eq_vector_tensor(&point[..low_bits]);
+        let high = if size_bits > low_bits {
+            crate::spartan::eq_vector_tensor(&point[low_bits..size_bits])
+        } else {
+            vec![F2_128::from(1u64)]
+        };
+        Self {
+            low_bits,
+            low,
+            high,
+        }
+    }
+
+    /// Multilinear evaluation of one bit slice with these tensors.
+    ///
+    /// Reads whole 64-bit words instead of calling `PackedBits::get` per bit,
+    /// and adds the low equality weights in exactly the order the shipped
+    /// per-bit loop did, so the claim is bit-identical.
+    fn eval(&self, words: &[u64], offset: usize) -> F2_128 {
+        if self.low_bits == 0 {
+            let bit = (words[offset >> 6] >> (offset & 63)) & 1;
+            return if bit == 1 {
+                F2_128::from(1u64)
+            } else {
+                F2_128::from(0u64)
+            };
+        }
+        let low_len = 1usize << self.low_bits;
+        let mut total = F2_128::from(0u64);
+        for (block, weight) in self.high.iter().enumerate() {
+            let start = offset + (block << self.low_bits);
+            let mut sum = F2_128::from(0u64);
+            let mut done = 0usize;
+            while done < low_len {
+                let absolute = start + done;
+                let word = words[absolute >> 6];
+                let shift = absolute & 63;
+                let take = (64 - shift).min(low_len - done);
+                let chunk = if take == 64 {
+                    word
+                } else {
+                    (word >> shift) & ((1u64 << take) - 1)
+                };
+                let mut set = chunk;
+                while set != 0 {
+                    let bit = set.trailing_zeros() as usize;
+                    sum = sum + self.low[done + bit];
+                    set &= set - 1;
+                }
+                done += take;
+            }
+            total = total + sum * *weight;
+        }
+        total
+    }
+}
+
 /// Split the full witness claim into per-segment claims directly from the bit
 /// witness, mirroring [`split_segment_claims`].
+///
+/// The segments are independent, and each one's evaluation depends only on the
+/// point and its own bits, so this shares one equality-tensor pair per segment
+/// width and runs the segments across the worker pool. The claims come back in
+/// layout order and carry the same field elements as the sequential version.
 pub fn split_segment_claims_bits(
     layout: &WitnessLayout,
     bits: &crate::PackedBits,
@@ -221,12 +298,48 @@ pub fn split_segment_claims_bits(
             actual: point.len(),
         });
     }
-    let mut claims = Vec::with_capacity(layout.segments.len());
+    // One tensor pair per distinct segment width (widths are powers of two, so
+    // this is a handful of entries even for a wide CPU relation).
+    let mut tensors: Vec<Option<SegmentTensors>> = (0..=total_bits).map(|_| None).collect();
     for segment in &layout.segments {
         let size_bits = segment.len.trailing_zeros() as usize;
-        let value = eval_bits_slice_mle(bits, segment.offset, &point[..size_bits]);
-        claims.push(SegmentClaim { value });
+        if tensors[size_bits].is_none() {
+            tensors[size_bits] = Some(SegmentTensors::build(size_bits, point));
+        }
     }
+    let words = bits.words();
+    let evaluate = |segment: &Segment| -> SegmentClaim {
+        let size_bits = segment.len.trailing_zeros() as usize;
+        let tensors = tensors[size_bits].as_ref().expect("width table");
+        SegmentClaim {
+            value: tensors.eval(words, segment.offset),
+        }
+    };
+    let segments = &layout.segments;
+    let workers = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+        .clamp(1, segments.len().max(1));
+    let claims = if workers > 1 {
+        let chunk = segments.len().div_ceil(workers);
+        let mut ordered = Vec::with_capacity(segments.len());
+        std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(workers);
+            for (index, part) in segments.chunks(chunk).enumerate() {
+                let evaluate = &evaluate;
+                handles.push((index, scope.spawn(move || {
+                    part.iter().map(evaluate).collect::<Vec<_>>()
+                })));
+            }
+            handles.sort_by_key(|(index, _)| *index);
+            for (_, handle) in handles {
+                ordered.extend(handle.join().expect("segment claim worker"));
+            }
+        });
+        ordered
+    } else {
+        segments.iter().map(&evaluate).collect()
+    };
     Ok(claims)
 }
 
@@ -322,6 +435,40 @@ mod tests {
             assert_eq!(routed.name, segment.name);
             assert_eq!(routed.owner, segment.owner);
         }
+    }
+
+    /// The word-level, shared-tensor, multi-threaded split must return exactly
+    /// the per-segment claims of the shipped per-bit evaluator, in layout order.
+    #[test]
+    fn split_bits_claims_match_the_reference_evaluator() {
+        let layout = WitnessLayout::new(vec![
+            Segment::new("a", 0, 2, SegmentKind::Direct, SegmentOwner::Cpu),
+            Segment::new("b", 2, 2, SegmentKind::Direct, SegmentOwner::Cpu),
+            Segment::new("c", 4, 4, SegmentKind::Direct, SegmentOwner::Cpu),
+            Segment::new("d", 8, 8, SegmentKind::Direct, SegmentOwner::Cpu),
+        ])
+        .unwrap();
+        let total_bits = layout.total_bits.trailing_zeros() as usize;
+        let pattern = (0..layout.total_bits)
+            .map(|index| (index.wrapping_mul(0x9e37).rotate_left(5) & 7) < 3)
+            .collect::<Vec<_>>();
+        let bits = crate::PackedBits::from_bools(&pattern);
+        let point = (0..total_bits)
+            .map(|bit| F2_128::from((bit as u64 * 11 + 5) & 0xff))
+            .collect::<Vec<_>>();
+        let expected = layout
+            .segments
+            .iter()
+            .map(|segment| {
+                let size_bits = segment.len.trailing_zeros() as usize;
+                eval_bits_slice_mle(&bits, segment.offset, &point[..size_bits])
+            })
+            .collect::<Vec<_>>();
+        let claims = split_segment_claims_bits(&layout, &bits, &point).unwrap();
+        assert_eq!(
+            claims.iter().map(|claim| claim.value).collect::<Vec<_>>(),
+            expected
+        );
     }
 
     #[test]

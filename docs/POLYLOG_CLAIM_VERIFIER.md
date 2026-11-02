@@ -467,3 +467,86 @@ RV64 `2^16` 全量交错对比（Lead 的机器窗口）：
   （ON）。
 - open item：ADDS=4095 时 testkit memory watchdog 观测到 4.05–4.3 GiB 瞬态（ADDS=1023 正常），
   待下一个窗口定位（不是 claim 表本身：2^12 表尺寸仅 ~2.1 M bits / 码字 ~16 MB）。
+
+## C. M4 实施计划（提交后待 Lead 确认；先不动代码）
+
+目标：native/paper 路径的 trace Logup-Shout 从「verifier 重建 witness」改为「已提交列 + 打开」，
+删掉 21.9–29.6 ms 的逐周期重建；同时把 paper 路径目前**完全不校验**的 `logup_shout`
+（§9.6 已知缺口）变成真校验。M4 完成后 M5 才能删行 blob。
+
+### C.1 方案对比（提议选 B）
+
+**A（LogupStar slim）**：保留 p3 Logup*，reader 列从 `T_field` 打开，去掉 25 列 logup PCS
+opening。问题：`LogupStarProof.pushforwards` 必须留在 proof（verifier 无 witness 可重建），
+长度为 `2^address_bits` 个域元素。合成 bench 的 ROM = ADDS+1 = 2^16 words → **+1 MB proof**，
+2^16 headline 无法接受；论文 ec20 ROM 小（~2^11）时才 +32 KB。受 benchmark ROM artifact 支配。
+
+**B（BinaryShout against T，推荐）**：复用 `binary_shout.rs` 的 Boolean/read sum-check 证明
+（~10–15 KB，**无 pushforwards**），把 Shout 的布尔列直接放进 claim 表 `T`，所有 claim 都通过
+`T` 的批量打开认证；reader word 列用 `T_field`（1 个 dense 列）绑 claim 字，`column_evals[0]`
+对公开 ROM 做 O(rom) 检查。proof 预期 **−220 KB 左右**（删 `logup_shout` 245 KB、加
+BinaryShout ~10–15 KB + 额外 T 打开 ~5–8 KB），落到 ~800 KB < 旧 861 KB；verifier 增量
+~5–8 ms，但替掉 native 路径 21.9–29.6 ms 的重建。
+
+### C.2 数据面（T 扩展）
+
+- `T_bits` 追加 shout 数据列（host 从 trace 计算）：`address0` 位（`address_bits`）、
+  `address1` 位（`address_bits`）、`is_32`、`valid`、link 12 位。schema 组之外新增
+  shout 组（46 列 @ a=16），slot 数 512 → 1024（2^16 时 T 从 ~4 MB packed 到 ~8 MB；
+  码字 rate 1/8 约 67 MB 瞬态，可控）。
+- `T_field`（新增，`P3BinaryPcs::commit_mosaic` dense 列）：**1 列 `word`**（每 cycle 的
+  claim instruction word 作为域元素）。2^16 时 65 536 fields，码字 ~8 MB，成本可忽略。
+  statement 绑定扩展为 `H(domain || row_root || T_bits_root || T_field_root)`。
+- link/code/width 的**派生关系**（selectors→code、memory→store width 是非线性）：
+  首版按决策 D 只做「T 数据列 vs router 表随机点等式」，乘积关系留 M4b。
+
+### C.3 Prover
+
+1. 构造/承诺扩展后的 `T_bits`、`T_field`；claim_rel 追加三条**线性**关系（都是公开系数，
+   用现有 claim_rel 原语）：
+   - `position = (pc − rom_base) >> 2`（word mode：`address0` 位 = schema pc 位右移 2，
+     低位为 0；`address1` 在 word mode 等于 `address0`）；
+   - `valid` = 公开前缀指示（MLE 在随机点可 O(log) 求值）；
+   - `is_32 ≡ 0`（word mode）。
+2. 调 `binary_shout::prove_binary_shout_claims` 的现有逻辑（必要时抽成对 T 数据列版本）：
+   `prove_binary_shout_claims(&witness, &synthetic_commitment, 0, binding)`，其中
+   `synthetic_commitment` 用 E5 模式绑定到 `T_bits` 的 shout 组 + `T_field`（cap/shapes/binding
+   hash），transcript 与 verifier 一致。
+3. link claims 仍按现有 `logup_shout_router_link_claims` 的格式折进 mosaic opening。
+4. 删除 paper 路径的 `logup_shout`（25 列 PCS 提交 + opening），proof 字段
+   `logup_shout`/`trace_logup_shout` 用新 `CommittedShoutProof` 取代（serde default，
+   旧格式可拒绝）。
+
+### C.4 Verifier（无 witness）
+
+1. 校验 `CommittedShoutProof` 的 Boolean/read sum-checks（复用
+   `verify_binary_shout_from_proof` 的检查逻辑，对 synthetic commitment）；
+2. `T` 批量打开（E5 式 `MosaicBatchingProof` + ring-switch）：把 proof 返回的
+   bit/link/valid/is_32 claims 转成 `T` 的 lifted 点 claim，一次打开认证；`word` 列来自
+   `T_field` 在 reader 点的打开；
+3. `column_evals[0]`（ROM word 列）对**公开 ROM**（`statement.rom` 重建，O(rom) 单列）比对；
+   metadata 列不需要（word-only Shout）；
+4. `claimed_read == MLE(T_field.word)(reader_point)`（绑定 claim 字）；
+5. 三条 claim_rel 关系（C.3-1）+ 已有的 claim target relation；
+6. link claims 折进 shift/store router opening（现有代码路径）。
+7. compressed 指令模式保留旧 trace-logup 路径（决策 C）。
+
+### C.5 工作量与顺序
+
+- **M4a**（~1–1.5 天）：T 扩展 + synthetic commitment + BinaryShout prover/verifier 接线 +
+  三条线性关系；先只改 **native TRACE_SHOUT 路径**，paper 路径保持不动 → 用同一 bench
+  A/B 测 proof size 与 verify；验证器用 `MAGNETAR_COMMITTED_SHOUT=0` 回退。
+- **M4b**（~0.5–1 天）：link 门控乘积关系（如必须）、paper 路径切到新证明、删旧
+  `logup_shout` 组件与 `trace_logup_shout` 的逐周期路径；小 ROM/压缩模式 fallback 保留。
+- **M5**（随后）：access digest → claim root、删行 blob/行 Merkle/decode/claims_to_trace，
+  proof 再减、verify 再降（目标 ~20–25 ms，再往 8–12 ms 需要 selected/core 侧优化）。
+
+### C.6 需要 Lead 决策
+
+1. 采用方案 **B**（BinaryShout against T，无 pushforwards）还是 A；
+2. T 扩展到 1024 slots + `T_field` 的 prover/host 成本（2^16 一次性 +~10 ms 级、+~80 MB 瞬态；
+   2^22 外推 ~+0.5–1 GB 码字+字段列，可接受？）；
+3. M4a 只改 native 路径、paper 路径留到 M4b 是否 OK；
+4. 新增 `CommittedShoutProof` 的 proof 字段命名/兼容策略（serde default，旧 proof 拒绝）；
+5. 授权范围确认：`binary_shout.rs`、`logup_shout.rs`（只删/改 M4 相关最小面）、
+   `claim_table.rs`、`lib.rs`、`trace_claims.rs`；不碰 stream/spartan/bit_pcs。
