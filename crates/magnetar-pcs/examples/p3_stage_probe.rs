@@ -64,18 +64,23 @@ fn report(name: &str, runs: &[(std::time::Duration, std::time::Duration)]) {
 /// Aggregating by name keeps the report short even when a phase runs many times
 /// (one span per fold batch, per Merkle tree, ...).
 static ACTIVE: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::HashMap<u64, (&'static str, Instant)>>,
+    std::sync::Mutex<std::collections::HashMap<u64, (&'static str, Instant, f64)>>,
 > = std::sync::OnceLock::new();
 static TOTALS: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::HashMap<&'static str, (u64, std::time::Duration)>>,
+    std::sync::Mutex<std::collections::HashMap<&'static str, (u64, std::time::Duration, f64)>>,
 > = std::sync::OnceLock::new();
 static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 struct SpanTimer;
 
-fn active() -> &'static std::sync::Mutex<std::collections::HashMap<u64, (&'static str, Instant)>>
-{
+fn active(
+) -> &'static std::sync::Mutex<std::collections::HashMap<u64, (&'static str, Instant, f64)>> {
     ACTIVE.get_or_init(Default::default)
+}
+
+/// Process CPU seconds, for the load-independent half of each span's cost.
+fn process_cpu_seconds() -> f64 {
+    magnetar_proof::process_cpu_seconds()
 }
 
 fn totals(
@@ -96,7 +101,10 @@ impl tracing::Subscriber for SpanTimer {
     fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
         let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let name: &'static str = Box::leak(span.metadata().name().to_string().into_boxed_str());
-        active().lock().unwrap().insert(id, (name, Instant::now()));
+        active()
+            .lock()
+            .unwrap()
+            .insert(id, (name, Instant::now(), process_cpu_seconds()));
         tracing::span::Id::from_u64(id)
     }
 
@@ -110,17 +118,22 @@ impl tracing::Subscriber for SpanTimer {
         let id = span.into_u64();
         if let Some(slot) = active().lock().unwrap().get_mut(&id) {
             slot.1 = Instant::now();
+            slot.2 = process_cpu_seconds();
         }
     }
 
     fn exit(&self, span: &tracing::span::Id) {
         let entry = active().lock().unwrap().remove(&span.into_u64());
-        if let Some((name, started)) = entry {
+        if let Some((name, started, cpu_started)) = entry {
             let elapsed = started.elapsed();
+            let cpu = process_cpu_seconds() - cpu_started;
             let mut totals = totals().lock().unwrap();
-            let slot = totals.entry(name).or_insert((0, std::time::Duration::ZERO));
+            let slot = totals
+                .entry(name)
+                .or_insert((0, std::time::Duration::ZERO, 0.0));
             slot.0 += 1;
             slot.1 += elapsed;
+            slot.2 += cpu;
         }
     }
 
@@ -145,11 +158,11 @@ fn dump_spans() {
     let totals = totals().lock().unwrap();
     let mut rows = totals
         .iter()
-        .map(|(name, (count, total))| (*name, *count, *total))
+        .map(|(name, (count, wall, cpu))| (*name, *count, *wall, *cpu))
         .collect::<Vec<_>>();
-    rows.sort_by_key(|(_, _, total)| std::cmp::Reverse(*total));
-    for (name, count, total) in rows {
-        eprintln!("span {name}: count={count} total={total:?}");
+    rows.sort_by_key(|(_, _, wall, _)| std::cmp::Reverse(*wall));
+    for (name, count, wall, cpu) in rows {
+        eprintln!("span {name}: count={count} wall={wall:?} cpu={cpu:.3}s");
     }
 }
 

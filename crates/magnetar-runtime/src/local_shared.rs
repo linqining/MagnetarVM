@@ -154,7 +154,50 @@ fn onehot_eval(
     total
 }
 
+/// Per-stage wall and process-CPU timer for the Access register-twist prover.
+///
+/// Under a loaded host the stage wall times move with the load; the CPU delta
+/// is what tells a real work reduction apart from a scheduling artefact. The
+/// process CPU counter comes from the same `getrusage` helper the proof and
+/// bench crates use.
+struct LocalProfile {
+    enabled: bool,
+    cpu_start: f64,
+    cpu_last: f64,
+}
+
+impl LocalProfile {
+    fn new() -> Self {
+        let cpu = magnetar_proof::process_cpu_seconds();
+        Self {
+            enabled: std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some(),
+            cpu_start: cpu,
+            cpu_last: cpu,
+        }
+    }
+
+    fn mark(&mut self, stage: &str, elapsed: std::time::Duration) {
+        if self.enabled {
+            let cpu = magnetar_proof::process_cpu_seconds();
+            eprintln!("local {stage}: {elapsed:?} cpu={:.3}s", cpu - self.cpu_last);
+            self.cpu_last = cpu;
+        }
+    }
+
+    fn total(&self, started: std::time::Instant) {
+        if self.enabled {
+            eprintln!(
+                "local total: {:?} cpu={:.3}s",
+                started.elapsed(),
+                magnetar_proof::process_cpu_seconds() - self.cpu_start
+            );
+        }
+    }
+}
+
 pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedProof, ProofError> {
+    let total_started = std::time::Instant::now();
+    let mut profile = LocalProfile::new();
     let shape = witness_shape(witness);
     let cells = shape.cells();
     let cycles = shape.cycles;
@@ -176,9 +219,7 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
     let read_flat = flat_onehot(witness, false, cycles);
     let (val_flat, inc) = build_val_flat(witness);
     let inc_flat = repeated_blocks(&inc, cells, cycles);
-    if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
-        eprintln!("local tables: {:?}", started.elapsed());
-    }
+    profile.mark("tables", started.elapsed());
     let started = std::time::Instant::now();
     let pcs = linear_pcs(cycles);
     let prepared = pcs
@@ -192,16 +233,12 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
     );
     let gamma = sample_point(&mut transcript, 1)[0];
     let cycle_point = sample_point(&mut transcript, cycle_bits);
-    if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
-        eprintln!("local commit: {:?}", started.elapsed());
-    }
+    profile.mark("commit", started.elapsed());
     let started = std::time::Instant::now();
     let eq = eq_vector(&cycle_point, cycles);
     let eq_flat = repeated_blocks(&eq, cells, cycles);
     let mut factors = vec![eq_flat, write_flat.clone(), inc_flat, val_flat.clone(), read_flat];
-    if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
-        eprintln!("local rw factors: {:?}", started.elapsed());
-    }
+    profile.mark("rw factors", started.elapsed());
     let started = std::time::Instant::now();
     let gamma_copy = gamma;
     let (rw_rounds, rw_challenges) = sumcheck_terms_indexed(
@@ -215,9 +252,7 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
                     + gamma_copy * folded[4] * folded[3])
         },
     )?;
-    if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
-        eprintln!("local rw sumcheck: {:?}", started.elapsed());
-    }
+    profile.mark("rw sumcheck", started.elapsed());
     let started = std::time::Instant::now();
     let rk = rw_challenges[cycle_bits..].to_vec();
     let rj = rw_challenges[..cycle_bits].to_vec();
@@ -245,9 +280,7 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
         &mut transcript,
         |folded| folded[0] * folded[1] * folded[2],
     )?;
-    if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
-        eprintln!("local val sumcheck: {:?}", started.elapsed());
-    }
+    profile.mark("val sumcheck", started.elapsed());
     let started = std::time::Instant::now();
     // Virtual address targets.
     let targets = vec![
@@ -310,9 +343,7 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
             value
         },
     )?;
-    if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
-        eprintln!("local virtual sumcheck: {:?}", started.elapsed());
-    }
+    profile.mark("virtual sumcheck", started.elapsed());
     let started = std::time::Instant::now();
     let (read_bits_start, read_valid_index, write_bits_start, write_valid_index, endpoint_start) = layout(shape);
     let address_columns = (0..2 * shape.address_bits + 2)
@@ -347,18 +378,14 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
             .map(|index| eval_mle(&columns[read_bits_start + index], &virtual_challenges))
             .collect::<Vec<_>>(),
     ];
-    if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
-        eprintln!("local value claims: {:?}", started.elapsed());
-    }
+    profile.mark("value claims", started.elapsed());
     let started = std::time::Instant::now();
     // The prepared batch moves into the opening: no deep copy of the codeword
     // and Merkle tree (half a gigabyte at RV64 `2^16`).
     let opening = pcs
         .open_batch_prepared(prepared, &values_points)
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
-    if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
-        eprintln!("local opening: {:?}", started.elapsed());
-    }
+    profile.mark("opening", started.elapsed());
     let started = std::time::Instant::now();
     let mut initial = witness.initial.clone();
     initial.resize(cells.next_power_of_two().max(2), F2_128::from(0u64));
@@ -383,9 +410,7 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
     let endpoints_opening = endpoints_pcs
         .open_batch(&endpoint_columns, &endpoint_points)
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
-    if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
-        eprintln!("local endpoints: {:?}", started.elapsed());
-    }
+    profile.mark("endpoints", started.elapsed());
     let started = std::time::Instant::now();
     let _ = (read_valid_index, write_bits_start, write_valid_index, endpoint_start);
     // Final state rounds.
@@ -406,9 +431,8 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
         });
         rounds
     };
-    if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
-        eprintln!("local final rounds: {:?}", started.elapsed());
-    }
+    profile.mark("final rounds", started.elapsed());
+    profile.total(total_started);
     Ok(LocalSharedProof {
         shape,
         opening,

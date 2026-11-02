@@ -20,6 +20,7 @@ pub mod binary_twist;
 pub mod binary_twist_address;
 pub mod branch_row;
 pub mod claim_native;
+pub mod claim_shout;
 pub mod claim_table;
 pub mod linear_twist;
 pub mod local_shared;
@@ -3013,6 +3014,21 @@ fn prove_unified_trace_dynamic_native_profile_inner(
             } else {
                 proof.trace_claim_root = crate::trace_claims::TraceClaimTree::build(trace).root();
             }
+            // M4a skeleton: committed Shout replaces the per-cycle trace Logup
+            // rebuild. Default off; `MAGNETAR_CLASSIC_LOGUP=1` forces the
+            // legacy path (A/B regression switch).
+            if crate::claim_shout::committed_shout_enabled()
+                && !crate::claim_shout::classic_logup_enabled()
+            {
+                let selected = proof
+                    .selected_cpu
+                    .as_ref()
+                    .ok_or_else(|| RuntimeError::Proof("committed Shout without selected CPU proof".into()))?;
+                let committed = crate::claim_shout::prove_committed_shout(trace, selected, [0u8; 32])?;
+                if let Some(claims) = proof.claim_proof.as_mut() {
+                    claims.committed_shout = Some(committed);
+                }
+            }
         }
         timings.push(StageTiming {
             stage: "SelectedCpu(wall)".into(),
@@ -3797,6 +3813,21 @@ pub fn verify_native_unified(
     };
     if expected_root != statement.trace_claim_root || proof.trace_claim_root != expected_root {
         return Err(RuntimeError::Proof("claim proof root mismatch".into()));
+    }
+    // M4a: verify the committed Shout proof when present; when the committed
+    // path is enabled but the proof predates it, reject explicitly.
+    if let Some(committed) = claim_proof.committed_shout.as_ref() {
+        crate::claim_shout::verify_committed_shout(
+            committed,
+            statement,
+            claim_table.ok_or_else(|| RuntimeError::Proof("missing claim table".into()))?,
+        )?;
+    } else if crate::claim_shout::committed_shout_enabled()
+        && !crate::claim_shout::classic_logup_enabled()
+    {
+        return Err(RuntimeError::Proof(
+            crate::claim_shout::CommittedShoutProof::PRE_M4_ERROR.into(),
+        ));
     }
     let rows = claim_proof
         .decode_rows(&statement.initial_state)

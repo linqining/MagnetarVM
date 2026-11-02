@@ -550,3 +550,39 @@ BinaryShout ~10–15 KB + 额外 T 打开 ~5–8 KB），落到 ~800 KB < 旧 86
 4. 新增 `CommittedShoutProof` 的 proof 字段命名/兼容策略（serde default，旧 proof 拒绝）；
 5. 授权范围确认：`binary_shout.rs`、`logup_shout.rs`（只删/改 M4 相关最小面）、
    `claim_table.rs`、`lib.rs`、`trace_claims.rs`；不碰 stream/spartan/bit_pcs。
+
+### C.7 M4a 骨架状态（2026-11-03，未 build）
+
+按 Lead 批准：方案 B；M4a 先写代码不 build，等窗口做「单测 → 字节等价 → 2^14 A/B → 2^16 全量」。
+
+已落地（骨架，默认路径完全不受影响）：
+- 新 `crates/magnetar-runtime/src/claim_shout.rs`：
+  - `committed_shout_enabled()`（`MAGNETAR_COMMITTED_SHOUT=1`，默认 off）与
+    `classic_logup_enabled()`（`MAGNETAR_CLASSIC_LOGUP=1`，A/B 回退开关）；
+  - `ShoutColumns` + `shout_columns(trace)`：从 `BinaryShoutWitness` 取 address0/1、is_32、
+    valid、12 link 列（word mode 校验），加 dense `word` 列（claim instruction word/cycle）；
+  - `extended_claim_bits(base, shout)`：`[claim schema | address0 | address1 | is_32 | valid | link]`
+    打包成扩展 `T_bits`（slot 数按 `ClaimTableColumns.columns + 2a+2+12` 重新补齐）；
+  - `commit_field_column` / `field_root` / `extended_table_root`（`T_bits` + `T_field` 绑定 root）；
+  - `synthetic_commitment(...)`：E5 式合成 `P3MosaicCommitment`（cap 取 T_bits、shape =
+    (cycle_bits, 2a+2+12)、binding 同时哈希 table root + field commitment）；
+  - `CommittedShoutProof`（`#[serde(default)]` 兼容策略：字段缺失时验证器报
+    "pre-M4 proof"）+ `prove_committed_shout` / `verify_committed_shout` 入口
+    （目前返回 "not wired yet"，待 build 窗口补全）；
+  - 3 个单测：shout 列与 trace word 一致、扩展表追加列、默认开关为 off。
+- `ClaimProof` 新增 `committed_shout: Option<CommittedShoutProof>`（wire 变体 + serde default）；
+- `lib.rs`：native prover 在 `MAGNETAR_COMMITTED_SHOUT=1 && !MAGNETAR_CLASSIC_LOGUP` 时调用
+  committed-shout 入口（当前返回 Err，即 skeleton 未启用时默认路径不变）；verifier 在
+  `committed_shout` 存在时校验，enabled 但缺失时明确报 "pre-M4 proof"；
+- `claim_table::slot_bits_for` 改为 `pub(crate)` 供扩展表使用。
+
+待补（build 窗口内）：
+1. `prove_committed_shout`：扩展表/word 列提交 + `prove_binary_shout_claims`（word-only ROM，
+   1 列）+ field column 在 reader point 打开 + shout claims 的 claim-table 批量关系；
+2. `verify_committed_shout`：Boolean/read sumcheck 校验、公开 ROM word 列 O(rom) 检查、
+   `claimed_read == MLE(T_field.word)(reader_point)`、shout evals 对 T_bits 的批量关系、
+   position↔pc / valid / is_32 三条线性 claim_rel；
+3. `claim_binding_root` 在 committed-shout 开启时改用 `extended_table_root`（statement/prover
+   同步；默认关闭时保持现有 root 不变）；
+4. 单测 + 字节等价 + 2^14/2^16 A/B（`MAGNETAR_CLASSIC_LOGUP=1` vs 默认，四项指标：
+   verify wall、CPU/iter、proof bytes、peak）；2^16 峰值硬上限 2.6 GiB。

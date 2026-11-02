@@ -403,6 +403,8 @@ pub struct ClaimProof {
     /// Committed claim columns and the claim relation (polylog verifier).
     /// `None` on the legacy row-based paths; the native path attaches it.
     pub table: Option<crate::claim_table::ClaimTableProof>,
+    /// M4a committed Shout proof (skeleton; see `docs/POLYLOG_CLAIM_VERIFIER.md` §C).
+    pub committed_shout: Option<crate::claim_shout::CommittedShoutProof>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -412,12 +414,16 @@ enum ClaimProofWire {
         blob: Vec<u8>,
         #[serde(default)]
         table: Option<crate::claim_table::ClaimTableProof>,
+        #[serde(default)]
+        committed_shout: Option<crate::claim_shout::CommittedShoutProof>,
     },
     CompactRegs {
         root: [u8; 32],
         blob: Vec<u8>,
         #[serde(default)]
         table: Option<crate::claim_table::ClaimTableProof>,
+        #[serde(default)]
+        committed_shout: Option<crate::claim_shout::CommittedShoutProof>,
     },
     /// Compact blob plus the register indices of rows whose claim does not
     /// carry the indices implied by its instruction word (the blob derives
@@ -429,6 +435,8 @@ enum ClaimProofWire {
         indices: Vec<(u32, u8, u8, u8)>,
         #[serde(default)]
         table: Option<crate::claim_table::ClaimTableProof>,
+        #[serde(default)]
+        committed_shout: Option<crate::claim_shout::CommittedShoutProof>,
     },
     Full {
         root: [u8; 32],
@@ -436,6 +444,8 @@ enum ClaimProofWire {
         openings: Vec<TraceClaimOpening>,
         #[serde(default)]
         table: Option<crate::claim_table::ClaimTableProof>,
+        #[serde(default)]
+        committed_shout: Option<crate::claim_shout::CommittedShoutProof>,
     },
 }
 
@@ -744,6 +754,7 @@ fn complete_claim_proof(root: [u8; 32], claims: Vec<TraceClaim>) -> ClaimProof {
             .collect(),
         reg_blob: None,
         table: None,
+        committed_shout: None,
     }
 }
 
@@ -754,6 +765,7 @@ impl serde::Serialize for ClaimProof {
                 root: self.root,
                 blob: blob.clone(),
                 table: self.table.clone(),
+                committed_shout: self.committed_shout.clone(),
             }
             .serialize(serializer)
         } else if self.complete {
@@ -770,6 +782,7 @@ impl serde::Serialize for ClaimProof {
                     root: self.root,
                     blob,
                     table: self.table.clone(),
+                    committed_shout: self.committed_shout.clone(),
                 }
             } else {
                 ClaimProofWire::CompactIndexed {
@@ -777,6 +790,7 @@ impl serde::Serialize for ClaimProof {
                     blob,
                     indices,
                     table: self.table.clone(),
+                    committed_shout: self.committed_shout.clone(),
                 }
             }
             .serialize(serializer)
@@ -786,6 +800,7 @@ impl serde::Serialize for ClaimProof {
                 complete: self.complete,
                 openings: self.openings.clone(),
                 table: self.table.clone(),
+                committed_shout: self.committed_shout.clone(),
             }
             .serialize(serializer)
         }
@@ -795,10 +810,16 @@ impl serde::Serialize for ClaimProof {
 impl<'de> serde::Deserialize<'de> for ClaimProof {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         match ClaimProofWire::deserialize(deserializer)? {
-            ClaimProofWire::Compact { root, blob, table } => {
+            ClaimProofWire::Compact {
+                root,
+                blob,
+                table,
+                committed_shout,
+            } => {
                 let claims = decode_compact_claim_blob(&blob).map_err(serde::de::Error::custom)?;
                 let mut proof = complete_claim_proof(root, claims);
                 proof.table = table;
+                proof.committed_shout = committed_shout;
                 Ok(proof)
             }
             ClaimProofWire::CompactIndexed {
@@ -806,6 +827,7 @@ impl<'de> serde::Deserialize<'de> for ClaimProof {
                 blob,
                 indices,
                 table,
+                committed_shout,
             } => {
                 let mut claims = decode_compact_claim_blob(&blob).map_err(serde::de::Error::custom)?;
                 for (row, rd, rs1, rs2) in indices {
@@ -818,6 +840,7 @@ impl<'de> serde::Deserialize<'de> for ClaimProof {
                 }
                 let mut proof = complete_claim_proof(root, claims);
                 proof.table = table;
+                proof.committed_shout = committed_shout;
                 Ok(proof)
             }
             ClaimProofWire::Full {
@@ -825,19 +848,27 @@ impl<'de> serde::Deserialize<'de> for ClaimProof {
                 complete,
                 openings,
                 table,
+                committed_shout,
             } => Ok(Self {
                 root,
                 complete,
                 openings,
                 reg_blob: None,
                 table,
+                committed_shout,
             }),
-            ClaimProofWire::CompactRegs { root, blob, table } => Ok(Self {
+            ClaimProofWire::CompactRegs {
+                root,
+                blob,
+                table,
+                committed_shout,
+            } => Ok(Self {
                 root,
                 complete: true,
                 openings: Vec::new(),
                 reg_blob: Some(blob),
                 table,
+                committed_shout,
             }),
         }
     }
@@ -864,6 +895,7 @@ impl ClaimProof {
             openings,
             reg_blob: None,
             table: None,
+            committed_shout: None,
         }
     }
 
@@ -894,6 +926,7 @@ impl ClaimProof {
             openings: Vec::new(),
             reg_blob: Some(blob),
             table: None,
+            committed_shout: None,
         }
     }
 

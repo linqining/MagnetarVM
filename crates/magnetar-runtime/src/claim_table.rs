@@ -126,7 +126,7 @@ impl ClaimTableColumns {
 /// power of two and keep the packed table large enough for both the
 /// ring-switch packing (>= 256 bits) and the PCS folding factor (3): the
 /// packed table needs at least `2^3 = 8` field elements, i.e. 1024 bits.
-fn slot_bits_for(columns: usize, cycles: usize) -> usize {
+pub(crate) fn slot_bits_for(columns: usize, cycles: usize) -> usize {
     let mut slot_bits = 1usize;
     while (1usize << slot_bits) < columns {
         slot_bits += 1;
