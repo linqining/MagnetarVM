@@ -4,7 +4,7 @@
 优化轮已提交（`1b26b4e` 优化+polylog claim 表、`9e805f2` segment claims 重写、
 `f310f82`/`faf3b72`/`ac8e4a4` M4a committed-Shout、`bd04687` Access sum-check、
 `21c38c7` 内层 chunk 填充、`a3a6e9c` packed CSR + 快速 pair 多项式）。
-提交后最终闸门：**662 passed / 0 failed**、
+提交后最终闸门：**666 passed / 0 failed**、
 `cargo build --workspace --examples --release` 绿。
 
 **Part 1（2^16 优化）收尾**：prove 70.4 → **31.4–34.6 s**（CPU ≈800 → **274 s**，

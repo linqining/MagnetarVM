@@ -5,7 +5,7 @@ Status: **incremental optimization phase**, branch `virtual-claims-rewrite`,
 polylog claim table, `9e805f2` segment-claim rewrite, `f310f82`/`faf3b72`/`ac8e4a4`
 M4a committed-Shout skeleton/body/opt-in fixes, `bd04687` Access sum-check,
 `21c38c7` chunked inner scan, `a3a6e9c` packed CSR + fast pair polynomial).
-Final gate on the committed tree: **662 passed / 0 failed**,
+Final gate on the committed tree: **666 passed / 0 failed**,
 `cargo build --workspace --examples --release` green.
 
 **Part 1 (2^16 optimization) is closed**: prove 70.4 -> **31.4-34.6 s** (CPU
