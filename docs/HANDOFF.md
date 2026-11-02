@@ -164,6 +164,12 @@ Details, measurements and the rejected experiments are in results §11.
     scanning and one thread per segment take `selected segments` 1.20 s → **9 ms**
     at `2^16` (claims bit-identical, proof bytes unchanged; ~1.19 s of serial-tail
     wall).
+14. **Inner scan fills 512-column chunks**: amortises `fill_left`'s per-block
+    bookkeeping ~256x in round 0 with the same per-column arithmetic.
+    `2^14` same-binary A/B `product2` 12.4/17.0 -> 5.1/5.5 s and whole-run CPU
+    103 -> 74 s; `2^16` inner recompute 226 -> **108 CPU-s (-52 %)**, so
+    `product2` should fall from 24.5 to ~12 s on a quiet host
+    (`MAGNETAR_P2_BLOCKWISE=1` keeps the old path for A/B).
 14. **Register-twist Access sum-checks**: `evaluate_points_at` now returns the
     factor value directly for `r == 0` / `r == 1` and reads each factor pair once
     (the old implementation multiplied for every evaluation point, including the

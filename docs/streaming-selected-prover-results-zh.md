@@ -990,7 +990,7 @@ verify 从 46.0 → 27.4 ms，代价是 +157 KB proof；2^10 上「表路径慢 
 | selected setup | 0.48 s | 0.40 s（`setup fill+check`） |
 | selected witness commit | 0.95 s | **0.32 s** |
 | `product6`（外层扫描） | 43.2 s | **24.5 s**（独立 probe：24.5 s@load 74；全链路内 27.2 s） |
-| `product2`（内层扫描） | 23.4 s | 内层 budget 22 时 27.5 s；本轮把内层 budget 提到 24（§11.3 第 4 条），全链路实测 24.5 s |
+| `product2`（内层扫描） | 23.4 s | 内层 budget 22 时 27.5 s；本轮把内层 budget 提到 24（§11.3 第 4 条），全链路实测 24.5 s；第 8 条的 chunk 填充再让该 stage CPU 减半 |
 | selected segments | 1.17 s | **0.009 s**（已重写，§11.3 第 7 条） |
 | selected open | 0.92 s | **0.84 s** |
 
@@ -1007,6 +1007,8 @@ verify 从 46.0 → 27.4 ms，代价是 +157 KB proof；2^10 上「表路径慢 
 6. **benchmark 内存看门狗**（`magnetar_testkit::install_memory_watchdog`，`MAGNETAR_MAX_RSS_GIB`，默认 4 GiB）：任何跑证明的 example 在把宿主推进 swap 之前直接 abort。`protocol_determinism` 默认改成 2 线程 × 10 轮（20 对，1.99 GiB），旧的 120 对并发峰值 5.75 GiB。
 
 7. **segment claims 重写**（`split_segment_claims_bits`）：原实现每个 segment 重建 eq tensor、逐 bit 读见证、单线程；改成 per-width 共享 eq tensor + 64-bit word 扫描（set-bit 迭代、累加顺序不变）+ 每 segment 一线程（按 layout 顺序收集）。`selected segments` 在 `2^14` 从 298/304 ms 降到 3.1/2.6 ms，在 `2^16` 从 1.20 s 降到 **9 ms**；claims 与参考求值器逐位一致（`split_bits_claims_match_the_reference_evaluator`），`2^14` proof 字节不变（859,845 B）；该阶段在串行尾，2^16 省约 1.19 s 墙钟。
+
+8. **内层扫描按 512 列 chunk 填充**（`prove_product2_columns`）。原 materialise-and-accumulate 循环每个 sum-check block 调一次 `fill_left`，而该调用带有 per-block 记账（instance 边界、claim 窗口二分、extras touch 检查），成本比 round 0 那两列本身还高。改成每次填 512 列，把记账开销摊薄 ~256×，而逐列运算顺序完全不变、proof 字节不变（`MAGNETAR_P2_BLOCKWISE=1` 可回到 per-block 版本供 A/B）。`2^14` 同二进制交错 A/B：`product2` 12.4/17.0 s → **5.1/5.5 s** wall、整次运行 CPU 103 → 74 s；`2^16` 内层重算从 226 → **108 CPU-s（-52 %）**，安静宿主上 `product2` 预期从 24.5 s 降到 ~12 s。
 
 外围阶段（teammate 轨道，同一棵树）：vendored p3 里的 `Keccak256Hash16` 没有转发 `hash_many`，Merkle 树全走逐条 hash；转发后叶子批量哈希，p3 CPU 降 2.1–2.7×（selected 2.4×、mosaic 2.7×、local 2.1×）。另外：`open_batch_prepared` 去掉 prepared 数据的 deep clone（2^16 下 -0.5 GiB memcpy）、`P3BinaryPcs::commit/open` 单次表转换、register-access 建表去冗余（Access 独立测量 7.6 → 5.0 CPU-s）、context 无 CPU 列时跳过 reservation 行构建。
 

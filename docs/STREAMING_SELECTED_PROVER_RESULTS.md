@@ -1313,7 +1313,7 @@ environment switches described in §11.4).
 | selected setup | 0.48 s | 0.40 s (`setup fill+check`) |
 | selected witness commit | 0.95 s | **0.32 s** |
 | `product6` (outer scan) | 43.2 s | **24.5 s** (probe run: 24.5 s at load 74; 27.2 s inside the full pipeline) |
-| `product2` (inner scan) | 23.4 s | **24.5 s** at inner budget 22 → the round moved the inner budget to 24, see §11.3 (4) |
+| `product2` (inner scan) | 23.4 s | **24.5 s** before item 8's chunked fill, which halves the stage CPU again (§11.3 item 8) |
 | selected segments | 1.17 s | **0.009 s** (rewritten, §11.3 item 7) |
 | selected open | 0.92 s | **0.84 s** |
 
@@ -1373,6 +1373,19 @@ p3 hash fix (§11.5): `Commit` and `Opening` roughly halved.
    (`split_bits_claims_match_the_reference_evaluator`), the streaming/eager
    proof bytes are unchanged (859,845 B at `2^14`), and the stage sits in the
    serial tail, so the ~1.19 s at `2^16` is wall-clock.
+8. **Inner scan fills 512-column chunks** (`prove_product2_columns`). The
+   materialise-and-accumulate block loop called `fill_left` once per sum-check
+   block, and that call carries per-block bookkeeping (instance bounds, the
+   claim-window binary search, the extras touch test) that costs more than the
+   two columns of the first round. Filling 512 columns per call amortises it
+   ~256x in round 0 while keeping the exact per-column arithmetic order, so
+   proof bytes do not change (`MAGNETAR_P2_BLOCKWISE=1` restores the per-block
+   fill for A/B). Interleaved same-binary A/B at `2^14`: `product2`
+   12.4/17.0 s -> **5.1/5.5 s** wall and whole-run CPU 103 -> 74 s; at `2^16`
+   the inner recompute drops from 226 to **108 CPU-s (-52 %)**, i.e. `product2`
+   should fall from 24.5 to ~12 s on a quiet host (the 2^16 wall could not be
+   re-measured: the host was giving the process ~2.8 of 12 cores during the
+   run, so only CPU is comparable).
 
 Peripheral stages (teammate track, same tree): `Keccak256Hash16` in the
 vendored p3 code did not forward `hash_many`, so the Merkle trees fell back to

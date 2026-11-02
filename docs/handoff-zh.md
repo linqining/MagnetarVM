@@ -148,6 +148,11 @@ claims-to-trace 0.77。
 13. **segment claims 重写**：per-width 共享 eq tensor + 64-bit word 扫描 + 每
     segment 一线程，`selected segments` 在 `2^16` 从 1.20 s 降到 **9 ms**（claims
     逐位一致、proof 字节不变；串行尾约省 1.19 s 墙钟）。
+14. **内层扫描按 512 列 chunk 填充**：把 `fill_left` 的 per-block 记账在 round 0
+    摊薄 ~256×，逐列运算顺序不变。`2^14` 同二进制 A/B：`product2` 12.4/17.0 →
+    5.1/5.5 s、整次 CPU 103 → 74 s；`2^16` 内层重算 226 → **108 CPU-s（-52 %）**，
+    安静宿主预期 `product2` 从 24.5 s 降到 ~12 s（`MAGNETAR_P2_BLOCKWISE=1`
+    保留旧路径供 A/B）。
 14. **register-twist Access sum-check**：`evaluate_points_at` 在 `r==0` / `r==1`
     时直接取因子值、每个因子对只读一次（旧实现对每个评估点都做一次乘法，包括
     两个平凡点）。`local_shared_bench ROWS=65536` 同二进制 A/B：Access CPU
