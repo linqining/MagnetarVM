@@ -206,6 +206,14 @@ Merkle 树退回逐条 hash；修复后 p3 CPU 降 2.1–2.7×，Commit/Opening 
 - **闸门要编所有 target，而不只是 tests。** `cargo test --workspace` 不会编
   `magnetar-pcs` 的 examples，这就是一个坏掉的 `p3_stage_probe` 混过「655 绿」的
   原因。最终闸门要加 `cargo build --workspace --examples --release`。
+- **M4a 的 committed-Shout 骨架建在二次方 reference Shout 上。**
+  `prove_binary_shout_claims` 会物化 `cells * cycles` 长度的因子向量
+  （`binary_shout.rs:666`），`sumcheck_terms` 每轮再折叠 `degree+1` 份：
+  `ADDS=1023` 实测 +1.19 GiB（用临时 `MAGNETAR_PROFILE_SHOUT` 阶段打点），
+  `2^14` 触发 2.5 GiB watchdog abort，`2^16` 需要 `2^32` 个域元素。因此 opt-in
+  路径不可扩展、保持默认关闭；M4 修订版必须改用线性 `logup_shout` 机制，并把
+  pushforward 提交（或在验证器点上打开），而不是直接放进 proof。
+  详见 `docs/POLYLOG_CLAIM_VERIFIER.md` §C.8。
 - **一次只跑一个重任务。** 本轮宿主空闲内存一度低于 1.5 GiB。所有 example 都装了
   `install_memory_watchdog`（`MAGNETAR_MAX_RSS_GIB`，默认 4 GiB），
   `protocol_determinism` 默认 20 对（1.99 GiB；旧 120 对默认峰值 5.75 GiB），

@@ -245,6 +245,15 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
   `magnetar-pcs` examples, which is how a broken `p3_stage_probe` slipped past a
   "655 green" run. Add `cargo build --workspace --examples --release` to the gate
   list.
+- **The M4a committed-Shout skeleton is on the quadratic reference Shout.**
+  `prove_binary_shout_claims` materialises `cells * cycles`-long factor vectors
+  (`binary_shout.rs:666`) and `sumcheck_terms` folds `degree + 1` copies per
+  round: +1.19 GiB at `ADDS=1023` (measured with `MAGNETAR_PROFILE_SHOUT` stage
+  marks), abort at the 2.5 GiB watchdog at `2^14`, and `2^32` field elements at
+  `2^16`. The opt-in path is therefore not scalable and stays default off; the
+  M4 revision must use the linear `logup_shout` machinery and commit (or open)
+  the pushforwards instead of shipping them. See
+  `docs/POLYLOG_CLAIM_VERIFIER.md` §C.8.
 - **One heavy run at a time.** The host had <1.5 GiB free memory during this
   round. Every example installs `install_memory_watchdog` (`MAGNETAR_MAX_RSS_GIB`,
   default 4 GiB), `protocol_determinism` defaults to 20 pairs (1.99 GiB, the old

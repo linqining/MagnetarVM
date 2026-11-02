@@ -15,36 +15,15 @@ fn width() -> usize {
 }
 
 fn resident_bytes() -> u64 {
-    let pid = std::process::id().to_string();
-    let output = std::process::Command::new("ps")
-        .args(["-o", "rss=", "-p", &pid])
-        .output();
-    output
-        .ok()
-        .and_then(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .parse::<u64>()
-                .ok()
-        })
-        .unwrap_or(0)
-        * 1024
+    magnetar_testkit::peak_rss_bytes().unwrap_or(0)
 }
 
-/// Process CPU time (user + system) in seconds, parsed from `ps`.
+/// Process CPU time (user + system) in seconds.
+///
+/// `ps` is unavailable in sandboxed runs, so use the in-process `getrusage`
+/// counter the proof crate exposes; it is also the load-robust metric.
 fn process_cpu_seconds() -> Option<f64> {
-    let pid = std::process::id().to_string();
-    let output = std::process::Command::new("ps")
-        .args(["-o", "time=", "-p", &pid])
-        .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let text = text.trim();
-    let mut seconds = 0.0f64;
-    for part in text.split(':') {
-        seconds = seconds * 60.0 + part.parse::<f64>().ok()?;
-    }
-    Some(seconds)
+    Some(magnetar_proof::process_cpu_seconds())
 }
 
 fn gib(bytes: u64) -> f64 {

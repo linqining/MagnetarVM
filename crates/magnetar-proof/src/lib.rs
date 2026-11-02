@@ -7,6 +7,25 @@
 use magnetar_constraint::{Field, F2_128};
 use thiserror::Error;
 
+/// Peak resident set size of this process, in bytes.
+pub fn peak_rss_bytes() -> Option<u64> {
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    let status = unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+    if status != 0 {
+        return None;
+    }
+    let maxrss = usage.ru_maxrss as u64;
+    // macOS reports bytes; Linux reports KiB.
+    #[cfg(target_os = "macos")]
+    {
+        Some(maxrss)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Some(maxrss.saturating_mul(1024))
+    }
+}
+
 /// CPU time (user + system) consumed by this process, in seconds.
 ///
 /// Stage comparisons on a loaded host cannot use wall-clock time: another

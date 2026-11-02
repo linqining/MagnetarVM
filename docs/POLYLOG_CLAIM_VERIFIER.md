@@ -594,3 +594,30 @@ BinaryShout ~10–15 KB + 额外 T 打开 ~5–8 KB），落到 ~800 KB < 旧 86
 **pending**：opt-in 路径的 2^14 A/B、字节等价 filter、2^16 全量（统一窗口）；此前 opt-in
 路径不参与默认验收。`simd_dual.rs` 末尾仅追加 `dynamic_claim_frame_columns`（默认 env 下
 零调用，仅 claim_shout 使用）。
+
+
+### C.8 2026-11-03: the committed-Shout skeleton is built on a quadratic reduction
+
+Measured with the RSS watchdog and `MAGNETAR_PROFILE_SHOUT` stage marks (temporary
+instrumentation):
+
+| stage (ADDS=1023, 2^10) | peak RSS |
+| --- | --- |
+| start of `prove_committed_shout` | 1.15 GiB |
+| after `BinaryShoutWitness::from_trace` | 1.15 GiB |
+| after `prove_binary_shout_claims` | **2.34 GiB** |
+
+`prove_binary_shout_claims` (the reference BinaryShout in
+`crates/magnetar-runtime/src/binary_shout.rs`) builds `terms = witness.cells *
+cycles` field vectors per factor and `sumcheck_terms` folds `degree + 1` full
+copies of every factor per round across threads. At 2^10 that is a +1.19 GiB
+transient; at 2^14 the full benchmark aborts at the 2.5 GiB watchdog limit; at
+2^16 `cells * cycles = 2^32` field elements (~68 GB) are simply infeasible.
+
+Consequence: **M4a as implemented cannot scale**, so the committed-Shout path
+stays opt-in and default off. The next M4 revision should reuse the *linear*
+`logup_shout` prover (O(cycles log)) and commit its position/link/reader columns
+(and, if the pushforwards must be checked, commit the pushforward vector and
+open it at the verifier's point instead of shipping `2^address_bits` field
+elements). The 1 MB pushforward that the plan tried to avoid is three orders of
+magnitude cheaper than the quadratic factor materialisation it replaced.

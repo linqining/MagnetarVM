@@ -182,6 +182,7 @@ pub fn compose_root(v1: &[u8; 32], shout: &[u8; 32], field: &[u8; 32]) -> [u8; 3
     magnetar_transcript::sha256(&bytes)
 }
 
+
 /// Composed root for a trace when the committed-Shout path is enabled.
 pub fn claim_binding_root_with_shout(trace: &magnetar_spec::Trace) -> Result<[u8; 32], RuntimeError> {
     let shout = shout_columns(trace)?;
