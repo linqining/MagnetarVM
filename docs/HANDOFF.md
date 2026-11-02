@@ -3,9 +3,19 @@
 Status: **incremental optimization phase**, branch `virtual-claims-rewrite`,
 2026-11-03 `2^16` optimization round committed (`1b26b4e` optimization +
 polylog claim table, `9e805f2` segment-claim rewrite, `f310f82`/`faf3b72`/`ac8e4a4`
-M4a committed-Shout skeleton/body/opt-in fixes, `bd04687` Access sum-check).
-Final gate on the committed tree: **659 passed / 0 failed**,
+M4a committed-Shout skeleton/body/opt-in fixes, `bd04687` Access sum-check,
+`21c38c7` chunked inner scan, `a3a6e9c` packed CSR + fast pair polynomial).
+Final gate on the committed tree: **662 passed / 0 failed**,
 `cargo build --workspace --examples --release` green.
+
+**Part 1 (2^16 optimization) is closed**: prove 70.4 -> **31.4-34.6 s** (CPU
+~800 -> **274 s**, 2.9x less work), verify 29.6 -> **24.7-27.2 ms**, peak
+2.26 -> **1.94-2.01 GiB**, proof unchanged by the prover work (1,018,153 B is
+the claim-table format). The remaining terms are `product6` 18.2 s (a packed
+CSR scan at the algebraic floor of the pair polynomial), `product2` 10.6 s,
+Access ~2 s, mosaic Opening ~2.1 s. The only further product6 idea on the
+table (a fused round-0 kernel) is estimated at 7-9 % of product6 (~1.5 s wall)
+and would add a second code path, so it is deliberately not taken.
 Chinese sibling: [handoff-zh.md](handoff-zh.md).
 Measurements and per-round history: [STREAMING_SELECTED_PROVER_RESULTS.md](STREAMING_SELECTED_PROVER_RESULTS.md)
 ([中文](streaming-selected-prover-results-zh.md)). Background design: [STREAMING_SELECTED_PROVER_HANDOFF.md](STREAMING_SELECTED_PROVER_HANDOFF.md).

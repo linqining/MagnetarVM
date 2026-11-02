@@ -2,9 +2,17 @@
 
 状态：**增量优化阶段**，分支 `virtual-claims-rewrite`，2026-11-03 的 `2^16`
 优化轮已提交（`1b26b4e` 优化+polylog claim 表、`9e805f2` segment claims 重写、
-`f310f82`/`faf3b72`/`ac8e4a4` M4a committed-Shout 骨架/主体/opt-in 修复、
-`bd04687` Access sum-check）。提交后最终闸门：**659 passed / 0 failed**、
+`f310f82`/`faf3b72`/`ac8e4a4` M4a committed-Shout、`bd04687` Access sum-check、
+`21c38c7` 内层 chunk 填充、`a3a6e9c` packed CSR + 快速 pair 多项式）。
+提交后最终闸门：**662 passed / 0 failed**、
 `cargo build --workspace --examples --release` 绿。
+
+**Part 1（2^16 优化）收尾**：prove 70.4 → **31.4–34.6 s**（CPU ≈800 → **274 s**，
+工作量 2.9×）、verify 29.6 → **24.7–27.2 ms**、峰值 2.26 → **1.94–2.01 GiB**，
+proof 不受 prover 优化影响（1,018,153 B 是 claim 表格式）。剩余大项：
+`product6` 18.2 s（packed CSR 扫描 + pair 多项式已到代数下界附近）、
+`product2` 10.6 s、Access ~2 s、mosaic Opening ~2.1 s。product6 唯一剩下的想法
+（round-0 专用 fused kernel）估算只有 7–9%、且要新增一条代码路径，故不做。
 英文主文档：[HANDOFF.md](HANDOFF.md)。
 实测数据与逐轮记录：[STREAMING_SELECTED_PROVER_RESULTS.md](STREAMING_SELECTED_PROVER_RESULTS.md)
 （[中文](streaming-selected-prover-results-zh.md)）。早期设计：[STREAMING_SELECTED_PROVER_HANDOFF.md](STREAMING_SELECTED_PROVER_HANDOFF.md)。
