@@ -237,6 +237,12 @@ Merkle 树退回逐条 hash；修复后 p3 CPU 降 2.1–2.7×，Commit/Opening 
   路径不可扩展、保持默认关闭；M4 修订版必须改用线性 `logup_shout` 机制，并把
   pushforward 提交（或在验证器点上打开），而不是直接放进 proof。
   详见 `docs/POLYLOG_CLAIM_VERIFIER.md` §C.8。
+- **M4v3（committed logup）是 opt-in 且超 proof 预算。** 首次 `2^16` A/B（宿主正
+  在重度 swap，只有 CPU 与 proof 大小可比）：proof 1,018,154 → 1,523,394 B
+  （+505 KB，其中 `committed_logup_shout` 独占 514,689 B），而 verify CPU/iter
+  155.3 → 97.0 ms（-37 %）。proof 超验收线 568 KB：四个独立 PCS 打开各自带一整套
+  rate-1/8 query；下一轮先把它们批成一个 `P3BatchOpening` 再测
+  （`docs/POLYLOG_CLAIM_VERIFIER.md` §C.9.2）。默认保持关闭。
 - **一次只跑一个重任务。** 本轮宿主空闲内存一度低于 1.5 GiB。所有 example 都装了
   `install_memory_watchdog`（`MAGNETAR_MAX_RSS_GIB`，默认 4 GiB），
   `protocol_determinism` 默认 20 对（1.99 GiB；旧 120 对默认峰值 5.75 GiB），

@@ -280,6 +280,13 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
   M4 revision must use the linear `logup_shout` machinery and commit (or open)
   the pushforwards instead of shipping them. See
   `docs/POLYLOG_CLAIM_VERIFIER.md` §C.8.
+- **M4v3 (committed logup) is opt-in and over the proof budget.** First `2^16`
+  A/B (host in heavy swap, only CPU/proof-size comparable): proof 1,018,154 ->
+  1,523,394 B (+505 KB, `committed_logup_shout` alone 514,689 B) while verify
+  CPU/iter 155.3 -> 97.0 ms (-37 %). The proof is 568 KB over the acceptance
+  line because four independent PCS openings each ship a full rate-1/8 query
+  set; batch them into one `P3BatchOpening` before the next measurement
+  (`docs/POLYLOG_CLAIM_VERIFIER.md` §C.9.2). Default stays off.
 - **One heavy run at a time.** The host had <1.5 GiB free memory during this
   round. Every example installs `install_memory_watchdog` (`MAGNETAR_MAX_RSS_GIB`,
   default 4 GiB), `protocol_determinism` defaults to 20 pairs (1.99 GiB, the old

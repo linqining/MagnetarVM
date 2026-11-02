@@ -832,3 +832,33 @@ link/valid/is_32 不提交。其余（提交 pushforward、FS 抽点开、verifi
 4. lib 接线 + `MAGNETAR_LINEAR_SHOUT`/`MAGNETAR_CLASSIC_LOGUP` A/B；
 5. 统一窗口四项测量后，达标（2^16 verify ≤25 ms、proof ≤~820 KB、peak ≤2.6 GiB）才考虑
    切默认，否则保持 opt-in 并写进 docs。
+
+#### C.9.2 First end-to-end A/B of M4v3 (2026-11-03)
+
+The wiring landed (`6c956a5`): `MAGNETAR_LINEAR_SHOUT=1` builds the committed
+logup proof, recomposes the statement v3 root and verifies without rebuilding the
+Shout witness; default stays off. First A/B at `2^16` (the host went into heavy
+swap during the run, 1-min load 480-650, so **wall is meaningless and only CPU
+and proof size are quoted**):
+
+| | default | `MAGNETAR_LINEAR_SHOUT=1` |
+| --- | --- | --- |
+| proof | 1,018,154 B | **1,523,394 B (+505 KB)** |
+| of which `committed_logup_shout` | -- | **514,689 B** |
+| verify CPU / iter | 155.3 ms (loaded) | **97.0 ms (-37 %)** |
+| `verify_native` stages | -- | claim table 8.96, access 13.5, trace_logup 20.3, core 18.1 ms |
+
+Verdict: **not ready for the default**. The verifier CPU direction is right
+(-37 % on a very noisy host, needs a quiet-host confirmation), but the proof is
+568 KB over the 950 KB acceptance line. The 514 KB is dominated by four
+independent PCS openings (word, position, fraction-reduction pushforward,
+product pushforward): each carries a full rate-1/8 query set. Next iteration:
+1. batch the four openings into a single `P3BatchOpening` over one commitment
+   (the `P3BatchPoint` machinery the classic logup_shout path already uses);
+   target `committed_logup_shout` <= 150 KB and total proof <= 1.0 MB;
+2. check why the opt-in log still reports a `verify_native trace_logup` stage
+   (label reuse or a real duplicate rebuild);
+3. consider trimming the logup proof itself (fraction GKR + product sumcheck).
+
+Until then M4v3 stays opt-in. A quiet-host four-metric A/B is required before
+any default flip.
