@@ -3024,10 +3024,13 @@ fn prove_unified_trace_dynamic_native_profile_inner(
                     .selected_cpu
                     .as_ref()
                     .ok_or_else(|| RuntimeError::Proof("committed Shout without selected CPU proof".into()))?;
-                let committed = crate::claim_shout::prove_committed_shout(trace, selected, [0u8; 32])?;
+                let v1_root = proof.trace_claim_root;
+                let (committed, shout_root) =
+                    crate::claim_shout::prove_committed_shout(trace, width, selected, &v1_root)?;
                 if let Some(claims) = proof.claim_proof.as_mut() {
                     claims.committed_shout = Some(committed);
                 }
+                proof.trace_claim_root = shout_root;
             }
         }
         timings.push(StageTiming {
@@ -3817,10 +3820,23 @@ pub fn verify_native_unified(
     // M4a: verify the committed Shout proof when present; when the committed
     // path is enabled but the proof predates it, reject explicitly.
     if let Some(committed) = claim_proof.committed_shout.as_ref() {
+        let table = claim_table
+            .ok_or_else(|| RuntimeError::Proof("missing claim table".into()))?;
+        let v1_root = crate::claim_table::claim_binding_root_from_parts(
+            claim_proof.root,
+            &table.root,
+        );
+        let selected = proof
+            .selected_cpu
+            .as_ref()
+            .ok_or_else(|| RuntimeError::Proof("committed Shout without selected CPU proof".into()))?;
         crate::claim_shout::verify_committed_shout(
             committed,
             statement,
-            claim_table.ok_or_else(|| RuntimeError::Proof("missing claim table".into()))?,
+            table,
+            &v1_root,
+            selected,
+            width,
         )?;
     } else if crate::claim_shout::committed_shout_enabled()
         && !crate::claim_shout::classic_logup_enabled()

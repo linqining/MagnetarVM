@@ -246,6 +246,14 @@ pub fn claim_table_enabled() -> bool {
 /// dynamic claim layer cannot represent), the legacy row root otherwise.
 pub fn statement_claim_root(trace: &magnetar_spec::Trace) -> [u8; 32] {
     if claim_table_enabled() {
+        // M4a: when the committed-Shout path is enabled the statement binds the
+        // Shout/claim-word tables too (composed root); default off keeps the v1
+        // root byte-identical.
+        if crate::claim_shout::committed_shout_enabled() {
+            if let Ok(root) = crate::claim_shout::claim_binding_root_with_shout(trace) {
+                return root;
+            }
+        }
         claim_binding_root(trace).unwrap_or_else(|_| claim_rows_root(trace))
     } else {
         claim_rows_root(trace)

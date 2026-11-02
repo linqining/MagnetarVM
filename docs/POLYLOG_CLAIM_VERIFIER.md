@@ -576,13 +576,21 @@ BinaryShout ~10–15 KB + 额外 T 打开 ~5–8 KB），落到 ~800 KB < 旧 86
   `committed_shout` 存在时校验，enabled 但缺失时明确报 "pre-M4 proof"；
 - `claim_table::slot_bits_for` 改为 `pub(crate)` 供扩展表使用。
 
-待补（build 窗口内）：
-1. `prove_committed_shout`：扩展表/word 列提交 + `prove_binary_shout_claims`（word-only ROM，
-   1 列）+ field column 在 reader point 打开 + shout claims 的 claim-table 批量关系；
-2. `verify_committed_shout`：Boolean/read sumcheck 校验、公开 ROM word 列 O(rom) 检查、
-   `claimed_read == MLE(T_field.word)(reader_point)`、shout evals 对 T_bits 的批量关系、
-   position↔pc / valid / is_32 三条线性 claim_rel；
-3. `claim_binding_root` 在 committed-shout 开启时改用 `extended_table_root`（statement/prover
-   同步；默认关闭时保持现有 root 不变）；
-4. 单测 + 字节等价 + 2^14/2^16 A/B（`MAGNETAR_CLASSIC_LOGUP=1` vs 默认，四项指标：
-   verify wall、CPU/iter、proof bytes、peak）；2^16 峰值硬上限 2.6 GiB。
+**已补完（2026-11-03，build 窗口，check/test 绿）**：
+1. `prove_committed_shout`：T_shout/T_field 提交 + word-only BinaryShout（1 列 ROM word）+
+   field 列在 reader point 打开（`word_value` 显式入 proof）+ 三条关系（reader-point evals、
+   data 检查、claim 侧 pc-shift）；`claimed_read == γ·word_value` 绑定 claim 字；
+2. `verify_committed_shout`：组合 root → synthetic commitment → BinaryShout 全部 sumcheck →
+   reader point 一致性 → field 打开（`P3BinaryPcs::verify` + `word_value`）→
+   `claimed_read == γ·word_value` → 公开 ROM word 列 O(rom) 检查 → 三条 claim relation
+   重算与校验（address0/address1↔pc>>2、valid=公开前缀、is_32=0、共享 position_value）；
+   `prefix_eq` 修正为 O(log) 正确实现（单测对 0..4 与直接求和一致）；
+3. statement root：`claim_table::statement_claim_root` 在 `MAGNETAR_COMMITTED_SHOUT=1` 时
+   返回 `H(v1 ‖ shout ‖ field)`，默认 off 时与 v1 完全一致；
+4. 编译：`cargo check --release -p magnetar-runtime` 绿（2 轮错误修复）；
+   测试：`cargo test --release -p magnetar-runtime --lib claim` → **51 passed / 0 failed**
+   （默认 env unset，包含 native/paper/claim_native/virtual_cpu/protocol 相关用例）。
+
+**pending**：opt-in 路径的 2^14 A/B、字节等价 filter、2^16 全量（统一窗口）；此前 opt-in
+路径不参与默认验收。`simd_dual.rs` 末尾仅追加 `dynamic_claim_frame_columns`（默认 env 下
+零调用，仅 claim_shout 使用）。

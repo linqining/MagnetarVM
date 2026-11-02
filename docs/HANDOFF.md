@@ -262,6 +262,16 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
 - **`1u64 << width` wraps at width 64.** Guard with `u64::MAX`.
 - **Stale release artifacts**: after vendor edits, prove the binary changed
   (proof bytes or sizes) before trusting a measurement.
+- **M4a committed-Shout transition (uncommitted WIP).** `ClaimProof` gains a
+  `committed_shout` field (`#[serde(default)]`, `None` on the default path), so pre-M4
+  unified-proof bytes differ from the current build (serde-default field only; no stored
+  goldens depend on it). The opt-in path is `MAGNETAR_COMMITTED_SHOUT=1`; it commits
+  `T_shout` (BinaryShout boolean columns) and `T_field` (claim word) and composes their
+  roots into `trace_claim_root`. `MAGNETAR_CLASSIC_LOGUP=1` forces the legacy per-cycle
+  trace Logup-Shout path. A verifier that expects the committed path rejects proofs
+  without the field ("pre-M4 proof"). Opt-in path has no A/B measurement yet; do not
+  enable it in the default benchmark until the unified window.
+
 - **Width-8 unit tests are deliberate**: ~63 call sites in `magnetar-cpu`,
   `simd_dual`, `simd_f2` and the row modules assert 8-bit arithmetic
   (`0xff` wrap, `Sra(248,1)`, `u8`/`i8` proptests). Everything that runs a proof

@@ -10054,6 +10054,35 @@ pub(crate) fn dynamic_claim_column_bits(
     Ok((mask, matrix_cycles, schema.columns, slots))
 }
 
+/// Frame columns of the canonical claim schema (block-column ids of pc,
+/// next_pc, the constant one and the pc-correction flag) plus the block-column
+/// mapping they were derived through. Used by the committed-Shout claim
+/// relations (M4a) to locate pc bits inside the claim-table slot layout.
+pub(crate) fn dynamic_claim_frame_columns(
+    mask: u8,
+    width: usize,
+    matrix_cycles: usize,
+) -> Result<(Vec<usize>, Vec<usize>, usize, usize), RuntimeError> {
+    let original = DynamicMixedRow::build(mask, width)?;
+    let (_, mapping, _) = segmented_dynamic_row(mask, width, matrix_cycles)?;
+    let pc = original
+        .pc
+        .iter()
+        .map(|var| mapping[*var])
+        .collect::<Vec<_>>();
+    let next_pc = original
+        .next_pc
+        .iter()
+        .map(|var| mapping[*var])
+        .collect::<Vec<_>>();
+    Ok((
+        pc,
+        next_pc,
+        mapping[original.one],
+        mapping[original.pc_correction],
+    ))
+}
+
 #[cfg(test)]
 mod virtual_spec_tests {
     use super::*;
