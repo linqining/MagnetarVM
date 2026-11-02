@@ -1322,6 +1322,13 @@ where
     // dominates the one multiply per column it saves. The fused path stays
     // behind an opt-in switch for a host with different cache behaviour.
     let fused = std::env::var_os("MAGNETAR_P2_FUSED").is_some();
+    // Default: fill one large column chunk per call. `fill_left` carries
+    // per-block bookkeeping (instance bounds, the claim-window binary search,
+    // the extras touch test) that costs more than the two columns of the first
+    // round; filling 512 columns at once amortises it ~256x while keeping the
+    // exact per-column arithmetic order (so proof bytes do not change).
+    // `MAGNETAR_P2_BLOCKWISE=1` restores the per-block fill for A/B.
+    let blockwise = fused || std::env::var_os("MAGNETAR_P2_BLOCKWISE").is_some();
     for round in 0..level {
         let block = 1usize << (round + 1);
         let blocks = total >> (round + 1);
@@ -1334,58 +1341,119 @@ where
         let weights = &weights;
         let left_ptr = SharedPtr(stored_left.as_mut_ptr());
         let right_ptr = SharedPtr(stored_right.as_mut_ptr());
-        let partials = parallel_chunks(
-            blocks,
-            || [zero(); 3],
-            |polynomial, start, end| {
-                let mut legacy_left = vec![zero(); block];
-                let mut legacy_right = vec![zero(); block];
-                for block_index in start..end {
-                    let first = block_index << (round + 1);
-                    let (pair_left, pair_right) = if !fused {
-                        columns.fill_left(first, &mut legacy_left);
-                        columns.fill_right(first, &mut legacy_right);
-                        let (mut even_left, mut odd_left) = (zero(), zero());
-                        let (mut even_right, mut odd_right) = (zero(), zero());
-                        for slot in 0..block {
-                            let weight = weights[slot & (weights.len() - 1)];
-                            if slot & weights.len() == 0 {
-                                accumulate_scalar(&mut even_left, weight, legacy_left[slot]);
-                                accumulate_scalar(&mut even_right, weight, legacy_right[slot]);
-                            } else {
-                                accumulate_scalar(&mut odd_left, weight, legacy_left[slot]);
-                                accumulate_scalar(&mut odd_right, weight, legacy_right[slot]);
+        let mut coefficients = [zero(); 3];
+        if blockwise {
+            let partials = parallel_chunks(
+                blocks,
+                || [zero(); 3],
+                |polynomial, start, end| {
+                    let mut legacy_left = vec![zero(); block];
+                    let mut legacy_right = vec![zero(); block];
+                    for block_index in start..end {
+                        let first = block_index << (round + 1);
+                        let (pair_left, pair_right) = if !fused {
+                            columns.fill_left(first, &mut legacy_left);
+                            columns.fill_right(first, &mut legacy_right);
+                            let (mut even_left, mut odd_left) = (zero(), zero());
+                            let (mut even_right, mut odd_right) = (zero(), zero());
+                            for slot in 0..block {
+                                let weight = weights[slot & (weights.len() - 1)];
+                                if slot & weights.len() == 0 {
+                                    accumulate_scalar(&mut even_left, weight, legacy_left[slot]);
+                                    accumulate_scalar(&mut even_right, weight, legacy_right[slot]);
+                                } else {
+                                    accumulate_scalar(&mut odd_left, weight, legacy_left[slot]);
+                                    accumulate_scalar(&mut odd_right, weight, legacy_right[slot]);
+                                }
+                            }
+                            ([even_left, odd_left], [even_right, odd_right])
+                        } else {
+                            let values = columns.block_values(first, block, weights);
+                            ([values[0], values[1]], [values[2], values[3]])
+                        };
+                        add_poly(polynomial, &product2_pair(&pair_left, &pair_right, 0));
+                        if store {
+                            // SAFETY: every block index is claimed by exactly one
+                            // worker, so the two slots written per block are
+                            // disjoint and inside the `blocks * 2` arrays.
+                            unsafe {
+                                left_ptr
+                                    .slice_mut(block_index * 2, 2)
+                                    .copy_from_slice(&pair_left);
+                                right_ptr
+                                    .slice_mut(block_index * 2, 2)
+                                    .copy_from_slice(&pair_right);
                             }
                         }
-                        ([even_left, odd_left], [even_right, odd_right])
-                    } else {
-                        // One call per block: the block sits inside a single
-                        // instance block at every RV64 shape, so the left
-                        // multiplicand's instance weight is hoisted out of the
-                        // per-column loop and the right side is branch-free.
-                        let values = columns.block_values(first, block, weights);
-                        ([values[0], values[1]], [values[2], values[3]])
-                    };
-                    add_poly(polynomial, &product2_pair(&pair_left, &pair_right, 0));
-                    if store {
-                        // SAFETY: every block index is claimed by exactly one
-                        // worker, so the two slots written per block are disjoint
-                        // and inside the `blocks * 2` arrays.
-                        unsafe {
-                            left_ptr
-                                .slice_mut(block_index * 2, 2)
-                                .copy_from_slice(&pair_left);
-                            right_ptr
-                                .slice_mut(block_index * 2, 2)
-                                .copy_from_slice(&pair_right);
+                    }
+                },
+            );
+            for polynomial in partials {
+                add_poly(&mut coefficients, &polynomial);
+            }
+        } else {
+            let chunk_cols = block.max(512).min(total);
+            let blocks_per_chunk = chunk_cols >> (round + 1);
+            let chunks = blocks.div_ceil(blocks_per_chunk);
+            let partials = parallel_chunks(
+                chunks,
+                || {
+                    (
+                        [zero(); 3],
+                        vec![zero(); chunk_cols],
+                        vec![zero(); chunk_cols],
+                    )
+                },
+                |accumulator, start, end| {
+                    let (polynomial, left_buf, right_buf) = accumulator;
+                    for chunk in start..end {
+                        let first = chunk * chunk_cols;
+                        let cols = (total - first).min(chunk_cols);
+                        columns.fill_left(first, &mut left_buf[..cols]);
+                        columns.fill_right(first, &mut right_buf[..cols]);
+                        let first_block = chunk * blocks_per_chunk;
+                        let last_block = (first_block + blocks_per_chunk).min(blocks);
+                        for block_index in first_block..last_block {
+                            let base = block_index * block - first;
+                            let (mut even_left, mut odd_left) = (zero(), zero());
+                            let (mut even_right, mut odd_right) = (zero(), zero());
+                            for slot in 0..block {
+                                let weight = weights[slot & (weights.len() - 1)];
+                                if slot & weights.len() == 0 {
+                                    accumulate_scalar(&mut even_left, weight, left_buf[base + slot]);
+                                    accumulate_scalar(
+                                        &mut even_right,
+                                        weight,
+                                        right_buf[base + slot],
+                                    );
+                                } else {
+                                    accumulate_scalar(&mut odd_left, weight, left_buf[base + slot]);
+                                    accumulate_scalar(&mut odd_right, weight, right_buf[base + slot]);
+                                }
+                            }
+                            let pair_left = [even_left, odd_left];
+                            let pair_right = [even_right, odd_right];
+                            add_poly(polynomial, &product2_pair(&pair_left, &pair_right, 0));
+                            if store {
+                                // SAFETY: block indices are claimed by exactly one
+                                // worker, so the slots written per block are
+                                // disjoint and inside the `blocks * 2` arrays.
+                                unsafe {
+                                    left_ptr
+                                        .slice_mut(block_index * 2, 2)
+                                        .copy_from_slice(&pair_left);
+                                    right_ptr
+                                        .slice_mut(block_index * 2, 2)
+                                        .copy_from_slice(&pair_right);
+                                }
+                            }
                         }
                     }
-                }
-            },
-        );
-        let mut coefficients = [zero(); 3];
-        for polynomial in partials {
-            add_poly(&mut coefficients, &polynomial);
+                },
+            );
+            for (polynomial, _, _) in partials {
+                add_poly(&mut coefficients, &polynomial);
+            }
         }
         let evaluated = eval_univariate3(&coefficients);
         let r = challenge(round, &evaluated);
