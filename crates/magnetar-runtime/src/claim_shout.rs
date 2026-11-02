@@ -292,12 +292,12 @@ fn prove_relation(
 ) -> Result<ShoutRelationProof, RuntimeError> {
     use magnetar_proof::prove;
     let slot_bits = slots.trailing_zeros() as usize;
-    let mut h = vec![F2_128::from(0u64); slots];
-    for (slot, entry) in h.iter_mut().enumerate() {
-        if coeffs.get(slot).copied().unwrap_or(F2_128::from(0u64)) != F2_128::from(0u64) {
-            *entry = fold_column(bits, slot, cycles, row_point);
-        }
-    }
+    // The ring-switch opening authenticates the evaluation of the *whole*
+    // packed table at the final point, so every slot's column fold enters the
+    // final check, even when its public coefficient is zero.
+    let h = (0..slots)
+        .map(|slot| fold_column(bits, slot, cycles, row_point))
+        .collect::<Vec<_>>();
     let padded = pad(coeffs, slots);
     let mut transcript = relation_transcript(commitment, row_point, value);
     let h_values = h.clone();
@@ -428,8 +428,10 @@ pub struct CommittedShoutProof {
     pub shout_commitment: P3Commitment,
     pub field_commitment: P3Commitment,
     pub field_opening: P3Opening,
-    /// Dense claim-word MLE at `reader_point` (checked against the opening).
+    /// Dense claim-word MLE at `word_point` (checked against the opening).
     pub word_value: F2_128,
+    /// BinaryShout `rho_j` cycle point where the reader word column is opened.
+    pub word_point: Vec<F2_128>,
     pub reader_point: Vec<F2_128>,
     pub address_bits: usize,
     pub cycles: usize,
@@ -452,15 +454,30 @@ impl PartialEq for CommittedShoutProof {
 }
 impl Eq for CommittedShoutProof {}
 
-fn gamma0(commitment: &P3MosaicCommitment, binding: &[u8], cycle_bits: usize) -> F2_128 {
+fn transcript_challenge(transcript: &mut Sha256Transcript, label: &str) -> F2_128 {
+    let bytes = transcript.challenge_32(label);
+    let mut value = [0u8; 16];
+    value.copy_from_slice(&bytes[..16]);
+    F2_128::from_bits(u128::from_le_bytes(value))
+}
+
+/// Reproduce the `magnetar-binary-shout` reader transcript exactly as
+/// `binary_shout` does: `rho_j` (cycle point) then `gamma0` (first column
+/// batching challenge). The reader word column is committed to `T_field` and
+/// opened at `rho_j`, so both sides must derive the same point.
+fn binary_shout_word_binding(
+    commitment: &P3MosaicCommitment,
+    binding: &[u8],
+    cycle_bits: usize,
+) -> (Vec<F2_128>, F2_128) {
     let mut transcript = Sha256Transcript::new("magnetar-binary-shout");
     transcript.absorb("commitment", &bincode::serialize(commitment).unwrap_or_default());
     transcript.absorb("packed-binding", binding);
-    for _ in 0..cycle_bits {
-        let _ = transcript.challenge_bytes("point", 16);
-    }
-    let bytes = transcript.challenge_bytes("column", 16);
-    F2_128::from_bits(u128::from_le_bytes(bytes.try_into().expect("16 bytes")))
+    let word_point = (0..cycle_bits)
+        .map(|_| transcript_challenge(&mut transcript, "point"))
+        .collect::<Vec<_>>();
+    let gamma = transcript_challenge(&mut transcript, "column");
+    (word_point, gamma)
 }
 
 pub fn prove_committed_shout(
@@ -502,11 +519,12 @@ pub fn prove_committed_shout(
         .iter()
         .map(|value| F2_128::from(value.value()))
         .collect::<Vec<_>>();
-    let word_value = eval_mle(&shout.word, &reader_point);
+    let (word_point, gamma) =
+        binary_shout_word_binding(&synthetic, SHOUT_BINDING_DOMAIN, cycle_bits);
+    let word_value = eval_mle(&shout.word, &word_point);
     let field_opening = claim_field_backend()
-        .open(&shout.word, &reader_point)
+        .open(&shout.word, &word_point)
         .map_err(|error| RuntimeError::Proof(format!("claim word open: {error}")))?;
-    let gamma = gamma0(&synthetic, SHOUT_BINDING_DOMAIN, cycle_bits);
     if proof.claimed_read != gamma * word_value {
         return Err(RuntimeError::Proof("committed Shout claimed_read != claim word".into()));
     }
@@ -577,6 +595,7 @@ pub fn prove_committed_shout(
             field_commitment,
             field_opening,
             word_value,
+            word_point,
             reader_point,
             address_bits: shout.address_bits,
             cycles,
@@ -633,11 +652,15 @@ pub fn verify_committed_shout(
     if reader_point != committed.reader_point {
         return Err(RuntimeError::Proof("committed Shout reader point mismatch".into()));
     }
-    let gamma = gamma0(&synthetic, SHOUT_BINDING_DOMAIN, cycle_bits);
+    let (word_point, gamma) =
+        binary_shout_word_binding(&synthetic, SHOUT_BINDING_DOMAIN, cycle_bits);
+    if word_point != committed.word_point {
+        return Err(RuntimeError::Proof("committed Shout word point mismatch".into()));
+    }
     let field_ok = claim_field_backend()
         .verify(
             &committed.field_commitment,
-            &reader_point,
+            &word_point,
             committed.word_value,
             &committed.field_opening,
         )
@@ -746,6 +769,38 @@ pub fn verify_committed_shout(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn relation_round_trip_on_shout_table() {
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction { op: Op::Addi, rd: 1, rs1: 0, rs2: 0, imm: 7, shamt: 0 }.encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        let trace = magnetar_executor::execute(
+            &program,
+            MachineConfig { entry: 0x1000, rom_base: 0x1000, ram_base: 0x1000_0000, ram_size: 0x40, stack_top: 0x1000_0040, max_cycles: 100 },
+        )
+        .unwrap();
+        let columns = shout_columns(&trace).unwrap();
+        let (bits, slots) = shout_bits(&columns);
+        let commitment = shout_backend().commit(&bits).unwrap();
+        let row_point = (0..columns.cycles.trailing_zeros() as usize)
+            .map(|index| F2_128::from((index + 1) as u64))
+            .collect::<Vec<_>>();
+        let mut coeffs = vec![F2_128::from(0u64); slots];
+        let mut value = F2_128::from(0u64);
+        for slot in 0..3 {
+            let coefficient = F2_128::from((slot + 1) as u64);
+            coeffs[slot] = coefficient;
+            value = value + coefficient * fold_column(&bits, slot, columns.cycles, &row_point);
+        }
+        let relation = prove_relation(&bits, &commitment, columns.cycles, slots, &row_point, &coeffs, value).unwrap();
+        verify_relation(&relation, &commitment, slots, &row_point, &coeffs, value).unwrap();
+    }
+
     use super::*;
 
     #[test]
