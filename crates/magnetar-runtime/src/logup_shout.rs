@@ -6,7 +6,8 @@
 //! one mosaic PCS opening discharges the reader and position claims.
 
 use magnetar_constraint::F2_128;
-use magnetar_pcs::{P3BatchOpening, P3BatchPoint, P3BinaryPcs};
+use magnetar_pcs::{P3BatchOpening, P3BatchPoint, P3BinaryPcs, P3Commitment, P3Opening};
+use magnetar_proof::Pcs as _;
 use magnetar_transcript::Sha256Transcript;
 use p3_binary_field::{BinaryChallenger, BinaryField128, TowerLevel};
 use p3_challenger::HashChallenger;
@@ -922,4 +923,678 @@ pub fn logup_shout_proof_size(proof: &LogupShoutProof) -> Result<usize, RuntimeE
     bincode::serialize(proof)
         .map(|bytes| bytes.len())
         .map_err(|error| RuntimeError::Proof(error.to_string()))
+}
+
+// ---------------------------------------------------------------------------
+// M4 v3: linear Shout with **committed pushforwards** (opt-in, default off).
+//
+// Same linear `logup_shout` reduction as the classic trace path, but the
+// verifier no longer rebuilds the Shout witness:
+//
+// * `T_word`: the reader word column (host-derived from the claim rows; padding
+//   cycles read `ROM[0]`, exactly what `positions()` induces) is committed; its
+//   opening at the Fiat-Shamir reader point is the reader claim.
+// * `T_pos`: the position embedding column (`embed((pc - rom_base) / 4)`,
+//   padding cycles 0) is committed; its opening at the logup position point is
+//   the position claim.
+// * the `2^address_bits`-wide pushforward vector is committed instead of
+//   travelling: the transcript binds `H(commitment)` and the verifier checks the
+//   values it needs with PCS openings.
+// * the public ROM word column is checked directly (O(rom)).
+//
+// Both tables are host-derived at statement construction (same trust model as
+// the M2/M3 claim table), and their roots are composed into the statement root.
+// Everything here is additive; the classic `prove_logup_shout` /
+// `verify_logup_shout*` paths are untouched.
+
+const COMMITTED_DOMAIN: &[u8] = b"magnetar-committed-logup-shout-v1";
+
+/// PCS for the dense single-column tables (reader word, position, pushforward).
+fn committed_pcs() -> P3BinaryPcs {
+    P3BinaryPcs::with_params(100, 3, 20, 3)
+}
+
+fn committed_hash(label: &[u8], commitment: &P3Commitment) -> [u8; 32] {
+    let mut bytes = COMMITTED_DOMAIN.to_vec();
+    bytes.extend_from_slice(label);
+    bytes.extend_from_slice(&bincode::serialize(commitment).unwrap_or_default());
+    magnetar_transcript::sha256(&bytes)
+}
+
+/// Root of the committed reader word column (bound by the statement root).
+pub fn committed_word_root(commitment: &P3Commitment) -> [u8; 32] {
+    committed_hash(b"word", commitment)
+}
+
+/// Root of the committed position-embedding column (bound by the statement root).
+pub fn committed_pos_root(commitment: &P3Commitment) -> [u8; 32] {
+    committed_hash(b"position", commitment)
+}
+
+/// Root of the committed pushforward table (bound by the statement root).
+pub fn committed_pushforward_root(commitment: &P3Commitment) -> [u8; 32] {
+    committed_hash(b"pushforward", commitment)
+}
+
+/// Transcript binding of one committed pushforward: absorbed instead of the
+/// table-wide vector.
+pub fn pushforward_binding(commitment: &P3Commitment) -> [u8; 32] {
+    committed_hash(b"pushforward-binding", commitment)
+}
+
+/// Host-side Shout columns for the committed path (from the Shout witness):
+/// `(reader word column, position embedding column)`.
+///
+/// The same values are derived from the trace at statement construction, so the
+/// prover cannot deviate from the committed tables.
+pub fn committed_columns_from_witness(
+    witness: &BinaryShoutWitness,
+) -> Result<(Vec<F2_128>, Vec<F2_128>), RuntimeError> {
+    if witness.rom.is_empty() {
+        return Err(RuntimeError::Proof("committed logup Shout: empty ROM".into()));
+    }
+    let table_column = witness
+        .rom
+        .iter()
+        .map(|row| row[0])
+        .collect::<Vec<F2_128>>();
+    let positions = positions(witness)?;
+    // `positions()` maps padding cycles to 0, so the reader word column reads
+    // `ROM[0]` there, matching the classic prover's `reader_columns`.
+    let word = positions
+        .iter()
+        .map(|position| table_column[*position])
+        .collect::<Vec<_>>();
+    let pos = positions
+        .iter()
+        .map(|position| to_f2(embed(*position)))
+        .collect::<Vec<_>>();
+    Ok((word, pos))
+}
+
+/// Host-side Shout columns for the committed path, derived from the trace at
+/// statement construction (same values [`committed_columns_from_witness`]
+/// produces: real rows read `ROM[(pc - rom_base) / 4]`, padding rows read
+/// `ROM[0]`; the position column is `embed((pc - rom_base) / 4)`, padding 0).
+pub fn committed_columns_from_trace(
+    trace: &magnetar_spec::Trace,
+) -> Result<(Vec<F2_128>, Vec<F2_128>), RuntimeError> {
+    if trace.rows.iter().any(|row| row.instruction_len != 4) {
+        return Err(RuntimeError::Proof(
+            "committed logup Shout requires word mode (4-byte instructions)".into(),
+        ));
+    }
+    let rom_base = trace.config.rom_base;
+    let cycles = trace.rows.len().next_power_of_two().max(2);
+    let rom_first = trace
+        .rom
+        .first()
+        .map(|word| F2_128::from(u64::from(*word)))
+        .ok_or_else(|| RuntimeError::Proof("committed logup Shout: empty ROM".into()))?;
+    let mut word = vec![rom_first; cycles];
+    let mut pos = vec![F2_128::from(0u64); cycles];
+    for (cycle, row) in trace.rows.iter().enumerate() {
+        let offset = row
+            .pc
+            .checked_sub(rom_base)
+            .ok_or_else(|| RuntimeError::Proof("row pc is below the ROM base".into()))?;
+        if offset % 4 != 0 {
+            return Err(RuntimeError::Proof(
+                "word-mode PC is not word aligned".into(),
+            ));
+        }
+        let index = usize::try_from(offset / 4)
+            .map_err(|_| RuntimeError::Proof("ROM index overflows usize".into()))?;
+        let position = index;
+        if position >= trace.rom.len().next_power_of_two().max(2) {
+            return Err(RuntimeError::Proof(
+                "row pc is outside the ROM table".into(),
+            ));
+        }
+        word[cycle] = F2_128::from(u64::from(row.instruction_word));
+        pos[cycle] = to_f2(embed(position));
+    }
+    Ok((word, pos))
+}
+
+/// SHA-256 of a classic (`prove_logup_shout`) proof encoding.
+///
+/// Used by the golden regression test: the M4 v3 vendor diff must not change the
+/// encoding of the classic path (it only adds functions and leaves every p3
+/// structure untouched).
+pub fn logup_proof_encoding_hash(proof: &LogupShoutProof) -> [u8; 32] {
+    magnetar_transcript::sha256(&bincode::serialize(proof).unwrap_or_default())
+}
+
+/// Golden hash of the classic `logup_shout` proof encoding.
+///
+/// Filled in the build window from `logup_proof_encoding_hash`; `None` here so
+/// the shared tree is not blocked before the measurement window.
+pub const GOLDEN_OLD_LOGUP_ENCODING: Option<[u8; 32]> = Some([
+    0xf3, 0x96, 0xfd, 0x79, 0x9e, 0xc5, 0xb7, 0xe5, 0xa8, 0xfc, 0x1f, 0x92, 0x69, 0x4e, 0x9f, 0x08,
+    0xce, 0x45, 0x47, 0x23, 0x31, 0x74, 0x00, 0xa7, 0xe0, 0x29, 0x30, 0xdd, 0x80, 0x40, 0x25, 0xaf,
+]);
+
+/// Linear Shout proof with committed pushforwards (M4 v3).
+///
+/// The reader word/position columns and the pushforward table are committed; the
+/// proof carries only openings/values, never the table-wide vector.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommittedLogupShoutProof {
+    pub address_bits: usize,
+    pub cycle_bits: usize,
+    pub cycles: usize,
+    pub columns: usize,
+    /// Reader point in PCS coordinate order (bit `i` of a cycle index).
+    pub reader_point: Vec<F2_128>,
+    pub word_commitment: P3Commitment,
+    pub word_opening: P3Opening,
+    pub reader_claim: F2_128,
+    pub pos_commitment: P3Commitment,
+    /// Opening of the position column at the logup position point.
+    pub pos_opening: P3Opening,
+    /// One transcript binding per table (the digest of its commitment).
+    pub pushforward_bindings: Vec<[u8; 32]>,
+    pub pushforward_commitment: P3Commitment,
+    /// Pushforward values at the fraction reduction's table-block points.
+    pub reduction_evals: Vec<F2_128>,
+    pub reduction_openings: Vec<P3Opening>,
+    /// Pushforward values at the product sumcheck's per-table points.
+    pub product_evals: Vec<F2_128>,
+    pub product_openings: Vec<P3Opening>,
+    pub logup: LogupStarProof<B, B>,
+}
+
+/// What committed Shout verification hands back to the caller.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommittedLogupShoutOutput {
+    /// Reader word MLE at the reader point (authenticated by the opening).
+    pub reader_claim: F2_128,
+    /// Position-column MLE at the logup position point (authenticated by the
+    /// position-column opening; the caller binds it to the claim table if it has
+    /// the host-derived position column in its statement root, which it does).
+    pub position_claim: F2_128,
+    /// Reader point in PCS coordinate order.
+    pub reader_point: Vec<F2_128>,
+    /// Public ROM word claim at the logup table point.
+    pub rom_claim: F2_128,
+}
+
+fn open_pushforward_claims(
+    pcs: &P3BinaryPcs,
+    values: &[F2_128],
+    claims: &[(Vec<B>, B)],
+) -> Result<(Vec<F2_128>, Vec<P3Opening>), RuntimeError> {
+    let mut evals = Vec::with_capacity(claims.len());
+    let mut openings = Vec::with_capacity(claims.len());
+    for (point, value) in claims {
+        let point_f2 = point
+            .iter()
+            .rev()
+            .map(|coordinate| to_f2(*coordinate))
+            .collect::<Vec<_>>();
+        let opening = pcs
+            .open(values, &point_f2)
+            .map_err(|error| RuntimeError::Proof(format!("pushforward open: {error}")))?;
+        evals.push(to_f2(*value));
+        openings.push(opening);
+    }
+    Ok((evals, openings))
+}
+
+/// Prover for the committed-pushforward linear Shout (word-mode reader).
+///
+/// Returns the proof and the three commitment roots the caller composes into the
+/// statement root: `(proof, word_root, pos_root, pushforward_root)`.
+pub fn prove_committed_logup_shout(
+    witness: &BinaryShoutWitness,
+) -> Result<(CommittedLogupShoutProof, [u8; 32], [u8; 32], [u8; 32]), RuntimeError> {
+    let cells = 1usize << witness.address_bits;
+    if witness.rom.len() != cells || witness.rom.iter().any(|row| row.is_empty()) {
+        return Err(RuntimeError::Proof(
+            "committed logup Shout ROM shape mismatch".into(),
+        ));
+    }
+    let (word_values, pos_values) = committed_columns_from_witness(witness)?;
+    let word_b = word_values
+        .iter()
+        .map(|value| to_b(*value))
+        .collect::<Vec<_>>();
+    let pcs = committed_pcs();
+
+    let word_commitment = pcs
+        .commit(&word_values)
+        .map_err(|error| RuntimeError::Proof(format!("word commit: {error}")))?;
+    let pos_commitment = pcs
+        .commit(&pos_values)
+        .map_err(|error| RuntimeError::Proof(format!("position commit: {error}")))?;
+    let word_bytes = bincode::serialize(&word_commitment)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let point = reader_point(&word_bytes, witness.cycle_bits);
+    let reader_claim = eval_mle(&word_b, &point);
+
+    let readers = [Reader {
+        point: &point,
+        claims: &[reader_claim],
+    }];
+    let lookups = [TableLookup {
+        num_variables: witness.address_bits,
+        readers: &readers,
+    }];
+    let position_values = positions(witness)?;
+    let reader_witnesses = [ReaderWitness {
+        positions: &position_values,
+    }];
+    let table_column_b = witness
+        .rom
+        .iter()
+        .map(|row| to_b(row[0]))
+        .collect::<Vec<B>>();
+    let column_refs = [table_column_b.as_slice()];
+    let table_witness = [TableWitness {
+        columns: &column_refs,
+        readers: &reader_witnesses,
+    }];
+
+    let mut prover_challenger = challenger();
+    let mut pushforward_commitment: Option<P3Commitment> = None;
+    let mut pushforward_values: Option<Vec<F2_128>> = None;
+    let (logup, output, bindings, reduction_claims, product_claims) =
+        LogupStarProof::<B, B>::prove_committed(
+            &lookups,
+            &table_witness,
+            &mut prover_challenger,
+            |pushforwards: &[Vec<B>]| {
+                let mut out = Vec::with_capacity(pushforwards.len());
+                for pushforward in pushforwards {
+                    let values = pushforward.iter().map(|value| to_f2(*value)).collect::<Vec<_>>();
+                    let commitment = pcs
+                        .commit(&values)
+                        .expect("committed pushforward table shape");
+                    out.push(pushforward_binding(&commitment));
+                    pushforward_commitment = Some(commitment);
+                    pushforward_values = Some(values);
+                }
+                out
+            },
+        );
+    let pushforward_commitment = pushforward_commitment
+        .ok_or_else(|| RuntimeError::Proof("logup Shout produced no pushforward table".into()))?;
+    let pushforward_values = pushforward_values
+        .ok_or_else(|| RuntimeError::Proof("logup Shout stored no pushforward values".into()))?;
+    let (reduction_evals, reduction_openings) =
+        open_pushforward_claims(&pcs, &pushforward_values, &reduction_claims)?;
+    let (product_evals, product_openings) =
+        open_pushforward_claims(&pcs, &pushforward_values, &product_claims)?;
+
+    // The PCS wire order is the reverse of the p3 point order.
+    let reader_point_wire = point
+        .as_slice()
+        .iter()
+        .rev()
+        .map(|coordinate| to_f2(*coordinate))
+        .collect::<Vec<_>>();
+    let word_opening = pcs
+        .open(&word_values, &reader_point_wire)
+        .map_err(|error| RuntimeError::Proof(format!("word open: {error}")))?;
+    let position_point = output
+        .position_point
+        .as_slice()
+        .iter()
+        .rev()
+        .map(|coordinate| to_f2(*coordinate))
+        .collect::<Vec<_>>();
+    let pos_opening = pcs
+        .open(&pos_values, &position_point)
+        .map_err(|error| RuntimeError::Proof(format!("position open: {error}")))?;
+
+    let proof = CommittedLogupShoutProof {
+        address_bits: witness.address_bits,
+        cycle_bits: witness.cycle_bits,
+        cycles: witness.cycles,
+        columns: 1,
+        reader_point: reader_point_wire,
+        word_commitment: word_commitment.clone(),
+        word_opening,
+        reader_claim: to_f2(reader_claim),
+        pos_commitment: pos_commitment.clone(),
+        pos_opening,
+        pushforward_bindings: bindings,
+        pushforward_commitment: pushforward_commitment.clone(),
+        reduction_evals,
+        reduction_openings,
+        product_evals,
+        product_openings,
+        logup,
+    };
+    Ok((
+        proof,
+        committed_word_root(&word_commitment),
+        committed_pos_root(&pos_commitment),
+        committed_pushforward_root(&pushforward_commitment),
+    ))
+}
+
+/// Verifier for the committed-pushforward linear Shout.
+///
+/// `rom` are the public instruction words; `rom_binding` binds them in the
+/// transcript-free statement (already authenticated by the statement root).
+pub fn verify_committed_logup_shout(
+    proof: &CommittedLogupShoutProof,
+    rom: &[u32],
+) -> Result<CommittedLogupShoutOutput, RuntimeError> {
+    if proof.cycles != 1usize << proof.cycle_bits
+        || proof.columns != 1
+        || proof.address_bits >= usize::BITS as usize
+        || proof.reader_point.len() != proof.cycle_bits
+        || rom.len() > 1usize << proof.address_bits
+        || rom.len().next_power_of_two().max(2) != 1usize << proof.address_bits
+        || proof.pushforward_bindings.len() != 1
+    {
+        return Err(RuntimeError::Proof(
+            "committed logup Shout statement shape mismatch".into(),
+        ));
+    }
+    let pcs = committed_pcs();
+
+    // 1. Reader word column: opening at the Fiat-Shamir reader point.
+    let word_bytes = bincode::serialize(&proof.word_commitment)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let point = reader_point(&word_bytes, proof.cycle_bits);
+    let reader_point_wire = point
+        .as_slice()
+        .iter()
+        .rev()
+        .map(|coordinate| to_f2(*coordinate))
+        .collect::<Vec<_>>();
+    if proof.reader_point != reader_point_wire {
+        return Err(RuntimeError::Proof(
+            "committed logup Shout reader point mismatch".into(),
+        ));
+    }
+    let reader_claim = to_b(proof.reader_claim);
+    let word_ok = pcs
+        .verify(&proof.word_commitment, &proof.reader_point, proof.reader_claim, &proof.word_opening)
+        .map_err(|error| RuntimeError::Proof(format!("word opening: {error}")))?;
+    if !word_ok {
+        return Err(RuntimeError::Proof("committed logup Shout word opening rejected".into()));
+    }
+
+    // 2. Pushforward table: the transcript binding must be its commitment digest.
+    if proof.pushforward_bindings[0] != pushforward_binding(&proof.pushforward_commitment) {
+        return Err(RuntimeError::Proof(
+            "committed logup Shout pushforward binding mismatch".into(),
+        ));
+    }
+
+    // 3. Logup* reduction: reader claim at the reader point, committed
+    //    pushforwards binding the table side.
+    let readers = [Reader {
+        point: &point,
+        claims: &[reader_claim],
+    }];
+    let lookups = [TableLookup {
+        num_variables: proof.address_bits,
+        readers: &readers,
+    }];
+    let reduction_evals = proof
+        .reduction_evals
+        .iter()
+        .map(|value| to_b(*value))
+        .collect::<Vec<_>>();
+    let product_evals = proof
+        .product_evals
+        .iter()
+        .map(|value| to_b(*value))
+        .collect::<Vec<_>>();
+    let mut verifier_challenger = challenger();
+    let (output, reduction_claims, product_claims) = proof
+        .logup
+        .verify_committed(
+            &lookups,
+            &mut verifier_challenger,
+            &proof.pushforward_bindings,
+            &reduction_evals,
+            &product_evals,
+        )
+        .map_err(|error| RuntimeError::Proof(format!("committed logup reduction: {error:?}")))?;
+
+    // 4. Open the committed pushforwards at the verifier-derived points.
+    if reduction_claims.len() != proof.reduction_evals.len()
+        || product_claims.len() != proof.product_evals.len()
+    {
+        return Err(RuntimeError::Proof(
+            "committed logup Shout pushforward claim count mismatch".into(),
+        ));
+    }
+    for (index, (claim_point, claim_value)) in reduction_claims.iter().enumerate() {
+        let point_f2 = claim_point
+            .iter()
+            .rev()
+            .map(|coordinate| to_f2(*coordinate))
+            .collect::<Vec<_>>();
+        if to_f2(*claim_value) != proof.reduction_evals[index] {
+            return Err(RuntimeError::Proof(
+                "committed logup Shout reduction claim mismatch".into(),
+            ));
+        }
+        let ok = pcs
+            .verify(
+                &proof.pushforward_commitment,
+                &point_f2,
+                proof.reduction_evals[index],
+                &proof.reduction_openings[index],
+            )
+            .map_err(|error| RuntimeError::Proof(format!("pushforward opening: {error}")))?;
+        if !ok {
+            return Err(RuntimeError::Proof(
+                "committed logup Shout pushforward opening rejected".into(),
+            ));
+        }
+    }
+    for (index, (claim_point, claim_value)) in product_claims.iter().enumerate() {
+        let point_f2 = claim_point
+            .iter()
+            .rev()
+            .map(|coordinate| to_f2(*coordinate))
+            .collect::<Vec<_>>();
+        if to_f2(*claim_value) != proof.product_evals[index] {
+            return Err(RuntimeError::Proof(
+                "committed logup Shout product claim mismatch".into(),
+            ));
+        }
+        let ok = pcs
+            .verify(
+                &proof.pushforward_commitment,
+                &point_f2,
+                proof.product_evals[index],
+                &proof.product_openings[index],
+            )
+            .map_err(|error| RuntimeError::Proof(format!("pushforward opening: {error}")))?;
+        if !ok {
+            return Err(RuntimeError::Proof(
+                "committed logup Shout pushforward opening rejected".into(),
+            ));
+        }
+    }
+
+    // 5. Position claim: opening of the committed position column at the logup
+    //    position point.
+    if output.tables.len() != 1 || output.tables[0].column_claims.len() != 1 {
+        return Err(RuntimeError::Proof("committed logup Shout output shape mismatch".into()));
+    }
+    let position_claim = output.tables[0].position_claims[0];
+    let position_point = output
+        .position_point
+        .as_slice()
+        .iter()
+        .rev()
+        .map(|coordinate| to_f2(*coordinate))
+        .collect::<Vec<_>>();
+    let pos_ok = pcs
+        .verify(
+            &proof.pos_commitment,
+            &position_point,
+            to_f2(position_claim),
+            &proof.pos_opening,
+        )
+        .map_err(|error| RuntimeError::Proof(format!("position opening: {error}")))?;
+    if !pos_ok {
+        return Err(RuntimeError::Proof("committed logup Shout position opening rejected".into()));
+    }
+
+    // 6. Public ROM word column: O(rom) check of the table claim at the
+    //    product sumcheck's table point.
+    let cells = 1usize << proof.address_bits;
+    let mut rom_words = vec![B::from_repr(0); cells];
+    for (index, word) in rom.iter().enumerate() {
+        rom_words[index] = to_b(F2_128::from(u64::from(*word)));
+    }
+    let expected = eval_mle(&rom_words, &output.table_point);
+    let table_claim = output.tables[0].column_claims[0];
+    if expected != table_claim {
+        return Err(RuntimeError::Proof(
+            "committed logup Shout public ROM word claim mismatch".into(),
+        ));
+    }
+
+    Ok(CommittedLogupShoutOutput {
+        reader_claim: proof.reader_claim,
+        position_claim: to_f2(position_claim),
+        reader_point: proof.reader_point.clone(),
+        rom_claim: to_f2(expected),
+    })
+}
+
+#[cfg(test)]
+mod committed_logup_tests {
+    use super::*;
+    use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+    fn trace() -> magnetar_spec::Trace {
+        let program = ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        );
+        magnetar_executor::execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100,
+            },
+        )
+        .unwrap()
+    }
+
+    /// A trace long enough for the P3 folding minimum of the committed path.
+    fn committed_trace() -> magnetar_spec::Trace {
+        let mut instructions = (0..200)
+            .map(|index| {
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: index,
+                    shamt: 0,
+                }
+                .encode()
+            })
+            .collect::<Vec<_>>();
+        instructions.push(Instruction::new(Op::Ecall).encode());
+        let program = ProgramImage::new(0x1000, instructions);
+        magnetar_executor::execute(
+            &program,
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 500,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn committed_logup_shout_round_trips() {
+        let trace = committed_trace();
+        let witness = BinaryShoutWitness::from_trace(&trace).unwrap();
+        let (proof, word_root, pos_root, pushforward_root) =
+            prove_committed_logup_shout(&witness).unwrap();
+        assert_ne!(word_root, pos_root);
+        assert_ne!(word_root, pushforward_root);
+        assert_ne!(pos_root, pushforward_root);
+        let output = verify_committed_logup_shout(&proof, &trace.rom).unwrap();
+        assert_eq!(output.reader_claim, proof.reader_claim);
+        assert_eq!(output.reader_point, proof.reader_point);
+        // The word column is the host-derived claim word column.
+        let (word, pos) = committed_columns_from_witness(&witness).unwrap();
+        assert_eq!(word.len(), proof.cycles);
+        assert_eq!(pos.len(), proof.cycles);
+    }
+
+    #[test]
+    fn classic_logup_encoding_matches_golden_hash() {
+        let trace = trace();
+        let witness = BinaryShoutWitness::from_trace(&trace).unwrap();
+        let proof = prove_logup_shout(&witness).unwrap();
+        let hash = logup_proof_encoding_hash(&proof);
+        // The M4 v3 vendor diff is additive: every p3 structure and every
+        // classic entry point is untouched, so this encoding must not change.
+        // The constant is filled in the build window when the golden value is
+        // produced; until then the hash is printed for the reviewer.
+        match GOLDEN_OLD_LOGUP_ENCODING {
+            Some(expected) => assert_eq!(hash, expected),
+            None => eprintln!("golden old logup proof encoding sha256 = {hash:02x?}"),
+        }
+    }
+
+    #[test]
+    fn committed_logup_shout_rejects_tampering() {
+        let trace = committed_trace();
+        let witness = BinaryShoutWitness::from_trace(&trace).unwrap();
+        let (proof, _, _, _) = prove_committed_logup_shout(&witness).unwrap();
+
+        // Public ROM tamper.
+        let mut rom = trace.rom.clone();
+        rom[0] ^= 1;
+        assert!(verify_committed_logup_shout(&proof, &rom).is_err());
+
+        // Reader claim tamper.
+        let mut bad = proof.clone();
+        bad.reader_claim = bad.reader_claim + F2_128::from(1u64);
+        assert!(verify_committed_logup_shout(&bad, &trace.rom).is_err());
+
+        // Pushforward eval tamper.
+        let mut bad = proof.clone();
+        bad.reduction_evals[0] = bad.reduction_evals[0] + F2_128::from(1u64);
+        assert!(verify_committed_logup_shout(&bad, &trace.rom).is_err());
+
+        // Pushforward binding tamper.
+        let mut bad = proof.clone();
+        bad.pushforward_bindings[0][0] ^= 1;
+        assert!(verify_committed_logup_shout(&bad, &trace.rom).is_err());
+
+        // Position opening tamper (swap the committed position column).
+        let mut bad = proof.clone();
+        bad.pos_commitment = proof.word_commitment.clone();
+        assert!(verify_committed_logup_shout(&bad, &trace.rom).is_err());
+    }
 }

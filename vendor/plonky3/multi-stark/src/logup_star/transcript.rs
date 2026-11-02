@@ -92,6 +92,44 @@ const PRODUCT_SUMCHECK: &str = "product_sumcheck";
 /// Step label of the table-column values at the product sumcheck's output point.
 const COLUMN_CLAIMS: &str = "column_claims";
 
+/// Step label of one table's committed-pushforward binding.
+///
+/// The committed-pushforward variant binds `H(pushforward commitment)` instead of
+/// sending the `2^num_variables`-wide vector, so the message is 32 bytes
+/// (`BINDING_BYTES` base elements) rather than table-wide.
+const PUSHFORWARD_BINDING: &str = "pushforward_binding";
+
+/// Byte length of one pushforward binding (the commitment digest).
+const BINDING_BYTES: usize = 32;
+
+/// Protocol name of the committed-pushforward variant.
+///
+/// A distinct name keeps the two transcript families apart even if a caller
+/// mislabels a proof.
+const NAME_COMMITTED: &[u8] = b"p3-multi-stark-logup-star-committed";
+
+/// Encode a 32-byte binding as base-field elements, most significant byte last.
+///
+/// Only `from_bool`, `TWO` and field add/mul are needed, so this stays generic
+/// over the transcript field.
+fn binding_values<F: TranscriptField, EF: ExtensionField<F>>(binding: &[u8; BINDING_BYTES]) -> [EF; BINDING_BYTES] {
+    let mut powers = [F::ZERO; 8];
+    powers[0] = F::ONE;
+    for bit in 1..8 {
+        powers[bit] = powers[bit - 1] * F::TWO;
+    }
+    core::array::from_fn(|index| {
+        let byte = binding[index];
+        let mut value = F::ZERO;
+        for bit in 0..8 {
+            if (byte >> bit) & 1 == 1 {
+                value += powers[bit];
+            }
+        }
+        EF::from(value)
+    })
+}
+
 /// Sponge alphabet of a challenger that speaks the base field natively.
 type Alphabet<F> = FieldUnit<F>;
 
@@ -259,6 +297,94 @@ impl LogupStarShape {
         InteractionPattern::new(steps).expect("two matched brackets are always well formed")
     }
 
+    /// Transcript description of the committed-pushforward variant.
+    ///
+    /// Identical to [`Self::pattern`] except that each table's pushforward step
+    /// is a fixed 32-byte binding message instead of one table-wide message.
+    #[must_use]
+    pub fn pattern_committed_pushforwards<F, EF>(&self) -> InteractionPattern
+    where
+        F: TranscriptField,
+        EF: ExtensionField<F>,
+    {
+        let challenge = |label, length| {
+            Interaction::algebra::<F, EF>(Hierarchy::Atomic, Kind::Challenge, label, length)
+        };
+        let message = |label, length| {
+            Interaction::algebra::<F, EF>(Hierarchy::Atomic, Kind::Message, label, length)
+        };
+        let mut steps = vec![
+            Interaction::algebra::<F, F>(
+                Hierarchy::Atomic,
+                Kind::Public,
+                STATEMENT,
+                Length::Fixed(self.num_statement_values() * <EF as BasedVectorSpace<F>>::DIMENSION),
+            ),
+            challenge(READER_BATCHING, Length::Scalar),
+        ];
+        steps.extend(self.tables.iter().map(|_| {
+            message(
+                PUSHFORWARD_BINDING,
+                Length::Fixed(BINDING_BYTES * <EF as BasedVectorSpace<F>>::DIMENSION),
+            )
+        }));
+        steps.push(challenge(
+            ENTRY_CHALLENGES,
+            Length::Fixed(self.tables.len()),
+        ));
+        steps.push(Interaction::marker::<FractionReduction>(
+            Hierarchy::Begin,
+            Kind::Protocol,
+            FRACTION_REDUCTION,
+        ));
+        steps.push(Interaction::marker::<FractionReduction>(
+            Hierarchy::End,
+            Kind::Protocol,
+            FRACTION_REDUCTION,
+        ));
+        steps.push(message(POSITION_CLAIMS, Length::Fixed(self.num_readers())));
+        steps.push(challenge(COLUMN_BATCHING, Length::Scalar));
+        steps.push(Interaction::marker::<ProductSumcheck>(
+            Hierarchy::Begin,
+            Kind::Protocol,
+            PRODUCT_SUMCHECK,
+        ));
+        steps.push(Interaction::marker::<ProductSumcheck>(
+            Hierarchy::End,
+            Kind::Protocol,
+            PRODUCT_SUMCHECK,
+        ));
+        steps.push(message(
+            COLUMN_CLAIMS,
+            Length::Fixed(self.num_column_claims()),
+        ));
+        InteractionPattern::new(steps).expect("two matched brackets are always well formed")
+    }
+
+    /// Domain separator of the committed-pushforward variant.
+    #[must_use]
+    pub fn domain_separator_committed<F, EF>(&self) -> DomainSeparator<Alphabet<F>>
+    where
+        F: TranscriptField,
+        EF: ExtensionField<F>,
+    {
+        let mut separator =
+            DomainSeparator::new(VERSION, NAME_COMMITTED, self.pattern_committed_pushforwards::<F, EF>());
+        separator
+            .instance(&(self.num_variables as u64).to_be_bytes())
+            .instance(&(self.tables.len() as u64).to_be_bytes())
+            .instance(&(self.num_readers() as u64).to_be_bytes());
+        for table in &self.tables {
+            separator
+                .instance(&(table.width as u64).to_be_bytes())
+                .instance(&(table.readers.len() as u64).to_be_bytes());
+            for height in &table.readers {
+                separator.instance(&(*height as u64).to_be_bytes());
+            }
+        }
+        separator
+    }
+
     /// Bind the protocol identity and every number the statement is shaped by.
     #[must_use]
     pub fn domain_separator<F, EF>(&self) -> DomainSeparator<Alphabet<F>>
@@ -350,6 +476,22 @@ where
     pub fn pushforward(&mut self, values: &[EF]) {
         self.state
             .observe_extensions::<F, EF, FieldToFieldCodec<F>>(PUSHFORWARD, values);
+    }
+
+    /// Seed the transcript from the shape in the committed-pushforward variant.
+    pub fn new_committed(challenger: &'a mut C, shape: &LogupStarShape) -> Self {
+        let separator = shape.domain_separator_committed::<F, EF>();
+        Self {
+            state: ProverState::new(challenger, &separator),
+            _ef: PhantomData,
+        }
+    }
+
+    /// Bind one table's committed-pushforward binding, tables in statement order.
+    pub fn pushforward_binding(&mut self, binding: &[u8; BINDING_BYTES]) {
+        let values = binding_values::<F, EF>(binding);
+        self.state
+            .observe_extensions::<F, EF, FieldToFieldCodec<F>>(PUSHFORWARD_BINDING, &values);
     }
 
     /// Draw the challenge each table's fraction identity is tested at.
@@ -479,6 +621,23 @@ where
     pub fn pushforward(&mut self, values: &[EF]) {
         self.state
             .observe_extensions::<F, EF, FieldToFieldCodec<F>>(PUSHFORWARD, values)
+            .expect(MEASURED_FIRST);
+    }
+
+    /// Seed the transcript from the shape in the committed-pushforward variant.
+    pub fn new_committed(challenger: &'a mut C, shape: &LogupStarShape) -> Self {
+        let separator = shape.domain_separator_committed::<F, EF>();
+        Self {
+            state: VerifierState::new(challenger, &separator, &[]),
+            _ef: PhantomData,
+        }
+    }
+
+    /// Replay one table's committed-pushforward binding, tables in statement order.
+    pub fn pushforward_binding(&mut self, binding: &[u8; BINDING_BYTES]) {
+        let values = binding_values::<F, EF>(binding);
+        self.state
+            .observe_extensions::<F, EF, FieldToFieldCodec<F>>(PUSHFORWARD_BINDING, &values)
             .expect(MEASURED_FIRST);
     }
 

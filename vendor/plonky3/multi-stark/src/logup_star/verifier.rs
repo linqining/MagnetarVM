@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use p3_challenger::fs::TranscriptField;
 use p3_challenger::{FieldChallenger, GrindingChallenger};
-use p3_field::ExtensionField;
+use p3_field::{ExtensionField, Field};
 use p3_multilinear_util::point::Point;
 use p3_multilinear_util::poly::Poly;
 
@@ -221,6 +221,255 @@ where
         Ok(())
     }
 
+    /// Verify one indexed-lookup reduction with **committed pushforwards**.
+    ///
+    /// Identical to [`Self::verify`] except that the table-wide pushforward
+    /// vectors are absent from the proof: the caller supplies
+    ///
+    /// - `bindings`: the 32-byte transcript binding of each committed pushforward,
+    ///   one per table in statement order;
+    /// - `reduction_evals`: the pushforward values at the fraction reduction's
+    ///   table-block points, in `plan.blocks` order (one per table block);
+    /// - `product_evals`: the pushforward values at the product sumcheck's
+    ///   per-table points, in table order.
+    ///
+    /// The values are checked against the caller's commitments with the PCS; the
+    /// points the caller must open are returned alongside the output, so the
+    /// caller never has to re-derive them (`reduction_claims` and
+    /// `product_claims`, in the order the values were supplied).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::verify`], plus malformed binding/eval counts.
+    pub fn verify_committed<Challenger>(
+        &self,
+        lookups: &[TableLookup<'_, EF>],
+        challenger: &mut Challenger,
+        bindings: &[[u8; 32]],
+        reduction_evals: &[EF],
+        product_evals: &[EF],
+    ) -> Result<
+        (
+            LogupStarOutput<EF>,
+            Vec<(Vec<EF>, EF)>,
+            Vec<(Vec<EF>, EF)>,
+        ),
+        LogupStarError,
+    >
+    where
+        Challenger: FieldChallenger<F> + GrindingChallenger<Witness = F>,
+    {
+        let plan = LogupStarPlan::new(lookups);
+
+        // Nothing table-wide may travel in the committed variant.
+        if !self.pushforwards.is_empty() {
+            return Err(LogupStarError::PushforwardCount {
+                expected: 0,
+                actual: self.pushforwards.len(),
+            });
+        }
+        self.check_shape_committed(&plan, bindings, reduction_evals, product_evals)?;
+
+        let shape = LogupStarShape::new(&plan);
+        let mut transcript =
+            LogupStarVerifierTranscript::<Challenger, F, EF>::new_committed(challenger, &shape);
+
+        transcript.statement(&TableLookup::statement(lookups));
+        let reader_batching = transcript.reader_batching();
+        for binding in bindings {
+            transcript.pushforward_binding(binding);
+        }
+        let entry_challenges = transcript.entry_challenges(plan.num_tables());
+
+        let reduction = transcript.fraction_reduction(|challenger| {
+            verify_fractional_gkr::<F, EF, _>(&self.fraction_gkr, plan.num_variables, challenger)
+        });
+
+        transcript.position_claims(&self.position_claims);
+        let column_batching = transcript.column_batching();
+
+        let product = transcript.product_sumcheck(|challenger| {
+            self.product
+                .verify(challenger, plan.max_table_variables, PRODUCT_DEGREE, 0)
+        });
+
+        transcript.column_claims(&self.column_claims.concat());
+        transcript.finish();
+
+        let reduction = reduction?;
+
+        let (numerator, denominator) = self.rebuild_opening_committed(
+            &plan,
+            lookups,
+            &reduction.point,
+            reader_batching,
+            &entry_challenges,
+            reduction_evals,
+        );
+        if numerator != reduction.numerator {
+            return Err(LogupStarError::LeafNumerator);
+        }
+        if denominator != reduction.denominator {
+            return Err(LogupStarError::LeafDenominator);
+        }
+
+        if self.product.claimed_sum
+            != product::claimed_sum(lookups, reader_batching, column_batching)
+        {
+            return Err(LogupStarError::ProductClaimedSum);
+        }
+
+        let (table_point, final_value) = product?;
+        if final_value
+            != final_value_committed::<F, EF>(
+                &table_point,
+                &plan.tables.iter().map(|shape| shape.num_variables).collect::<Vec<_>>(),
+                product_evals,
+                &self.column_claims,
+                column_batching,
+            )
+        {
+            return Err(LogupStarError::ProductFinalValue);
+        }
+
+        // The points the caller must open against the committed pushforwards,
+        // in the same order the values were supplied.
+        let mut reduction_claims = Vec::with_capacity(reduction_evals.len());
+        let mut index = 0;
+        for block in &plan.blocks {
+            if !matches!(block.role, BlockRole::Table) {
+                continue;
+            }
+            let own = block.subpoint(&reduction.point, plan.num_variables);
+            reduction_claims.push((own.as_slice().to_vec(), reduction_evals[index]));
+            index += 1;
+        }
+        let mut product_claims = Vec::with_capacity(product_evals.len());
+        for (table, shape) in plan.tables.iter().enumerate() {
+            let own = table_point.get_subpoint_over_range(
+                plan.max_table_variables - shape.num_variables..plan.max_table_variables,
+            );
+            product_claims.push((own.as_slice().to_vec(), product_evals[table]));
+        }
+
+        let output = LogupStarOutput {
+            position_point: reduction.point.get_subpoint_over_range(
+                plan.num_variables - plan.max_reader_variables..plan.num_variables,
+            ),
+            table_point,
+            tables: plan
+                .tables
+                .iter()
+                .enumerate()
+                .map(|(table, shape)| {
+                    let first = plan.reader_offset(table);
+                    TableOutput {
+                        column_claims: self.column_claims[table].clone(),
+                        position_claims: self.position_claims[first..first + shape.readers.len()]
+                            .to_vec(),
+                    }
+                })
+                .collect(),
+        };
+        Ok((output, reduction_claims, product_claims))
+    }
+
+    /// Measure a committed-pushforward proof against the shape before replaying.
+    fn check_shape_committed(
+        &self,
+        plan: &LogupStarPlan,
+        bindings: &[[u8; 32]],
+        reduction_evals: &[EF],
+        product_evals: &[EF],
+    ) -> Result<(), LogupStarError> {
+        if bindings.len() != plan.num_tables() {
+            return Err(LogupStarError::PushforwardCount {
+                expected: plan.num_tables(),
+                actual: bindings.len(),
+            });
+        }
+        let table_blocks = plan
+            .blocks
+            .iter()
+            .filter(|block| matches!(block.role, BlockRole::Table))
+            .count();
+        if reduction_evals.len() != table_blocks {
+            return Err(LogupStarError::PushforwardCount {
+                expected: table_blocks,
+                actual: reduction_evals.len(),
+            });
+        }
+        if product_evals.len() != plan.num_tables() {
+            return Err(LogupStarError::PushforwardCount {
+                expected: plan.num_tables(),
+                actual: product_evals.len(),
+            });
+        }
+        if self.position_claims.len() != plan.num_readers() {
+            return Err(LogupStarError::PositionClaimCount {
+                expected: plan.num_readers(),
+                actual: self.position_claims.len(),
+            });
+        }
+        if self.column_claims.len() != plan.num_tables() {
+            return Err(LogupStarError::ColumnClaimShape {
+                expected: plan.num_tables(),
+                actual: self.column_claims.len(),
+            });
+        }
+        for (table, (shape, claims)) in plan.tables.iter().zip(&self.column_claims).enumerate() {
+            if claims.len() != shape.width {
+                return Err(LogupStarError::ColumnClaimCount {
+                    table,
+                    expected: shape.width,
+                    actual: claims.len(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Committed-pushforward variant of [`Self::rebuild_opening`].
+    fn rebuild_opening_committed(
+        &self,
+        plan: &LogupStarPlan,
+        lookups: &[TableLookup<'_, EF>],
+        point: &Point<EF>,
+        reader_batching: EF,
+        entry_challenges: &[EF],
+        pushforward_evals: &[EF],
+    ) -> (EF, EF) {
+        let mut numerator = EF::ZERO;
+        let mut denominator = EF::ZERO;
+        let mut covered = EF::ZERO;
+        let mut eval_index = 0;
+
+        for block in &plan.blocks {
+            let weight = block.weight::<F, EF>(point, plan.num_variables);
+            let own = block.subpoint(point, plan.num_variables);
+            covered += weight;
+
+            match block.role {
+                BlockRole::Reader { index } => {
+                    let reader = &lookups[block.table].readers[index];
+                    let scale = reader_batching.exp_u64(index as u64);
+                    numerator +=
+                        weight * scale * Point::eval_eq(reader.point.as_slice(), own.as_slice());
+                    let claim = self.position_claims[plan.reader_offset(block.table) + index];
+                    denominator += weight * (entry_challenges[block.table] - claim);
+                }
+                BlockRole::Table => {
+                    numerator += weight * pushforward_evals[eval_index];
+                    eval_index += 1;
+                    denominator +=
+                        weight * (position::eval::<F, EF>(&own) - entry_challenges[block.table]);
+                }
+            }
+        }
+
+        (numerator, denominator + (EF::ONE - covered))
+    }
+
     /// Rebuild the numerator and denominator the reduction should have opened.
     ///
     /// Each block contributes its own value, weighted by the equality factor selecting it:
@@ -284,6 +533,52 @@ where
     }
 }
 
+
+/// Committed-pushforward variant of [`product::final_value`].
+///
+/// Every table's pushforward is replaced by the value the caller checked against
+/// its commitment at that table's point.
+fn final_value_committed<F, EF>(
+    point: &Point<EF>,
+    table_variables: &[usize],
+    pushforward_evals: &[EF],
+    column_claims: &[Vec<EF>],
+    batching: EF,
+) -> EF
+where
+    F: Field,
+    EF: ExtensionField<F>,
+{
+    let num_rounds = point.num_variables();
+    let mut power = EF::ONE;
+
+    pushforward_evals
+        .iter()
+        .zip(column_claims)
+        .zip(table_variables)
+        .map(|((&pushforward, claims), &num_variables)| {
+            let padding_rounds = num_rounds - num_variables;
+
+            // The padding coordinates are the leading ones, each weighted as if it were zero.
+            let weight = point.as_slice()[..padding_rounds]
+                .iter()
+                .map(|&coordinate| EF::ONE - coordinate)
+                .product::<EF>();
+
+            // The columns were folded under the batching challenge, so their claims are too.
+            let columns = claims
+                .iter()
+                .map(|&claim| {
+                    let weighted = power * claim;
+                    power *= batching;
+                    weighted
+                })
+                .sum::<EF>();
+
+            weight * pushforward * columns
+        })
+        .sum()
+}
 
 /// Recompute the pushforwards the verifier would otherwise read from the proof.
 ///
