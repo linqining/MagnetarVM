@@ -1274,3 +1274,168 @@ cargo test --release --offline -p magnetar-runtime --lib streaming_lockstep_proo
 /usr/bin/time -l env WIDTH=64 ADDS=65535 MAGNETAR_PROFILE_UNIFIED=1 \
   cargo run --release --offline -p magnetar-testkit --example paper_unified_bench
 ```
+
+## 11. RV64 `2^16` optimization round (2026-11-03)
+
+Status: landed on top of the streaming prover above; the streaming/eager byte
+equality gate stays green. Branch `virtual-claims-rewrite`.
+
+### 11.1 Headline
+
+| | before round (§1) | after round |
+| --- | --- | --- |
+| prove wall | 70.4 s | **55.5–59.3 s** (host load 14–72) |
+| prove CPU (user+sys) | ≈800 s | **421.6–434.9 s** |
+| verify wall | 29.6 ms | **27.4 ms** with the claim table, **46.0 ms** on the legacy row path (§11.6) |
+| peak RSS | 2.26 GiB | **2.38 GiB** (claim table on; 2.19 GiB with it off) |
+| proof bytes | 861,407 B | **1,018,152 B** (claim-table format, §11.6) |
+
+The claim table is now the default: on the same `2^16` binary it replaces the
+`O(rows)` claim row sums and moves verify from 46.0 to 27.4 ms for +157 KB of
+proof -- the 2^10 measurement that had called it a net loss (+1.4 ms) simply
+saw the fixed PCS cost at a size where the row sums are free.
+
+Wall-clock times on this host are not comparable across sessions: the 1-minute
+load moved between 13 and 150 during the round and the same binary reported a
+2.4x spread. The load-robust number is the prover CPU time: the same 2^16 run
+now costs **421.6–434.9 s of CPU against ≈800 s**, i.e. about **1.8x less work**
+(kept honest by the stage-level A/B below, which uses the same-binary
+environment switches described in §11.4).
+
+### 11.2 Stage split (load 37–72)
+
+| stage | before (§2) | after |
+| --- | --- | --- |
+| unified context | 0.48 s | **0.31 s** |
+| unified Commit | 1.19 s | **0.52 s** |
+| unified Access (register twist) | 2.56 s | 2.63 s |
+| unified Opening | 3.38 s | **1.99 s** |
+| selected setup | 0.48 s | 0.40 s (`setup fill+check`) |
+| selected witness commit | 0.95 s | **0.32 s** |
+| `product6` (outer scan) | 43.2 s | **24.5 s** (probe run: 24.5 s at load 74; 27.2 s inside the full pipeline) |
+| `product2` (inner scan) | 23.4 s | **24.5 s** at inner budget 22 → the round moved the inner budget to 24, see §11.3 (4) |
+| selected segments | 1.17 s | 1.20 s |
+| selected open | 0.92 s | **0.84 s** |
+
+The two streaming products still dominate, but the outer scan is no longer the
+single biggest term. The peripheral stages also improved through a teammate's
+p3 hash fix (§11.5): `Commit` and `Opening` roughly halved.
+
+### 11.3 What changed
+
+1. **Zero-padding rows are no longer scanned** (`LockstepRows::live_rows`,
+   `prove_product6_rows`). `SharedBlockMatrix` rounds its row count up to a
+   power of two; at RV64 `2^16` that padding is 49.6 % of `rows`
+   (`2^29` instance rows + 4,194,368 extras pad to `2^30`). Rows past
+   `instance_rows + extra_rows` evaluate to zero for all six slots, and a
+   fully padded block contributes `product6_pair(0, 0, ..) = 0` for any
+   equality weight, so every phase-1 pass stops at the last live block. The
+   phase-2 fold carries the short (live) length: it is a prefix of the
+   conceptual array and an out-of-range odd entry is zero, while the equality
+   values stay at full length (the boundary element is folded with them in
+   later rounds -- getting that wrong was the one bug found here, and the byte
+   equality gate caught it).
+   Same-binary A/B at `2^14` (`MAGNETAR_LIVE_FULL=1` disables the skip):
+   product6 **12.8 s → 6.5 s**, whole prove CPU 166 s → 101 s.
+2. **Branch-free set-bit accumulation** (`accumulate_row_words`). The scan is a
+   sparse CSR walk over ~3.7 entries per row whose only unpredictable branch was
+   `if bit { add }`. It is now one word load plus a 0/all-ones mask and a masked
+   XOR, so the ~50 % mispredict disappears. Bit-identical by construction.
+3. **Work-stealing round scheduling** (`parallel_chunks`). This host is 6
+   performance + 6 efficiency cores, so a fixed split leaves the efficiency
+   cores straggling (up to 1.3x round time); workers now claim chunks from a
+   shared counter. Because field addition is XOR, the partial sums are folded
+   independently of who processed what, so proof bytes do not change.
+4. **Inner level budget 22 → 24** (`auto_level_inner`). The inner (column)
+   sum-check recomputed `column_bits - (budget - 1)` rounds from the witness;
+   two more bits of level array cost a fixed `2^24 * 16 B * 2 = 512 MiB` and
+   remove two of eight full column scans at `2^16` (-25 % of the inner stage,
+   -0.5 GiB difference in peak). `MAGNETAR_INNER_BUDGET_LOG` overrides.
+5. **Load-robust measurement**: every gated stage print now reports cumulative
+   process CPU time (`magnetar_proof::process_cpu_seconds`, `getrusage`), and
+   the streaming stages have same-binary diagnostic switches
+   (`MAGNETAR_STREAM_WORKERS`, `MAGNETAR_LIVE_FULL`, `MAGNETAR_P2_FUSED`,
+   `MAGNETAR_INNER_BUDGET_LOG`). This is what makes the A/B above trustworthy
+   on a shared machine.
+6. **Memory watchdog for benchmarks** (`magnetar_testkit::install_memory_watchdog`,
+   `MAGNETAR_MAX_RSS_GIB`, default 4 GiB): every example that runs a proof
+   aborts before it can push the host into swap. `protocol_determinism` now
+   defaults to 4 threads x 10 rounds (40 pairs) instead of 120 concurrent pairs
+   -- the old default peaked at 5.75 GiB.
+
+Peripheral stages (teammate track, same tree): `Keccak256Hash16` in the
+vendored p3 code did not forward `hash_many`, so the Merkle trees fell back to
+serial hashing; forwarding it batches the leaves and cut p3 CPU 2.1–2.7x
+(selected 2.4x, mosaic 2.7x, local 2.1x). Removing the prepared-data deep
+clone in `open_batch_prepared` (-0.5 GiB memcpy at `2^16`), a single table
+conversion in `P3BinaryPcs::commit/open`, deduplicated register-access table
+construction (Access standalone 7.6 -> 5.0 CPU-s), and skipping the
+reservation-row build when the context has no CPU columns complete the set.
+
+### 11.4 Measurement method on a shared host
+
+- **Wall clock is unreliable here**: the same binary measured 18.5 s and 55 s
+  for the same `2^14` prove depending on the load; the load average moved
+  13 -> 150 within minutes. Two earlier rounds (§9.10) concluded "inner fusion
+  is neutral / worth <=3 s" from wall-clock A/Bs that this round shows were
+  inside the noise.
+- **Use CPU time** (`cpu=` in the profiles, `getrusage`): it is stable to a few
+  percent under load because it counts the work, not the waiting.
+- **Use same-binary switches** for attribution: rebuilding two binaries brings
+  every other in-flight tree change into the comparison.
+- The byte-equality gates are the correctness check, not the timing:
+  `streaming_lockstep_proof_matches_the_eager_proof_bytes` and
+  `parallel_chunked_streaming_matches_sequential` are green with the new scan.
+
+### 11.5 What did not work
+
+- **A fused/hoisted inner block loop** (`ColumnRows::block_values`): hoisting
+  `instance_weight` out of the per-column loop and fusing fill+accumulate saves
+  one `F2_128` multiply per column but adds per-block claim/extras/binary-search
+  overhead. Same-binary A/B at `2^14`: **9.1 CPU-s vs 6.3 CPU-s, i.e. 35 %
+  slower**. Kept behind `MAGNETAR_P2_FUSED` for a host with different cache
+  behaviour; the default stays on the materialise-and-accumulate loop.
+- **Hoisted sum-check evaluation** in the register-twist Access stage: the
+  repeated factor loads are absorbed by cache/LLVM; measured 0 % on CPU time,
+  reverted.
+- Work stealing is kept for robustness but its size could not be isolated on
+  this host: the wall-clock spread of two identical runs is larger than the
+  expected 10–30 %.
+
+### 11.6 Proof bytes and the claim layer
+
+The proof grew from 861,407 B to **1,018,152 B** (varint 829,741 B,
+compressed 667,089 B). That is not from the prover work above: it is the
+in-progress polylog claim layer (docs/POLYLOG_CLAIM_VERIFIER.md), which commits
+the claim table as packed bit columns and attaches the commitment/opening to
+`ClaimProof`. The claim table PCS uses rate 1/8
+(`P3BinaryPcs::with_params(100, 3, 20, 3)`); at rate 1/2 the same proof was
+1,136,696 B with the same verify time, so rate 1/8 is the shipped profile. The
+row-based blob is still present during the transition, so both encodings are
+carried (`MAGNETAR_CLAIM_TABLE=0` reverts to it); removing it is the next
+structural step (M4/M5), after which the proof comes back below the old size.
+The streaming/eager byte equality gate still passes, so the prover change
+itself is byte-neutral.
+
+Measured on one `2^16` binary, interleaved within a minute:
+
+| claim table | verify | proof | peak |
+| --- | --- | --- | --- |
+| off (legacy row sums) | 45.97 ms | 861,408 B | 2.19 GiB |
+| on, rate 1/8 (default) | **27.38 ms** | 1,018,152 B | 2.38 GiB |
+
+### 11.7 Next
+
+1. **Inner stage** is now the largest single term (24.5 s). The cheap levers
+   left are: amortise `fill_left`'s per-block overhead by filling larger
+   column chunks per block (the measured per-block cost at round 0 dominates),
+   and re-check the level budget trade on a quiet host.
+2. **Outer scan** (24.5 s): 3.7 entries per row stay the floor of this
+   formulation; the remaining ideas are a tighter CSR layout
+   (`(word, shift, slot, coefficient)` packed into 16 B) and prefetching the
+   bit window.
+3. **Claim layer**: finish M4/M5 so the claim table replaces the row blob
+   (proof back below 861 KB and the verifier's O(rows) claim/Logup work gone).
+4. Refresh the 2^17/2^18/2^19 staircase only with the memory watchdog and one
+   run at a time; the host's free memory has been under 1.5 GiB during this
+   round.

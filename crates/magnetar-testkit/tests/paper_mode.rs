@@ -42,7 +42,7 @@ fn paper_mode_committed_shout_round_trips() {
         program_hash: program_hash(&program),
         rom: trace.rom.clone(),
         trace_commitment: trace_digest(&trace),
-        trace_claim_root: magnetar_runtime::trace_claims::TraceClaimTree::build(&trace).root(),
+        trace_claim_root: magnetar_runtime::claim_table::statement_claim_root(&trace),
         access_statement_digest: AccessStatement::from_trace(&trace).digest(),
         config: trace.config.clone(),
         initial_state: trace.initial_state.clone(),

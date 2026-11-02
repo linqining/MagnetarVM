@@ -52,6 +52,7 @@ fn gib(bytes: u64) -> f64 {
 }
 
 fn main() {
+    let _memory_watchdog = magnetar_testkit::install_memory_watchdog(4.0);
     let adds = std::env::var("ADDS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
@@ -85,7 +86,7 @@ fn main() {
         program_hash: program_hash(&program),
         rom: trace.rom.clone(),
         trace_commitment: trace_digest(&trace),
-        trace_claim_root: magnetar_runtime::trace_claims::TraceClaimTree::build(&trace).root(),
+        trace_claim_root: magnetar_runtime::claim_table::statement_claim_root(&trace),
         access_statement_digest: AccessStatement::from_trace(&trace).digest(),
         config: trace.config.clone(),
         initial_state: trace.initial_state.clone(),
@@ -118,11 +119,24 @@ fn main() {
     let proof = if use_trace_shout {
         let mut proof =
             magnetar_runtime::prove_unified_trace_dynamic_native(&trace, width()).unwrap();
+        // Keep the committed claim table when swapping in the compact
+        // register-derived blob; the composed trace_claim_root binds it.
+        let claim_table = proof
+            .claim_proof
+            .as_ref()
+            .and_then(|claims| claims.table.clone());
         proof.claim_proof = if no_claim {
             None
         } else {
-            Some(magnetar_runtime::trace_claims::ClaimProof::from_trace_reg(&trace))
+            let mut claims = magnetar_runtime::trace_claims::ClaimProof::from_trace_reg(&trace);
+            claims.table = claim_table;
+            Some(claims)
         };
+        if no_claim {
+            // Trace-mode verification binds the legacy row root only.
+            proof.trace_claim_root =
+                magnetar_runtime::trace_claims::TraceClaimTree::build(&trace).root();
+        }
         proof
     } else {
         prove_unified_trace_paper(&trace, width()).unwrap()
@@ -176,12 +190,23 @@ fn main() {
             let _ = verify_native_unified(&statement, &proof, width());
         }
         let wall = wall.elapsed();
-        if let (Some(before), Some(after)) = (cpu, process_cpu_seconds()) {
-            eprintln!(
-                "verify cpu: {:.1} ms/iter over {repeat} runs (wall {:.1} ms/iter)",
-                (after - before) * 1000.0 / repeat as f64,
+        let cpu_ms = match (cpu, process_cpu_seconds()) {
+            (Some(before), Some(after)) => {
+                Some((after - before) * 1000.0 / repeat as f64)
+            }
+            _ => None,
+        };
+        // `ps` may be unavailable in sandboxed runs, so the wall figure is
+        // always printed; CPU is printed when the process CPU counter works.
+        match cpu_ms {
+            Some(cpu_ms) => eprintln!(
+                "verify cpu: {cpu_ms:.1} ms/iter over {repeat} runs (wall {:.1} ms/iter)",
                 wall.as_secs_f64() * 1000.0 / repeat as f64
-            );
+            ),
+            None => eprintln!(
+                "verify wall: {:.1} ms/iter over {repeat} runs (ps unavailable)",
+                wall.as_secs_f64() * 1000.0 / repeat as f64
+            ),
         }
     }
     if profile {

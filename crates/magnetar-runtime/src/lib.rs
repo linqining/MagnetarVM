@@ -20,6 +20,7 @@ pub mod binary_twist;
 pub mod binary_twist_address;
 pub mod branch_row;
 pub mod claim_native;
+pub mod claim_table;
 pub mod linear_twist;
 pub mod local_shared;
 pub mod local_twist;
@@ -158,7 +159,7 @@ impl ReferencePipeline {
             program_hash: program_hash(&expanded),
             rom: trace.rom.clone(),
             trace_commitment: trace_digest(&trace),
-            trace_claim_root: crate::trace_claims::TraceClaimTree::build(&trace).root(),
+            trace_claim_root: crate::claim_table::statement_claim_root(&trace),
             access_statement_digest: crate::access_statement::AccessStatement::from_trace(&trace)
                 .digest(),
             config: trace.config.clone(),
@@ -197,7 +198,7 @@ impl ReferencePipeline {
             program_hash: program_hash(image),
             rom: trace.rom.clone(),
             trace_commitment: trace_digest(&trace),
-            trace_claim_root: crate::trace_claims::TraceClaimTree::build(&trace).root(),
+            trace_claim_root: crate::claim_table::statement_claim_root(&trace),
             access_statement_digest: crate::access_statement::AccessStatement::from_trace(&trace)
                 .digest(),
             config: trace.config.clone(),
@@ -2832,6 +2833,7 @@ pub fn prove_unified_trace_dynamic_native_trace(
 ) -> Result<UnifiedTraceProof, RuntimeError> {
     let mut proof = prove_unified_trace_dynamic_native_profile(trace, width)?.0;
     proof.claim_proof = None;
+    proof.trace_claim_root = crate::trace_claims::TraceClaimTree::build(trace).root();
     Ok(proof)
 }
 
@@ -2858,7 +2860,14 @@ pub fn prove_unified_trace_paper(
     .0;
     proof.logup_shout = Some(logup);
     proof.trace_logup_shout = None;
+    let claim_table = proof
+        .claim_proof
+        .as_ref()
+        .and_then(|claims| claims.table.clone());
     proof.claim_proof = Some(crate::trace_claims::ClaimProof::from_trace_reg(trace));
+    if let Some(claims) = proof.claim_proof.as_mut() {
+        claims.table = claim_table;
+    }
     if let Some(selected) = &proof.selected_cpu {
         if let Ok(set) = crate::virtual_claims::VirtualClaimSet::from_selected(selected) {
             proof.virtual_claim_root = set.root;
@@ -2988,6 +2997,21 @@ fn prove_unified_trace_dynamic_native_profile_inner(
         if let Some(selected) = &proof.selected_cpu {
             if let Ok(set) = crate::virtual_claims::VirtualClaimSet::from_selected(selected) {
                 proof.virtual_claim_root = set.root;
+            }
+            // Commit the claim columns and prove the claim relation against the
+            // selected claim target (polylog verifier, width 64 only).
+            if selected.op == crate::simd_dual::SelectedOp::Dynamic
+                && width == crate::claim_table::CLAIM_TABLE_WIDTH
+                && crate::claim_table::claim_table_enabled()
+            {
+                let (table, binding_root) =
+                    crate::claim_table::prove_claim_table(trace, width, selected)?;
+                if let Some(claims) = proof.claim_proof.as_mut() {
+                    claims.table = Some(table);
+                }
+                proof.trace_claim_root = binding_root;
+            } else {
+                proof.trace_claim_root = crate::trace_claims::TraceClaimTree::build(trace).root();
             }
         }
         timings.push(StageTiming {
@@ -3598,11 +3622,18 @@ pub fn verify_unified_trace(
     proof: &UnifiedTraceProof,
     width: usize,
 ) -> Result<(), RuntimeError> {
-    if proof.trace_claim_root != crate::trace_claims::TraceClaimTree::build(trace).root() {
+    let rows_root = crate::trace_claims::TraceClaimTree::build(trace).root();
+    // Native proofs bind the committed claim table in the composed root;
+    // legacy proofs carry the row root directly.
+    let expected_root = match proof.claim_proof.as_ref().and_then(|claims| claims.table.as_ref()) {
+        Some(table) => crate::claim_table::claim_binding_root_from_parts(rows_root, &table.root),
+        None => rows_root,
+    };
+    if proof.trace_claim_root != expected_root {
         return Err(RuntimeError::Proof("trace claim root mismatch".into()));
     }
     if let Some(claims) = &proof.claim_proof {
-        if claims.root != proof.trace_claim_root {
+        if claims.root != rows_root {
             return Err(RuntimeError::Proof("claim proof mismatch".into()));
         }
         let Some(rows) = claims.verify() else {
@@ -3625,7 +3656,11 @@ pub fn verify_unified_claim_proof(
         .claim_proof
         .as_ref()
         .ok_or_else(|| RuntimeError::Proof("missing claim proof".into()))?;
-    if claims.root != proof.trace_claim_root {
+    let expected_root = match &claims.table {
+        Some(table) => crate::claim_table::claim_binding_root_from_parts(claims.root, &table.root),
+        None => claims.root,
+    };
+    if proof.trace_claim_root != expected_root {
         return Err(RuntimeError::Proof("claim proof root mismatch".into()));
     }
     claims
@@ -3643,7 +3678,16 @@ pub fn verify_unified_claim_proof_with_statement(
         .claim_proof
         .as_ref()
         .ok_or_else(|| RuntimeError::Proof("missing claim proof".into()))?;
-    if claims.root != proof.trace_claim_root {
+    if proof.trace_claim_root != statement.trace_claim_root {
+        return Err(RuntimeError::Proof(
+            "claim root does not match the public statement".into(),
+        ));
+    }
+    let expected_root = match &claims.table {
+        Some(table) => crate::claim_table::claim_binding_root_from_parts(claims.root, &table.root),
+        None => claims.root,
+    };
+    if proof.trace_claim_root != expected_root {
         return Err(RuntimeError::Proof(
             "claim proof root mismatch".into(),
         ));
@@ -3744,7 +3788,14 @@ pub fn verify_native_unified(
         .claim_proof
         .as_ref()
         .ok_or_else(|| RuntimeError::Proof("missing claim proof".into()))?;
-    if claim_proof.root != statement.trace_claim_root {
+    let claim_table = claim_proof.table.as_ref();
+    let expected_root = match claim_table {
+        Some(table) => {
+            crate::claim_table::claim_binding_root_from_parts(claim_proof.root, &table.root)
+        }
+        None => claim_proof.root,
+    };
+    if expected_root != statement.trace_claim_root || proof.trace_claim_root != expected_root {
         return Err(RuntimeError::Proof("claim proof root mismatch".into()));
     }
     let rows = claim_proof
@@ -3760,9 +3811,9 @@ pub fn verify_native_unified(
     }
     let claim_root = claim_proof.root;
     // Wave 1: everything that only needs the decoded rows runs together — the
-    // claim leaf/tree check, the folded claim's row sums, the access statement
-    // and the claim-derived trace. Wave 2 (selected lockstep + core proof) then
-    // only needs wave 1's results.
+    // claim leaf/tree check, the committed claim table's relation, the access
+    // statement and the claim-derived trace. Wave 2 (selected lockstep + core
+    // proof) then only needs wave 1's results.
     std::thread::scope(|scope| {
         let rows_ref = &rows;
         let leaves = scope.spawn(move || -> Result<(), RuntimeError> {
@@ -3784,12 +3835,34 @@ pub fn verify_native_unified(
             .map(|selected| {
                 scope.spawn(move || -> Result<crate::simd_dual::DynamicClaim, RuntimeError> {
                     let started = std::time::Instant::now();
-                    let backend = crate::protocol::selected_backend();
-                    let claim = crate::simd_dual::dynamic_claim_for_selected(
-                        selected, rows_ref, &backend,
+                    // Interleaved A/B toggle: `MAGNETAR_CLAIM_ROWS=1` keeps the
+                    // legacy per-row claim sums so the polylog claim table can
+                    // be measured against the same binary. Both paths are
+                    // sound; only the cost differs.
+                    let use_rows = claim_table.is_none()
+                        || std::env::var_os("MAGNETAR_CLAIM_ROWS").is_some();
+                    if use_rows {
+                        let backend = crate::protocol::selected_backend();
+                        let claim = crate::simd_dual::dynamic_claim_for_selected(
+                            selected, rows_ref, &backend,
+                        )?;
+                        if profile {
+                            eprintln!(
+                                "verify_native claim rows (legacy A/B): {:?}",
+                                started.elapsed()
+                            );
+                        }
+                        return Ok(claim);
+                    }
+                    // Polylog claim check: the target is verified against the
+                    // committed claim columns instead of re-summing every row.
+                    let claim = crate::claim_table::verify_claim_table_and_claim(
+                        claim_table.expect("claim table path requires a table"),
+                        selected,
+                        width,
                     )?;
                     if profile {
-                        eprintln!("verify_native claim sums: {:?}", started.elapsed());
+                        eprintln!("verify_native claim table: {:?}", started.elapsed());
                     }
                     Ok(claim)
                 })
@@ -3954,11 +4027,35 @@ pub fn verify_unified_trace_statement(
         || statement.initial_ram != trace.initial_ram
         || statement.final_state != trace.final_state
         || statement.trace_commitment != proof.trace_commitment
-        || statement.trace_claim_root != proof.trace_claim_root
         || statement.rom != trace.rom
         || statement.program_hash != rom_hash(&statement.rom)
         || statement.output != trace.io_output
         || statement.input != trace.io_input
+    {
+        return Err(RuntimeError::Proof(
+            "public statement does not match the trace".into(),
+        ));
+    }
+    // The statement carries the composed claim binding (row root + committed
+    // claim table) when the trace has a claim table, and the legacy row root
+    // otherwise. Legacy proofs omit the table and bind only the row root;
+    // native proofs bind the composed value.
+    let rows_root = crate::trace_claims::TraceClaimTree::build(trace).root();
+    let composed_root = if crate::claim_table::claim_table_enabled() {
+        crate::claim_table::claim_binding_root(trace).ok()
+    } else {
+        None
+    };
+    let expected_statement_root = composed_root.unwrap_or(rows_root);
+    let table = proof.claim_proof.as_ref().and_then(|claims| claims.table.as_ref());
+    let expected_proof_root = match table {
+        Some(_) => composed_root.ok_or_else(|| {
+            RuntimeError::Proof("claim proof carries a claim table the trace cannot build".into())
+        })?,
+        None => rows_root,
+    };
+    if statement.trace_claim_root != expected_statement_root
+        || proof.trace_claim_root != expected_proof_root
     {
         return Err(RuntimeError::Proof(
             "public statement does not match the trace".into(),
@@ -6528,13 +6625,16 @@ mod tests {
         if let Some(selected) = &proof.selected_cpu {
             let backend = crate::protocol::selected_backend();
             crate::simd_dual::verify_dynamic_cpu_claims(&synthetic, selected, &backend).unwrap();
-            crate::simd_dual::verify_dynamic_claim_bundle(
-                &statement,
-                proof.claim_proof.as_ref().unwrap(),
-                selected,
-                &backend,
-            )
-            .unwrap();
+            let claim_table = proof
+                .claim_proof
+                .as_ref()
+                .and_then(|claims| claims.table.as_ref())
+                .expect("native proof carries the committed claim table");
+            let claim =
+                crate::claim_table::verify_claim_table_and_claim(claim_table, selected, 64)
+                    .unwrap();
+            crate::simd_dual::verify_dynamic_claim_binding_prepared(selected, &claim, &backend)
+                .unwrap();
         }
         claim_rows[0].rd_value ^= 1;
         let access = crate::access_statement::AccessStatement::from_claims(
@@ -6689,8 +6789,131 @@ mod tests {
             2,
         )
         .unwrap();
-        let proof = prove_unified_trace(&outcome.trace, 64).unwrap();
+        // The trace-free native verifier requires the committed claim table,
+        // so prove through the native dynamic path (compressed instructions are
+        // represented by the claim schema).
+        let proof = prove_unified_trace_dynamic_native(&outcome.trace, 64).unwrap();
         verify_native_unified(&outcome.statement, &proof, 64).unwrap();
+    }
+
+    #[test]
+    fn native_claim_table_polylog_binding_rejects_tampering() {
+        let outcome = ReferencePipeline::run(
+            &ProgramImage::new(
+                0x1000,
+                vec![
+                    magnetar_spec::Instruction {
+                        op: magnetar_spec::Op::Addi,
+                        rd: 1,
+                        rs1: 0,
+                        rs2: 0,
+                        imm: 7,
+                        shamt: 0,
+                    }
+                    .encode(),
+                    magnetar_spec::Instruction::new(magnetar_spec::Op::Ecall).encode(),
+                ],
+            ),
+            config(),
+            2,
+        )
+        .unwrap();
+        let proof = prove_unified_trace_dynamic_native(&outcome.trace, 64).unwrap();
+        let statement = outcome.statement.clone();
+        verify_native_unified(&statement, &proof, 64).unwrap();
+        let table = proof
+            .claim_proof
+            .as_ref()
+            .and_then(|claims| claims.table.as_ref())
+            .expect("native proof carries the committed claim table");
+        assert_eq!(
+            crate::claim_table::claim_table_root(&table.commitment),
+            table.root
+        );
+        assert_eq!(
+            crate::claim_table::claim_binding_root_from_parts(
+                proof.claim_proof.as_ref().unwrap().root,
+                &table.root,
+            ),
+            statement.trace_claim_root
+        );
+
+        // The composed statement root binds the claim-table commitment.
+        let mut bad_statement = statement.clone();
+        bad_statement.trace_claim_root[0] ^= 1;
+        assert!(verify_native_unified(&bad_statement, &proof, 64).is_err());
+
+        // Commitment and root tampering.
+        let mut bad = proof.clone();
+        bad.claim_proof
+            .as_mut()
+            .unwrap()
+            .table
+            .as_mut()
+            .unwrap()
+            .commitment
+            .num_variables += 1;
+        assert!(verify_native_unified(&statement, &bad, 64).is_err());
+        let mut bad = proof.clone();
+        bad.claim_proof
+            .as_mut()
+            .unwrap()
+            .table
+            .as_mut()
+            .unwrap()
+            .root[0] ^= 1;
+        assert!(verify_native_unified(&statement, &bad, 64).is_err());
+
+        // Claim relation tampering: a round polynomial, the claimed sum and the
+        // ring-switch opening are each rejected.
+        let mut bad = proof.clone();
+        bad.claim_proof
+            .as_mut()
+            .unwrap()
+            .table
+            .as_mut()
+            .unwrap()
+            .relations[0]
+            .sumcheck
+            .round_polys[0][0] = bad.claim_proof.as_ref().unwrap().table.as_ref().unwrap()
+            .relations[0]
+            .sumcheck
+            .round_polys[0][0]
+            + F2_128::from(1u64);
+        assert!(verify_native_unified(&statement, &bad, 64).is_err());
+        let mut bad = proof.clone();
+        bad.claim_proof
+            .as_mut()
+            .unwrap()
+            .table
+            .as_mut()
+            .unwrap()
+            .relations[0]
+            .sumcheck
+            .claimed_sum = bad.claim_proof.as_ref().unwrap().table.as_ref().unwrap().relations[0]
+            .sumcheck
+            .claimed_sum
+            + F2_128::from(1u64);
+        assert!(verify_native_unified(&statement, &bad, 64).is_err());
+        let mut bad = proof.clone();
+        bad.claim_proof
+            .as_mut()
+            .unwrap()
+            .table
+            .as_mut()
+            .unwrap()
+            .relations[0]
+            .opening
+            .s_hat_v[0] = bad.claim_proof.as_ref().unwrap().table.as_ref().unwrap().relations[0]
+            .opening
+            .s_hat_v[0]
+            + F2_128::from(1u64);
+        assert!(verify_native_unified(&statement, &bad, 64).is_err());
+
+        // Serialization round-trip keeps the table binding valid.
+        let bytes = encode_unified_proof(&proof).unwrap();
+        let decoded = decode_unified_proof(&bytes).unwrap();
+        verify_native_unified(&statement, &decoded, 64).unwrap();
     }
 
     #[test]
@@ -7389,7 +7612,7 @@ mod tests {
             program_hash: program_hash(&program),
             rom: trace.rom.clone(),
             trace_commitment: trace_digest(&trace),
-            trace_claim_root: crate::trace_claims::TraceClaimTree::build(&trace).root(),
+            trace_claim_root: crate::claim_table::statement_claim_root(&trace),
             access_statement_digest: crate::access_statement::AccessStatement::from_trace(&trace)
                 .digest(),
             config: config(),
@@ -8436,7 +8659,7 @@ mod tests {
             program_hash: program_hash(&program),
             rom: trace.rom.clone(),
             trace_commitment: trace_digest(&trace),
-            trace_claim_root: crate::trace_claims::TraceClaimTree::build(&trace).root(),
+            trace_claim_root: crate::claim_table::statement_claim_root(&trace),
             access_statement_digest: crate::access_statement::AccessStatement::from_trace(&trace)
                 .digest(),
             config: config(),

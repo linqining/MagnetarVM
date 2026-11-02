@@ -7608,7 +7608,17 @@ where
     B::Commitment: Sync,
     B::Opening: Sync,
 {
-    if claim_proof.root != statement.trace_claim_root {
+    // Native proofs bind the committed claim table in a composed root; legacy
+    // proofs (and the claim-native fast path without the table) carry the row
+    // root directly. Same rule as `verify_unified_trace`.
+    let expected_root = match claim_proof.table.as_ref() {
+        Some(table) => crate::claim_table::claim_binding_root_from_parts(
+            claim_proof.root,
+            &table.root,
+        ),
+        None => claim_proof.root,
+    };
+    if expected_root != statement.trace_claim_root {
         return Err(RuntimeError::Proof(
             "claim proof root does not match the statement".into(),
         ));
@@ -9959,6 +9969,89 @@ impl<M: magnetar_proof::SpartanMatrix> magnetar_proof::SpartanMatrix for Scatter
             .and_then(|mle| mle.eval(col_point))
             .map_err(magnetar_proof::SpartanError::Proof)
     }
+}
+
+/// Per-row values of the canonical claim column set, laid out column-major.
+///
+/// This is the polylog claim-table source (`docs/POLYLOG_CLAIM_VERIFIER.md`):
+/// the same emission logic as `dynamic_claim_sums_with`, but returning the raw
+/// bit of every claimed block column instead of a row-weighted field sum. The
+/// returned `slots` are indexed by the position of the block column in
+/// `columns` (the canonical claim schema order), so a packed claim table is
+/// `slots[slot][row]`.
+///
+/// The mask/padding rules must match `dynamic_segment_setup` exactly, because
+/// the claim table has to agree with the committed selected witness on the
+/// claimed columns.
+pub(crate) fn dynamic_claim_column_bits(
+    trace: &magnetar_spec::Trace,
+    width: usize,
+) -> Result<(u8, usize, Vec<usize>, Vec<Vec<bool>>), RuntimeError> {
+    let claims = trace
+        .rows
+        .iter()
+        .map(crate::trace_claims::TraceClaim::from_row)
+        .collect::<Vec<_>>();
+    let inputs = mixed_alu_branch_rows_and_flags_from_claims(&claims)
+        .ok_or_else(|| RuntimeError::Proof("dynamic claim row decode".into()))?;
+    if inputs.len() != claims.len() {
+        return Err(RuntimeError::Proof("dynamic claim row count".into()));
+    }
+    // Mask and cycle count follow `dynamic_segment_setup`.
+    let mask_rows = mixed_alu_branch_rows_from_trace_dynamic(trace, width)?;
+    let final_pc = trace.final_state.pc;
+    let mut mask = mixed_rows_component_mask(&mask_rows);
+    if mask_rows.len() < mask_rows.len().next_power_of_two().max(2) {
+        mask |= MIXED_BRANCH;
+    }
+    if mask_rows.last().map(|(pc, _)| *pc) == Some(final_pc) && mask & MIXED_JUMP == 0 {
+        mask |= MIXED_BRANCH;
+    }
+    let matrix_cycles = mask_rows.len().next_power_of_two().max(2);
+    let original = DynamicMixedRow::build(mask, width)?;
+    let (_, mapping, layout) = segmented_dynamic_row(mask, width, matrix_cycles)?;
+    let block_cols = layout.total_bits / matrix_cycles;
+    let schema = dynamic_claim_schema_with(&original, &mapping, block_cols, matrix_cycles)?;
+    let mut slots = vec![vec![false; matrix_cycles]; schema.columns.len()];
+    let mut emitted = vec![false; schema.columns.len()];
+    let mut emissions = Vec::new();
+    for index in 0..matrix_cycles {
+        let (pc, next_pc, instruction_len, input) = if index < claims.len() {
+            (
+                inputs[index].0,
+                claims[index].next_pc,
+                claims[index].instruction_len,
+                inputs[index].1,
+            )
+        } else {
+            (final_pc, final_pc, 4, dynamic_padding_input(mask, final_pc))
+        };
+        claim_emission(
+            &original,
+            &mapping,
+            &input,
+            pc,
+            next_pc,
+            instruction_len,
+            &mut emissions,
+        );
+        for &(column, value) in &emissions {
+            let slot = schema.slot_of[column] as usize;
+            if slot == u32::MAX as usize {
+                continue;
+            }
+            if emitted[slot] && slots[slot][index] != value {
+                return Err(RuntimeError::Proof(
+                    "dynamic claim column emitted twice with different values".into(),
+                ));
+            }
+            emitted[slot] = true;
+            slots[slot][index] = value;
+        }
+        // Reset the per-row duplicate detection for the next row.
+        emitted.fill(false);
+    }
+    Ok((mask, matrix_cycles, schema.columns, slots))
 }
 
 #[cfg(test)]

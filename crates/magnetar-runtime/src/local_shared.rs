@@ -11,10 +11,10 @@ use crate::binary_twist::{
     eq_vector, replay_terms_derived, sample_point, sumcheck_terms_indexed,
 };
 use crate::linear_twist::{
-    eq_points_local, eval_mle, fixed_sumcheck_indexed, linear_pcs, replay_fixed,
-    witness_shape, LinearTwistShape,
+    eq_points_local, eval_mle, fixed_sumcheck_indexed, linear_pcs, replay_fixed, witness_shape,
+    LinearTwistShape,
 };
-use crate::local_twist::{dense_onehot, flat, padded};
+use crate::local_twist::padded;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LocalSharedProof {
@@ -45,11 +45,15 @@ fn layout(shape: LinearTwistShape) -> (usize, usize, usize, usize, usize) {
     )
 }
 
-fn build_columns(witness: &BinaryTwistWitness) -> Vec<Vec<F2_128>> {
+fn build_columns(
+    witness: &BinaryTwistWitness,
+    read_bits: Vec<Vec<F2_128>>,
+    read_valid: Vec<F2_128>,
+    write_bits: Vec<Vec<F2_128>>,
+    write_valid: Vec<F2_128>,
+) -> Vec<Vec<F2_128>> {
     let shape = witness_shape(witness);
     let cycles = shape.cycles;
-    let (read_bits, read_valid, _) = crate::virtual_onehot::bit_columns_pub(witness, false);
-    let (write_bits, write_valid, _) = crate::virtual_onehot::bit_columns_pub(witness, true);
     let mut inc = vec![F2_128::from(0u64); cycles];
     let copied = witness.cycles.min(cycles);
     inc[..copied].copy_from_slice(&witness.increment[..copied]);
@@ -63,24 +67,115 @@ fn build_columns(witness: &BinaryTwistWitness) -> Vec<Vec<F2_128>> {
     columns
 }
 
+/// Flattens the one-hot address matrix of one side directly, cell by cell.
+///
+/// `flat[cell * cycles + cycle]` is the address bit of that cell. Building it
+/// straight from the witness rows avoids materialising the `cells` column
+/// vectors first and then copying them again.
+fn flat_onehot(witness: &BinaryTwistWitness, write: bool, cycles: usize) -> Vec<F2_128> {
+    let cells = 1usize << witness.address_bits;
+    let source = if write {
+        &witness.write_address
+    } else {
+        &witness.read_address
+    };
+    let mut flat = vec![F2_128::from(0u64); cells * cycles];
+    for (cycle, row) in source.iter().enumerate() {
+        for (cell, value) in row.iter().enumerate().take(cells) {
+            flat[cell * cycles + cycle] = *value;
+        }
+    }
+    flat
+}
+
+/// Repeats one cycle-indexed vector under every cell of the flattened layout.
+fn repeated_blocks(values: &[F2_128], cells: usize, cycles: usize) -> Vec<F2_128> {
+    let mut flat = vec![F2_128::from(0u64); cells * cycles];
+    for cell in 0..cells {
+        flat[cell * cycles..cell * cycles + cycles].copy_from_slice(&values[..cycles]);
+    }
+    flat
+}
+
+/// The value table and increment column without the unused write-address table.
+///
+/// `val[cell * cycles + cycle]` is the cell's value before that cycle's write.
+fn build_val_flat(witness: &BinaryTwistWitness) -> (Vec<F2_128>, Vec<F2_128>) {
+    let cells = 1usize << witness.address_bits;
+    let cycles = witness.cycles.next_power_of_two().max(2);
+    let mut val = vec![F2_128::from(0u64); cells * cycles];
+    let mut inc = vec![F2_128::from(0u64); cycles];
+    let mut current = witness.initial.clone();
+    current.resize(cells, F2_128::from(0u64));
+    for (cycle, target_inc) in inc.iter_mut().enumerate() {
+        let increment = witness
+            .increment
+            .get(cycle)
+            .copied()
+            .unwrap_or(F2_128::from(0u64));
+        let write = witness.write_address.get(cycle);
+        for cell in 0..cells {
+            let index = cell * cycles + cycle;
+            let write_bit = write.map_or(F2_128::from(0u64), |row| row[cell]);
+            val[index] = current[cell];
+            current[cell] = current[cell] + write_bit * increment;
+        }
+        *target_inc = increment;
+    }
+    (val, inc)
+}
+
+/// Evaluation of a one-hot address matrix at (cell point, cycle point).
+///
+/// `dense[cell][cycle]` is one exactly on the addressed cell, so the
+/// multilinear evaluation is a per-cycle equality weight times the address
+/// weight. This is `O(cycles * address_bits)` instead of a full `cells * cycles`
+/// pass over a materialised dense matrix.
+fn onehot_eval(
+    bits: &[Vec<F2_128>],
+    valid: &[F2_128],
+    cell_point: &[F2_128],
+    cycle_point: &[F2_128],
+    cycles: usize,
+) -> F2_128 {
+    let eq = eq_vector(cycle_point, cycles);
+    let mut total = F2_128::from(0u64);
+    for cycle in 0..cycles {
+        let mut weight = eq[cycle] * valid[cycle];
+        for (bit, column) in bits.iter().enumerate() {
+            let value = column[cycle];
+            weight = weight
+                * (cell_point[bit] * value
+                    + (F2_128::from(1u64) + cell_point[bit])
+                        * (F2_128::from(1u64) + value));
+        }
+        total = total + weight;
+    }
+    total
+}
+
 pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedProof, ProofError> {
     let shape = witness_shape(witness);
     let cells = shape.cells();
     let cycles = shape.cycles;
     let cycle_bits = shape.cycle_bits();
     let started = std::time::Instant::now();
-    let columns = build_columns(witness);
-    let read = dense_onehot(witness, false);
-    let write = dense_onehot(witness, true);
-    let (val_flat, _, inc) = crate::linear_twist::build_val_tables(witness);
-    let write_flat = flat(&write, cycles);
-    let read_flat = flat(&read, cycles);
-    let mut inc_flat = vec![F2_128::from(0u64); cells * cycles];
-    for cycle in 0..cycles {
-        for cell in 0..cells {
-            inc_flat[cell * cycles + cycle] = inc[cycle];
-        }
-    }
+    // One pass over the witness builds the address bit columns; every later
+    // table reuses them. The former code rebuilt them six times (twice here,
+    // twice for each side of the virtual-address claims).
+    let (read_bits, read_valid, _) = crate::virtual_onehot::bit_columns_pub(witness, false);
+    let (write_bits, write_valid, _) = crate::virtual_onehot::bit_columns_pub(witness, true);
+    let columns = build_columns(
+        witness,
+        read_bits.clone(),
+        read_valid.clone(),
+        write_bits.clone(),
+        write_valid.clone(),
+    );
+    let write_flat = flat_onehot(witness, true, cycles);
+    let read_flat = flat_onehot(witness, false, cycles);
+    let (val_flat, inc) = build_val_flat(witness);
+    let inc_flat = repeated_blocks(&inc, cells, cycles);
     if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
         eprintln!("local tables: {:?}", started.elapsed());
     }
@@ -102,12 +197,7 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
     }
     let started = std::time::Instant::now();
     let eq = eq_vector(&cycle_point, cycles);
-    let mut eq_flat = vec![F2_128::from(0u64); cells * cycles];
-    for cycle in 0..cycles {
-        for cell in 0..cells {
-            eq_flat[cell * cycles + cycle] = eq[cycle];
-        }
-    }
+    let eq_flat = repeated_blocks(&eq, cells, cycles);
     let mut factors = vec![eq_flat, write_flat.clone(), inc_flat, val_flat.clone(), read_flat];
     if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
         eprintln!("local rw factors: {:?}", started.elapsed());
@@ -168,15 +258,18 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
     let mut virtual_claims = Vec::with_capacity(targets.len());
     let mut virtual_factors = Vec::new();
     let mut groups = Vec::with_capacity(targets.len());
-    let (rb, rv) = (crate::virtual_onehot::bit_columns_pub(witness, false).0, crate::virtual_onehot::bit_columns_pub(witness, false).1);
-    let (wb, wv) = (crate::virtual_onehot::bit_columns_pub(witness, true).0, crate::virtual_onehot::bit_columns_pub(witness, true).1);
     for (write_target, target_rk, target_rj) in &targets {
-        let (bits, valid) = if *write_target { (&wb, &wv) } else { (&rb, &rv) };
-        let dense = if *write_target { &write } else { &read };
-        let dense_flat = flat(dense, cycles);
-        virtual_claims.push(eval_mle(
-            &dense_flat,
-            &target_rj.iter().chain(target_rk).copied().collect::<Vec<_>>(),
+        let (bits, valid) = if *write_target {
+            (&write_bits, &write_valid)
+        } else {
+            (&read_bits, &read_valid)
+        };
+        virtual_claims.push(onehot_eval(
+            bits,
+            valid,
+            target_rk,
+            target_rj,
+            cycles,
         ));
         let mut group = Vec::new();
         group.push(virtual_factors.len());
@@ -258,8 +351,10 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
         eprintln!("local value claims: {:?}", started.elapsed());
     }
     let started = std::time::Instant::now();
+    // The prepared batch moves into the opening: no deep copy of the codeword
+    // and Merkle tree (half a gigabyte at RV64 `2^16`).
     let opening = pcs
-        .open_batch_prepared(&prepared, &values_points)
+        .open_batch_prepared(prepared, &values_points)
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
     if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
         eprintln!("local opening: {:?}", started.elapsed());
@@ -577,6 +672,45 @@ pub fn local_shared_outer_claims(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The compact table builders must produce exactly the tables the former
+    /// dense materialisation produced, value for value: the proof transcript
+    /// depends on every one of them.
+    #[test]
+    fn compact_tables_match_the_dense_reference() {
+        let witness = crate::linear_twist::tests::register_witness();
+        let shape = witness_shape(&witness);
+        let (cycles, cells) = (shape.cycles, shape.cells());
+        for write in [false, true] {
+            let dense = crate::local_twist::dense_onehot(&witness, write);
+            let dense_flat = crate::local_twist::flat(&dense, cycles);
+            assert_eq!(flat_onehot(&witness, write, cycles), dense_flat);
+            let (bits, valid, _) = crate::virtual_onehot::bit_columns_pub(&witness, write);
+            for seed in 0..8u64 {
+                let rj = (0..shape.cycle_bits())
+                    .map(|bit| F2_128::from((seed >> bit) & 1))
+                    .collect::<Vec<_>>();
+                let rk = (0..shape.address_bits)
+                    .map(|bit| F2_128::from((seed.wrapping_mul(7) >> bit) & 1))
+                    .collect::<Vec<_>>();
+                let point = rj.iter().chain(rk.iter()).copied().collect::<Vec<_>>();
+                assert_eq!(
+                    eval_mle(&dense_flat, &point),
+                    onehot_eval(&bits, &valid, &rk, &rj, cycles)
+                );
+            }
+        }
+        let (val_reference, _, inc_reference) = crate::linear_twist::build_val_tables(&witness);
+        let (val, inc) = build_val_flat(&witness);
+        assert_eq!(val, val_reference);
+        assert_eq!(inc, inc_reference);
+        let inc_flat = repeated_blocks(&inc, cells, cycles);
+        for cycle in 0..cycles {
+            for cell in 0..cells {
+                assert_eq!(inc_flat[cell * cycles + cycle], inc[cycle]);
+            }
+        }
+    }
 
     #[test]
     fn local_shared_round_trips() {

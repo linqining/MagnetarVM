@@ -1813,14 +1813,20 @@ impl<'a> UnifiedProveContext<'a> {
     ) -> Result<Self, RuntimeError> {
         check_trace_linkage(trace)?;
         let debug_tables = std::env::var_os("MAGNETAR_DEBUG_TABLES").is_some();
+        let profile_context = std::env::var_os("MAGNETAR_PROFILE_CONTEXT").is_some();
+        let context_started = std::time::Instant::now();
         if debug_tables {
             eprintln!("context start rss={:.2} GiB", crate::resident_gib());
         }
+        let twist_started = std::time::Instant::now();
         let witness = BinaryTwistWitness::from_trace(trace)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         witness
             .validate()
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        if profile_context {
+            eprintln!("context twist witness: {:?}", twist_started.elapsed());
+        }
         if debug_tables {
             eprintln!(
                 "after twist witness rss={:.2} GiB (cycles {}, addrs {})",
@@ -1829,8 +1835,12 @@ impl<'a> UnifiedProveContext<'a> {
                 witness.read_address.len()
             );
         }
+        let batch_started = std::time::Instant::now();
         let tables =
             batch_tables(&witness).map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        if profile_context {
+            eprintln!("context batch tables: {:?}", batch_started.elapsed());
+        }
         if debug_tables {
             eprintln!("after batch tables rss={:.2} GiB", crate::resident_gib());
         }
@@ -1847,6 +1857,7 @@ impl<'a> UnifiedProveContext<'a> {
             )
         };
 
+        let side_started = std::time::Instant::now();
         let shout_witness = BinaryShoutWitness::from_trace(trace).ok();
         let shift_router_witness =
             BinaryRouterWitness::from_trace_mode(trace, RouterMode::Shifts).ok();
@@ -1856,11 +1867,23 @@ impl<'a> UnifiedProveContext<'a> {
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         let register_tables = batch_tables(&register_witness)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        let shared_cpu = width <= 128
+        if profile_context {
+            eprintln!("context side witnesses: {:?}", side_started.elapsed());
+        }
+        // Below this gate the dynamic-selected path drops the CPU witness column and the
+        // gated tables, and `ram_index` is 0 whether or not the rows are shareable. Building
+        // them here only to branch on a value that branch does not read costs a full padded
+        // row build (`O(rows x flags)`) on the pre-commit critical path.
+        let shared_started = std::time::Instant::now();
+        let shared_cpu = cpu_columns
+            && width <= 128
             && crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(trace, width)
                 .ok()
                 .filter(|rows| !rows.is_empty() && rows.len().is_power_of_two())
                 .is_some();
+        if profile_context {
+            eprintln!("context reservation rows: {:?}", shared_started.elapsed());
+        }
         let mut mosaic_tables = Vec::new();
         let ram_index = if shared_cpu || !cpu_columns {
             0usize
@@ -1905,7 +1928,11 @@ impl<'a> UnifiedProveContext<'a> {
         mosaic_tables.push(register_tables.initial.clone());
         mosaic_tables.push(register_tables.read_value.clone());
         mosaic_tables.push(register_tables.write_value.clone());
+        let trace_started = std::time::Instant::now();
         let trace_witness = crate::trace_commitment::trace_witness(trace)?;
+        if profile_context {
+            eprintln!("context trace witness: {:?}", trace_started.elapsed());
+        }
         let trace_index = mosaic_tables.len();
         let trace_table = P3MosaicTable {
             columns: vec![trace_witness.values.clone()],
@@ -1989,6 +2016,9 @@ impl<'a> UnifiedProveContext<'a> {
         // small-table threshold with the small-table PCS while the verifier
         // derived the large-table profile from the commitment.
         let pcs = opening_pcs(&mosaic_tables);
+        if profile_context {
+            eprintln!("context total: {:?}", context_started.elapsed());
+        }
 
         Ok(Self {
             trace,

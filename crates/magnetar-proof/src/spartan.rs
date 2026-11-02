@@ -1343,7 +1343,11 @@ pub fn prove_lockstep_claims_bits<B: BitPcs>(
         });
     }
     if profile {
-        eprintln!("selected product6: {:?}", started.elapsed());
+        eprintln!(
+            "selected product6: {:?} cpu={:.2}s",
+            started.elapsed(),
+            crate::process_cpu_seconds()
+        );
     }
     let va0 = az0_mle.eval(&rx)?;
     let vb0 = bz0_mle.eval(&rx)?;
@@ -1367,7 +1371,11 @@ pub fn prove_lockstep_claims_bits<B: BitPcs>(
     let [a0_values, b0_values, c0_values, a1_values, b1_values, c1_values] =
         row_combinations_parallel(a0, b0, c0, a1, b1, c1, &rx)?;
     if profile {
-        eprintln!("selected row-combinations: {:?}", started.elapsed());
+        eprintln!(
+            "selected row-combinations: {:?} cpu={:.2}s",
+            started.elapsed(),
+            crate::process_cpu_seconds()
+        );
     }
     let started = std::time::Instant::now();
     let left_values = (0..z.len())
@@ -1388,7 +1396,11 @@ pub fn prove_lockstep_claims_bits<B: BitPcs>(
         });
     }
     if profile {
-        eprintln!("selected product2: {:?}", started.elapsed());
+        eprintln!(
+            "selected product2: {:?} cpu={:.2}s",
+            started.elapsed(),
+            crate::process_cpu_seconds()
+        );
     }
     let started = std::time::Instant::now();
     let segments = split_segment_claims(layout, z, &ry)?;
@@ -1803,7 +1815,7 @@ fn prove_lockstep_bits_streaming_inner<B: BitPcs>(
     }
     let started = std::time::Instant::now();
     let inner_level = levels.map_or_else(
-        || crate::stream::auto_level(columns.column_bits()),
+        || crate::stream::auto_level_inner(columns.column_bits()),
         |(_, inner)| inner,
     );
     let inner = crate::stream::prove_product2_columns(
@@ -1830,7 +1842,11 @@ fn prove_lockstep_bits_streaming_inner<B: BitPcs>(
     let started = std::time::Instant::now();
     let (opened, opening) = backend.open_with_commitment(bits, &ry, &commitment)?;
     if profiles {
-        eprintln!("selected open: {:?}", started.elapsed());
+        eprintln!(
+            "selected open: {:?} cpu={:.2}s",
+            started.elapsed(),
+            crate::process_cpu_seconds()
+        );
     }
     if opened != vw {
         return Err(SpartanError::ClaimMismatch {

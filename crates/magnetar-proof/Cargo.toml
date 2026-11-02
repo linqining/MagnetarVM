@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+libc = "0.2"
 magnetar-constraint.workspace = true
 magnetar-transcript.workspace = true
 serde.workspace = true

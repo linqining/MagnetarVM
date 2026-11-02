@@ -7,6 +7,22 @@
 use magnetar_constraint::{Field, F2_128};
 use thiserror::Error;
 
+/// CPU time (user + system) consumed by this process, in seconds.
+///
+/// Stage comparisons on a loaded host cannot use wall-clock time: another
+/// process stealing cores inflates it by 2-3x. The consumed CPU time is stable
+/// to a few percent, so every gated profile print includes it.
+pub fn process_cpu_seconds() -> f64 {
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    let status = unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+    if status != 0 {
+        return 0.0;
+    }
+    let user = usage.ru_utime.tv_sec as f64 + usage.ru_utime.tv_usec as f64 * 1e-6;
+    let sys = usage.ru_stime.tv_sec as f64 + usage.ru_stime.tv_usec as f64 * 1e-6;
+    user + sys
+}
+
 /// Commitment interface used by the reference Spartan reduction.
 ///
 /// Implementations commit to a power-of-two evaluation vector. The reference

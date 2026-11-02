@@ -958,3 +958,90 @@ cargo test --release --offline -p magnetar-runtime --lib streaming_lockstep_proo
 /usr/bin/time -l env WIDTH=64 ADDS=65535 MAGNETAR_PROFILE_UNIFIED=1 \
   cargo run --release --offline -p magnetar-testkit --example paper_unified_bench
 ```
+
+## 11. RV64 `2^16` 优化轮（2026-11-03）
+
+状态：在既有 streaming 证明器之上的增量优化，streaming/eager 字节等价闸门保持绿。分支 `virtual-claims-rewrite`。
+
+### 11.1 头部数字
+
+| | 本轮之前（§1） | 本轮之后 |
+| --- | --- | --- |
+| prove wall | 70.4 s | **55.5–59.3 s**（宿主 load 14–72） |
+| prove CPU（user+sys） | ≈800 s | **421.6–434.9 s** |
+| verify wall | 29.6 ms | **27.4 ms**（claim 表开）/ **46.0 ms**（legacy 行路径，§11.6） |
+| 峰值 RSS | 2.26 GiB | **2.38 GiB**（claim 表开；关时 2.19 GiB） |
+| proof 字节 | 861,407 B | **1,018,152 B**（claim 表格式，见 §11.6） |
+
+claim 表现在是默认开启：同一个 2^16 二进制上，它替掉 `O(rows)` 的 claim 行和，
+verify 从 46.0 → 27.4 ms，代价是 +157 KB proof；2^10 上「表路径慢 1.4 ms」只是
+小规模下 PCS 固定成本占主导。
+
+这台机器上 wall 跨次不可比：本轮 load 在 13–150 之间波动，同一二进制同一规模的 spread 达 2.4×。真正可靠的数字是 CPU 时间：同样的 2^16 运行从 ≈800 CPU-s 降到 **421.6 CPU-s**，即工作量约 **1.9×**。下面各阶段 A/B 都在同一二进制里用 env 开关完成（§11.4），不依赖跨二进制 wall。
+
+### 11.2 阶段分解（load 37–72）
+
+| 阶段 | 之前（§2） | 之后 |
+| --- | --- | --- |
+| unified context | 0.48 s | **0.31 s** |
+| unified Commit | 1.19 s | **0.52 s** |
+| unified Access（register twist） | 2.56 s | 2.63 s |
+| unified Opening | 3.38 s | **1.99 s** |
+| selected setup | 0.48 s | 0.40 s（`setup fill+check`） |
+| selected witness commit | 0.95 s | **0.32 s** |
+| `product6`（外层扫描） | 43.2 s | **24.5 s**（独立 probe：24.5 s@load 74；全链路内 27.2 s） |
+| `product2`（内层扫描） | 23.4 s | 内层 budget 22 时 27.5 s；本轮把内层 budget 提到 24（§11.3 第 4 条），全链路实测 24.5 s |
+| selected segments | 1.17 s | 1.20 s |
+| selected open | 0.92 s | **0.84 s** |
+
+两个 streaming product 仍占大头，但外层已不再是一枝独秀。外围阶段也因 teammate 的 p3 hash 修复（§11.5）明显下降：Commit/Opening 约减半。
+
+### 11.3 改了什么
+
+1. **不再扫描零填充行**（`LockstepRows::live_rows`、`prove_product6_rows`）。`SharedBlockMatrix` 把行数向上取整到 2 的幂；RV64 `2^16` 下这份 padding 占 `rows` 的 49.6 %（`2^29` 个 instance 行 + 4,194,368 个 extra 行 pad 到 `2^30`）。live 行之后的六个 slot 全为 0，且整块 padding 对任意 eq 权重都贡献 `product6_pair(0,0,..)=0`，所以每一轮 phase 1 都在最后一个 live block 停止。phase 2 折叠携带「短长度」：它是概念数组的前缀、越界的奇数项为 0；但 **eq 值必须保持全长**（边界元素在后续轮会与它一起折叠——这正是本轮唯一一个 bug，字节等价闸门抓到了它）。
+   同二进制 A/B（`2^14`，`MAGNETAR_LIVE_FULL=1` 关闭该优化）：product6 **12.8 s → 6.5 s**，整次 prove CPU 166 s → 101 s。
+2. **无分支 set-bit 累加**（`accumulate_row_words`）。扫描是 CSR 上每行 ~3.7 个条目，唯一不可预测的分支是 `if bit { add }`；现在改成一次 word load + 0/all-ones 掩码 + 掩码 XOR，消掉 ~50 % 的分支误预测。按构造逐位一致。
+3. **工作窃取式轮内调度**（`parallel_chunks`）。这台机器是 6 性能核 + 6 能效核，固定均分会给能效核留下 straggler（轮时间最多慢 1.3×）；现在 worker 从共享计数器领 chunk。域加法是 XOR，partial sum 的合并与谁处理哪块无关，所以 proof 字节不变。
+4. **内层 level budget 22 → 24**（`auto_level_inner`）。内层（列空间）sum-check 原本要重算 `column_bits-(budget-1)` 轮；多 2 bit budget = 固定 `2^24×16B×2 = 512 MiB` level 数组，换掉 8 轮里的 2 轮全列扫描（内层 stage 的 -25 %；2^16 峰值 +0.5 GiB）。`MAGNETAR_INNER_BUDGET_LOG` 可覆盖。
+5. **可比的测量手段**：所有 env 门控的阶段打印现在都带累计进程 CPU 时间（`magnetar_proof::process_cpu_seconds`，`getrusage`）；streaming 阶段加了同二进制诊断开关（`MAGNETAR_STREAM_WORKERS`、`MAGNETAR_LIVE_FULL`、`MAGNETAR_P2_FUSED`、`MAGNETAR_INNER_BUDGET_LOG`）。这是本轮 A/B 在共享机器上仍然可信的原因。
+6. **benchmark 内存看门狗**（`magnetar_testkit::install_memory_watchdog`，`MAGNETAR_MAX_RSS_GIB`，默认 4 GiB）：任何跑证明的 example 在把宿主推进 swap 之前直接 abort。`protocol_determinism` 默认改成 4 线程 × 10 轮（40 对），旧的 120 对并发峰值 5.75 GiB。
+
+外围阶段（teammate 轨道，同一棵树）：vendored p3 里的 `Keccak256Hash16` 没有转发 `hash_many`，Merkle 树全走逐条 hash；转发后叶子批量哈希，p3 CPU 降 2.1–2.7×（selected 2.4×、mosaic 2.7×、local 2.1×）。另外：`open_batch_prepared` 去掉 prepared 数据的 deep clone（2^16 下 -0.5 GiB memcpy）、`P3BinaryPcs::commit/open` 单次表转换、register-access 建表去冗余（Access 独立测量 7.6 → 5.0 CPU-s）、context 无 CPU 列时跳过 reservation 行构建。
+
+### 11.4 共享机器上的测量方法
+
+- **wall 在这里不可靠**：同一二进制同一 `2^14` prove 在负载变化下实测 18.5 s 和 55 s；load 几分钟内从 13 到 150。§9.10 早先「内层融合 neutral / 最多 3 s」的结论正是被这种噪声误导。
+- **用 CPU 时间**（profile 里的 `cpu=`，`getrusage`）：它数的是工作量而不是等待，负载下只有几个百分点的漂移。
+- **归因用同二进制开关**：重建两个二进制会把树上所有其他人的改动一起带进对比。
+- 正确性靠字节等价闸门，不靠计时：`streaming_lockstep_proof_matches_the_eager_proof_bytes`、`parallel_chunked_streaming_matches_sequential` 在新扫描下仍绿。
+
+### 11.5 没成功的尝试
+
+- **融合/外提的内层 block 循环**（`ColumnRows::block_values`）：把 `instance_weight` 提出 per-column 循环、fill+accumulate 融合，看起来每列省一次 `F2_128` 乘法，但每个 block 的 claim/extras/二分查找固定开销吃掉了收益。同二进制 A/B（`2^14`）：**9.1 CPU-s vs 6.3 CPU-s，慢 35 %**。代码留在 `MAGNETAR_P2_FUSED` 开关后面，默认走原来的 materialise-and-accumulate。
+- Access 阶段的 hoisted sum-check 求值器：重复 load 被 cache/LLVM 吸收，CPU 时间 0 % 收益，已回退。
+- 工作窃取保留（鲁棒性），但其单独收益在这台宿主机上无法隔离：两次相同运行的 wall 差异比预期收益还大。
+
+### 11.6 proof 字节与 claim 层
+
+proof 从 861,407 B 涨到 **1,018,152 B**（varint 829,741 B、压缩 667,089 B）。
+这**不是**本轮 prover 改动造成的：它来自进行中的 polylog claim 层
+（`docs/POLYLOG_CLAIM_VERIFIER.md`），把 claim 表按打包 bit 列提交，并把
+commitment/opening 挂到 `ClaimProof` 上。claim 表 PCS 用 rate 1/8
+（`P3BinaryPcs::with_params(100, 3, 20, 3)`）；rate 1/2 时同版本 proof 是
+1,136,696 B 而 verify 时间一样，所以 rate 1/8 是最终参数。过渡期行 blob 仍然存在
+（`MAGNETAR_CLAIM_TABLE=0` 即回到它）；去掉它是下一步结构工作（M4/M5），之后 proof
+会降回旧大小以下。
+
+同一个 2^16 二进制、一分钟内交错测得：
+
+| claim 表 | verify | proof | peak |
+| --- | --- | --- | --- |
+| 关（legacy 逐行和） | 45.97 ms | 861,408 B | 2.19 GiB |
+| 开，rate 1/8（默认） | **27.38 ms** | 1,018,152 B | 2.38 GiB |
+
+### 11.7 下一步
+
+1. **内层 stage 现在是最大单项**（24.5 s）。剩下的便宜杠杆：把 `fill_left` 的 per-block 开销摊到更大的列 chunk（实测 round 0 的 per-block 成本占比很高）；以及在安静宿主上重新评估 level budget 的取舍。
+2. **外层扫描**（24.5 s）：每行 3.7 个条目是该形式的 floor；剩余想法是更紧的 CSR 布局（把 `(word, shift, slot, coefficient)` 压进 16 B）与 bit 窗口预取。
+3. **claim 层**：完成 M4/M5，让 claim 表取代行 blob（proof 回到 861 KB 以下，验证器剩余的 O(rows) claim/Logup 工作消失）。
+4. 2^17/2^18/2^19 阶梯只在带内存看门狗、一次一个运行的条件下重测；本轮宿主的空闲内存一度低于 1.5 GiB。

@@ -24,10 +24,25 @@ pub fn prove_claim_native(
 ) -> Result<ClaimNativeProof, RuntimeError> {
     let backend = crate::protocol::selected_backend();
     let selected_cpu = crate::simd_dual::prove_dynamic_cpu_claims(trace, width, &backend)?;
+    let mut claim_proof = crate::trace_claims::ClaimProof::from_trace(trace);
+    let mut trace_claim_root = crate::trace_claims::TraceClaimTree::build(trace).root();
+    // Mirror the unified prover: bind the committed claim table in the composed
+    // root when the claim layer is enabled (the statement carries that root).
+    if width == crate::claim_table::CLAIM_TABLE_WIDTH
+        && crate::claim_table::claim_table_enabled()
+        && selected_cpu.op == crate::simd_dual::SelectedOp::Dynamic
+    {
+        if let Ok((table, binding_root)) =
+            crate::claim_table::prove_claim_table(trace, width, &selected_cpu)
+        {
+            claim_proof.table = Some(table);
+            trace_claim_root = binding_root;
+        }
+    }
     Ok(ClaimNativeProof {
         trace_commitment: crate::trace_digest(trace),
-        trace_claim_root: crate::trace_claims::TraceClaimTree::build(trace).root(),
-        claim_proof: crate::trace_claims::ClaimProof::from_trace(trace),
+        trace_claim_root,
+        claim_proof,
         selected_cpu,
         width,
     })
@@ -343,7 +358,7 @@ mod tests {
             )),
             rom: trace.rom.clone(),
             trace_commitment: crate::trace_digest(trace),
-            trace_claim_root: crate::trace_claims::TraceClaimTree::build(trace).root(),
+            trace_claim_root: crate::claim_table::statement_claim_root(trace),
             access_statement_digest: crate::access_statement::AccessStatement::from_trace(trace)
                 .digest(),
             config: trace.config.clone(),

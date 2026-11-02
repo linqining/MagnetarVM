@@ -4,6 +4,7 @@ use magnetar_executor::execute;
 use magnetar_runtime::protocol::{Orchestrator, ProtocolPlan};
 use magnetar_runtime::prove_unified_trace;
 use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+use magnetar_testkit::{install_memory_watchdog, peak_rss_bytes};
 
 fn trace() -> magnetar_spec::Trace {
     let program = ProgramImage::new(
@@ -35,16 +36,41 @@ fn trace() -> magnetar_spec::Trace {
     .unwrap()
 }
 
+/// Read a positive `usize` knob from the environment.
+fn env_count(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
 fn main() {
+    // The default is a small concurrency budget: each concurrent pair of
+    // two-row proofs holds ~0.85 GiB, so 12 threads x 10 rounds peaked near
+    // 5.8 GiB on a 36 GiB host. Two concurrent pairs keep the peak under
+    // 2 GiB while still racing the allocator, the thread pool and the
+    // scheduler (the nondeterminism this gate targets is the parallel grind
+    // inside one proof, which two racing proves already exercise); raise it
+    // with `PROTOCOL_THREADS` when the host is known to have room.
+    let _watchdog = install_memory_watchdog(4.0);
     let failures = AtomicUsize::new(0);
     let runs = AtomicUsize::new(0);
-    let threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4);
+    let identical = AtomicUsize::new(0);
+    let threads = env_count("PROTOCOL_THREADS", 2);
+    let rounds = env_count("PROTOCOL_ROUNDS", 10);
+    eprintln!(
+        "protocol determinism: threads={threads} rounds={rounds} pairs={}",
+        threads * rounds
+    );
     std::thread::scope(|scope| {
-        for _ in 0..threads {
-            scope.spawn(|| {
-                for _ in 0..10 {
+        // Shared references, not moves: every worker bumps the same counters.
+        let failures = &failures;
+        let runs = &runs;
+        let identical = &identical;
+        for thread in 0..threads {
+            scope.spawn(move || {
+                for round in 0..rounds {
                     let trace = trace();
                     let direct = prove_unified_trace(&trace, 64).unwrap();
                     let orchestrator = Orchestrator::new(ProtocolPlan::unified())
@@ -100,14 +126,24 @@ fn main() {
                         diff!(width);
                         diff!(commitment);
                         diff!(packed_shout);
+                    } else {
+                        identical.fetch_add(1, Ordering::Relaxed);
+                        eprintln!(
+                            "thread {thread} round {round}: {} B proof, byte-identical",
+                            left.len()
+                        );
                     }
                 }
             });
         }
     });
+    let peak = peak_rss_bytes()
+        .map(|bytes| format!("{:.2} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0)))
+        .unwrap_or_else(|| "unknown".into());
     println!(
-        "runs={} failures={}",
+        "runs={} identical={} failures={} peak_rss={peak}",
         runs.load(Ordering::Relaxed),
+        identical.load(Ordering::Relaxed),
         failures.load(Ordering::Relaxed)
     );
 }

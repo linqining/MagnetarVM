@@ -43,11 +43,24 @@ fn bit_to_field(bit: bool) -> F {
     }
 }
 
+/// All-ones mask when `bit`, zero otherwise: turns a set-bit test into a
+/// branch-free masked XOR.
+#[inline]
+fn bit_mask(bit: bool) -> u128 {
+    0u128.wrapping_sub(bit as u128)
+}
+
 pub fn profile() -> bool {
     std::env::var_os("MAGNETAR_PROFILE_STREAM").is_some()
 }
 
 fn workers() -> usize {
+    if let Some(count) = std::env::var("MAGNETAR_STREAM_WORKERS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        return count.max(1);
+    }
     std::thread::available_parallelism()
         .map(|count| count.get())
         .unwrap_or(1)
@@ -60,6 +73,77 @@ fn worker_ranges(count: usize) -> Vec<(usize, usize)> {
         .map(|worker| (count * worker / workers, count * (worker + 1) / workers))
         .filter(|(start, end)| start < end)
         .collect()
+}
+
+/// A raw pointer that may be shared across workers that write disjoint ranges.
+struct SharedPtr<T>(*mut T);
+
+// SAFETY: every user of this wrapper splits the underlying range into disjoint
+// chunks (one shared atomic counter hands out each chunk exactly once), so no
+// two workers ever touch the same element.
+unsafe impl<T> Sync for SharedPtr<T> {}
+unsafe impl<T> Send for SharedPtr<T> {}
+
+impl<T> SharedPtr<T> {
+    /// Mutable view of `len` elements starting at `index`.
+    ///
+    /// # Safety
+    /// The caller must own the range exclusively: no other thread may read or
+    /// write it for the duration of the returned borrow.
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn slice_mut(&self, index: usize, len: usize) -> &mut [T] {
+        // SAFETY: the caller guarantees exclusive ownership of `index..index+len`.
+        unsafe { std::slice::from_raw_parts_mut(self.0.add(index), len) }
+    }
+}
+
+/// Work-stealing parallel loop over `count` items.
+///
+/// A fixed split of the work between workers leaves the efficiency cores
+/// straggling: this host has 6 performance and 6 efficiency cores, so an even
+/// split makes a round 1.3x longer than the work / total-throughput bound. Each
+/// worker here claims the next chunk from a shared counter, and the returned
+/// partials are folded by the caller. Field addition is XOR, so the fold is
+/// independent of which worker got which chunk: proof bytes do not change.
+fn parallel_chunks<T, M, B>(count: usize, make: M, body: B) -> Vec<T>
+where
+    T: Send,
+    M: Fn() -> T + Sync,
+    B: Fn(&mut T, usize, usize) + Sync,
+{
+    if count == 0 {
+        return Vec::new();
+    }
+    let workers = workers().min(count).max(1);
+    let chunk = (count / (workers * 8)).max(1);
+    let chunks = count.div_ceil(chunk);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut partials = Vec::with_capacity(workers);
+    std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            let make = &make;
+            let body = &body;
+            let next = &next;
+            handles.push(scope.spawn(move || {
+                let mut accumulator = make();
+                loop {
+                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if index >= chunks {
+                        break;
+                    }
+                    let start = index * chunk;
+                    let end = (start + chunk).min(count);
+                    body(&mut accumulator, start, end);
+                }
+                accumulator
+            }));
+        }
+        for handle in handles {
+            partials.push(handle.join().expect("stream worker"));
+        }
+    });
+    partials
 }
 
 /// Number of recomputed sumcheck rounds for a vector of `2^bits` entries.
@@ -75,6 +159,25 @@ pub fn auto_level(bits: usize) -> usize {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(22);
+    bits.saturating_sub(budget.saturating_sub(1))
+}
+
+/// Recompute rounds for the inner (column space) sum-check.
+///
+/// The inner level arrays are two `2^budget`-entry field vectors, so one extra
+/// bit of budget costs `2^(budget+1) * 32` bytes (`MAGNETAR_INNER_BUDGET_LOG`,
+/// default 22) and saves one full scan of the witness columns.
+pub fn auto_level_inner(bits: usize) -> usize {
+    if std::env::var_os("MAGNETAR_STREAM_EAGER").is_some() {
+        return 0;
+    }
+    // Two extra bits vs the outer default: a 2^16 run measured -25% of the
+    // inner stage (-7 s of prove) for +0.5 GiB of level arrays, which is well
+    // inside the memory envelope. `MAGNETAR_INNER_BUDGET_LOG` overrides.
+    let budget = std::env::var("MAGNETAR_INNER_BUDGET_LOG")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(24);
     bits.saturating_sub(budget.saturating_sub(1))
 }
 
@@ -134,6 +237,17 @@ pub struct LockstepRows<'a> {
     instance_rows: usize,
     rows: usize,
     log_rows: usize,
+    /// Number of rows that can be non-zero: the block-diagonal instance rows
+    /// followed by the (unpadded) extra rows. Rows past this point are the
+    /// zero padding that rounds the matrix up to a power of two; every outer
+    /// sum-check pass over them is pure overhead (they are half the rows at
+    /// RV64 `2^16`: `2^29` instance rows plus ~`2^22` extras pad to `2^30`).
+    live_rows: usize,
+    /// `base_cols / 64` when a base block is a whole number of words, which
+    /// makes the bit lookup `words[instance * words_per_block + column / 64]`.
+    /// Zero when the block is not word aligned (small unit-test shapes), which
+    /// selects the generic bit lookup.
+    words_per_base_block: usize,
     /// Base-matrix nonzeros grouped by local row: `(slot, column, coefficient)`
     /// for slots `0..6` in `A0, B0, C0, A1, B1, C1` order. Most base rows are
     /// empty, so one flat pass beats six sparse-row probes per row.
@@ -217,9 +331,11 @@ impl<'a> LockstepRows<'a> {
             }
         }
         if profile() {
+            let live = (instance_rows + extra_len).min(rows);
             eprintln!(
-                "lockstep rows: base_rows={base_rows} base_cols={base_cols} entries={total} per_row={:.2} instance_rows={instance_rows} rows={rows}",
-                total as f64 / base_rows as f64
+                "lockstep rows: base_rows={base_rows} base_cols={base_cols} entries={total} per_row={:.2} instance_rows={instance_rows} extra_rows={extra_len} live_rows={live} rows={rows} padding={:.1}%",
+                total as f64 / base_rows as f64,
+                (rows - live) as f64 * 100.0 / rows as f64
             );
         }
         Ok(Self {
@@ -231,6 +347,12 @@ impl<'a> LockstepRows<'a> {
             instance_rows,
             rows,
             log_rows: rows.trailing_zeros() as usize,
+            live_rows: if std::env::var_os("MAGNETAR_LIVE_FULL").is_some() {
+                rows
+            } else {
+                (instance_rows + extra_len).min(rows)
+            },
+            words_per_base_block: if base_cols % 64 == 0 { base_cols / 64 } else { 0 },
             base_offsets: counts,
             base_entries: sorted,
         })
@@ -238,6 +360,12 @@ impl<'a> LockstepRows<'a> {
 
     pub fn rows(&self) -> usize {
         self.rows
+    }
+
+    /// First row index that is zero padding: every row at or past it has all
+    /// six values equal to zero, so sum-check passes can stop there.
+    pub fn live_rows(&self) -> usize {
+        self.live_rows
     }
 
     pub fn row_bits(&self) -> usize {
@@ -271,12 +399,38 @@ impl<'a> LockstepRows<'a> {
         }
     }
 
-    /// Accumulate `weight * row_values(row)` into `out` without materialising the
-    /// six values: every set CSR entry adds `weight * coefficient` to its slot.
-    /// Distributivity makes this bit-identical to `accumulate_weighted` over
-    /// `row_values` (addition is XOR in the binary tower field).
+    /// Accumulate one block-diagonal row with a branch-free set-bit test.
+    ///
+    /// The witness bits of a base block are word aligned for every RV64 shape,
+    /// so the set-bit test is one word load plus a masked, arithmetic-shift
+    /// free 0/all-ones mask. Folding the mask into the add removes the ~50 %
+    /// unpredictable branch the previous `if bit { add }` form had, which is
+    /// the single most expensive instruction in the scan.
     #[inline]
-    pub fn accumulate_row_values(&self, row: usize, weight: F, out: &mut [F; 6]) {
+    fn accumulate_row_words(&self, row: usize, weight: F, out: &mut [F; 6]) {
+        let instance = row >> self.log_base_rows;
+        let local = row & (self.base_rows - 1);
+        let words = self.bits.words();
+        let base = instance * self.words_per_base_block;
+        let first = self.base_offsets[local] as usize;
+        let last = self.base_offsets[local + 1] as usize;
+        for &(slot, column, coefficient) in &self.base_entries[first..last] {
+            let word = words[base + ((column as usize) >> 6)];
+            let mask = 0u128.wrapping_sub(((word >> (column & 63)) & 1) as u128);
+            let term = if coefficient == one() {
+                weight
+            } else {
+                weight * coefficient
+            };
+            let entry = &mut out[slot as usize];
+            *entry = F::from_bits(entry.value() ^ (term.value() & mask));
+        }
+    }
+
+    /// Generic variant of `accumulate_row_words` for shapes whose base block is
+    /// not word aligned.
+    #[inline]
+    fn accumulate_row_general(&self, row: usize, weight: F, out: &mut [F; 6]) {
         if row < self.instance_rows {
             let instance = row >> self.log_base_rows;
             let local = row & (self.base_rows - 1);
@@ -285,14 +439,14 @@ impl<'a> LockstepRows<'a> {
             let first = self.base_offsets[local] as usize;
             let last = self.base_offsets[local + 1] as usize;
             for &(slot, column, coefficient) in &self.base_entries[first..last] {
-                if bits.get(offset + column as usize) {
-                    let term = if coefficient == one() {
-                        weight
-                    } else {
-                        weight * coefficient
-                    };
-                    out[slot as usize] = out[slot as usize] + term;
-                }
+                let mask = 0u128.wrapping_sub(bits.get(offset + column as usize) as u128);
+                let term = if coefficient == one() {
+                    weight
+                } else {
+                    weight * coefficient
+                };
+                let entry = &mut out[slot as usize];
+                *entry = F::from_bits(entry.value() ^ (term.value() & mask));
             }
         } else {
             let extra = row - self.instance_rows;
@@ -302,6 +456,51 @@ impl<'a> LockstepRows<'a> {
             }
             accumulate_weighted(out, weight, &value);
         }
+    }
+
+    /// Fold the weights of one length-`block` run of rows into the even/odd
+    /// accumulators of a single sum-check block: `even` receives rows
+    /// `first..first + half` with `weights[t]`, `odd` the next `half`.
+    ///
+    /// The whole block sits inside one instance and inside one base block for
+    /// every shape the streaming prover runs at scale (block <= base rows and
+    /// power-of-two aligned), so the fast path avoids the per-row instance and
+    /// extra-row dispatch entirely.
+    #[inline]
+    pub fn accumulate_block(
+        &self,
+        first: usize,
+        block: usize,
+        weights: &[F],
+        even: &mut [F; 6],
+        odd: &mut [F; 6],
+    ) {
+        let half = weights.len();
+        debug_assert_eq!(half * 2, block);
+        let local0 = first & (self.base_rows - 1);
+        let fast = self.words_per_base_block != 0
+            && first + block <= self.instance_rows
+            && local0 + block <= self.base_rows;
+        if fast {
+            for (slot, weight) in weights.iter().enumerate() {
+                self.accumulate_row_words(first + slot, *weight, even);
+                self.accumulate_row_words(first + half + slot, *weight, odd);
+            }
+        } else {
+            for (slot, weight) in weights.iter().enumerate() {
+                self.accumulate_row_general(first + slot, *weight, even);
+                self.accumulate_row_general(first + half + slot, *weight, odd);
+            }
+        }
+    }
+
+    /// Accumulate `weight * row_values(row)` into `out` without materialising the
+    /// six values: every set CSR entry adds `weight * coefficient` to its slot.
+    /// Distributivity makes this bit-identical to `accumulate_weighted` over
+    /// `row_values` (addition is XOR in the binary tower field).
+    #[inline]
+    pub fn accumulate_row_values(&self, row: usize, weight: F, out: &mut [F; 6]) {
+        self.accumulate_row_general(row, weight, out);
     }
 }
 
@@ -382,13 +581,22 @@ where
 
     // Phase 1: rounds `0..level` are recomputed from the witness block by
     // block; the last pass also stores the level-(level-1) values.
+    //
+    // Only the live rows (block-diagonal instance rows plus the unpadded extra
+    // rows) can be non-zero: everything past them is the power-of-two padding
+    // of `SharedBlockMatrix`. At RV64 `2^16` that padding is half of `rows`
+    // (`2^29 + ~2^22` pad to `2^30`), and a fully padded block contributes
+    // `product6_pair(0, 0, ..) = 0` for any equality weight, so every pass can
+    // stop at the last live block. Byte-identical by construction.
+    let live_rows = rows.live_rows();
     let mut stored: Vec<[F; 6]> = Vec::new();
     let mut eq_factor = one();
     for round in 0..level {
         let block = 1usize << (round + 1);
-        let blocks = total >> (round + 1);
+        let full_blocks = total >> (round + 1);
+        let blocks = live_rows.div_ceil(block);
         let eq_table = EqTable::new(&tau[round + 1..]);
-        if eq_table.len() != blocks {
+        if eq_table.len() != full_blocks {
             return Err(SpartanError::Dimensions);
         }
         let f0 = one() - tau[round];
@@ -398,50 +606,37 @@ where
         if store {
             stored = vec![[zero(); 6]; blocks * 2];
         }
-        let ranges = worker_ranges(blocks);
         let weights = fold_weights(&challenges[..]);
-        let mut partials: Vec<[F; 4]> = Vec::with_capacity(ranges.len());
-        std::thread::scope(|scope| {
-            let mut rest: &mut [[F; 6]] = &mut stored[..];
-            let mut handles = Vec::with_capacity(ranges.len());
-            let eq_table = &eq_table;
-            let weights = &weights;
-            for &(start, end) in &ranges {
-                let take = if store { (end - start) * 2 } else { 0 };
-                let (head, tail) = rest.split_at_mut(take);
-                rest = tail;
-                handles.push(scope.spawn(move || {
-                    let mut polynomial = [zero(); 4];
-                    for (offset, block_index) in (start..end).enumerate() {
-                        let first = block_index << (round + 1);
-                        let mut even = [zero(); 6];
-                        let mut odd = [zero(); 6];
-                        for slot in 0..block {
-                            let weight = weights[slot & (weights.len() - 1)];
-                            let target = if slot & weights.len() == 0 {
-                                &mut even
-                            } else {
-                                &mut odd
-                            };
-                            rows.accumulate_row_values(first + slot, weight, target);
-                        }
-                        let high = eq_table.at(block_index) * scale;
-                        add_poly(
-                            &mut polynomial,
-                            &product6_pair(&even, &odd, high * f0, high * f1, alpha),
-                        );
-                        if store {
-                            head[offset * 2] = even;
-                            head[offset * 2 + 1] = odd;
+        let weights = &weights;
+        let eq_table = &eq_table;
+        let stored_ptr = SharedPtr(stored.as_mut_ptr());
+        let partials = parallel_chunks(
+            blocks,
+            || [zero(); 4],
+            |polynomial, start, end| {
+                for block_index in start..end {
+                    let first = block_index << (round + 1);
+                    let mut even = [zero(); 6];
+                    let mut odd = [zero(); 6];
+                    rows.accumulate_block(first, block, weights, &mut even, &mut odd);
+                    let high = eq_table.at(block_index) * scale;
+                    add_poly(
+                        polynomial,
+                        &product6_pair(&even, &odd, high * f0, high * f1, alpha),
+                    );
+                    if store {
+                        // SAFETY: the shared counter hands every block index to
+                        // exactly one worker, so the two slots written per block
+                        // are disjoint and inside `stored` (`blocks * 2` long).
+                        unsafe {
+                            let head = stored_ptr.slice_mut(block_index * 2, 2);
+                            head[0] = even;
+                            head[1] = odd;
                         }
                     }
-                    polynomial
-                }));
-            }
-            for handle in handles {
-                partials.push(handle.join().expect("stream worker"));
-            }
-        });
+                }
+            },
+        );
         let mut coefficients = [zero(); 4];
         for polynomial in partials {
             add_poly(&mut coefficients, &polynomial);
@@ -454,9 +649,9 @@ where
     }
     if profile() {
         eprintln!(
-            "stream outer recompute ({level} rounds, {} rows): {:?}",
-            total,
-            started.elapsed()
+            "stream outer recompute ({level} rounds, live {live_rows} / {total} rows): {:?} cpu={:.2}s",
+            started.elapsed(),
+            crate::process_cpu_seconds()
         );
     }
 
@@ -472,8 +667,8 @@ where
         }
         arrays
     } else {
-        let mut arrays = vec![[zero(); 6]; total];
-        let ranges = worker_ranges(total);
+        let mut arrays = vec![[zero(); 6]; live_rows];
+        let ranges = worker_ranges(live_rows);
         std::thread::scope(|scope| {
             let mut rest: &mut [[F; 6]] = &mut arrays[..];
             let mut handles = Vec::with_capacity(ranges.len());
@@ -493,7 +688,16 @@ where
         arrays
     };
     let remaining = n - level;
-    if arrays.len() != 1usize << remaining {
+    // The live prefix is more than half of `rows`, so ceil-halving it
+    // `remaining` times lands on exactly one entry: the trailing entries of the
+    // conceptual full array are zero, and a zero pair contributes a zero round
+    // polynomial, so the folds below can carry the short (live) length and
+    // treat an out-of-range odd entry as zero.
+    if remaining == 0 {
+        if arrays.len() != 1 {
+            return Err(SpartanError::Dimensions);
+        }
+    } else if arrays.len() <= 1usize << (remaining - 1) || arrays.len() > 1usize << remaining {
         return Err(SpartanError::Dimensions);
     }
     let mut eq_values = eq_vector_tensor(&tau[level..]);
@@ -507,35 +711,33 @@ where
     };
     let started = std::time::Instant::now();
     for round in level..n {
-        let pairs = arrays.len() / 2;
-        let ranges = worker_ranges(pairs);
-        let mut partials: Vec<[F; 4]> = Vec::with_capacity(ranges.len());
-        std::thread::scope(|scope| {
-            let mut handles = Vec::with_capacity(ranges.len());
-            for &(start, end) in &ranges {
-                let arrays = &arrays;
-                let eq_values = &eq_values;
-                handles.push(scope.spawn(move || {
-                    let mut polynomial = [zero(); 4];
-                    for index in start..end {
-                        add_poly(
-                            &mut polynomial,
-                            &product6_pair(
-                                &arrays[index * 2],
-                                &arrays[index * 2 + 1],
-                                eq_values[index * 2],
-                                eq_values[index * 2 + 1],
-                                alpha,
-                            ),
-                        );
-                    }
-                    polynomial
-                }));
-            }
-            for handle in handles {
-                partials.push(handle.join().expect("stream worker"));
-            }
-        });
+        let length = arrays.len();
+        let pairs = length.div_ceil(2);
+        let eq_pairs = eq_values.len() / 2;
+        let partials = parallel_chunks(
+            pairs,
+            || [zero(); 4],
+            |polynomial, start, end| {
+                for index in start..end {
+                    let odd = index * 2 + 1;
+                    // Past the live prefix every row value is zero, so the
+                    // out-of-range odd value is zero. The equality value is
+                    // *not* zero there and is kept at full length: the
+                    // boundary element is folded with it in later rounds.
+                    let high = if odd < length { arrays[odd] } else { [zero(); 6] };
+                    add_poly(
+                        polynomial,
+                        &product6_pair(
+                            &arrays[index * 2],
+                            &high,
+                            eq_values[index * 2],
+                            eq_values[odd],
+                            alpha,
+                        ),
+                    );
+                }
+            },
+        );
         let mut coefficients = [zero(); 4];
         for polynomial in partials {
             add_poly(&mut coefficients, &polynomial);
@@ -548,22 +750,26 @@ where
         challenges.push(r);
         round_polys.push(evaluated.to_vec());
         for index in 0..pairs {
+            let odd = index * 2 + 1;
+            let high = if odd < length { arrays[odd] } else { [zero(); 6] };
             let low = arrays[index * 2];
-            let high = arrays[index * 2 + 1];
             for slot in 0..6 {
                 arrays[index][slot] = low[slot] + r * (high[slot] - low[slot]);
             }
+        }
+        for index in 0..eq_pairs {
             let low = eq_values[index * 2];
             let high = eq_values[index * 2 + 1];
             eq_values[index] = low + r * (high - low);
         }
         arrays.truncate(pairs);
-        eq_values.truncate(pairs);
+        eq_values.truncate(eq_pairs);
     }
     if profile() {
         eprintln!(
-            "stream outer fold ({remaining} rounds): {:?}",
-            started.elapsed()
+            "stream outer fold ({remaining} rounds): {:?} cpu={:.2}s",
+            started.elapsed(),
+            crate::process_cpu_seconds()
         );
     }
     if n == 0 {
@@ -929,6 +1135,126 @@ impl<'a> ColumnRows<'a> {
         }
     }
 
+    /// Even/odd weighted sums of one inner sum-check block, without
+    /// materialising the two column vectors.
+    ///
+    /// Returns `[even_left, odd_left, even_right, odd_right]`. The block is
+    /// `weights.len() * 2` columns, even side first. A block at RV64 scale sits
+    /// inside one instance block, so the left multiplicand factors as
+    /// `instance_weight(instance) * combined(local)`; the weight is hoisted out
+    /// of the per-column loop (one multiply per block instead of two per
+    /// column) and the right side uses a mask instead of a branch. Both are
+    /// exact by distributivity: field addition is XOR.
+    pub fn block_values(&self, first: usize, block: usize, weights: &[F]) -> [F; 4] {
+        let half = weights.len();
+        debug_assert_eq!(half * 2, block);
+        let mask = self.base_cols - 1;
+        let local0 = first & mask;
+        let fast = block <= self.base_cols && local0 + block <= self.base_cols;
+        if !fast {
+            let mut left = vec![zero(); block];
+            let mut right = vec![zero(); block];
+            self.fill_left(first, &mut left);
+            self.fill_right(first, &mut right);
+            let (mut even_left, mut odd_left) = (zero(), zero());
+            let (mut even_right, mut odd_right) = (zero(), zero());
+            for (slot, weight) in weights.iter().enumerate() {
+                accumulate_scalar(&mut even_left, *weight, left[slot]);
+                accumulate_scalar(&mut odd_left, *weight, left[half + slot]);
+                accumulate_scalar(&mut even_right, *weight, right[slot]);
+                accumulate_scalar(&mut odd_right, *weight, right[half + slot]);
+            }
+            return [even_left, odd_left, even_right, odd_right];
+        }
+        let instance = first >> self.log_base_cols;
+        let (mut even_left, mut odd_left) = (zero(), zero());
+        let (mut even_right, mut odd_right) = (zero(), zero());
+        let base = &self.combined[local0..local0 + block];
+        for (slot, weight) in weights.iter().enumerate() {
+            let weight = *weight;
+            even_left = even_left + weight * base[slot];
+            odd_left = odd_left + weight * base[half + slot];
+            let even_mask = bit_mask(self.bits.get(first + slot));
+            let odd_mask = bit_mask(self.bits.get(first + half + slot));
+            even_right = F::from_bits(even_right.value() ^ (weight.value() & even_mask));
+            odd_right = F::from_bits(odd_right.value() ^ (weight.value() & odd_mask));
+        }
+        let instance_weight = self.instance_weight[instance];
+        let mut even_left = instance_weight * even_left;
+        let mut odd_left = instance_weight * odd_left;
+        if self.claim.is_some() {
+            let end_col = local0 + block;
+            let low = self
+                .claim_columns
+                .partition_point(|(column, _)| *column < local0);
+            let high = self
+                .claim_columns
+                .partition_point(|(column, _)| *column < end_col);
+            let (mut even_claim, mut odd_claim) = (zero(), zero());
+            for &(column, coefficient) in &self.claim_columns[low..high] {
+                let position = column - local0;
+                if position < half {
+                    even_claim = even_claim + weights[position] * coefficient;
+                } else {
+                    odd_claim = odd_claim + weights[position - half] * coefficient;
+                }
+            }
+            let claim_instance_weight = self.claim_instance_weight[instance];
+            even_left = even_left + claim_instance_weight * even_claim;
+            odd_left = odd_left + claim_instance_weight * odd_claim;
+        }
+        if !self.extras.is_empty() {
+            if let Some((extras_low, extras_high)) = self.extras_local {
+                // Extra rows written by instance `i` land in instance `i`'s
+                // block (parts A/B) or in the next block (part C, whose column
+                // is `(i + 1) * base_cols + pc`), so both the previous and the
+                // current instance can touch this window. This mirrors
+                // `fill_left`'s `touches` predicate exactly.
+                let candidates: &[usize] = if instance == 0 {
+                    &[0]
+                } else {
+                    &[instance - 1, instance]
+                };
+                for &candidate in candidates {
+                    let mut touched = false;
+                    for block_start in [
+                        candidate * self.base_cols,
+                        (candidate + 1) * self.base_cols,
+                    ] {
+                        let window_low = first.saturating_sub(block_start);
+                        let window_high = (first + block)
+                            .saturating_sub(block_start)
+                            .min(self.base_cols);
+                        if window_high > window_low
+                            && window_high > extras_low
+                            && window_low <= extras_high
+                        {
+                            touched = true;
+                            break;
+                        }
+                    }
+                    if !touched {
+                        continue;
+                    }
+                    for (lazy, scale) in &self.extras {
+                        lazy.for_each_instance_entry(candidate, |offset, column, coefficient| {
+                            if column >= first && column < first + block {
+                                let position = column - first;
+                                let value = self.row_eq(self.instance_rows + offset) * *scale
+                                    * coefficient;
+                                if position < half {
+                                    even_left = even_left + weights[position] * value;
+                                } else {
+                                    odd_left = odd_left + weights[position - half] * value;
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+        }
+        [even_left, odd_left, even_right, odd_right]
+    }
 }
 
 pub struct InnerSumcheck {
@@ -989,6 +1315,13 @@ where
     let mut round_polys: Vec<Vec<F>> = Vec::with_capacity(n);
     let mut stored_left: Vec<F> = Vec::new();
     let mut stored_right: Vec<F> = Vec::new();
+    // Measured on this host (RV64 `2^14`, interleaved CPU-time A/B in one
+    // binary): the fused `block_values` loop is ~35% slower than the
+    // materialise-and-accumulate loop it replaced -- at the small block sizes
+    // of the early rounds the per-block hoisting/claim/extras overhead
+    // dominates the one multiply per column it saves. The fused path stays
+    // behind an opt-in switch for a host with different cache behaviour.
+    let fused = std::env::var_os("MAGNETAR_P2_FUSED").is_some();
     for round in 0..level {
         let block = 1usize << (round + 1);
         let blocks = total >> (round + 1);
@@ -997,57 +1330,59 @@ where
             stored_left = vec![zero(); blocks * 2];
             stored_right = vec![zero(); blocks * 2];
         }
-        let ranges = worker_ranges(blocks);
         let weights = fold_weights(&challenges[..]);
-        let mut partials: Vec<[F; 3]> = Vec::with_capacity(ranges.len());
-        std::thread::scope(|scope| {
-            let mut left_rest: &mut [F] = &mut stored_left[..];
-            let mut right_rest: &mut [F] = &mut stored_right[..];
-            let mut handles = Vec::with_capacity(ranges.len());
-            let weights = &weights;
-            for &(start, end) in &ranges {
-                let take = if store { (end - start) * 2 } else { 0 };
-                let (left_head, left_tail) = left_rest.split_at_mut(take);
-                left_rest = left_tail;
-                let (right_head, right_tail) = right_rest.split_at_mut(take);
-                right_rest = right_tail;
-                handles.push(scope.spawn(move || {
-                    let mut left = vec![zero(); block];
-                    let mut right = vec![zero(); block];
-                    let mut polynomial = [zero(); 3];
-                    for (offset, block_index) in (start..end).enumerate() {
-                        let first = block_index << (round + 1);
-                        columns.fill_left(first, &mut left);
-                        columns.fill_right(first, &mut right);
+        let weights = &weights;
+        let left_ptr = SharedPtr(stored_left.as_mut_ptr());
+        let right_ptr = SharedPtr(stored_right.as_mut_ptr());
+        let partials = parallel_chunks(
+            blocks,
+            || [zero(); 3],
+            |polynomial, start, end| {
+                let mut legacy_left = vec![zero(); block];
+                let mut legacy_right = vec![zero(); block];
+                for block_index in start..end {
+                    let first = block_index << (round + 1);
+                    let (pair_left, pair_right) = if !fused {
+                        columns.fill_left(first, &mut legacy_left);
+                        columns.fill_right(first, &mut legacy_right);
                         let (mut even_left, mut odd_left) = (zero(), zero());
                         let (mut even_right, mut odd_right) = (zero(), zero());
                         for slot in 0..block {
                             let weight = weights[slot & (weights.len() - 1)];
                             if slot & weights.len() == 0 {
-                                accumulate_scalar(&mut even_left, weight, left[slot]);
-                                accumulate_scalar(&mut even_right, weight, right[slot]);
+                                accumulate_scalar(&mut even_left, weight, legacy_left[slot]);
+                                accumulate_scalar(&mut even_right, weight, legacy_right[slot]);
                             } else {
-                                accumulate_scalar(&mut odd_left, weight, left[slot]);
-                                accumulate_scalar(&mut odd_right, weight, right[slot]);
+                                accumulate_scalar(&mut odd_left, weight, legacy_left[slot]);
+                                accumulate_scalar(&mut odd_right, weight, legacy_right[slot]);
                             }
                         }
-                        let pair_left = [even_left, odd_left];
-                        let pair_right = [even_right, odd_right];
-                        add_poly(&mut polynomial, &product2_pair(&pair_left, &pair_right, 0));
-                        if store {
-                            left_head[offset * 2] = even_left;
-                            left_head[offset * 2 + 1] = odd_left;
-                            right_head[offset * 2] = even_right;
-                            right_head[offset * 2 + 1] = odd_right;
+                        ([even_left, odd_left], [even_right, odd_right])
+                    } else {
+                        // One call per block: the block sits inside a single
+                        // instance block at every RV64 shape, so the left
+                        // multiplicand's instance weight is hoisted out of the
+                        // per-column loop and the right side is branch-free.
+                        let values = columns.block_values(first, block, weights);
+                        ([values[0], values[1]], [values[2], values[3]])
+                    };
+                    add_poly(polynomial, &product2_pair(&pair_left, &pair_right, 0));
+                    if store {
+                        // SAFETY: every block index is claimed by exactly one
+                        // worker, so the two slots written per block are disjoint
+                        // and inside the `blocks * 2` arrays.
+                        unsafe {
+                            left_ptr
+                                .slice_mut(block_index * 2, 2)
+                                .copy_from_slice(&pair_left);
+                            right_ptr
+                                .slice_mut(block_index * 2, 2)
+                                .copy_from_slice(&pair_right);
                         }
                     }
-                    polynomial
-                }));
-            }
-            for handle in handles {
-                partials.push(handle.join().expect("stream worker"));
-            }
-        });
+                }
+            },
+        );
         let mut coefficients = [zero(); 3];
         for polynomial in partials {
             add_poly(&mut coefficients, &polynomial);
@@ -1059,9 +1394,10 @@ where
     }
     if profile() {
         eprintln!(
-            "stream inner recompute ({level} rounds, {} columns): {:?}",
+            "stream inner recompute ({level} rounds, {} columns): {:?} cpu={:.2}s",
             total,
-            started.elapsed()
+            started.elapsed(),
+            crate::process_cpu_seconds()
         );
     }
 
@@ -1091,25 +1427,15 @@ where
     let started = std::time::Instant::now();
     for round in level..n {
         let pairs = left.len() / 2;
-        let ranges = worker_ranges(pairs);
-        let mut partials: Vec<[F; 3]> = Vec::with_capacity(ranges.len());
-        std::thread::scope(|scope| {
-            let mut handles = Vec::with_capacity(ranges.len());
-            for &(start, end) in &ranges {
-                let left = &left;
-                let right = &right;
-                handles.push(scope.spawn(move || {
-                    let mut polynomial = [zero(); 3];
-                    for index in start..end {
-                        add_poly(&mut polynomial, &product2_pair(left, right, index));
-                    }
-                    polynomial
-                }));
-            }
-            for handle in handles {
-                partials.push(handle.join().expect("stream worker"));
-            }
-        });
+        let partials = parallel_chunks(
+            pairs,
+            || [zero(); 3],
+            |polynomial, start, end| {
+                for index in start..end {
+                    add_poly(polynomial, &product2_pair(&left, &right, index));
+                }
+            },
+        );
         let mut coefficients = [zero(); 3];
         for polynomial in partials {
             add_poly(&mut coefficients, &polynomial);
@@ -1129,9 +1455,10 @@ where
     }
     if profile() {
         eprintln!(
-            "stream inner fold ({} rounds): {:?}",
+            "stream inner fold ({} rounds): {:?} cpu={:.2}s",
             n - level,
-            started.elapsed()
+            started.elapsed(),
+            crate::process_cpu_seconds()
         );
     }
     if n == 0 {

@@ -37,6 +37,7 @@ fn gib(bytes: u64) -> f64 {
 }
 
 fn main() {
+    let _memory_watchdog = magnetar_testkit::install_memory_watchdog(4.0);
     let adds = std::env::var("ADDS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())

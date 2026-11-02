@@ -76,3 +76,54 @@ pub fn arith_memory_program() -> ProgramImage {
         ],
     )
 }
+
+/// Peak-RSS watchdog for benchmark examples.
+///
+/// The prover's peak is a sum of transients, so a single wrong constant can
+/// push the host into swap and take the machine down. Every example that runs
+/// a proof should install this: it aborts the process as soon as the peak RSS
+/// passes `limit_gib` (taken from `MAGNETAR_MAX_RSS_GIB`, default 4.0 GiB,
+/// which is above the RV64 `2^16` peak of ~2.3 GiB). Raise the variable
+/// deliberately for a larger run; never run a large proof without it.
+#[cfg(not(test))]
+pub fn install_memory_watchdog(default_gib: f64) -> std::thread::JoinHandle<()> {
+    let limit_gib = std::env::var("MAGNETAR_MAX_RSS_GIB")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .unwrap_or(default_gib);
+    let limit_bytes = (limit_gib * 1024.0 * 1024.0 * 1024.0) as u64;
+    eprintln!("memory watchdog: limit {limit_gib:.2} GiB");
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if let Some(peak) = peak_rss_bytes() {
+            if peak > limit_bytes {
+                eprintln!(
+                    "memory watchdog: peak RSS {:.2} GiB exceeded the {limit_gib:.2} GiB limit; aborting",
+                    peak as f64 / (1024.0 * 1024.0 * 1024.0)
+                );
+                std::process::abort();
+            }
+        }
+    })
+}
+
+/// Peak resident set size of this process, in bytes.
+pub fn peak_rss_bytes() -> Option<u64> {
+    // `getrusage(RUSAGE_SELF).ru_maxrss` is the peak, so one check per tick is
+    // enough: once it passes the limit the watchdog fires.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    let status = unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+    if status != 0 {
+        return None;
+    }
+    let maxrss = usage.ru_maxrss as u64;
+    // macOS reports bytes; Linux reports KiB.
+    #[cfg(target_os = "macos")]
+    {
+        Some(maxrss)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Some(maxrss.saturating_mul(1024))
+    }
+}

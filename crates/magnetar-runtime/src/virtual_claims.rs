@@ -193,7 +193,7 @@ mod virtual_cpu_tests {
             )),
             rom: trace.rom.clone(),
             trace_commitment: crate::trace_digest(trace),
-            trace_claim_root: crate::trace_claims::TraceClaimTree::build(trace).root(),
+            trace_claim_root: crate::claim_table::statement_claim_root(trace),
             access_statement_digest: crate::access_statement::AccessStatement::from_trace(trace)
                 .digest(),
             config: trace.config.clone(),

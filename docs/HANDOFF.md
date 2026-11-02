@@ -1,13 +1,22 @@
 # Handoff — MagnetarVM streaming selected prover (RV64)
 
 Status: **incremental optimization phase**, branch `virtual-claims-rewrite`,
-latest commit `386c2e8`, work since then uncommitted, 2026-10-31.
+latest commit `386c2e8` plus the 2026-11-03 `2^16` optimization round
+(uncommitted until the final gate), 2026-11-03.
 Chinese sibling: [handoff-zh.md](handoff-zh.md).
 Measurements and per-round history: [STREAMING_SELECTED_PROVER_RESULTS.md](STREAMING_SELECTED_PROVER_RESULTS.md)
 ([中文](streaming-selected-prover-results-zh.md)). Background design: [STREAMING_SELECTED_PROVER_HANDOFF.md](STREAMING_SELECTED_PROVER_HANDOFF.md).
 
-Headline at RV64 `2^16`: **prove 70.4 s, verify 29.6 ms, peak 2.26 GiB, proof 861,407 B**,
-all proofs byte-identical to the original format. Workspace tests: **651 passed, 0 failed**.
+Headline at RV64 `2^16` (2026-11-03 round, host load 14–72): **prove 55.5–59.3 s
+(prove CPU 421.6–434.9 s vs ≈800 s before), verify 27.4 ms, peak 2.38 GiB**. The
+streaming prover is still byte-identical to the eager path; the *proof file* is
+1,018,152 B because the polylog claim layer (results §11.6) now commits the
+claim table and attaches it to `ClaimProof` -- with the claim table off the same
+binary gives verify 46.0 ms and 861,408 B, so the table is worth +157 KB of
+proof for -18.6 ms of verify. The row blob is still carried during the
+transition, so the size goes back down when M4/M5 remove it. Workspace tests:
+**655 passed / 0 failed**; `protocol_determinism` 20/20 byte-identical at
+1.99 GiB peak.
 
 ---
 
@@ -28,6 +37,14 @@ MAGNETAR_PROFILE_RING=1      # ring-switch pack/eval/product2/p3 open
 MAGNETAR_PROFILE_LOCAL=1     # register twist (standalone bench below)
 MAGNETAR_PROFILE_VERIFY=1 MAGNETAR_VERIFY_CPU=5   # verifier stages + CPU/iter
 
+# Streaming-scan diagnostic switches (same-binary A/B; every stage print also
+# carries cumulative process CPU time, which is the load-robust metric, see §6)
+MAGNETAR_STREAM_WORKERS=N      # worker count (default: available_parallelism)
+MAGNETAR_LIVE_FULL=1           # disable the zero-padding row skip (A/B)
+MAGNETAR_P2_FUSED=1            # fused inner block loop (measured 35% slower)
+MAGNETAR_INNER_BUDGET_LOG=NN   # inner sum-check level budget (default 24)
+MAGNETAR_MAX_RSS_GIB=4.0       # benchmark watchdog (magnetar-testkit examples)
+
 # Register twist alone (Access layer), 2^16 rows
 ROWS=65536 MAGNETAR_PROFILE_LOCAL=1 target/release/examples/local_shared_bench
 
@@ -46,20 +63,27 @@ core count is low.
 
 | cycles | prove | verify | peak RSS | proof |
 | --- | --- | --- | --- | --- |
-| `2^16` | **70.4 s** | **29.6 ms** | **2.26 GiB** | 861,407 B |
+| `2^16` (2026-11-03, load 14–72) | **55.5–59.3 s** | **27.4 ms** | **2.38 GiB** | 1,018,152 B† |
+| `2^16` (2026-10-31) | 70.4 s | 29.6 ms | 2.26 GiB | 861,407 B |
 | `2^17` | **147.6 s** | 55.8 ms | 4.60 GiB | 942,535 B |
 | `2^18` | 321.5 s (pre-fusion) | 161.5 ms | 7.73 GiB | 1,050,900 B |
 | `2^19` | 667.8 s (pre-fusion) | 318.3 ms | 10.54 GiB | 1,177,984 B |
 
+† proof size is the claim-table format; the streaming proof itself is still
+byte-identical to the eager path. See results §11.6.
 `2^18`/`2^19` predate the fused scan and the ring-switch fix; two loaded re-runs
 gave 335 s and 437 s with 5.7–7.8 GiB peak and were discarded. A linear fit
 through the measured points projects ≈20 GiB at `2^22` (supersedes the earlier
 55–60 GiB model, which came from the 32-byte-digest build).
 
-`2^16` stage split (load 70–90): unified context 0.48, Commit 1.19, Access 2.56
-(register twist), Opening 3.38; selected setup 0.48, witness commit 0.95,
-`product6` **43.2**, `product2` **23.4**, segments 1.17, selected open 0.92.
-The two streaming products are 95 % of the prover.
+`2^16` stage split (2026-11-03 round, load 37–72): unified context 0.31,
+Commit 0.52, Access 2.63 (register twist), Opening 1.99; selected setup 0.40,
+witness commit 0.32, `product6` **24.5**, `product2` **24.5** (inner level
+budget 24, see results §11.3), segments 1.20, selected open 0.84. The two
+streaming products are still ≈90 % of the prover, and `product2` is now the
+largest single term. The previous split (load 70–90) was: context 0.48,
+Commit 1.19, Access 2.56, Opening 3.38; setup 0.48, witness commit 0.95,
+`product6` 43.2, `product2` 23.4, segments 1.17, selected open 0.92.
 
 Verifier at `2^16` (30.3 ms wall over 5 iterations, 188 ms CPU/iter): trace
 Logup-Shout 21.9–29.6 (starts as soon as the claim-derived trace exists and
@@ -71,7 +95,12 @@ claim leaves 3.8–4.1, claims decode 1.0, claims-to-trace 0.77.
 | Area | File |
 | --- | --- |
 | Streaming lockstep prover (outer product6, inner product2) | [stream.rs:363](file:///Users/mac/projects/MagnetarVM/crates/magnetar-proof/src/stream.rs#L363), [stream.rs:973](file:///Users/mac/projects/MagnetarVM/crates/magnetar-proof/src/stream.rs#L973) |
-| Fused weighted row scan (`accumulate_row_values`) | [stream.rs:279](file:///Users/mac/projects/MagnetarVM/crates/magnetar-proof/src/stream.rs#L279) |
+| Fused weighted row scan / block scan | [stream.rs:470](file:///Users/mac/projects/MagnetarVM/crates/magnetar-proof/src/stream.rs#L470) (`accumulate_block`), [stream.rs:410](file:///Users/mac/projects/MagnetarVM/crates/magnetar-proof/src/stream.rs#L410) (branch-free set-bit) |
+| Zero-padding skip (`live_rows`) | [stream.rs:245](file:///Users/mac/projects/MagnetarVM/crates/magnetar-proof/src/stream.rs#L245) |
+| Work-stealing round scheduler | [stream.rs:108](file:///Users/mac/projects/MagnetarVM/crates/magnetar-proof/src/stream.rs#L108) |
+| Inner level budget (`auto_level_inner`) | [stream.rs:170](file:///Users/mac/projects/MagnetarVM/crates/magnetar-proof/src/stream.rs#L170) |
+| CPU-time stage instrumentation | [lib.rs:15](file:///Users/mac/projects/MagnetarVM/crates/magnetar-proof/src/lib.rs#L15) |
+| Benchmark RSS watchdog | [testkit/src/lib.rs:89](file:///Users/mac/projects/MagnetarVM/crates/magnetar-testkit/src/lib.rs#L89) |
 | Ring-switch PCS (bit → field, eq table, opening) | [bit_pcs.rs:737](file:///Users/mac/projects/MagnetarVM/crates/magnetar-proof/src/bit_pcs.rs#L737), [bit_pcs.rs:875](file:///Users/mac/projects/MagnetarVM/crates/magnetar-proof/src/bit_pcs.rs#L875) |
 | p3 PCS wrapper: 16 B digest, prepared batches | [p3_pcs.rs:34](file:///Users/mac/projects/MagnetarVM/crates/magnetar-pcs/src/p3_pcs.rs#L34), [p3_pcs.rs:432](file:///Users/mac/projects/MagnetarVM/crates/magnetar-pcs/src/p3_pcs.rs#L432) |
 | Register-twist Access proof | [local_shared.rs:66](file:///Users/mac/projects/MagnetarVM/crates/magnetar-runtime/src/local_shared.rs#L66) |
@@ -109,6 +138,32 @@ claim leaves 3.8–4.1, claims decode 1.0, claims-to-trace 0.77.
    `prove_gated_bundle_from_trace` used `last_row.pc + 4` as the PC-chain target
    (overshoots when the row builder appends a halt row).
 
+### 4.1 2026-11-03 round: `2^16` optimization
+
+Details, measurements and the rejected experiments are in results §11.
+
+7. **Zero-padding rows are no longer scanned.** At `2^16` the matrix rounds
+   `2^29` instance rows + 4.19 M extras up to `2^30`, so 49.6 % of every outer
+   pass was zeros. Same-binary A/B at `2^14`: product6 12.8 → 6.5 s.
+8. **Branch-free set-bit accumulation** in the CSR scan (masked XOR instead of
+   an unpredictable `if bit { add }`).
+9. **Work-stealing round scheduling** (`parallel_chunks`): this host has 6
+   performance + 6 efficiency cores, so a fixed split straggles. Field
+   addition is XOR, so the merge order does not change proof bytes.
+10. **Inner level budget 22 → 24** (`auto_level_inner`): -2 of 8 column scans,
+    -25 % of the inner stage, at a fixed +512 MiB of level arrays.
+11. **Load-robust measurement**: every stage print carries cumulative CPU time,
+    and the streaming stages have same-binary diagnostic switches. Wall-clock
+    A/B is unusable on this shared host (see §6).
+12. **Benchmark memory watchdog** and a smaller default `protocol_determinism`
+    (40 pairs; the old 120-pair default peaked at 5.75 GiB).
+
+Peripheral stages (parallel track): the vendored p3 `Keccak256Hash16` did not
+forward `hash_many`, so Merkle trees hashed serially; forwarding it cut p3 CPU
+2.1–2.7x and `Commit`/`Opening` roughly in half. Plus a removed prepared-data
+deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
+(register twist standalone 7.6 → 5.0 CPU-s).
+
 ## 5. Open work, in priority order
 
 1. **Committed claim columns → polylog verifier** (the only route to the paper's
@@ -117,23 +172,57 @@ claim leaves 3.8–4.1, claims decode 1.0, claims-to-trace 0.77.
    trace. Design sketch in results §9.8; touches the claim schema, the proof
    format, and both prover/verifier. It also needs a tamper test per layer
    through the top-level entry point.
-2. **Memory: bit-level / smaller codeword.** The peak is codewords and Merkle
+2. **`product2` is now the largest single term** (24.5 s of 55.5 s). The fused
+   block loop was measured 35 % *slower* (results §11.5) and is parked behind
+   `MAGNETAR_P2_FUSED`; the next levers are amortising `fill_left`'s per-block
+   overhead over larger column chunks (round 0's block is two columns) and a
+   tighter CSR layout. Re-check the inner level budget on a quiet host
+   (24 is the current default; 23 trades one scan for -256 MiB).
+3. **Memory: bit-level / smaller codeword.** The peak is codewords and Merkle
    trees (selected witness commit 2.07 GiB, mosaic commit/opening 5.0/6.0 GiB at
-   `2^18`), linear in `cycles`; ≈20 GiB projected at `2^22` against the paper's
-   6.4 GiB.
-3. **Inner (`product2`) fusion** — the right-hand (bit) side was proven
-   byte-identical but measured neutral in an interleaved `2^14` A/B (the
-   untouched `product6` swung 15.1–20.1 s). Needs a quiet-host A/B before more
-   effort; worth ≤3 s. Its left side (`fill_left`) also folds claim deltas
-   (`claim_columns`, `claim_instance_weight`), which a fused version must replay.
-4. **Refresh the `2^18`/`2^19` rows** once the host is quiet; they are marked
-   pre-fusion.
-5. Rejected on purpose: raising the stream budget above 22 (trades ~11 % of
-   `product6` for +0.4 GiB at `2^16` and ~+25 GiB at `2^22`), and caching the
-   mosaic prover data across Access (adds its transient to the peak).
+   `2^18`), linear in `cycles`; ≈21 GiB projected at `2^22` against the paper's
+   6.4 GiB (the 512 MiB inner level arrays are fixed, not linear).
+4. **Refresh the `2^17`–`2^19` rows** with the memory watchdog and one run at a
+   time; they are marked pre-fusion and the host had <1.5 GiB free during the
+   round.
+5. **Claim layer M4/M5**: the claim table commitment is in the tree (M2/M3),
+   the row blob is still carried, so the proof is 1,136,696 B until M4/M5
+   remove it (results §11.6, docs/POLYLOG_CLAIM_VERIFIER.md).
+6. Rejected on purpose: raising the *outer* stream budget above 22 (trades
+   ~11 % of `product6` for +0.4 GiB at `2^16` and ~+25 GiB at `2^22`), caching
+   scale-linear PCS data across stages (the deep clone removal was kept, the
+   cache was not), and the fused inner block loop (35 % slower).
 
 ## 6. Traps and invariants
 
+- **Wall-clock A/B is meaningless on this host.** During the 2026-11-03 round
+  the same binary reported `2^14` proves from 18.5 s to 55 s within minutes
+  (1-minute load 13–150). Use the `cpu=` field that every gated profile print
+  now carries (cumulative `getrusage` CPU), and A/B with same-binary env
+  switches instead of rebuilding. The round's "fused inner loop" experiment is
+  the cautionary tale: a wall-clock A/B had called the earlier inner fusion
+  neutral when it is in fact 35 % slower.
+- **Zero-padding skip keeps equality values at full length.** In
+  `prove_product6_rows` the row arrays are truncated to the live prefix, but
+  the equality vector is not: the boundary element of the live prefix folds
+  with a *non-zero* equality value in later rounds; setting that to zero
+  diverges at the first odd-length fold. The byte-equality gate found this.
+- **Claim-layer transition rules.** The polylog claim table is on by default
+  (`MAGNETAR_CLAIM_TABLE=0` restores the legacy row path, `MAGNETAR_CLAIM_ROWS=1`
+  keeps the table in the proof but verifies with the row sums for A/B). It
+  requires width 64; `ClaimProof`'s wire variants gained a `table` field, so
+  proofs from an older build do not deserialize (same-version round trip is
+  covered by tests). The claim-native fast path now binds the same composed
+  root. Open item: at `ADDS=4095` the full benchmark was observed to peak at
+  4.05–4.3 GiB (the 2^12 claim table is only ~16 MB of codeword, so it is not
+  that), while `ADDS=1023` and `2^16` peak at 2.1–2.4 GiB; the benchmark
+  memory watchdog caught it. Root-cause the non-monotonic transient before
+  quoting small-scale peaks.
+- **One heavy run at a time.** The host had <1.5 GiB free memory during this
+  round. Every example installs `install_memory_watchdog` (`MAGNETAR_MAX_RSS_GIB`,
+  default 4 GiB), `protocol_determinism` defaults to 20 pairs (1.99 GiB, the old
+  120-pair default peaked at 5.75 GiB), and anything above ~2 GiB is serialized
+  across all agents.
 - **Byte equality is the gate.** `streaming_lockstep_proof_matches_the_eager_proof_bytes`
   ([simd_dual.rs:8335](file:///Users/mac/projects/MagnetarVM/crates/magnetar-runtime/src/simd_dual.rs#L8335)),
   `parallel_chunked_streaming_matches_sequential` ([lib.rs:8361](file:///Users/mac/projects/MagnetarVM/crates/magnetar-runtime/src/lib.rs#L8361))

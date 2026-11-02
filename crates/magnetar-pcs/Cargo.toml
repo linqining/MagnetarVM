@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[dev-dependencies]
+libc = "0.2"
+tracing = "0.1"
+
 [dependencies]
 bincode.workspace = true
 ligerito = { path = "../../vendor/ligerito", default-features = false, features = ["std", "prover", "parallel", "hardware-accel", "transcript-sha256", "serde"] }

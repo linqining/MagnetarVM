@@ -26,6 +26,15 @@ use p3_symmetric::{
 
 type F = BinaryField128;
 
+/// Env-gated sub-stage profiling for the P3 wrapper (`MAGNETAR_PROFILE_PCS=1`).
+///
+/// One env lookup per PCS entry point (never inside a row loop); the timers only
+/// report, they do not change the prover's behaviour or output.
+fn profile_pcs() -> bool {
+    std::env::var_os("MAGNETAR_PROFILE_PCS").is_some()
+}
+
+
 /// Keccak-256 truncated to 16 bytes. The Merkle tree over the codeword is the
 /// largest single term of the prover peak (`2^(N+12)` B at 32 B per node), so
 /// halving the digest halves it; 128-bit collision resistance still exceeds
@@ -54,6 +63,40 @@ impl CryptographicHasher<u8, [u8; 16]> for Keccak256Hash16 {
         let mut out = [0u8; 16];
         out.copy_from_slice(&digest[..16]);
         out
+    }
+
+    /// Hash equal-length messages in groups through the wide Keccak backend.
+    ///
+    /// The trait default hashes one message per call, which leaves the batched
+    /// (NEON/SHA3, AVX2, ...) drivers of `Keccak256Hash` unused. Every Merkle
+    /// node of every PCS commitment is a 16-byte leaf or a 32-byte pair, so the
+    /// whole commitment's hashing went down the scalar sponge path even though
+    /// `LANES` reports the wide backend. Truncation is applied after the batch,
+    /// so the digests are the same bytes as the scalar path.
+    fn hash_many(&self, input: &[u8], out: &mut [[u8; 16]]) {
+        if out.is_empty() {
+            return;
+        }
+        // The batch contract: one equal-length message per requested digest.
+        assert!(
+            input.len().is_multiple_of(out.len()),
+            "batched hash input must split evenly across the digests"
+        );
+        let message_len = input.len() / out.len();
+        // A chunk small enough to stay out of the allocator's way; the wide
+        // backend pulls far more speed from a full lane group than from depth.
+        const DIGEST_CHUNK: usize = 256;
+        let mut wide = vec![[0u8; 32]; out.len().min(DIGEST_CHUNK)];
+        let mut consumed = 0usize;
+        for digests in out.chunks_mut(DIGEST_CHUNK) {
+            let count = digests.len();
+            let bytes = &input[consumed..consumed + count * message_len];
+            consumed += count * message_len;
+            Keccak256Hash.hash_many(bytes, &mut wide[..count]);
+            for (digest, wide_digest) in digests.iter_mut().zip(&wide[..count]) {
+                digest.copy_from_slice(&wide_digest[..16]);
+            }
+        }
     }
 }
 
@@ -279,6 +322,21 @@ impl P3BinaryPcs {
             .map_err(|error| ProofError::Pcs(error.to_string()))
     }
 
+    /// Shape of a single-column table without materialising the column.
+    ///
+    /// `table` copies the values into the P3 field type, so callers that only
+    /// need the arity used to pay a full copy (64 MiB at RV64 `2^16`) and then
+    /// drop it before the real conversion inside `commit_with`. This returns
+    /// the same `(logical, pcs_log)` pair with no allocation.
+    fn table_shape(values: &[F2_128]) -> Result<(usize, usize), ProofError> {
+        if values.is_empty() || !values.len().is_power_of_two() {
+            return Err(ProofError::NotPowerOfTwo(values.len()));
+        }
+        let logical = values.len().trailing_zeros() as usize;
+        let pcs_log = logical.max(1);
+        Ok((logical, pcs_log))
+    }
+
     fn table(values: &[F2_128]) -> Result<(Table<F>, usize, usize), ProofError> {
         if values.is_empty() || !values.len().is_power_of_two() {
             return Err(ProofError::NotPowerOfTwo(values.len()));
@@ -347,12 +405,9 @@ impl P3BinaryPcs {
         let logical = len.trailing_zeros() as usize;
         let mut converted = Vec::with_capacity(len * columns.len());
         for column in columns {
-            converted.extend(
-                column
-                    .iter()
-                    .map(|value| F::from_repr(value.value()))
-                    .collect::<Vec<_>>(),
-            );
+            // Extend straight from the iterator: the intermediate `collect` used
+            // to allocate and copy every column a second time.
+            converted.extend(column.iter().map(|value| F::from_repr(value.value())));
         }
         Ok((
             Table::new(RowMajorMatrix::new(converted, len)),
@@ -433,7 +488,10 @@ impl P3BinaryPcs {
         &self,
         columns: &[Vec<F2_128>],
     ) -> Result<P3CommittedBatch, ProofError> {
+        let profile = profile_pcs();
+        let tables_started = std::time::Instant::now();
         let (table, num_variables, num_columns) = Self::batch_table(columns)?;
+        let tables_time = tables_started.elapsed();
         let stacked_variables = Self::stacked_variables(num_variables, num_columns);
         let backend = Self::backend_with(
             stacked_variables,
@@ -444,9 +502,17 @@ impl P3BinaryPcs {
         )?;
         let mut challenger = Self::challenger();
         let witness = SuffixProver::<F, F>::new_witness(vec![table], 0);
+        let commit_started = std::time::Instant::now();
         let (cap, data) = backend
             .commit(witness, &mut challenger)
             .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        let commit_time = commit_started.elapsed();
+        if profile {
+            let cells = num_columns as u64 * (1u64 << num_variables);
+            eprintln!(
+                "pcs commit_batch_prepared: tables {tables_time:?} commit {commit_time:?} cells={cells} stacked_vars={stacked_variables}"
+            );
+        }
         Ok(P3CommittedBatch {
             commitment: P3BatchCommitment {
                 cap,
@@ -461,11 +527,16 @@ impl P3BinaryPcs {
     }
 
     /// Open a prepared batch; the codeword and Merkle tree are reused.
+    ///
+    /// Takes the prepared batch by value: the prover data (the retained codeword and
+    /// Merkle tree) moves into the opening instead of being deep-copied. The local
+    /// Twist PCS commits one batch and opens it once, so nothing needs the copy.
     pub fn open_batch_prepared(
         &self,
-        prepared: &P3CommittedBatch,
+        prepared: P3CommittedBatch,
         points: &[P3BatchPoint],
     ) -> Result<P3BatchOpening, ProofError> {
+        let profile = profile_pcs();
         let protocol = Self::batch_protocol(
             prepared.commitment.num_variables,
             prepared.commitment.num_columns,
@@ -476,12 +547,20 @@ impl P3BinaryPcs {
             .map(|point| Self::point(&point.point))
             .collect::<Vec<_>>();
         let mut challenger = prepared.challenger.clone();
+        let open_started = std::time::Instant::now();
         let proof = prepared
             .backend
-            .open_at(prepared.data.clone(), &protocol, &p3_points, &mut challenger)
+            .open_at(prepared.data, &protocol, &p3_points, &mut challenger)
             .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        let open_time = open_started.elapsed();
+        if profile {
+            eprintln!(
+                "pcs open_batch_prepared: open_at {open_time:?} points={}",
+                points.len()
+            );
+        }
         Ok(P3BatchOpening {
-            commitment: prepared.commitment.clone(),
+            commitment: prepared.commitment,
             proof,
         })
     }
@@ -692,6 +771,8 @@ impl P3BinaryPcs {
         &self,
         tables: &[P3MosaicTable],
     ) -> Result<P3MosaicCommitment, ProofError> {
+        let profile = profile_pcs();
+        let tables_started = std::time::Instant::now();
         let mut p3_tables = Vec::with_capacity(tables.len());
         let mut shapes = Vec::with_capacity(tables.len());
         for table in tables {
@@ -699,6 +780,7 @@ impl P3BinaryPcs {
             p3_tables.push(p3_table);
             shapes.push(shape);
         }
+        let tables_time = tables_started.elapsed();
         let stacked_variables = Self::mosaic_stacked_variables(&shapes)?;
         let backend = Self::backend_with(
             stacked_variables,
@@ -709,9 +791,28 @@ impl P3BinaryPcs {
         )?;
         let mut challenger = Self::challenger();
         let witness = SuffixProver::<F, F>::new_witness(p3_tables, 0);
+        let commit_started = std::time::Instant::now();
         let (cap, _) = backend
             .commit(witness, &mut challenger)
             .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        let commit_time = commit_started.elapsed();
+        if profile {
+            let cells: u64 = tables
+                .iter()
+                .map(|table| {
+                    table
+                        .columns
+                        .first()
+                        .map_or(0, |column| column.len() as u64)
+                        * table.columns.len() as u64
+                })
+                .sum();
+            eprintln!(
+                "pcs commit_mosaic: tables {tables_time:?} commit {commit_time:?} tables={} cells={} stacked_vars={stacked_variables}",
+                tables.len(),
+                cells
+            );
+        }
         Ok(P3MosaicCommitment {
             cap,
             tables: shapes,
@@ -726,6 +827,8 @@ impl P3BinaryPcs {
         tables: &[P3MosaicTable],
         points: &[P3MosaicPoint],
     ) -> Result<P3MosaicOpening, ProofError> {
+        let profile = profile_pcs();
+        let tables_started = std::time::Instant::now();
         let mut p3_tables = Vec::with_capacity(tables.len());
         let mut shapes = Vec::with_capacity(tables.len());
         for table in tables {
@@ -733,6 +836,7 @@ impl P3BinaryPcs {
             p3_tables.push(p3_table);
             shapes.push(shape);
         }
+        let tables_time = tables_started.elapsed();
         let stacked_variables = Self::mosaic_stacked_variables(&shapes)?;
         let (protocol, p3_points) = Self::mosaic_schedule(&shapes, points)?;
         let backend = Self::backend_with(
@@ -744,12 +848,23 @@ impl P3BinaryPcs {
         )?;
         let mut challenger = Self::challenger();
         let witness = SuffixProver::<F, F>::new_witness(p3_tables, 0);
+        let commit_started = std::time::Instant::now();
         let (cap, data) = backend
             .commit(witness, &mut challenger)
             .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        let commit_time = commit_started.elapsed();
+        let open_started = std::time::Instant::now();
         let proof = backend
             .open_at(data, &protocol, &p3_points, &mut challenger)
             .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        let open_time = open_started.elapsed();
+        if profile {
+            eprintln!(
+                "pcs open_mosaic: tables {tables_time:?} commit {commit_time:?} open_at {open_time:?} tables={} points={} stacked_vars={stacked_variables}",
+                tables.len(),
+                points.len()
+            );
+        }
         Ok(P3MosaicOpening {
             commitment: P3MosaicCommitment {
                 cap,
@@ -829,7 +944,8 @@ impl Pcs for P3BinaryPcs {
     type Opening = P3Opening;
 
     fn commit(&self, values: &[F2_128]) -> Result<Self::Commitment, ProofError> {
-        let (_, num_variables, pcs_log) = Self::table(values)?;
+        let profile = profile_pcs();
+        let (num_variables, pcs_log) = Self::table_shape(values)?;
         let backend = Self::backend_with(
             pcs_log,
             self.security_level,
@@ -838,12 +954,21 @@ impl Pcs for P3BinaryPcs {
             self.log_folding_factor,
         )?;
         let mut challenger = Self::challenger();
+        let started = std::time::Instant::now();
         let (cap, _) = Self::commit_with(&backend, values, &mut challenger)?;
+        if profile {
+            eprintln!(
+                "pcs commit: {:?} values={} pcs_log={pcs_log}",
+                started.elapsed(),
+                values.len()
+            );
+        }
         Ok(P3Commitment { cap, num_variables })
     }
 
     fn open(&self, values: &[F2_128], point: &[F2_128]) -> Result<Self::Opening, ProofError> {
-        let (_, num_variables, pcs_log) = Self::table(values)?;
+        let profile = profile_pcs();
+        let (num_variables, pcs_log) = Self::table_shape(values)?;
         if point.len() != num_variables {
             return Err(ProofError::PointLength {
                 expected: num_variables,
@@ -858,7 +983,10 @@ impl Pcs for P3BinaryPcs {
             self.log_folding_factor,
         )?;
         let mut challenger = Self::challenger();
+        let commit_started = std::time::Instant::now();
         let (cap, data) = Self::commit_with(&backend, values, &mut challenger)?;
+        let commit_time = commit_started.elapsed();
+        let open_started = std::time::Instant::now();
         let proof = backend
             .open_at(
                 data,
@@ -867,6 +995,13 @@ impl Pcs for P3BinaryPcs {
                 &mut challenger,
             )
             .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        let open_time = open_started.elapsed();
+        if profile {
+            eprintln!(
+                "pcs open: commit {commit_time:?} open_at {open_time:?} values={} pcs_log={pcs_log}",
+                values.len()
+            );
+        }
         Ok(P3Opening {
             commitment: P3Commitment { cap, num_variables },
             proof,
