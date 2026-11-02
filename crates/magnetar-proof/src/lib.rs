@@ -567,18 +567,27 @@ pub mod bit_pcs;
 pub mod dual_field;
 pub mod f2_protocol;
 pub mod simd;
+pub mod bits;
 pub mod spartan;
+pub mod stream;
 pub mod virtual_spartan;
 pub use bit_pcs::{
     BitPcs, DirectBitPcs, PackedBitPcs, PackedOpening, PackedTableOpening, RevealingPackedBitPcs,
     RingSwitchOpening, RingSwitchPackedBitPcs,
 };
+pub use bits::PackedBits;
 pub use simd::{LazyExtraRows, SharedBlockMatrix};
 pub use spartan::{
-    prove_lockstep, prove_lockstep_bits, prove_lockstep_bits_with_point, prove_lockstep_claims,
+    prove_lockstep, prove_lockstep_bits, prove_lockstep_bits_streaming,
+    prove_lockstep_bits_streaming_claim, prove_lockstep_bits_streaming_claim_with_level,
+    prove_lockstep_bits_streaming_with_level,
+    prove_lockstep_bits_with_point,
+    prove_lockstep_claims,
     prove_lockstep_with_matrices, prove_shared_simd_spartan, prove_spartan, prove_spartan_bits,
     prove_spartan_with_matrices, verify_lockstep, verify_lockstep_bits,
-    verify_lockstep_bits_with_replacements, verify_lockstep_bits_with_replacements_point, verify_lockstep_bits_with_witness,
+    verify_lockstep_bits_with_replacements, verify_lockstep_bits_with_replacements_claim_point,
+    verify_lockstep_bits_with_replacements_point, verify_lockstep_bits_with_witness,
+    verify_lockstep_bits_with_witness_claim,
     verify_lockstep_claims, verify_lockstep_segments, verify_lockstep_with_matrices,
     verify_shared_simd_spartan, verify_shared_simd_spartan_with_witnesses, verify_spartan,
     verify_spartan_bits, verify_spartan_with_matrices, witness_vector, LockstepClaims,

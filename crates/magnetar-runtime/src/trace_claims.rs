@@ -106,26 +106,133 @@ impl TraceClaim {
     }
 
     pub fn leaf(&self) -> [u8; 32] {
+        // Encode straight into a stack buffer with the domain prefix, so the
+        // per-row leaf costs one hash and no allocation. Larger-than-typical
+        // rows (many memory accesses) fall back to the allocating path.
+        let mut buffer = [0u8; LEAF_BUFFER];
+        buffer[..LEAF_DOMAIN.len()].copy_from_slice(LEAF_DOMAIN);
+        let mut len = LEAF_DOMAIN.len();
+        if encode_into(&mut buffer, &mut len, self) {
+            return magnetar_transcript::sha256(&buffer[..len]);
+        }
         hash(&[LEAF_DOMAIN, &self.encode()])
     }
 }
 
+const LEAF_BUFFER: usize = 384;
+
+/// Encode the claim into `buffer` at `len`; `false` if it does not fit.
+fn encode_into(buffer: &mut [u8], len: &mut usize, claim: &TraceClaim) -> bool {
+    let mut put = |bytes: &[u8]| -> bool {
+        if *len + bytes.len() > buffer.len() {
+            return false;
+        }
+        buffer[*len..*len + bytes.len()].copy_from_slice(bytes);
+        *len += bytes.len();
+        true
+    };
+    put(&claim.pc.to_le_bytes())
+        && put(&claim.next_pc.to_le_bytes())
+        && put(&claim.instruction_word.to_le_bytes())
+        && put(&[claim.instruction_len])
+        && put(&[claim.rd])
+        && put(&[claim.rs1])
+        && put(&[claim.rs2])
+        && put(&[u8::from(claim.rd_present)])
+        && put(&[u8::from(claim.rs1_present)])
+        && put(&[u8::from(claim.rs2_present)])
+        && put(&claim.rd_value.to_le_bytes())
+        && put(&claim.rs1_value.to_le_bytes())
+        && put(&claim.rs2_value.to_le_bytes())
+        && match claim.syscall {
+            Some(syscall) => {
+                put(&[1])
+                    && put(&syscall.number.to_le_bytes())
+                    && syscall.args.iter().all(|arg| put(&arg.to_le_bytes()))
+            }
+            None => put(&[0]),
+        }
+        && claim.memory.iter().all(|access| {
+            put(&access.cycle.to_le_bytes())
+                && put(&access.addr.to_le_bytes())
+                && put(&access.value.to_le_bytes())
+                && put(&[access.width])
+                && put(&[u8::from(access.is_write)])
+        })
+}
+
+/// One row of a complete claim proof: absolute row index plus the claim.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TraceClaimOpening {
     pub index: usize,
     pub claim: TraceClaim,
-    pub leaf: [u8; 32],
-    pub siblings: Vec<[u8; 32]>,
 }
 
+/// Claim-tree root. Leaves hash groups of `CLAIM_LEAF_GROUP` rows, which
+/// amortizes the per-hash cost on both sides (a group costs one SHA-256
+/// instead of one per row).
 #[derive(Clone, Debug)]
 pub struct TraceClaimTree {
-    claims: Vec<TraceClaim>,
-    layers: Vec<Vec<[u8; 32]>>,
+    root: [u8; 32],
+}
+
+/// Rows per claim-tree leaf.
+pub const CLAIM_LEAF_GROUP: usize = 8;
+
+const GROUP_BUFFER: usize = 1024;
+
+/// Hash of one group of consecutive claims: `LEAF_DOMAIN`, the group length
+/// and each length-prefixed claim encoding.
+fn claim_group_leaf(group: &[TraceClaim]) -> [u8; 32] {
+    let mut buffer = [0u8; GROUP_BUFFER];
+    buffer[..LEAF_DOMAIN.len()].copy_from_slice(LEAF_DOMAIN);
+    let mut len = LEAF_DOMAIN.len() + 2;
+    buffer[LEAF_DOMAIN.len()] = group.len() as u8;
+    let mut fits = true;
+    for claim in group {
+        let start = len + 2;
+        if start > buffer.len() {
+            fits = false;
+            break;
+        }
+        let mut end = start;
+        if !encode_into(&mut buffer, &mut end, claim) {
+            fits = false;
+            break;
+        }
+        let size = (end - start) as u16;
+        buffer[len..len + 2].copy_from_slice(&size.to_le_bytes());
+        len = end;
+    }
+    if fits {
+        return magnetar_transcript::sha256(&buffer[..len]);
+    }
+    let mut bytes = Vec::with_capacity(LEAF_DOMAIN.len() + group.len() * 128);
+    bytes.extend_from_slice(LEAF_DOMAIN);
+    bytes.extend_from_slice(&(group.len() as u16).to_le_bytes());
+    for claim in group {
+        let encoded = claim.encode();
+        bytes.extend_from_slice(&(encoded.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(&encoded);
+    }
+    magnetar_transcript::sha256(&bytes)
+}
+
+fn claim_group_leaves(claims: &[TraceClaim]) -> Vec<[u8; 32]> {
+    claims.chunks(CLAIM_LEAF_GROUP).map(claim_group_leaf).collect()
+}
+
+/// Domain-separated hash of two 32-byte children, allocation-free.
+fn hash_node(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+    let mut buffer = [0u8; NODE_DOMAIN.len() + 64];
+    buffer[..NODE_DOMAIN.len()].copy_from_slice(NODE_DOMAIN);
+    buffer[NODE_DOMAIN.len()..NODE_DOMAIN.len() + 32].copy_from_slice(left);
+    buffer[NODE_DOMAIN.len() + 32..].copy_from_slice(right);
+    magnetar_transcript::sha256(&buffer)
 }
 
 fn hash(parts: &[&[u8]]) -> [u8; 32] {
-    let mut bytes = Vec::new();
+    let mut bytes = Vec::with_capacity(parts.iter().map(|part| part.len()).sum());
     for part in parts {
         bytes.extend_from_slice(part);
     }
@@ -143,68 +250,25 @@ impl TraceClaimTree {
             .iter()
             .map(TraceClaim::from_row)
             .collect::<Vec<_>>();
-        let mut leaves = claims.iter().map(TraceClaim::leaf).collect::<Vec<_>>();
-        let width = leaves.len().max(1).next_power_of_two();
-        leaves.resize(width, [0u8; 32]);
-        let mut layers = vec![leaves];
-        while layers.last().map(Vec::len).unwrap_or(0) > 1 {
-            let previous = layers.last().expect("layer");
-            let next = previous
-                .chunks_exact(2)
-                .map(|pair| hash(&[NODE_DOMAIN, &pair[0], &pair[1]]))
-                .collect::<Vec<_>>();
-            layers.push(next);
+        Self {
+            root: claim_root_of(&claims),
         }
-        Self { claims, layers }
     }
 
     pub fn root(&self) -> [u8; 32] {
-        self.layers
-            .last()
-            .map(|layer| layer[0])
-            .unwrap_or([0u8; 32])
-    }
-
-    pub fn len(&self) -> usize {
-        self.layers.first().map(Vec::len).unwrap_or(0)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn open(&self, index: usize) -> Option<TraceClaimOpening> {
-        let mut position = index;
-        let leaf = *self.layers.first()?.get(index)?;
-        let mut siblings = Vec::with_capacity(self.layers.len().saturating_sub(1));
-        for layer in self.layers.iter().take(self.layers.len().saturating_sub(1)) {
-            siblings.push(*layer.get(position ^ 1)?);
-            position /= 2;
-        }
-        Some(TraceClaimOpening {
-            index,
-            claim: self.claims.get(index)?.clone(),
-            leaf,
-            siblings,
-        })
+        self.root
     }
 }
 
-pub fn verify_opening(root: [u8; 32], opening: &TraceClaimOpening) -> bool {
-    if opening.claim.leaf() != opening.leaf {
-        return false;
+fn claim_root_of(claims: &[TraceClaim]) -> [u8; 32] {
+    if claims.is_empty() {
+        return [0u8; 32];
     }
-    let mut node = opening.leaf;
-    let mut position = opening.index;
-    for sibling in &opening.siblings {
-        node = if position & 1 == 0 {
-            hash(&[NODE_DOMAIN, &node, sibling])
-        } else {
-            hash(&[NODE_DOMAIN, sibling, &node])
-        };
-        position /= 2;
-    }
-    node == root
+    let workers = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+        .max(1);
+    reduce_claim_root(claim_group_leaves(claims), workers)
 }
 
 /// Trace-aware reference check: recovered claims must match the supplied rows.
@@ -347,6 +411,15 @@ enum ClaimProofWire {
     CompactRegs {
         root: [u8; 32],
         blob: Vec<u8>,
+    },
+    /// Compact blob plus the register indices of rows whose claim does not
+    /// carry the indices implied by its instruction word (the blob derives
+    /// `rd`/`rs1`/`rs2` from the word, and the executor may record others,
+    /// e.g. on the syscall row).
+    CompactIndexed {
+        root: [u8; 32],
+        blob: Vec<u8>,
+        indices: Vec<(u32, u8, u8, u8)>,
     },
     Full {
         root: [u8; 32],
@@ -617,6 +690,51 @@ fn decode_claim_columns_with_regs(
     Ok(claims)
 }
 
+/// Register indices the compact blob derives from the instruction word.
+fn instruction_indices(word: u32, instruction_len: u8) -> Option<(u8, u8, u8)> {
+    if instruction_len == 4 {
+        magnetar_spec::decode(word)
+            .ok()
+            .map(|instruction| (instruction.rd, instruction.rs1, instruction.rs2))
+    } else {
+        magnetar_spec::decode_compressed((word & 0xffff) as u16)
+            .ok()
+            .map(|instruction| (instruction.rd, instruction.rs1, instruction.rs2))
+    }
+}
+
+/// Rows whose claim indices are not the ones the compact blob re-derives.
+fn claim_index_overrides(claims: &[TraceClaim]) -> Vec<(u32, u8, u8, u8)> {
+    claims
+        .iter()
+        .enumerate()
+        .filter_map(|(index, claim)| {
+            let derived = instruction_indices(claim.instruction_word, claim.instruction_len)?;
+            ((claim.rd, claim.rs1, claim.rs2) != derived)
+                .then_some((index as u32, claim.rd, claim.rs1, claim.rs2))
+        })
+        .collect()
+}
+
+fn decode_compact_claim_blob(blob: &[u8]) -> Result<Vec<TraceClaim>, Box<bincode::ErrorKind>> {
+    let blob = miniz_oxide::inflate::decompress_to_vec(blob)
+        .map_err(|error| Box::new(bincode::ErrorKind::Custom(format!("claim blob: {error:?}"))))?;
+    decode_claim_columns(&blob)
+}
+
+fn complete_claim_proof(root: [u8; 32], claims: Vec<TraceClaim>) -> ClaimProof {
+    ClaimProof {
+        root,
+        complete: true,
+        openings: claims
+            .into_iter()
+            .enumerate()
+            .map(|(index, claim)| TraceClaimOpening { index, claim })
+            .collect(),
+        reg_blob: None,
+    }
+}
+
 impl serde::Serialize for ClaimProof {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         if let Some(blob) = &self.reg_blob {
@@ -631,11 +749,20 @@ impl serde::Serialize for ClaimProof {
                 .iter()
                 .map(|opening| opening.claim.clone())
                 .collect::<Vec<_>>();
+            let indices = claim_index_overrides(&claims);
             let blob = encode_claim_columns(&claims);
             let blob = miniz_oxide::deflate::compress_to_vec(&blob, 6);
-            ClaimProofWire::Compact {
-                root: self.root,
-                blob,
+            if indices.is_empty() {
+                ClaimProofWire::Compact {
+                    root: self.root,
+                    blob,
+                }
+            } else {
+                ClaimProofWire::CompactIndexed {
+                    root: self.root,
+                    blob,
+                    indices,
+                }
             }
             .serialize(serializer)
         } else {
@@ -653,24 +780,24 @@ impl<'de> serde::Deserialize<'de> for ClaimProof {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         match ClaimProofWire::deserialize(deserializer)? {
             ClaimProofWire::Compact { root, blob } => {
-                let blob = miniz_oxide::inflate::decompress_to_vec(&blob)
-                    .map_err(serde::de::Error::custom)?;
-                let claims = decode_claim_columns(&blob).map_err(serde::de::Error::custom)?;
-                Ok(Self {
-                    root,
-                    complete: true,
-                    openings: claims
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, claim)| TraceClaimOpening {
-                            index,
-                            leaf: claim.leaf(),
-                            claim,
-                            siblings: Vec::new(),
-                        })
-                        .collect(),
-                    reg_blob: None,
-                })
+                let claims = decode_compact_claim_blob(&blob).map_err(serde::de::Error::custom)?;
+                Ok(complete_claim_proof(root, claims))
+            }
+            ClaimProofWire::CompactIndexed {
+                root,
+                blob,
+                indices,
+            } => {
+                let mut claims = decode_compact_claim_blob(&blob).map_err(serde::de::Error::custom)?;
+                for (row, rd, rs1, rs2) in indices {
+                    let claim = claims.get_mut(row as usize).ok_or_else(|| {
+                        serde::de::Error::custom("claim index override out of range")
+                    })?;
+                    claim.rd = rd;
+                    claim.rs1 = rs1;
+                    claim.rs2 = rs2;
+                }
+                Ok(complete_claim_proof(root, claims))
             }
             ClaimProofWire::Full {
                 root,
@@ -694,20 +821,21 @@ impl<'de> serde::Deserialize<'de> for ClaimProof {
 
 impl ClaimProof {
     pub fn from_trace(trace: &Trace) -> Self {
-        let tree = TraceClaimTree::build(trace);
-        let openings = tree
-            .claims
+        let claims = trace
+            .rows
+            .iter()
+            .map(TraceClaim::from_row)
+            .collect::<Vec<_>>();
+        let openings = claims
             .iter()
             .enumerate()
             .map(|(index, claim)| TraceClaimOpening {
                 index,
                 claim: claim.clone(),
-                leaf: claim.leaf(),
-                siblings: Vec::new(),
             })
             .collect();
         Self {
-            root: tree.root(),
+            root: claim_root_of(&claims),
             complete: true,
             openings,
             reg_blob: None,
@@ -717,8 +845,12 @@ impl ClaimProof {
     /// Compact ROM/register-derived encoding: rows are rebuilt from the
     /// statement's initial registers; rs1/rs2 columns are omitted.
     pub fn from_trace_reg(trace: &Trace) -> Self {
-        let tree = TraceClaimTree::build(trace);
-        let claims = tree.claims.clone();
+        let claims = trace
+            .rows
+            .iter()
+            .map(TraceClaim::from_row)
+            .collect::<Vec<_>>();
+        let root = claim_root_of(&claims);
         let encoded = encode_claim_columns(&claims);
         let mut columns: ClaimColumns = bincode::DefaultOptions::new()
             .with_varint_encoding()
@@ -732,7 +864,7 @@ impl ClaimProof {
             .expect("claim columns serialize");
         let blob = miniz_oxide::deflate::compress_to_vec(&blob, 6);
         Self {
-            root: tree.root(),
+            root,
             complete: true,
             openings: Vec::new(),
             reg_blob: Some(blob),
@@ -741,6 +873,27 @@ impl ClaimProof {
 
     /// Verify a compact register-derived claim proof against the statement's
     /// initial registers.
+    /// Decode the authenticated rows without recomputing the claim root; the
+    /// caller checks the root separately with [`verify_complete_leaves`].
+    pub fn decode_rows(
+        &self,
+        initial: &magnetar_spec::MachineState,
+    ) -> Option<Vec<TraceClaim>> {
+        if let Some(blob) = self.reg_blob.as_ref() {
+            let blob = miniz_oxide::inflate::decompress_to_vec(blob).ok()?;
+            return decode_claim_columns_with_regs(&blob, Some(initial.regs)).ok();
+        }
+        if self.complete && !self.openings.is_empty() {
+            return Some(
+                self.openings
+                    .iter()
+                    .map(|opening| opening.claim.clone())
+                    .collect(),
+            );
+        }
+        None
+    }
+
     pub fn verify_reg(
         &self,
         initial: &magnetar_spec::MachineState,
@@ -748,63 +901,38 @@ impl ClaimProof {
         let Some(blob) = self.reg_blob.as_ref() else {
             return self.verify();
         };
+        let profile = std::env::var_os("MAGNETAR_PROFILE_VERIFY").is_some();
+        let started = std::time::Instant::now();
         let blob =
             miniz_oxide::inflate::decompress_to_vec(blob).ok()?;
+        if profile {
+            eprintln!("claim blob inflate: {:?}", started.elapsed());
+        }
+        let decode_started = std::time::Instant::now();
         let claims = decode_claim_columns_with_regs(&blob, Some(initial.regs)).ok()?;
+        if profile {
+            eprintln!("claim blob decode: {:?}", decode_started.elapsed());
+        }
         if claims.first().map(|claim| claim.pc) != Some(initial.pc) {
             return None;
         }
-        let openings = claims
-            .iter()
-            .enumerate()
-            .map(|(index, claim)| TraceClaimOpening {
-                index,
-                claim: claim.clone(),
-                leaf: claim.leaf(),
-                siblings: Vec::new(),
-            })
-            .collect::<Vec<_>>();
-        verify_complete_claims(self.root, &openings)
+        let tree_started = std::time::Instant::now();
+        if !verify_complete_leaves(self.root, &claims) {
+            return None;
+        }
+        if profile {
+            eprintln!("claim leaves+tree: {:?}", tree_started.elapsed());
+        }
+        Some(claims)
     }
 
     pub fn verify(&self) -> Option<Vec<TraceClaim>> {
-        if self.complete {
-            verify_complete_claims(self.root, &self.openings)
-        } else {
-            verify_claims(self.root, &self.openings)
+        if !self.complete {
+            return None;
         }
+        verify_complete_claims(self.root, &self.openings)
     }
 
-    /// Open a sparse subset of authenticated row claims (virtual-claim style).
-    ///
-    /// Indices are sorted and deduplicated; the returned proof carries the
-    /// actual row index on every opening, so gaps are allowed.
-    pub fn open_indices(trace: &magnetar_spec::Trace, indices: &[usize]) -> Option<Self> {
-        let tree = TraceClaimTree::build(trace);
-        let mut indices = indices.to_vec();
-        indices.sort_unstable();
-        indices.dedup();
-        let openings = indices
-            .into_iter()
-            .map(|index| tree.open(index))
-            .collect::<Option<Vec<_>>>()?;
-        Some(Self {
-            root: tree.root(),
-            complete: false,
-            openings,
-            reg_blob: None,
-        })
-    }
-
-    /// Verify a sparse opening and return `(row index, claim)` pairs.
-    pub fn verify_subset(&self) -> Option<Vec<(usize, TraceClaim)>> {
-        if self.complete {
-            return verify_complete_claims(self.root, &self.openings).map(|claims| {
-                claims.into_iter().enumerate().collect::<Vec<_>>()
-            });
-        }
-        verify_indexed_claims(self.root, &self.openings)
-    }
 }
 
 impl ClaimProof {
@@ -892,50 +1020,88 @@ pub fn verify_complete_claims(
     if openings.is_empty() {
         return None;
     }
-    let mut leaves = Vec::with_capacity(openings.len().next_power_of_two());
     let mut claims = Vec::with_capacity(openings.len());
     for (index, opening) in openings.iter().enumerate() {
-        if opening.index != index || opening.claim.leaf() != opening.leaf {
+        if opening.index != index {
             return None;
         }
-        leaves.push(opening.leaf);
         claims.push(opening.claim.clone());
     }
-    leaves.resize(openings.len().next_power_of_two(), [0u8; 32]);
+    verify_complete_leaves(root, &claims).then_some(claims)
+}
+
+/// Root of the padded claim tree with `leaves` as the leaf layer.
+fn reduce_claim_root(mut leaves: Vec<[u8; 32]>, workers: usize) -> [u8; 32] {
+    let size = leaves.len().next_power_of_two();
+    leaves.resize(size, [0u8; 32]);
     while leaves.len() > 1 {
-        leaves = leaves
-            .chunks_exact(2)
-            .map(|pair| hash(&[NODE_DOMAIN, &pair[0], &pair[1]]))
-            .collect();
+        if workers > 1 && leaves.len() >= 8192 {
+            let chunk = leaves.len().div_ceil(workers) & !1;
+            let mut next = Vec::with_capacity(leaves.len() / 2);
+            let mut partial: Vec<Vec<[u8; 32]>> = std::thread::scope(|scope| {
+                let mut handles = Vec::with_capacity(workers);
+                for first in (0..leaves.len()).step_by(chunk) {
+                    let last = (first + chunk).min(leaves.len());
+                    let slice = &leaves[first..last];
+                    handles.push(scope.spawn(move || {
+                        slice
+                            .chunks_exact(2)
+                            .map(|pair| hash_node(&pair[0], &pair[1]))
+                            .collect::<Vec<_>>()
+                    }));
+                }
+                handles
+                    .into_iter()
+                    .map(|handle| handle.join().expect("claim tree worker"))
+                    .collect()
+            });
+            for part in &mut partial {
+                next.append(part);
+            }
+            leaves = next;
+        } else {
+            leaves = leaves
+                .chunks_exact(2)
+                .map(|pair| hash_node(&pair[0], &pair[1]))
+                .collect();
+        }
     }
-    (leaves[0] == root).then_some(claims)
+    leaves[0]
 }
 
-/// Verify a contiguous list of claim openings and return their payloads.
-pub fn verify_claims(root: [u8; 32], openings: &[TraceClaimOpening]) -> Option<Vec<TraceClaim>> {
-    let mut claims = Vec::with_capacity(openings.len());
-    for (index, opening) in openings.iter().enumerate() {
-        if opening.index != index || !verify_opening(root, opening) {
-            return None;
-        }
-        claims.push(opening.claim.clone());
+/// Verify a complete payload list against the claim root, hashing each leaf
+/// once. The tree is padded with zero leaves to a power of two.
+pub fn verify_complete_leaves(root: [u8; 32], claims: &[TraceClaim]) -> bool {
+    if claims.is_empty() {
+        return false;
     }
-    Some(claims)
-}
-
-/// Verify sparse openings, preserving each opening's absolute row index.
-pub fn verify_indexed_claims(
-    root: [u8; 32],
-    openings: &[TraceClaimOpening],
-) -> Option<Vec<(usize, TraceClaim)>> {
-    let mut claims = Vec::with_capacity(openings.len());
-    for opening in openings {
-        if !verify_opening(root, opening) {
-            return None;
-        }
-        claims.push((opening.index, opening.claim.clone()));
-    }
-    Some(claims)
+    let groups = claims.len().div_ceil(CLAIM_LEAF_GROUP);
+    let workers = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+        .max(1)
+        .min(groups.max(1));
+    let leaves = if workers > 1 && groups >= 512 {
+        let chunk = groups.div_ceil(workers);
+        std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(workers);
+            for first in (0..groups).step_by(chunk) {
+                let last = (first + chunk).min(groups);
+                let start = first * CLAIM_LEAF_GROUP;
+                let end = (last * CLAIM_LEAF_GROUP).min(claims.len());
+                let slice = &claims[start..end];
+                handles.push(scope.spawn(move || claim_group_leaves(slice)));
+            }
+            let mut leaves = Vec::with_capacity(groups);
+            for handle in handles {
+                leaves.extend(handle.join().expect("claim leaf worker"));
+            }
+            leaves
+        })
+    } else {
+        claim_group_leaves(claims)
+    };
+    reduce_claim_root(leaves, workers) == root
 }
 
 #[cfg(test)]
@@ -943,6 +1109,31 @@ mod tests {
     use super::*;
     use magnetar_executor::execute;
     use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+    #[test]
+    fn leaf_buffer_matches_the_allocating_encoding() {
+        let trace = trace();
+        for row in &trace.rows {
+            let claim = TraceClaim::from_row(row);
+            assert_eq!(claim.leaf(), hash(&[LEAF_DOMAIN, &claim.encode()]));
+        }
+        let mut with_syscall = trace.rows[0].clone();
+        let claim = TraceClaim::from_row(&with_syscall);
+        assert_eq!(claim.leaf(), hash(&[LEAF_DOMAIN, &claim.encode()]));
+        // Force the fallback path: a claim with many memory accesses.
+        let mut claim = TraceClaim::from_row(&trace.rows[0]);
+        claim.memory = (0..64)
+            .map(|index| TraceMemClaim {
+                cycle: index,
+                addr: index * 8,
+                value: index as u64,
+                width: 8,
+                is_write: index % 2 == 0,
+            })
+            .collect();
+        assert_eq!(claim.leaf(), hash(&[LEAF_DOMAIN, &claim.encode()]));
+        let _ = &mut with_syscall;
+    }
 
     fn trace() -> Trace {
         let program = ProgramImage::new(
@@ -975,39 +1166,61 @@ mod tests {
     }
 
     #[test]
-    fn every_row_opening_verifies() {
+    fn group_leaf_matches_the_allocating_encoding() {
         let trace = trace();
-        let tree = TraceClaimTree::build(&trace);
-        for index in 0..trace.rows.len() {
-            let opening = tree.open(index).unwrap();
-            assert_eq!(opening.leaf, claim_leaf(&trace.rows[index]));
-            assert!(verify_opening(tree.root(), &opening));
+        let claims = trace
+            .rows
+            .iter()
+            .map(TraceClaim::from_row)
+            .collect::<Vec<_>>();
+        for group in claims.chunks(CLAIM_LEAF_GROUP) {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(LEAF_DOMAIN);
+            bytes.extend_from_slice(&(group.len() as u16).to_le_bytes());
+            for claim in group {
+                let encoded = claim.encode();
+                bytes.extend_from_slice(&(encoded.len() as u16).to_le_bytes());
+                bytes.extend_from_slice(&encoded);
+            }
+            assert_eq!(claim_group_leaf(group), magnetar_transcript::sha256(&bytes));
         }
     }
 
     #[test]
-    fn tampered_leaf_is_rejected() {
+    fn group_root_binds_every_row() {
         let trace = trace();
-        let tree = TraceClaimTree::build(&trace);
-        let mut opening = tree.open(0).unwrap();
-        opening.leaf[0] ^= 1;
-        assert!(!verify_opening(tree.root(), &opening));
+        let claims = trace
+            .rows
+            .iter()
+            .map(TraceClaim::from_row)
+            .collect::<Vec<_>>();
+        let root = TraceClaimTree::build(&trace).root();
+        assert_eq!(root, claim_root_of(&claims));
+        assert!(verify_complete_leaves(root, &claims));
+        for mutate in [
+            |claims: &mut Vec<TraceClaim>| claims[0].instruction_len ^= 4,
+            |claims: &mut Vec<TraceClaim>| claims[1].rd_value ^= 1,
+            |claims: &mut Vec<TraceClaim>| {
+                claims.pop();
+            },
+        ] {
+            let mut tampered = claims.clone();
+            mutate(&mut tampered);
+            assert!(!verify_complete_leaves(root, &tampered));
+        }
     }
 
     #[test]
     fn verified_claims_recover_row_fields() {
         let trace = trace();
-        let tree = TraceClaimTree::build(&trace);
-        let openings = (0..trace.rows.len())
-            .map(|index| tree.open(index).unwrap())
-            .collect::<Vec<_>>();
-        let claims = verify_claims(tree.root(), &openings).unwrap();
+        let proof = ClaimProof::from_trace(&trace);
+        let claims = proof.verify().unwrap();
         assert_eq!(claims.len(), trace.rows.len());
         assert_eq!(claims[0].pc, 0x1000);
         assert_eq!(claims[0].instruction_len, 4);
-        let mut bad = openings;
-        bad[0].claim.instruction_len = 2;
-        assert!(verify_claims(tree.root(), &bad).is_none());
+        let mut bad = proof;
+        bad.openings[0].claim.instruction_len = 2;
+        assert!(bad.verify().is_none());
     }
 
     #[test]
@@ -1048,10 +1261,6 @@ mod tests {
         let trace = trace();
         let proof = ClaimProof::from_trace(&trace);
         assert!(proof.complete);
-        assert!(proof
-            .openings
-            .iter()
-            .all(|opening| opening.siblings.is_empty()));
         let mut removed = proof.clone();
         removed.openings.pop();
         assert!(removed.verify().is_none());
@@ -1063,7 +1272,12 @@ mod tests {
     #[test]
     fn tampered_claim_fields_are_rejected() {
         let trace = trace();
-        let tree = TraceClaimTree::build(&trace);
+        let root = TraceClaimTree::build(&trace).root();
+        let claims = trace
+            .rows
+            .iter()
+            .map(TraceClaim::from_row)
+            .collect::<Vec<_>>();
         for mutate in [
             |claim: &mut TraceClaim| claim.instruction_len ^= 4,
             |claim: &mut TraceClaim| claim.rd_value ^= 1,
@@ -1077,9 +1291,9 @@ mod tests {
                 })
             },
         ] {
-            let mut opening = tree.open(0).unwrap();
-            mutate(&mut opening.claim);
-            assert!(!verify_opening(tree.root(), &opening));
+            let mut tampered = claims.clone();
+            mutate(&mut tampered[0]);
+            assert!(!verify_complete_leaves(root, &tampered));
         }
     }
 
@@ -1092,21 +1306,4 @@ mod tests {
         assert_ne!(root, TraceClaimTree::build(&changed).root());
     }
 
-    #[test]
-    fn sparse_claim_openings_preserve_absolute_indices() {
-        let trace = trace();
-        let last = trace.rows.len() - 1;
-        let proof = ClaimProof::open_indices(&trace, &[last, 0]).unwrap();
-        let rows = proof.verify_subset().unwrap();
-        assert_eq!(
-            rows.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
-            vec![0, last]
-        );
-        for (index, claim) in &rows {
-            assert_eq!(claim, &TraceClaim::from_row(&trace.rows[*index]));
-        }
-        let mut tampered = proof;
-        tampered.openings[0].claim.pc ^= 1;
-        assert!(tampered.verify_subset().is_none());
-    }
 }

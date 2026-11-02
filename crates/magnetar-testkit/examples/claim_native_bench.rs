@@ -58,10 +58,10 @@ fn main() {
             exit_code: trace.exit_code,
         };
     let started = Instant::now();
-    let proof = prove_claim_native(&trace, 8).unwrap();
+    let proof = prove_claim_native(&trace, 64).unwrap();
     let prove = started.elapsed();
     let started = Instant::now();
-    verify_claim_native(&statement, &proof, 8).unwrap();
+    verify_claim_native(&statement, &proof, 64).unwrap();
     let verify = started.elapsed();
     let bytes = bincode::serialize(&proof).unwrap().len();
     let claim_bytes = bincode::serialize(&proof.claim_proof).unwrap().len();

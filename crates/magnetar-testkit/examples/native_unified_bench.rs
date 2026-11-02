@@ -43,7 +43,7 @@ fn main() {
         )
         .unwrap();
         let started = Instant::now();
-        let proof = prove_unified_trace_dynamic_native_trace(&trace, 8).unwrap();
+        let proof = prove_unified_trace_dynamic_native_trace(&trace, 64).unwrap();
         let prove = started.elapsed();
         let bytes = bincode::serialize(&proof).unwrap().len();
         let sizes = unified_proof_sizes(&proof).unwrap();
@@ -66,7 +66,7 @@ fn main() {
             );
         }
         let started = Instant::now();
-        verify_unified_trace(&trace, &proof, 8).unwrap();
+        verify_unified_trace(&trace, &proof, 64).unwrap();
         let verify = started.elapsed();
         println!(
             "adds={adds} rows={} proof={bytes}B core={}B access={}B logup={}B selected={}B claim={}B trace_claims={}B batches={}B prove={prove:?} verify={verify:?}",

@@ -445,7 +445,7 @@ mod tests {
             },
         )
         .unwrap();
-        let rows = reservation_cpu_rows_from_trace(&trace, 8).unwrap();
+        let rows = reservation_cpu_rows_from_trace(&trace, 64).unwrap();
         let row = ReservationCpuRow::new(8);
         for (index, (pc, input)) in rows.iter().enumerate() {
             let bits = row.witness(*pc, *input);
@@ -576,7 +576,7 @@ mod tests {
             },
         )
         .unwrap();
-        let rows = reservation_cpu_rows_from_trace(&trace, 8).unwrap();
+        let rows = reservation_cpu_rows_from_trace(&trace, 64).unwrap();
         assert_eq!(rows.len(), 4);
         let proof = prove_reservation_cpu_batch(8, &rows).unwrap();
         verify_reservation_cpu_batch(8, &rows, &proof).unwrap();
@@ -646,7 +646,7 @@ mod tests {
             },
         )
         .unwrap();
-        let rows = reservation_cpu_rows_from_trace_full(&trace, 8).unwrap();
+        let rows = reservation_cpu_rows_from_trace_full(&trace, 64).unwrap();
         assert_eq!(rows.len(), 8);
         let (z, a0, a1, layout) = reservation_claim_inputs(8, &rows).unwrap();
         let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());

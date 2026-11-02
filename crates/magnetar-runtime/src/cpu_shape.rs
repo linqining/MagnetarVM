@@ -371,9 +371,9 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let (real, _) = crate::merged_cpu_system(&trace, 8).unwrap();
+        let (real, _) = crate::merged_cpu_system(&trace, 64).unwrap();
         let shape = CpuShape::from_trace(&trace).zeroed();
-        let (synthetic, _) = shape.system_with_len(&trace, 8).unwrap();
+        let (synthetic, _) = shape.system_with_len(&trace, 64).unwrap();
         assert_eq!(
             format!("{:?}", real.constraints),
             format!("{:?}", synthetic.constraints)
@@ -445,9 +445,9 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let (real, _) = crate::merged_cpu_system(&trace, 8).unwrap();
+        let (real, _) = crate::merged_cpu_system(&trace, 64).unwrap();
         let shape = CpuShape::from_trace(&trace);
-        let synthetic = shape.system(&trace, 8).unwrap();
+        let synthetic = shape.system(&trace, 64).unwrap();
         assert_eq!(real.num_vars, synthetic.num_vars);
         assert_eq!(real.constraints.len(), synthetic.constraints.len());
         assert_eq!(

@@ -1144,6 +1144,140 @@ pub(crate) fn sumcheck_terms(
     Ok((polynomials, challenges))
 }
 
+/// Evaluate the round polynomial at `points` evaluation points in one pass over
+/// the factor pairs. `summand_at` receives the per-factor folded value at each
+/// multilinear index, so no folded copy of any factor is materialised.
+pub(crate) fn evaluate_points_at(
+    factors: &[Vec<F2_128>],
+    points: usize,
+    summand_at: &(impl Fn(&[F2_128]) -> F2_128 + Sync),
+) -> Vec<F2_128> {
+    let len = factors[0].len();
+    let pairs = len / 2;
+    let requested = std::env::var("MAGNETAR_SUMCHECK_THREADS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|count| count.get())
+                .unwrap_or(1)
+        });
+    let workers = requested.max(1).min(pairs.div_ceil(4096).max(1));
+    let mut polynomial = vec![F2_128::from(0u64); points];
+    if workers > 1 {
+        let partials = std::thread::scope(|scope| {
+            let chunk = pairs.div_ceil(workers);
+            let mut handles = Vec::with_capacity(workers);
+            for start in (0..pairs).step_by(chunk) {
+                let end = (start + chunk).min(pairs);
+                let factors: &[Vec<F2_128>] = factors;
+                handles.push(scope.spawn(move || {
+                    let mut local = vec![F2_128::from(0u64); points];
+                    let mut scratch = vec![F2_128::from(0u64); factors.len()];
+                    for index in start..end {
+                        let (even, odd) = (2 * index, 2 * index + 1);
+                        for (point, target) in local.iter_mut().enumerate() {
+                            let r = F2_128::from(point as u64);
+                            for (slot, factor) in scratch.iter_mut().zip(factors) {
+                                let a = factor[even];
+                                let b = factor[odd];
+                                *slot = a + r * (a + b);
+                            }
+                            *target = *target + summand_at(&scratch);
+                        }
+                    }
+                    local
+                }));
+            }
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("sumcheck worker"))
+                .collect::<Vec<_>>()
+        });
+        for partial in partials {
+            for (target, value) in polynomial.iter_mut().zip(partial) {
+                *target = *target + value;
+            }
+        }
+    } else {
+        let mut scratch = vec![F2_128::from(0u64); factors.len()];
+        for index in 0..pairs {
+            let (even, odd) = (2 * index, 2 * index + 1);
+            for (point, target) in polynomial.iter_mut().enumerate() {
+                let r = F2_128::from(point as u64);
+                for (slot, factor) in scratch.iter_mut().zip(factors) {
+                    let a = factor[even];
+                    let b = factor[odd];
+                    *slot = a + r * (a + b);
+                }
+                *target = *target + summand_at(&scratch);
+            }
+        }
+    }
+    polynomial
+}
+
+/// Fold one factor to half its length at `challenge`, in place.
+fn fold_factor_in_place(factor: &mut Vec<F2_128>, challenge: F2_128) {
+    let pairs = factor.len() / 2;
+    for index in 0..pairs {
+        let even = factor[2 * index];
+        let odd = factor[2 * index + 1];
+        factor[index] = even + challenge * (even + odd);
+    }
+    factor.truncate(pairs);
+}
+
+/// Fold every factor at `challenge` in place; each factor gets its own thread
+/// when the round is still large.
+pub(crate) fn fold_factors_in_place(factors: &mut [Vec<F2_128>], challenge: F2_128) {
+    let large = factors[0].len() >= 1 << 16;
+    if large && factors.len() > 1 {
+        std::thread::scope(|scope| {
+            for factor in factors.iter_mut() {
+                scope.spawn(move || fold_factor_in_place(factor, challenge));
+            }
+        });
+    } else {
+        for factor in factors.iter_mut() {
+            fold_factor_in_place(factor, challenge);
+        }
+    }
+}
+
+/// Sum-check with an index-wise summand. Produces exactly the same round
+/// polynomials and challenges as [`sumcheck_terms`] (addition in the binary
+/// tower field is XOR, so the reduction order does not matter), but evaluates
+/// every round from the un-folded factor pairs and folds the factors in place.
+pub(crate) fn sumcheck_terms_indexed(
+    factors: &mut [Vec<F2_128>],
+    degrees: &[usize],
+    transcript: &mut Sha256Transcript,
+    summand_at: impl Fn(&[F2_128]) -> F2_128 + Sync,
+) -> Result<(Vec<Vec<F2_128>>, Vec<F2_128>), ProofError> {
+    let len = factors[0].len();
+    if factors.iter().any(|factor| factor.len() != len) {
+        return Err(ProofError::DimensionMismatch);
+    }
+    let rounds = len.trailing_zeros() as usize;
+    if degrees.len() != rounds {
+        return Err(ProofError::DimensionMismatch);
+    }
+    let mut polynomials = Vec::with_capacity(rounds);
+    let mut challenges = Vec::with_capacity(rounds);
+    for degree in degrees {
+        let polynomial = evaluate_points_at(factors, degree + 1, &summand_at);
+        for coefficient in &polynomial {
+            transcript.absorb("round", &coefficient.value().to_le_bytes());
+        }
+        let challenge = challenge(transcript, "sumcheck");
+        fold_factors_in_place(factors, challenge);
+        polynomials.push(polynomial);
+        challenges.push(challenge);
+    }
+    Ok((polynomials, challenges))
+}
+
 fn sumcheck_terms_shared(
     factors: &[Vec<F2_128>],
     degrees: &[usize],
@@ -2858,6 +2992,56 @@ mod tests {
     use super::*;
     use magnetar_executor::execute;
     use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+    fn lcg_factors(count: usize, len: usize) -> Vec<Vec<F2_128>> {
+        let mut state = 0x1234_5678_9abc_def0u64;
+        (0..count)
+            .map(|_| {
+                (0..len)
+                    .map(|_| {
+                        state = state
+                            .wrapping_mul(6364136223846793005)
+                            .wrapping_add(1442695040888963407);
+                        F2_128::from(state)
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn indexed_sumcheck_matches_reference() {
+        let factors = lcg_factors(4, 1 << 10);
+        let degrees = vec![3usize; 10];
+        let mut reference_transcript = Sha256Transcript::new("indexed-sumcheck-test");
+        let (reference_rounds, reference_challenges) =
+            sumcheck_terms(&factors, &degrees, &mut reference_transcript, |folded| {
+                (0..folded[0].len()).fold(F2_128::from(0u64), |sum, index| {
+                    sum + folded[0][index] * folded[1][index] * folded[2][index]
+                        + folded[0][index] * folded[3][index]
+                })
+            })
+            .unwrap();
+        let mut indexed = factors.clone();
+        let mut indexed_transcript = Sha256Transcript::new("indexed-sumcheck-test");
+        let (indexed_rounds, indexed_challenges) = sumcheck_terms_indexed(
+            &mut indexed,
+            &degrees,
+            &mut indexed_transcript,
+            |folded| folded[0] * folded[1] * folded[2] + folded[0] * folded[3],
+        )
+        .unwrap();
+        assert_eq!(reference_rounds, indexed_rounds);
+        assert_eq!(reference_challenges, indexed_challenges);
+        let mut expected = factors;
+        for challenge in &reference_challenges {
+            expected = expected
+                .iter()
+                .map(|factor| fold(factor, *challenge))
+                .collect();
+        }
+        assert_eq!(expected, indexed);
+    }
 
     fn trace() -> magnetar_spec::Trace {
         let program = ProgramImage::new(

@@ -201,9 +201,9 @@ mod tests {
     #[test]
     fn gated_bundle_covers_alu_memory_and_twist() {
         let rows = rows();
-        let bundle = prove_gated_bundle(8, &rows).unwrap();
+        let bundle = prove_gated_bundle(64, &rows).unwrap();
         assert!(bundle.ram.is_some());
-        verify_gated_bundle(8, &rows, &bundle).unwrap();
+        verify_gated_bundle(64, &rows, &bundle).unwrap();
     }
 
     #[test]
@@ -238,10 +238,10 @@ mod tests {
     #[test]
     fn gated_bundle_rejects_tampered_pc() {
         let rows = rows();
-        let bundle = prove_gated_bundle(8, &rows).unwrap();
+        let bundle = prove_gated_bundle(64, &rows).unwrap();
         let mut bad = rows.clone();
         bad[0].0 = bad[0].0.wrapping_add(4);
-        assert!(verify_gated_bundle(8, &bad, &bundle).is_err());
+        assert!(verify_gated_bundle(64, &bad, &bundle).is_err());
     }
 
     #[test]
@@ -392,7 +392,10 @@ pub fn prove_gated_bundle_from_trace<B: BitPcs>(
 ) -> Result<GatedBundle<B::Commitment, B::Opening>, RuntimeError> {
     let rows = crate::simd_full::gated_rows_from_trace(trace, width)?;
     let initial_pc = rows.first().map(|row| row.0).unwrap_or(0);
-    let final_pc = rows.last().map(|row| row.0 + 4).unwrap_or(0);
+    // The chain ends at the next PC of the last executed row: `last + 4`
+    // overshoots when the row builder appends a halt row at the final PC, and
+    // a chunk's end is not the whole trace's final PC.
+    let final_pc = trace.rows.last().map(|row| row.next_pc).unwrap_or(0);
     let mut bundle = prove_gated_bundle_with_backend(width, &rows, backend)
         .map_err(|error| RuntimeError::Proof(format!("base bundle: {error}")))?;
     if rows.len() >= 2 {
@@ -480,10 +483,10 @@ mod trace_tests {
         .unwrap();
         let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
         let backend = DirectBitPcs::new(pcs);
-        let bundle = prove_gated_bundle_from_trace(&trace, 8, &backend).unwrap();
+        let bundle = prove_gated_bundle_from_trace(&trace, 64, &backend).unwrap();
         assert!(bundle.aux.is_some());
         assert!(bundle.register.is_some());
         assert!(bundle.shift_proofs.is_empty());
-        verify_gated_bundle_from_trace(&trace, 8, &bundle, &backend).unwrap();
+        verify_gated_bundle_from_trace(&trace, 64, &bundle, &backend).unwrap();
     }
 }

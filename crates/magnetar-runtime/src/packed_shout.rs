@@ -26,21 +26,21 @@ pub struct PackedShoutProof {
     pub packed_opening: RingSwitchOpening<P3MosaicOpening>,
 }
 
-fn pad_bits(mut bits: Vec<bool>) -> Vec<bool> {
-    bits.resize(bits.len().next_power_of_two().max(256), false);
-    bits
-}
-
-fn table_bits(witness: &BinaryShoutWitness) -> (Vec<bool>, usize, usize) {
+fn table_bits(witness: &BinaryShoutWitness) -> (magnetar_proof::PackedBits, usize, usize) {
     let table = witness.table();
     let col_bits = table.columns.len().next_power_of_two().trailing_zeros() as usize;
-    let mut bits = vec![false; (1usize << col_bits) * witness.cycles];
+    let len = ((1usize << col_bits) * witness.cycles)
+        .next_power_of_two()
+        .max(256);
+    let mut bits = magnetar_proof::PackedBits::zeroed(len);
     for (column, values) in table.columns.iter().enumerate() {
         for (cycle, value) in values.iter().enumerate() {
-            bits[cycle * (1usize << col_bits) + column] = value.value() == 1;
+            if value.value() == 1 {
+                bits.set(cycle * (1usize << col_bits) + column, true);
+            }
         }
     }
-    (pad_bits(bits), col_bits, witness.cycle_bits)
+    (bits, col_bits, witness.cycle_bits)
 }
 
 fn eq_at(point: &[F2_128], index: usize) -> F2_128 {

@@ -34,7 +34,7 @@ fn main() {
         },
     )
     .unwrap();
-    let (proof, timings) = prove_unified_trace_dynamic_native_profile(&trace, 8).unwrap();
+    let (proof, timings) = prove_unified_trace_dynamic_native_profile(&trace, 64).unwrap();
     println!("proof={}B", bincode::serialize(&proof).unwrap().len());
     for timing in timings {
         println!("{:>14}: {:?}", timing.stage, timing.duration);

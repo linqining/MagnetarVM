@@ -362,14 +362,14 @@ mod tests {
     fn native_claim_path_round_trips() {
         let trace = trace();
         let statement = statement(&trace);
-        let proof = prove_claim_native(&trace, 8).unwrap();
-        verify_claim_native(&statement, &proof, 8).unwrap();
+        let proof = prove_claim_native(&trace, 64).unwrap();
+        verify_claim_native(&statement, &proof, 64).unwrap();
         let mut tampered = proof.clone();
         tampered.trace_commitment[0] ^= 1;
-        assert!(verify_claim_native(&statement, &tampered, 8).is_err());
+        assert!(verify_claim_native(&statement, &tampered, 64).is_err());
         let mut tampered = proof;
         tampered.claim_proof.openings[0].claim.rd_value ^= 1;
-        assert!(verify_claim_native(&statement, &tampered, 8).is_err());
+        assert!(verify_claim_native(&statement, &tampered, 64).is_err());
     }
     #[test]
     fn native_claim_path_binds_write_syscall_output() {
@@ -430,7 +430,7 @@ mod tests {
         .unwrap();
         assert_eq!(trace.io_output, b"H");
         let statement = statement(&trace);
-        let proof = prove_claim_native(&trace, 8).unwrap();
-        verify_claim_native(&statement, &proof, 8).unwrap();
+        let proof = prove_claim_native(&trace, 64).unwrap();
+        verify_claim_native(&statement, &proof, 64).unwrap();
     }
 }

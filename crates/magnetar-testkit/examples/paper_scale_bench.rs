@@ -44,10 +44,10 @@ fn main() {
         )
         .unwrap();
         let started = Instant::now();
-        let proof = prove_unified_trace_auto(&trace, 8).unwrap();
+        let proof = prove_unified_trace_auto(&trace, 64).unwrap();
         let prove = started.elapsed();
         let started = Instant::now();
-        verify_unified_trace(&trace, &proof, 8).unwrap();
+        verify_unified_trace(&trace, &proof, 64).unwrap();
         let verify = started.elapsed();
         let bytes = bincode::serialize(&proof).unwrap().len();
         let sizes = unified_proof_sizes(&proof).unwrap();

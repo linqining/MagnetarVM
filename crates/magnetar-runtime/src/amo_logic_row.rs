@@ -158,7 +158,13 @@ impl AmoLogicRow {
         bits.resize(self.relation.num_vars, false);
         bits[self.zero] = false;
         bits[self.one] = true;
-        let mask = (1u64 << self.width) - 1;
+        // A width-64 word has no spare bit; `1u64 << 64` wraps to 1 and would
+        // mask every value to zero.
+        let mask = if self.width == 64 {
+            u64::MAX
+        } else {
+            (1u64 << self.width) - 1
+        };
         let value = match self.kind {
             AmoLogicKind::Xor => old ^ operand,
             AmoLogicKind::And => old & operand,

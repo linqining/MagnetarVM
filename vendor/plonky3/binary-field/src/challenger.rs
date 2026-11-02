@@ -2,6 +2,7 @@
 
 use alloc::vec::Vec;
 use core::iter::repeat;
+use core::sync::atomic::{AtomicU64, Ordering};
 use core::marker::PhantomData;
 
 use p3_challenger::{
@@ -266,19 +267,37 @@ where
         } else {
             1u64 << F::bits()
         };
+        let mut base = 0u64;
 
-        let witness = (0..num_candidates)
-            .into_par_iter()
-            .map_init(
+        // The search is parallel, but the witness must not depend on which
+        // worker wins the race: prover outputs have to be byte-identical across
+        // runs. Scan the candidates in waves and take the smallest passing
+        // candidate of the first wave that has one. The wave size is fixed, so
+        // the result equals the serial first hit on every machine, and each
+        // wave is still split across the rayon pool.
+        const SEARCH_WAVE: u64 = 1 << 16;
+        let witness = loop {
+            assert!(base < num_candidates, "failed to find witness");
+            let end = base.saturating_add(SEARCH_WAVE).min(num_candidates);
+            let best = AtomicU64::new(u64::MAX);
+            (base..end).into_par_iter().for_each_init(
                 || self.clone(),
                 |worker, index| {
+                    if index >= best.load(Ordering::Relaxed) {
+                        return;
+                    }
                     worker.inner.clone_from(&self.inner);
-                    let witness = candidate(index);
-                    worker.check_witness(bits, witness).then_some(witness)
+                    if worker.check_witness(bits, candidate(index)) {
+                        best.fetch_min(index, Ordering::Relaxed);
+                    }
                 },
-            )
-            .find_map_any(core::convert::identity)
-            .expect("failed to find witness");
+            );
+            let found = best.load(Ordering::Relaxed);
+            if found != u64::MAX {
+                break candidate(found);
+            }
+            base = end;
+        };
         assert!(self.check_witness(bits, witness));
         witness
     }

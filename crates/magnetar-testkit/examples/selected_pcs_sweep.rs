@@ -52,7 +52,7 @@ fn main() {
         let backend =
             RingSwitchPackedBitPcs::new(P3BinaryPcs::with_params(security, inv_rate, pow, folding));
         let started = Instant::now();
-        match prove_dynamic_cpu_claims(&trace, 8, &backend) {
+        match prove_dynamic_cpu_claims(&trace,64, &backend) {
             Ok(claims) => {
                 let elapsed = started.elapsed();
                 let bytes = bincode::serialize(&claims).unwrap().len();

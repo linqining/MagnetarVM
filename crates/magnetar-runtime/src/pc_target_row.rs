@@ -84,7 +84,11 @@ impl PcTargetRow {
         bits.resize(self.relation.num_vars, false);
         bits[self.relation.num_vars - 1] = true;
         bits[self.align] = align;
-        let mask = (1u64 << self.width) - 1;
+        let mask = if self.width == 64 {
+            u64::MAX
+        } else {
+            (1u64 << self.width) - 1
+        };
         let target = if align {
             base.wrapping_add(imm) & !1
         } else {

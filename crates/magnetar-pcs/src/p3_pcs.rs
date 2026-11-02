@@ -7,7 +7,10 @@
 use magnetar_constraint::F2_128;
 use magnetar_proof::{Pcs, ProofError};
 use p3_binary_field::{BinaryChallenger, BinaryField128, TowerLevel};
-use p3_binary_pcs::{BinaryPcs, BinaryPcsConfig, BinaryPcsParams, BinaryPcsProof};
+use p3_binary_pcs::{
+    BinaryPcs, BinaryPcsConfig, BinaryPcsConfigError, BinaryPcsParams, BinaryPcsProof,
+    BinaryPcsProverData,
+};
 use p3_challenger::HashChallenger;
 use p3_commit::{Mmcs, MultilinearPcs};
 use p3_field::PrimeCharacteristicRing;
@@ -17,12 +20,46 @@ use p3_merkle_tree::MerkleTreeMmcs;
 use p3_multilinear_util::point::Point;
 use p3_sumcheck::layout::{Layout, SuffixProver, Table};
 use p3_sumcheck::{OpeningBatch, OpeningProtocol, PrescribedPointPcs, TableShape, TableSpec};
-use p3_symmetric::{CompressionFunctionFromHasher, SerializingHasher};
+use p3_symmetric::{
+    CompressionFunctionFromHasher, CryptographicHasher, SerializingHasher,
+};
 
 type F = BinaryField128;
-type P3Hash = SerializingHasher<Keccak256Hash>;
-type P3Compress = CompressionFunctionFromHasher<Keccak256Hash, 2, 32>;
-type P3Mmcs = MerkleTreeMmcs<F, u8, P3Hash, P3Compress, 2, 32>;
+
+/// Keccak-256 truncated to 16 bytes. The Merkle tree over the codeword is the
+/// largest single term of the prover peak (`2^(N+12)` B at 32 B per node), so
+/// halving the digest halves it; 128-bit collision resistance still exceeds
+/// the protocol's 100-bit target.
+#[derive(Clone)]
+pub struct Keccak256Hash16;
+
+impl CryptographicHasher<u8, [u8; 16]> for Keccak256Hash16 {
+    const LANES: usize = <Keccak256Hash as CryptographicHasher<u8, [u8; 32]>>::LANES;
+
+    fn hash_iter<I>(&self, input: I) -> [u8; 16]
+    where
+        I: IntoIterator<Item = u8>,
+    {
+        let digest = Keccak256Hash.hash_iter(input);
+        let mut out = [0u8; 16];
+        out.copy_from_slice(&digest[..16]);
+        out
+    }
+
+    fn hash_iter_slices<'a, I>(&self, input: I) -> [u8; 16]
+    where
+        I: IntoIterator<Item = &'a [u8]>,
+    {
+        let digest = Keccak256Hash.hash_iter_slices(input);
+        let mut out = [0u8; 16];
+        out.copy_from_slice(&digest[..16]);
+        out
+    }
+}
+
+type P3Hash = SerializingHasher<Keccak256Hash16>;
+type P3Compress = CompressionFunctionFromHasher<Keccak256Hash16, 2, 16>;
+type P3Mmcs = MerkleTreeMmcs<F, u8, P3Hash, P3Compress, 2, 16>;
 type P3Challenger = BinaryChallenger<F, HashChallenger<u8, Keccak256Hash, 32>>;
 type P3PcsBackend = BinaryPcs<F, F, P3Mmcs, P3Mmcs>;
 type P3Proof = BinaryPcsProof<F, F, P3Mmcs, P3Mmcs>;
@@ -52,6 +89,14 @@ pub struct P3BatchCommitment {
     pub num_variables: usize,
     pub stacked_variables: usize,
     pub num_columns: usize,
+}
+
+/// A batch commitment whose codeword and Merkle tree are retained for opening.
+pub struct P3CommittedBatch {
+    pub commitment: P3BatchCommitment,
+    backend: P3PcsBackend,
+    data: BinaryPcsProverData<F, F, P3Mmcs>,
+    challenger: P3Challenger,
 }
 
 /// One PCS opening proof covering every column and every point in a batch.
@@ -189,8 +234,8 @@ impl P3BinaryPcs {
 
     fn mmcs() -> P3Mmcs {
         P3Mmcs::new(
-            P3Hash::new(Keccak256Hash),
-            P3Compress::new(Keccak256Hash),
+            P3Hash::new(Keccak256Hash16),
+            P3Compress::new(Keccak256Hash16),
             0,
         )
     }
@@ -211,12 +256,25 @@ impl P3BinaryPcs {
             pow_bits,
             security_level,
         };
-        let config = BinaryPcsConfig::try_new_with_folding::<F, F>(
-            num_variables,
-            params,
-            log_folding_factor,
-        )
-        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        let build = |params: BinaryPcsParams| {
+            BinaryPcsConfig::try_new_with_folding::<F, F>(num_variables, params, log_folding_factor)
+        };
+        let config = match build(params) {
+            Ok(config) => config,
+            // A target above what the binary field can deliver at this domain
+            // size is unreachable at any query count. Large witnesses (RV64
+            // 2^16 packs the witness into 2^22 field elements) hit this cap, so
+            // clamp the target to the achievable ceiling. Prover and verifier
+            // derive the schedule from the same domain size and therefore agree.
+            Err(BinaryPcsConfigError::SecurityLevelExceedsFieldCapacity { max, .. }) => build(
+                BinaryPcsParams {
+                    security_level: max,
+                    ..params
+                },
+            )
+            .map_err(|error| ProofError::Pcs(error.to_string()))?,
+            Err(error) => return Err(ProofError::Pcs(error.to_string())),
+        };
         P3PcsBackend::new(config, Self::mmcs(), Self::mmcs())
             .map_err(|error| ProofError::Pcs(error.to_string()))
     }
@@ -364,6 +422,67 @@ impl P3BinaryPcs {
             num_variables,
             stacked_variables,
             num_columns,
+        })
+    }
+
+    /// Commit a batch and retain the committed prover data for a later opening.
+    /// `open_batch` re-encodes and re-hashes the table; a caller that needs the
+    /// commitment before sampling its opening points (the usual Fiat-Shamir
+    /// order) can use this to encode once.
+    pub fn commit_batch_prepared(
+        &self,
+        columns: &[Vec<F2_128>],
+    ) -> Result<P3CommittedBatch, ProofError> {
+        let (table, num_variables, num_columns) = Self::batch_table(columns)?;
+        let stacked_variables = Self::stacked_variables(num_variables, num_columns);
+        let backend = Self::backend_with(
+            stacked_variables,
+            self.security_level,
+            self.log_inv_rate,
+            self.pow_bits,
+            self.log_folding_factor,
+        )?;
+        let mut challenger = Self::challenger();
+        let witness = SuffixProver::<F, F>::new_witness(vec![table], 0);
+        let (cap, data) = backend
+            .commit(witness, &mut challenger)
+            .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        Ok(P3CommittedBatch {
+            commitment: P3BatchCommitment {
+                cap,
+                num_variables,
+                stacked_variables,
+                num_columns,
+            },
+            backend,
+            data,
+            challenger,
+        })
+    }
+
+    /// Open a prepared batch; the codeword and Merkle tree are reused.
+    pub fn open_batch_prepared(
+        &self,
+        prepared: &P3CommittedBatch,
+        points: &[P3BatchPoint],
+    ) -> Result<P3BatchOpening, ProofError> {
+        let protocol = Self::batch_protocol(
+            prepared.commitment.num_variables,
+            prepared.commitment.num_columns,
+            points,
+        )?;
+        let p3_points = points
+            .iter()
+            .map(|point| Self::point(&point.point))
+            .collect::<Vec<_>>();
+        let mut challenger = prepared.challenger.clone();
+        let proof = prepared
+            .backend
+            .open_at(prepared.data.clone(), &protocol, &p3_points, &mut challenger)
+            .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        Ok(P3BatchOpening {
+            commitment: prepared.commitment.clone(),
+            proof,
         })
     }
 
@@ -916,6 +1035,63 @@ impl Pcs for P3SharedPcs {
 
 #[cfg(test)]
 mod tests {
+    fn eval_at(values: &[F2_128], point: &[F2_128]) -> F2_128 {
+        let mut folded = values.to_vec();
+        for coordinate in point {
+            let next = folded
+                .chunks_exact(2)
+                .map(|pair| pair[0] + *coordinate * (pair[1] - pair[0]))
+                .collect::<Vec<_>>();
+            folded = next;
+        }
+        folded[0]
+    }
+
+    #[test]
+    fn mosaic_opens_a_twelve_column_table_with_repeated_points() {
+        let shapes = [(1usize, 12usize), (1, 1), (5, 1), (1, 1), (4, 1)];
+        let tables = shapes
+            .iter()
+            .map(|(variables, columns)| P3MosaicTable {
+                columns: (0..*columns)
+                    .map(|column| {
+                        (0..(1usize << variables))
+                            .map(|row| F2_128::from((row * 3 + column + 1) as u64))
+                            .collect()
+                    })
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
+        let pcs = P3BinaryPcs::with_params(100, 2, 21, 2);
+        pcs.commit_mosaic(&tables).unwrap();
+        let point = |variables: usize| -> Vec<F2_128> {
+            (0..variables).map(|index| F2_128::from(index as u64 + 1)).collect()
+        };
+        let points = vec![
+            P3MosaicPoint { table: 0, point: point(1), columns: (0..12).collect(), next_columns: Vec::new() },
+            P3MosaicPoint { table: 1, point: point(1), columns: vec![0], next_columns: Vec::new() },
+            P3MosaicPoint { table: 2, point: point(5), columns: vec![0], next_columns: Vec::new() },
+            P3MosaicPoint { table: 2, point: point(5), columns: vec![0], next_columns: Vec::new() },
+            P3MosaicPoint { table: 2, point: point(5), columns: vec![0], next_columns: Vec::new() },
+            P3MosaicPoint { table: 3, point: point(1), columns: vec![0], next_columns: Vec::new() },
+            P3MosaicPoint { table: 4, point: point(4), columns: vec![0], next_columns: Vec::new() },
+            P3MosaicPoint { table: 4, point: point(4), columns: vec![0], next_columns: Vec::new() },
+        ];
+        let values = points
+            .iter()
+            .map(|point| {
+                point
+                    .columns
+                    .iter()
+                    .map(|column| eval_at(&tables[point.table].columns[*column], &point.point))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let opening = pcs.open_mosaic(&tables, &points).unwrap();
+        let verified = pcs.verify_mosaic(&opening, &points, &values).unwrap();
+        assert!(verified);
+    }
+
     use super::*;
     use magnetar_proof::Mle;
 
@@ -923,6 +1099,18 @@ mod tests {
         (0..size)
             .map(|index| F2_128::from((index as u64).wrapping_mul(0x9e37_79b9)))
             .collect()
+    }
+
+    /// Pins the Merkle digest width: the tree and every path node scale with it
+    /// and it was the largest single term of the prover peak (`2^16`: 1.52 GiB
+    /// at 16 bytes against 2.01-2.61 GiB at 32 bytes).
+    #[test]
+    fn merkle_digest_is_sixteen_bytes() {
+        // `P3Cap` is the 16-byte root plus `usize` metadata; a 32-byte digest
+        // would make it 40. The tree and every path node scale with the digest,
+        // and it was the largest single term of the prover peak (`2^16`:
+        // 1.52 GiB at 16 bytes against 2.01-2.61 GiB at 32 bytes).
+        assert_eq!(core::mem::size_of::<P3Cap>(), 24);
     }
 
     #[test]

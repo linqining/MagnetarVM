@@ -1016,10 +1016,17 @@ pub(crate) fn prove_trace_access_shared(
     check_trace_access_bindings(trace, witness)?;
     let profile = std::env::var_os("MAGNETAR_PROFILE_ACCESS").is_some();
     let started = std::time::Instant::now();
+    if profile {
+        eprintln!("access start rss: {:.2} GiB", crate::resident_gib());
+    }
     let (ram, ram_claims) = prove_binary_twist_claims(tables, witness, commitment, ram_index)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     if profile {
-        eprintln!("access ram claims: {:?}", started.elapsed());
+        eprintln!(
+            "access ram claims: {:?} rss={:.2} GiB",
+            started.elapsed(),
+            crate::resident_gib()
+        );
     }
     let started = std::time::Instant::now();
     let (registers, register_claims) = prove_binary_twist_claims(
@@ -1030,7 +1037,11 @@ pub(crate) fn prove_trace_access_shared(
     )
     .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     if profile {
-        eprintln!("access register claims: {:?}", started.elapsed());
+        eprintln!(
+            "access register claims: {:?} rss={:.2} GiB",
+            started.elapsed(),
+            crate::resident_gib()
+        );
     }
     Ok((
         TraceAccessProof { registers, ram },
@@ -2666,7 +2677,11 @@ pub(crate) fn verify_unified_with_plan_impl(
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         let witness_time = started.elapsed();
         let verify_started = std::time::Instant::now();
-        crate::logup_shout::verify_trace_logup_shout(trace_logup, &witness)?;
+        crate::logup_shout::verify_trace_logup_shout(
+            trace_logup,
+            &witness,
+            &crate::rom_hash(&trace.rom),
+        )?;
         if profile {
             eprintln!(
                 "trace logup witness: {witness_time:?} verify: {:?}",
@@ -2783,6 +2798,24 @@ pub fn prove_unified_trace_auto(
     }
 }
 
+pub(crate) fn resident_gib() -> f64 {
+    let pid = std::process::id().to_string();
+    let output = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid])
+        .output();
+    let bytes = output
+        .ok()
+        .and_then(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .parse::<f64>()
+                .ok()
+        })
+        .unwrap_or(0.0)
+        * 1024.0;
+    bytes / (1024.0 * 1024.0 * 1024.0)
+}
+
 pub fn prove_unified_trace_dynamic_native(
     trace: &Trace,
     width: usize,
@@ -2809,12 +2842,20 @@ pub fn prove_unified_trace_paper(
     trace: &Trace,
     width: usize,
 ) -> Result<UnifiedTraceProof, RuntimeError> {
-    let mut proof = prove_unified_trace_dynamic_native(trace, width)?;
     let witness = crate::binary_shout::BinaryShoutWitness::from_trace(trace)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let mut logup = crate::logup_shout::prove_logup_shout(&witness)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     logup.logup.pushforwards.clear();
+    // The committed Shout's ROM claim is opened with the mosaic, so the prover
+    // folds it in before the opening; the trace Logup-Shout worker is skipped.
+    let mut proof = prove_unified_trace_dynamic_native_profile_inner(
+        trace,
+        width,
+        Some((&logup.rom_point, &logup.rom_claims)),
+        false,
+    )?
+    .0;
     proof.logup_shout = Some(logup);
     proof.trace_logup_shout = None;
     proof.claim_proof = Some(crate::trace_claims::ClaimProof::from_trace_reg(trace));
@@ -2831,22 +2872,61 @@ pub fn prove_unified_trace_dynamic_native_profile(
     trace: &Trace,
     width: usize,
 ) -> Result<(UnifiedTraceProof, Vec<StageTiming>), RuntimeError> {
+    prove_unified_trace_dynamic_native_profile_inner(trace, width, None, true)
+}
+
+/// Shared native profile prover. `shout_rom` folds an externally computed
+/// committed-Shout ROM claim into the mosaic opening instead of running the
+/// trace Logup-Shout worker.
+fn prove_unified_trace_dynamic_native_profile_inner(
+    trace: &Trace,
+    width: usize,
+    shout_rom: Option<(&[F2_128], &[F2_128])>,
+    with_trace_logup: bool,
+) -> Result<(UnifiedTraceProof, Vec<StageTiming>), RuntimeError> {
     let selected_started = std::time::Instant::now();
     let backend = crate::protocol::selected_backend();
-    let packed_witness = crate::binary_shout::BinaryShoutWitness::from_trace(trace).ok();
+    let packed_witness = if with_trace_logup {
+        crate::binary_shout::BinaryShoutWitness::from_trace(trace).ok()
+    } else {
+        None
+    };
     std::thread::scope(|scope| {
-        let selected =
-            scope.spawn(|| crate::simd_dual::prove_dynamic_cpu_claims(trace, width, &backend));
-        let trace_logup_shout = packed_witness.as_ref().map(|witness| {
-            scope.spawn(|| crate::logup_shout::prove_trace_logup_shout(witness))
+        // Hold the selected witness commit until the mosaic commit is done:
+        // two codeword+Merkle transients would otherwise overlap and double
+        // the process peak.
+        let (commit_done, commit_gate) = std::sync::mpsc::channel::<()>();
+        let selected = scope.spawn(move || {
+            crate::simd_dual::prove_dynamic_cpu_claims_after(trace, width, &backend, commit_gate)
+        });
+        let mut trace_logup_shout = packed_witness.as_ref().map(|witness| {
+            scope.spawn(|| {
+                crate::logup_shout::prove_trace_logup_shout(witness, crate::rom_hash(&trace.rom))
+            })
         });
         let plan = crate::protocol::ProtocolPlan::unified();
-        let mut context = crate::protocol::UnifiedProveContext::new_with_group(trace, width, None)?;
+        let context_started = std::time::Instant::now();
+        // The dynamic selected proof replaces the unified CPU/gated claims and
+        // the caller discards their openings, so do not materialize those
+        // columns (each is `cycles * base_cols` field elements at RV64 scale).
+        let mut context =
+            crate::protocol::UnifiedProveContext::new_without_cpu_columns(trace, width, None)?;
+        let mut trace_logup = None;
         let mut timings = Vec::new();
+        if std::env::var_os("MAGNETAR_PROFILE_UNIFIED").is_some() {
+            eprintln!(
+                "unified context: {:?} rss={:.2} GiB",
+                context_started.elapsed(),
+                resident_gib()
+            );
+        }
         for stage in plan.execution() {
             let started = std::time::Instant::now();
             match stage {
-                crate::protocol::ExecutionStage::Commit => context.commit()?,
+                crate::protocol::ExecutionStage::Commit => {
+                    context.commit()?;
+                    let _ = commit_done.send(());
+                }
                 crate::protocol::ExecutionStage::Access => context.prove_access()?,
                 crate::protocol::ExecutionStage::Shout => context.prove_shout()?,
                 crate::protocol::ExecutionStage::ShiftRouter => context.prove_shift_router()?,
@@ -2854,15 +2934,42 @@ pub fn prove_unified_trace_dynamic_native_profile(
                 crate::protocol::ExecutionStage::RegisterAndTrace => {
                     context.prove_register_and_trace()?
                 }
-                crate::protocol::ExecutionStage::Cpu | crate::protocol::ExecutionStage::Opening => {
+                crate::protocol::ExecutionStage::Opening => {
+                    // The trace Logup-Shout ROM claim is opened together with
+                    // the other mosaic claims, so bind it before opening.
+                    if let Some(handle) = trace_logup_shout.take() {
+                        let logup = handle
+                            .join()
+                            .map_err(|_| {
+                                RuntimeError::Proof("logup Shout worker panicked".into())
+                            })?
+                            .map_err(|error| {
+                                RuntimeError::Proof(format!("trace logup prover: {error}"))
+                            })?;
+                        trace_logup = Some(logup);
+                    }
+                    if let Some((point, values)) = shout_rom {
+                        context.add_logup_shout_rom(point, values)?;
+                    }
+                    context.prove_opening()?
                 }
+                crate::protocol::ExecutionStage::Cpu => {}
             }
             timings.push(StageTiming {
                 stage: format!("{stage:?}"),
                 duration: started.elapsed(),
             });
+            if std::env::var_os("MAGNETAR_PROFILE_UNIFIED").is_some() {
+                eprintln!(
+                    "unified {stage:?}: {:?} rss={:.2} GiB",
+                    started.elapsed(),
+                    resident_gib()
+                );
+            }
         }
         let started = std::time::Instant::now();
+        // No-op if the Commit stage already released the gate.
+        let _ = commit_done.send(());
         let mut proof = context.finish()?;
         timings.push(StageTiming {
             stage: "Finish".into(),
@@ -2871,17 +2978,7 @@ pub fn prove_unified_trace_dynamic_native_profile(
         proof.gated = None;
         proof.cpu = None;
         proof.e5_opening = None;
-        proof.opening = None;
-        proof.shout = None;
-        proof.shout_index = None;
-        if let Some(trace_logup_shout) = trace_logup_shout {
-            proof.trace_logup_shout = Some(
-                trace_logup_shout
-                    .join()
-                    .map_err(|_| RuntimeError::Proof("logup Shout worker panicked".into()))?
-                    .map_err(|error| RuntimeError::Proof(format!("trace logup prover: {error}")))?,
-            );
-        }
+        proof.trace_logup_shout = trace_logup;
         proof.selected_cpu = Some(
             selected
                 .join()
@@ -3378,7 +3475,18 @@ pub fn verify_core_statement(
         filtered.into_iter().unzip()
     };
     if let Some(opening) = &proof.opening {
-        let pcs = magnetar_pcs::P3BinaryPcs::with_params(100, 3, 21, 2);
+        // The opening must be for the commitment the access claims are bound
+        // to, otherwise it commits to unrelated data.
+        let same_commitment = bincode::serialize(&opening.commitment)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?
+            == bincode::serialize(&proof.commitment)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        if !same_commitment {
+            return Err(RuntimeError::Proof(
+                "core opening commitment mismatch".into(),
+            ));
+        }
+        let pcs = crate::protocol::core_opening_pcs();
         if !pcs
             .verify_mosaic(opening, &points, &values)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?
@@ -3597,6 +3705,16 @@ pub fn verify_native_unified(
     proof: &UnifiedTraceProof,
     width: usize,
 ) -> Result<(), RuntimeError> {
+    if proof.width != width {
+        return Err(RuntimeError::Proof(
+            "proof width does not match the requested width".into(),
+        ));
+    }
+    if proof.opening.is_none() && proof.e5_opening.is_none() && proof.field_opening.is_none() {
+        return Err(RuntimeError::Proof(
+            "native proof carries no mosaic opening".into(),
+        ));
+    }
     if proof.trace_claim_root != statement.trace_claim_root {
         return Err(RuntimeError::Proof(
             "claim root does not match the public statement".into(),
@@ -3621,87 +3739,207 @@ pub fn verify_native_unified(
         }
     }
     let profile = std::env::var_os("MAGNETAR_PROFILE_VERIFY").is_some();
-    let claims_started = std::time::Instant::now();
-    let claims = verify_unified_claim_proof_with_statement(statement, proof)?;
-    if profile {
-        eprintln!("verify_native claims: {:?}", claims_started.elapsed());
+    let decode_started = std::time::Instant::now();
+    let claim_proof = proof
+        .claim_proof
+        .as_ref()
+        .ok_or_else(|| RuntimeError::Proof("missing claim proof".into()))?;
+    if claim_proof.root != statement.trace_claim_root {
+        return Err(RuntimeError::Proof("claim proof root mismatch".into()));
     }
-    let access_started = std::time::Instant::now();
-    let access = crate::access_statement::AccessStatement::from_claims(
-        statement.config.clone(),
-        statement.initial_ram.clone(),
-        statement.initial_state.clone(),
-        &claims,
-    );
-    if access.digest() != statement.access_statement_digest {
+    let rows = claim_proof
+        .decode_rows(&statement.initial_state)
+        .ok_or_else(|| RuntimeError::Proof("claim proof decode failed".into()))?;
+    if rows.first().map(|claim| claim.pc) != Some(statement.initial_state.pc) {
         return Err(RuntimeError::Proof(
-            "claim access statement mismatch".into(),
+            "claim proof start pc mismatch".into(),
         ));
     }
     if profile {
-        eprintln!("verify_native access: {:?}", access_started.elapsed());
+        eprintln!("verify_native claims decode: {:?}", decode_started.elapsed());
     }
-    let trace_started = std::time::Instant::now();
-    let synthetic = crate::trace_claims::claims_to_trace(statement, &claims)?;
-    if profile {
-        eprintln!("verify_native claims_to_trace: {:?}", trace_started.elapsed());
-    }
-    if statement.trace_len != synthetic.rows.len() as u64
-        || statement.initial_state != synthetic.initial_state
-        || statement.final_state != synthetic.final_state
-        || statement.rom != synthetic.rom
-        || statement.initial_ram != synthetic.initial_ram
-    {
-        return Err(RuntimeError::Proof(
-            "claim-derived trace does not match the statement".into(),
-        ));
-    }
+    let claim_root = claim_proof.root;
+    // Wave 1: everything that only needs the decoded rows runs together — the
+    // claim leaf/tree check, the folded claim's row sums, the access statement
+    // and the claim-derived trace. Wave 2 (selected lockstep + core proof) then
+    // only needs wave 1's results.
     std::thread::scope(|scope| {
-        let selected = proof.selected_cpu.as_ref().map(|selected| {
-            let claims = &claims;
-            let synthetic = &synthetic;
-            scope.spawn(move || -> Result<(), RuntimeError> {
-                crate::simd_dual::verify_selected_claim_consistency(selected, claims)?;
-                let backend = crate::protocol::selected_backend();
-                if selected.op == crate::simd_dual::SelectedOp::Dynamic {
-                    crate::simd_dual::verify_dynamic_segments_against_rows(
-                        synthetic, selected, &backend, width,
-                    )
-                    .map_err(|error| RuntimeError::Proof(format!("selected verifier: {error}")))?;
-                } else {
-                    crate::simd_dual::verify_selected_cpu_claims(selected, &backend)
-                        .map_err(|error| RuntimeError::Proof(format!("selected verifier: {error}")))?;
-                }
-                Ok(())
-            })
-        });
-        let unified = scope.spawn(|| -> Result<(), RuntimeError> {
-            let profile = std::env::var_os("MAGNETAR_PROFILE_VERIFY").is_some();
-            let core_started = std::time::Instant::now();
-            crate::verify_core_proof(proof)
-                .map_err(|error| RuntimeError::Proof(format!("core verifier: {error}")))?;
-            if profile {
-                eprintln!("verify_native core_proof: {:?}", core_started.elapsed());
+        let rows_ref = &rows;
+        let leaves = scope.spawn(move || -> Result<(), RuntimeError> {
+            let started = std::time::Instant::now();
+            if !crate::trace_claims::verify_complete_leaves(claim_root, rows_ref) {
+                return Err(RuntimeError::Proof(
+                    "claim proof opening mismatch".into(),
+                ));
             }
+            if profile {
+                eprintln!("verify_native claim leaves: {:?}", started.elapsed());
+            }
+            Ok(())
+        });
+        let prepared = proof
+            .selected_cpu
+            .as_ref()
+            .filter(|selected| selected.op == crate::simd_dual::SelectedOp::Dynamic)
+            .map(|selected| {
+                scope.spawn(move || -> Result<crate::simd_dual::DynamicClaim, RuntimeError> {
+                    let started = std::time::Instant::now();
+                    let backend = crate::protocol::selected_backend();
+                    let claim = crate::simd_dual::dynamic_claim_for_selected(
+                        selected, rows_ref, &backend,
+                    )?;
+                    if profile {
+                        eprintln!("verify_native claim sums: {:?}", started.elapsed());
+                    }
+                    Ok(claim)
+                })
+            });
+        let access = scope.spawn(move || -> Result<(), RuntimeError> {
+            let started = std::time::Instant::now();
+            let access = crate::access_statement::AccessStatement::from_claims(
+                statement.config.clone(),
+                statement.initial_ram.clone(),
+                statement.initial_state.clone(),
+                rows_ref,
+            );
+            if access.digest() != statement.access_statement_digest {
+                return Err(RuntimeError::Proof(
+                    "claim access statement mismatch".into(),
+                ));
+            }
+            if profile {
+                eprintln!("verify_native access: {:?}", started.elapsed());
+            }
+            Ok(())
+        });
+        let trace = scope.spawn(move || -> Result<magnetar_spec::Trace, RuntimeError> {
+            let started = std::time::Instant::now();
+            let synthetic = crate::trace_claims::claims_to_trace(statement, rows_ref)?;
+            if profile {
+                eprintln!("verify_native claims_to_trace: {:?}", started.elapsed());
+            }
+            // `claims_to_trace` copies the statement's config, states, ROM and
+            // initial RAM, so the comparisons below are tautological for them.
+            // The endpoints are what ties the authenticated claims to the
+            // statement: the first row starts at the claimed initial PC and the
+            // last row lands on the claimed final PC (the chain itself is
+            // enforced by the selected lockstep).
+            if rows_ref.is_empty()
+                || rows_ref[0].pc != statement.initial_state.pc
+                || rows_ref[rows_ref.len() - 1].next_pc != statement.final_state.pc
+            {
+                return Err(RuntimeError::Proof(
+                    "claim endpoints do not match the statement".into(),
+                ));
+            }
+            // `claims_to_trace` copies the statement's states, ROM and initial
+            // RAM, so comparing those here would be tautological. The endpoints
+            // are checked against the authenticated claims above, the ROM
+            // through the trace Logup-Shout table and the initial RAM through
+            // the access digest; only the row count is left to compare.
+            if statement.trace_len != synthetic.rows.len() as u64 {
+                return Err(RuntimeError::Proof(
+                    "claim-derived trace does not match the statement".into(),
+                ));
+            }
+            Ok(synthetic)
+        });
+        // The trace Logup-Shout check only needs the claim-derived trace, which
+        // is ready first; it then overlaps both wave 1 and wave 2 instead of
+        // serialising after them.
+        let logup = scope.spawn(move || -> Result<(), RuntimeError> {
             let logup_started = std::time::Instant::now();
+            let synthetic = trace
+                .join()
+                .map_err(|_| RuntimeError::Proof("claim trace panicked".into()))??;
             if let Some(trace_logup) = &proof.trace_logup_shout {
+                let witness_started = std::time::Instant::now();
                 let witness = crate::binary_shout::BinaryShoutWitness::from_trace(&synthetic)
                     .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-                crate::logup_shout::verify_trace_logup_shout(trace_logup, &witness)?;
+                if profile {
+                    eprintln!(
+                        "verify_native trace_logup witness build: {:?}",
+                        witness_started.elapsed()
+                    );
+                }
+                crate::logup_shout::verify_trace_logup_shout(
+                    trace_logup,
+                    &witness,
+                    &statement.program_hash,
+                )?;
             }
             if profile {
                 eprintln!("verify_native trace_logup: {:?}", logup_started.elapsed());
             }
             Ok(())
         });
-        if let Some(selected) = selected {
-            selected
-                .join()
-                .map_err(|_| RuntimeError::Proof("selected verifier panicked".into()))??;
-        }
-        unified
+        // Wave 2 starts as soon as the claim sums are ready; the remaining wave-1
+        // checks and the Logup-Shout verification run alongside it.
+        let claim = match prepared {
+            Some(handle) => Some(
+                handle
+                    .join()
+                    .map_err(|_| RuntimeError::Proof("claim sums panicked".into()))??,
+            ),
+            None => None,
+        };
+        // Wave 2.
+        std::thread::scope(|wave| {
+            let selected = proof.selected_cpu.as_ref().map(|selected| {
+                let rows_ref = &rows;
+                let claim = claim.as_ref();
+                wave.spawn(move || -> Result<(), RuntimeError> {
+                    crate::simd_dual::verify_selected_claim_consistency(selected, rows_ref)?;
+                    let backend = crate::protocol::selected_backend();
+                    if selected.op == crate::simd_dual::SelectedOp::Dynamic {
+                        // Proof-only: bind the committed witness to the
+                        // authenticated claim rows; no trace or witness rebuild.
+                        let claim = claim.ok_or_else(|| {
+                            RuntimeError::Proof("missing prepared claim".into())
+                        })?;
+                        crate::simd_dual::verify_dynamic_claim_binding_prepared(
+                            selected, claim, &backend,
+                        )
+                        .map_err(|error| {
+                            RuntimeError::Proof(format!("selected verifier: {error}"))
+                        })?;
+                    } else {
+                        crate::simd_dual::verify_selected_cpu_claims(selected, &backend).map_err(
+                            |error| RuntimeError::Proof(format!("selected verifier: {error}")),
+                        )?;
+                    }
+                    Ok(())
+                })
+            });
+            // The mosaic opening and the trace Logup-Shout check are
+            // independent (both read the proof and the claim-derived trace), so
+            // they run as two waves instead of one serial thread.
+            let core = wave.spawn(|| -> Result<(), RuntimeError> {
+                let core_started = std::time::Instant::now();
+                crate::verify_core_proof(proof)
+                    .map_err(|error| RuntimeError::Proof(format!("core verifier: {error}")))?;
+                if profile {
+                    eprintln!("verify_native core_proof: {:?}", core_started.elapsed());
+                }
+                Ok(())
+            });
+            if let Some(selected) = selected {
+                selected
+                    .join()
+                    .map_err(|_| RuntimeError::Proof("selected verifier panicked".into()))??;
+            }
+            core.join()
+                .map_err(|_| RuntimeError::Proof("core verifier panicked".into()))?
+        })?;
+        leaves
             .join()
-            .map_err(|_| RuntimeError::Proof("unified verifier panicked".into()))?
+            .map_err(|_| RuntimeError::Proof("claim leaf verifier panicked".into()))??;
+        access
+            .join()
+            .map_err(|_| RuntimeError::Proof("access verifier panicked".into()))??;
+        logup
+            .join()
+            .map_err(|_| RuntimeError::Proof("trace logup verifier panicked".into()))?
     })
 }
 
@@ -5263,7 +5501,7 @@ mod tests {
         );
         let trace = execute(&program, config()).unwrap();
         assert_eq!(trace.final_state.regs[6], 0);
-        let proof = prove_unified_trace(&trace, 8).unwrap();
+        let proof = prove_unified_trace(&trace, 64).unwrap();
         verify_unified_proof(&proof).unwrap();
     }
 
@@ -5312,7 +5550,7 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let proof = prove_unified_trace(&trace, 8).unwrap();
+        let proof = prove_unified_trace(&trace, 64).unwrap();
         verify_unified_proof(&proof).unwrap();
     }
 
@@ -5334,9 +5572,9 @@ mod tests {
         rom.push(Instruction::new(Op::Ecall).encode());
         let program = ProgramImage::new(0x1000, rom);
         let trace = execute(&program, config()).unwrap();
-        let proof = prove_unified_trace_group(&trace, 8, 4).unwrap();
+        let proof = prove_unified_trace_group(&trace, 64, 4).unwrap();
         verify_unified_proof(&proof).unwrap();
-        verify_unified_trace(&trace, &proof, 8).unwrap();
+        verify_unified_trace(&trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -5379,7 +5617,7 @@ mod tests {
                 ],
             );
             let trace = execute(&program, config()).unwrap();
-            let rows = crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, 8)
+            let rows = crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, 64)
                 .unwrap();
             assert!(rows.len() >= trace.rows.len(), "{op:?}");
         }
@@ -5436,7 +5674,7 @@ mod tests {
         );
         let trace = execute(&amo, config()).unwrap();
         let rows =
-            crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, 8).unwrap();
+            crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, 64).unwrap();
         assert!(rows.len() >= trace.rows.len());
     }
 
@@ -5458,12 +5696,12 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let proof = prove_chunked_trace_streaming_dynamic(&trace, 8, 1).unwrap();
+        let proof = prove_chunked_trace_streaming_dynamic(&trace, 64, 1).unwrap();
         assert!(proof
             .chunks
             .iter()
             .all(|chunk| chunk.selected_cpu.is_some()));
-        verify_chunked_trace(&trace, &proof, 8).unwrap();
+        verify_chunked_trace(&trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -5484,10 +5722,10 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let proof = prove_chunked_trace_dynamic(&trace, 8, 1).unwrap();
+        let proof = prove_chunked_trace_dynamic(&trace, 64, 1).unwrap();
         assert!(proof.selected_cpu.is_some());
         assert!(proof.whole_cpu.is_none());
-        verify_chunked_trace(&trace, &proof, 8).unwrap();
+        verify_chunked_trace(&trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -5526,10 +5764,10 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let normal = prove_chunked_trace_streaming(&trace, 8, 2).unwrap();
-        let compact = prove_chunked_trace(&trace, 8, 2).unwrap();
-        verify_chunked_trace(&trace, &normal, 8).unwrap();
-        verify_chunked_trace(&trace, &compact, 8).unwrap();
+        let normal = prove_chunked_trace_streaming(&trace, 64, 2).unwrap();
+        let compact = prove_chunked_trace(&trace, 64, 2).unwrap();
+        verify_chunked_trace(&trace, &normal, 64).unwrap();
+        verify_chunked_trace(&trace, &compact, 64).unwrap();
         assert!(compact.whole_cpu.is_some());
         assert!(compact.chunks.iter().all(|chunk| chunk.cpu.is_none()));
         assert!(compact.chunks.len() > 1);
@@ -5539,11 +5777,11 @@ mod tests {
         );
         let mut tampered_chain = compact.clone();
         tampered_chain.chain.chunks[0].state_after[0] ^= 1;
-        assert!(verify_chunked_trace(&trace, &tampered_chain, 8).is_err());
+        assert!(verify_chunked_trace(&trace, &tampered_chain, 64).is_err());
         let mut tampered = compact;
         let cpu = tampered.whole_cpu.as_mut().unwrap();
         cpu.vw = cpu.vw + F2_128::from(1u64);
-        assert!(verify_chunked_trace(&trace, &tampered, 8).is_err());
+        assert!(verify_chunked_trace(&trace, &tampered, 64).is_err());
     }
 
     #[test]
@@ -5564,10 +5802,10 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let proof = prove_chunked_trace(&trace, 8, trace.rows.len()).unwrap();
+        let proof = prove_chunked_trace(&trace, 64, trace.rows.len()).unwrap();
         assert!(proof.whole_cpu.is_none());
         assert!(proof.chunks.iter().all(|chunk| chunk.cpu.is_some()));
-        verify_chunked_trace(&trace, &proof, 8).unwrap();
+        verify_chunked_trace(&trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -5606,11 +5844,11 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let proof = prove_chunked_trace(&trace, 8, trace.rows.len()).unwrap();
+        let proof = prove_chunked_trace(&trace, 64, trace.rows.len()).unwrap();
         assert_eq!(proof.chunks.len(), 1);
         assert_eq!(proof.chunks[0].start, 0);
         assert_eq!(proof.chunks[0].end, trace.rows.len());
-        verify_chunked_trace(&trace, &proof, 8).unwrap();
+        verify_chunked_trace(&trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -5640,12 +5878,12 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let proof = prove_chunked_trace(&trace, 8, 2).unwrap();
+        let proof = prove_chunked_trace(&trace, 64, 2).unwrap();
         let digest = chunked_proof_digest(&proof).unwrap();
         let mut tampered = proof.clone();
         tampered.trace_commitment[0] ^= 1;
         assert_ne!(digest, chunked_proof_digest(&tampered).unwrap());
-        verify_chunked_trace(&trace, &proof, 8).unwrap();
+        verify_chunked_trace(&trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -5675,26 +5913,26 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let proof = prove_unified_trace(&trace, 8).unwrap();
+        let proof = prove_unified_trace(&trace, 64).unwrap();
         assert!(proof.e5_opening.is_some());
         assert!(proof.opening.is_none());
         assert!(proof.field_opening.is_some());
         assert!(proof.field_tables.contains(&proof.trace_index));
-        verify_unified_trace(&trace, &proof, 8).unwrap();
+        verify_unified_trace(&trace, &proof, 64).unwrap();
 
         let mut tampered = proof.clone();
         tampered.e5_opening.as_mut().unwrap().batch.value =
             tampered.e5_opening.as_ref().unwrap().batch.value + F2_128::from(1u64);
-        assert!(verify_unified_trace(&trace, &tampered, 8).is_err());
+        assert!(verify_unified_trace(&trace, &tampered, 64).is_err());
 
         let mut tampered = proof.clone();
         tampered.e5_opening.as_mut().unwrap().ring.s_hat_v[0] =
             tampered.e5_opening.as_ref().unwrap().ring.s_hat_v[0] + F2_128::from(1u64);
-        assert!(verify_unified_trace(&trace, &tampered, 8).is_err());
+        assert!(verify_unified_trace(&trace, &tampered, 64).is_err());
 
         let mut tampered = proof;
         tampered.field_pcs_commitment.as_mut().unwrap().tables[0].num_columns += 1;
-        assert!(verify_unified_trace(&trace, &tampered, 8).is_err());
+        assert!(verify_unified_trace(&trace, &tampered, 64).is_err());
     }
 
     #[test]
@@ -5715,7 +5953,7 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let proof = prove_unified_trace(&trace, 8).unwrap();
+        let proof = prove_unified_trace(&trace, 64).unwrap();
         let bytes = bincode::serialize(&proof).unwrap();
         drop(trace);
         let decoded: UnifiedTraceProof = bincode::deserialize(&bytes).unwrap();
@@ -5740,7 +5978,7 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let proof = prove_unified_trace(&trace, 8).unwrap();
+        let proof = prove_unified_trace(&trace, 64).unwrap();
         let digest = unified_proof_digest(&proof).unwrap();
         let mut tampered = proof.clone();
         tampered.trace_commitment[0] ^= 1;
@@ -5758,7 +5996,7 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let proof = prove_unified_trace(&trace, 8).unwrap();
+        let proof = prove_unified_trace(&trace, 64).unwrap();
         verify_unified_proof(&proof).unwrap();
     }
 
@@ -5794,7 +6032,7 @@ mod tests {
         }
         program.push(Instruction::new(Op::Ecall).encode());
         let trace = execute(&ProgramImage::new(0x1000, program), config()).unwrap();
-        let proof = prove_unified_trace(&trace, 8).unwrap();
+        let proof = prove_unified_trace(&trace, 64).unwrap();
         verify_unified_proof(&proof).unwrap();
     }
 
@@ -5811,16 +6049,16 @@ mod tests {
             assert_eq!(pair[0].next_pc, pair[0].pc);
             assert_eq!(pair[1].micro_op, magnetar_spec::MicroOpKind::Execute);
         }
-        let rows = crate::simd_full::gated_rows_from_trace(&expanded, 8).unwrap();
-        let bundle = crate::gated_bundle::prove_gated_bundle(8, &rows).unwrap();
-        crate::gated_bundle::verify_gated_bundle(8, &rows, &bundle).unwrap();
-        let proof = prove_unified_trace(&expanded, 8).unwrap();
+        let rows = crate::simd_full::gated_rows_from_trace(&expanded, 64).unwrap();
+        let bundle = crate::gated_bundle::prove_gated_bundle(64, &rows).unwrap();
+        crate::gated_bundle::verify_gated_bundle(64, &rows, &bundle).unwrap();
+        let proof = prove_unified_trace(&expanded, 64).unwrap();
         verify_unified_proof(&proof).unwrap();
         eprintln!(
             "fetch-expanded unified bytes {}",
             bincode::serialize(&proof).unwrap().len()
         );
-        let default_proof = prove_unified_trace(&outcome.trace, 8).unwrap();
+        let default_proof = prove_unified_trace(&outcome.trace, 64).unwrap();
         eprintln!(
             "default unified bytes {}",
             bincode::serialize(&default_proof).unwrap().len()
@@ -6154,9 +6392,9 @@ mod tests {
         assert_eq!(trace.final_state.reg(4), 7);
         assert_eq!(trace.final_state.reg(5), 1);
 
-        let proof = prove_trace_proof(&trace, 8).unwrap();
+        let proof = prove_trace_proof(&trace, 64).unwrap();
         assert!(matches!(proof.rows[5], RowCpuProof::Skip));
-        verify_trace_proof(&trace, &proof, 8).unwrap();
+        verify_trace_proof(&trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -6170,7 +6408,7 @@ mod tests {
             1,
         )
         .unwrap();
-        let proof = prove_unified_trace(&outcome.trace, 8).unwrap();
+        let proof = prove_unified_trace(&outcome.trace, 64).unwrap();
         let claims = verify_unified_claim_proof(&proof).unwrap();
         assert_eq!(claims.len(), outcome.trace.rows.len());
         assert_eq!(claims[0].pc, 0x1000);
@@ -6203,22 +6441,77 @@ mod tests {
             2,
         )
         .unwrap();
-        let proof = prove_unified_trace_dynamic_native(&outcome.trace, 8).unwrap();
+        let proof = prove_unified_trace_dynamic_native(&outcome.trace, 64).unwrap();
         let statement = outcome.statement.clone();
         let outputs = verify_native_claim_layer(&statement, &proof).unwrap();
         assert_eq!(outputs.len(), outcome.trace.rows.len());
-        verify_native_unified(&statement, &proof, 8).unwrap();
+        verify_native_unified(&statement, &proof, 64).unwrap();
+        // The statement fields the claim-derived trace is compared against must
+        // not be accepted when they disagree with the authenticated claims.
+        let mut bad_initial = statement.clone();
+        bad_initial.initial_state.pc ^= 4;
+        assert!(
+            verify_native_unified(&bad_initial, &proof, 64).is_err(),
+            "tampered initial_state.pc accepted"
+        );
+        let mut bad_final = statement.clone();
+        bad_final.final_state.pc ^= 4;
+        assert!(
+            verify_native_unified(&bad_final, &proof, 64).is_err(),
+            "tampered final_state.pc accepted"
+        );
+        let mut bad_rom = statement.clone();
+        bad_rom.rom[0] ^= 1;
+        assert!(
+            verify_native_unified(&bad_rom, &proof, 64).is_err(),
+            "tampered rom accepted"
+        );
+        let mut bad_ram = statement.clone();
+        bad_ram.initial_ram[0] ^= 1;
+        assert!(
+            verify_native_unified(&bad_ram, &proof, 64).is_err(),
+            "tampered initial_ram accepted"
+        );
         let decoded: UnifiedTraceProof =
             bincode::deserialize(&bincode::serialize(&proof).unwrap()).unwrap();
-        verify_native_unified(&statement, &decoded, 8).unwrap();
+        verify_native_unified(&statement, &decoded, 64).unwrap();
         let mut bad_root = proof.clone();
         bad_root.trace_claim_root[0] ^= 1;
-        assert!(verify_native_unified(&statement, &bad_root, 8).is_err());
+        assert!(verify_native_unified(&statement, &bad_root, 64).is_err());
         assert!(verify_native_claim_layer(&statement, &bad_root).is_err());
         let mut bad_commitment = proof.clone();
         bad_commitment.trace_commitment[0] ^= 1;
-        assert!(verify_native_unified(&statement, &bad_commitment, 8).is_err());
+        assert!(verify_native_unified(&statement, &bad_commitment, 64).is_err());
         assert!(verify_native_claim_layer(&statement, &bad_commitment).is_err());
+
+        // The selected lockstep proof must be checked end to end: the folded
+        // claim, the segment claims, the inner sum-check and the PCS opening.
+        let mut tampered_segments = proof.clone();
+        if let Some(selected) = tampered_segments.selected_cpu.as_mut() {
+            selected.proof.segments[0].value =
+                selected.proof.segments[0].value + magnetar_constraint::F2_128::from(1u64);
+        }
+        assert!(verify_native_unified(&statement, &tampered_segments, 64).is_err());
+        let mut tampered_inner = proof.clone();
+        if let Some(selected) = tampered_inner.selected_cpu.as_mut() {
+            selected.proof.inner.round_polys[0][0] = selected.proof.inner.round_polys[0][0]
+                + magnetar_constraint::F2_128::from(1u64);
+        }
+        assert!(verify_native_unified(&statement, &tampered_inner, 64).is_err());
+        let mut tampered_opening = proof.clone();
+        if let Some(selected) = tampered_opening.selected_cpu.as_mut() {
+            selected.proof.opening.s_hat_v[0] = selected.proof.opening.s_hat_v[0]
+                + magnetar_constraint::F2_128::from(1u64);
+        }
+        assert!(verify_native_unified(&statement, &tampered_opening, 64).is_err());
+        let mut tampered_binding = proof.clone();
+        if let Some(selected) = tampered_binding.selected_cpu.as_mut() {
+            if let Some(binding) = selected.claim_binding.as_mut() {
+                binding.target =
+                    binding.target + magnetar_constraint::F2_128::from(1u64);
+            }
+        }
+        assert!(verify_native_unified(&statement, &tampered_binding, 64).is_err());
         assert_eq!(outputs[0].pc, 0x1000);
         assert_eq!(outputs[0].instruction_len, 4);
         let mut claim_rows = verify_unified_claim_proof(&proof).unwrap();
@@ -6256,9 +6549,97 @@ mod tests {
             .claim
             .instruction_len = 2;
         assert!(verify_native_claim_layer(&statement, &bad).is_err());
+        // Every field the native verifier consumes must reject tampering:
+        // width, the mosaic opening and its commitment binding, the virtual
+        // claim root, the claim blob, the access table indices, the claim
+        // column set and the trace Logup-Shout proof.
+        let mut bad_width = proof.clone();
+        bad_width.width = 16;
+        assert!(verify_native_unified(&statement, &bad_width, 64).is_err());
+        let mut no_opening = proof.clone();
+        no_opening.opening = None;
+        assert!(verify_native_unified(&statement, &no_opening, 64).is_err());
+        let mut bad_opening_commitment = proof.clone();
+        if let Some(opening) = bad_opening_commitment.opening.as_mut() {
+            opening.commitment.binding[0] ^= 1;
+        }
+        assert!(verify_native_unified(&statement, &bad_opening_commitment, 64).is_err());
+        let mut bad_virtual = proof.clone();
+        bad_virtual.virtual_claim_root = [7u8; 32];
+        assert!(verify_native_unified(&statement, &bad_virtual, 64).is_err());
+        // The claim data is carried either as a compressed blob (register
+        // path) or as decoded rows; tamper whichever representation this proof
+        // uses.
+        let mut bad_claim_data = proof.clone();
+        let mut tampered_claim_data = false;
+        if let Some(claim) = bad_claim_data.claim_proof.as_mut() {
+            if let Some(blob) = claim.reg_blob.as_mut() {
+                blob[0] ^= 1;
+                tampered_claim_data = true;
+            } else if let Some(opening) = claim.openings.first_mut() {
+                opening.claim.pc ^= 1;
+                tampered_claim_data = true;
+            }
+        }
+        assert!(tampered_claim_data);
+        assert!(verify_native_unified(&statement, &bad_claim_data, 64).is_err());
+        let mut bad_ram_index = proof.clone();
+        bad_ram_index.ram_index = usize::MAX;
+        assert!(verify_native_unified(&statement, &bad_ram_index, 64).is_err());
+        let mut bad_columns = proof.clone();
+        if let Some(binding) = bad_columns
+            .selected_cpu
+            .as_mut()
+            .and_then(|selected| selected.claim_binding.as_mut())
+        {
+            binding.columns_root[0] ^= 1;
+        }
+        assert!(verify_native_unified(&statement, &bad_columns, 64).is_err());
+        let mut bad_logup = proof.clone();
+        if let Some(logup) = bad_logup.trace_logup_shout.as_mut() {
+            logup.link_claims[0] = logup.link_claims[0] + magnetar_constraint::F2_128::from(1u64);
+        }
+        assert!(verify_native_unified(&statement, &bad_logup, 64).is_err());
+
         let mut bad = proof;
-        bad.selected_cpu.as_mut().unwrap().claim_root[0] ^= 1;
+        bad.claim_proof.as_mut().unwrap().root[0] ^= 1;
         assert!(verify_native_claim_layer(&statement, &bad).is_err());
+        assert!(verify_native_unified(&statement, &bad, 64).is_err());
+    }
+
+    #[test]
+    fn native_verifier_rejects_a_tampered_compressed_claim_blob() {
+        let outcome = ReferencePipeline::run(
+            &ProgramImage::new(
+                0x1000,
+                vec![
+                    magnetar_spec::Instruction {
+                        op: magnetar_spec::Op::Addi,
+                        rd: 1,
+                        rs1: 0,
+                        rs2: 0,
+                        imm: 7,
+                        shamt: 0,
+                    }
+                    .encode(),
+                    magnetar_spec::Instruction::new(magnetar_spec::Op::Ecall).encode(),
+                ],
+            ),
+            config(),
+            2,
+        )
+        .unwrap();
+        // The paper path carries the register-derived compressed claim blob.
+        let proof = prove_unified_trace_paper(&outcome.trace, 64).unwrap();
+        verify_native_unified(&outcome.statement, &proof, 64).unwrap();
+        let mut tampered = proof.clone();
+        let blob = tampered
+            .claim_proof
+            .as_mut()
+            .and_then(|claim| claim.reg_blob.as_mut())
+            .expect("paper proof carries the compressed blob");
+        blob[0] ^= 1;
+        assert!(verify_native_unified(&outcome.statement, &tampered, 64).is_err());
     }
 
     #[test]
@@ -6292,9 +6673,9 @@ mod tests {
             3,
         )
         .unwrap();
-        let proof = prove_unified_trace_dynamic_native(&outcome.trace, 8).unwrap();
+        let proof = prove_unified_trace_dynamic_native(&outcome.trace, 64).unwrap();
         let outputs = verify_native_claim_layer(&outcome.statement, &proof).unwrap();
-        verify_native_unified(&outcome.statement, &proof, 8).unwrap();
+        verify_native_unified(&outcome.statement, &proof, 64).unwrap();
         assert_eq!(outputs.len(), outcome.trace.rows.len());
         assert_eq!(outputs[1].memory.len(), 1);
         assert_eq!(outputs[1].memory[0].addr, 0x1000_0000);
@@ -6308,8 +6689,8 @@ mod tests {
             2,
         )
         .unwrap();
-        let proof = prove_unified_trace(&outcome.trace, 8).unwrap();
-        verify_native_unified(&outcome.statement, &proof, 8).unwrap();
+        let proof = prove_unified_trace(&outcome.trace, 64).unwrap();
+        verify_native_unified(&outcome.statement, &proof, 64).unwrap();
     }
 
     #[test]
@@ -6338,8 +6719,8 @@ mod tests {
     #[test]
     fn trace_statistics_match_the_merged_cpu_system() {
         let trace = execute(&program(), config()).unwrap();
-        let stats = trace_cpu_stats(&trace, 8).unwrap();
-        let (system, witness) = merged_cpu_system(&trace, 8).unwrap();
+        let stats = trace_cpu_stats(&trace, 64).unwrap();
+        let (system, witness) = merged_cpu_system(&trace, 64).unwrap();
         assert_eq!(stats.rows.len(), trace.rows.len());
         assert_eq!(stats.variables, system.num_vars);
         assert_eq!(stats.constraints, system.constraints.len());
@@ -6349,7 +6730,7 @@ mod tests {
             .iter()
             .any(|row| row.op == "addi" && row.constraints > 0));
 
-        let proof = prove_unified_trace(&trace, 8).unwrap();
+        let proof = prove_unified_trace(&trace, 64).unwrap();
         let sizes = unified_proof_sizes(&proof).unwrap();
         let encoded = encode_unified_proof(&proof).unwrap();
         assert!(sizes.cpu > 0 && sizes.access > 0);
@@ -6385,7 +6766,7 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let proof = prove_unified_trace(&trace, 8).unwrap();
+        let proof = prove_unified_trace(&trace, 64).unwrap();
         assert!(proof.gated.is_some());
         assert!(
             proof.commitment.tables.len()
@@ -6393,7 +6774,7 @@ mod tests {
                     + usize::from(proof.shift_router.is_some())
                     + usize::from(proof.store_router.is_some())
         );
-        verify_unified_trace(&trace, &proof, 8).unwrap();
+        verify_unified_trace(&trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -6464,9 +6845,9 @@ mod tests {
             },
         )
         .unwrap();
-        let proof = prove_unified_trace(&trace, 8).unwrap();
+        let proof = prove_unified_trace(&trace, 64).unwrap();
         assert!(proof.amo.is_some());
-        verify_unified_trace(&trace, &proof, 8).unwrap();
+        verify_unified_trace(&trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -6546,11 +6927,11 @@ mod tests {
             },
         )
         .unwrap();
-        let proof = prove_unified_trace(&trace, 8).unwrap();
+        let proof = prove_unified_trace(&trace, 64).unwrap();
         let amo = proof.amo.as_ref().expect("LR/SC bundle");
         assert!(amo.lr.is_some());
         assert!(amo.sc.is_some());
-        verify_unified_trace(&trace, &proof, 8).unwrap();
+        verify_unified_trace(&trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -6648,15 +7029,15 @@ mod tests {
             },
         )
         .unwrap();
-        let proof = prove_unified_trace(&trace, 8).unwrap();
+        let proof = prove_unified_trace(&trace, 64).unwrap();
         let amo = proof.amo.as_ref().expect("AMO bundle");
         assert!(amo.add.is_some());
         assert!(amo.lr.is_some());
         assert!(amo.sc.is_some());
-        verify_unified_trace(&trace, &proof, 8).unwrap();
+        verify_unified_trace(&trace, &proof, 64).unwrap();
         let bundle = crate::protocol::ProofBundle::from_unified(&proof);
         let restored = bundle.into_unified().unwrap();
-        verify_unified_trace(&trace, &restored, 8).unwrap();
+        verify_unified_trace(&trace, &restored, 64).unwrap();
     }
 
     #[test]
@@ -6709,8 +7090,8 @@ mod tests {
             },
         )
         .unwrap();
-        let proof = prove_unified_trace(&trace, 8).unwrap();
-        verify_unified_trace(&trace, &proof, 8).unwrap();
+        let proof = prove_unified_trace(&trace, 64).unwrap();
+        verify_unified_trace(&trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -6788,8 +7169,8 @@ mod tests {
                 },
             )
             .unwrap();
-            let proof = prove_unified_trace(&trace, 8).unwrap();
-            verify_unified_trace(&trace, &proof, 8).unwrap();
+            let proof = prove_unified_trace(&trace, 64).unwrap();
+            verify_unified_trace(&trace, &proof, 64).unwrap();
         }
     }
 
@@ -6834,8 +7215,8 @@ mod tests {
             },
         )
         .unwrap();
-        let proof = prove_unified_trace(&trace, 8).unwrap();
-        verify_unified_trace(&trace, &proof, 8).unwrap();
+        let proof = prove_unified_trace(&trace, 64).unwrap();
+        verify_unified_trace(&trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -6870,8 +7251,8 @@ mod tests {
             },
         )
         .unwrap();
-        let proof = prove_unified_trace(&trace, 8).unwrap();
-        verify_unified_trace(&trace, &proof, 8).unwrap();
+        let proof = prove_unified_trace(&trace, 64).unwrap();
+        verify_unified_trace(&trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -6924,8 +7305,8 @@ mod tests {
             },
         )
         .unwrap();
-        let proof = prove_unified_trace(&trace, 8).unwrap();
-        verify_unified_trace(&trace, &proof, 8).unwrap();
+        let proof = prove_unified_trace(&trace, 64).unwrap();
+        verify_unified_trace(&trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -6957,12 +7338,12 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let proof = prove_unified_revealed(&trace, 8).unwrap();
+        let proof = prove_unified_revealed(&trace, 64).unwrap();
         assert!(proof.opening.is_none());
-        verify_unified_trace(&trace, &proof, 8).unwrap();
+        verify_unified_trace(&trace, &proof, 64).unwrap();
         let mut tampered = proof;
         tampered.commitment.tables[0].num_columns += 1;
-        assert!(verify_unified_trace(&trace, &tampered, 8).is_err());
+        assert!(verify_unified_trace(&trace, &tampered, 64).is_err());
     }
 
     #[test]
@@ -6992,7 +7373,7 @@ mod tests {
         assert_eq!(trace.final_state.reg(3), 12);
         assert_eq!(trace.final_state.reg(4), 35);
 
-        let proof = prove_unified_trace(&trace, 8).unwrap();
+        let proof = prove_unified_trace(&trace, 64).unwrap();
         assert!(proof.amo.is_none());
         assert!(proof.access.ram.opening.is_none());
         assert!(
@@ -7002,7 +7383,7 @@ mod tests {
                     + usize::from(proof.shift_router.is_some())
                     + usize::from(proof.store_router.is_some())
         );
-        verify_unified_trace(&trace, &proof, 8).unwrap();
+        verify_unified_trace(&trace, &proof, 64).unwrap();
 
         let statement = Statement {
             program_hash: program_hash(&program),
@@ -7021,37 +7402,37 @@ mod tests {
             halted: trace.halted,
             exit_code: trace.exit_code,
         };
-        verify_unified_trace_statement(&statement, &trace, &proof, 8).unwrap();
-        verify_unified_trace_statement(&statement, &trace, &proof, 8).unwrap();
+        verify_unified_trace_statement(&statement, &trace, &proof, 64).unwrap();
+        verify_unified_trace_statement(&statement, &trace, &proof, 64).unwrap();
 
         let bytes = encode_unified_proof(&proof).unwrap();
         assert!(!bytes.is_empty());
         let decoded = decode_unified_proof(&bytes).unwrap();
-        verify_unified_trace_statement(&statement, &trace, &decoded, 8).unwrap();
+        verify_unified_trace_statement(&statement, &trace, &decoded, 64).unwrap();
         assert!(decode_unified_proof(&bytes[..bytes.len() / 2]).is_err());
 
         let mut wrong_length = statement.clone();
         wrong_length.trace_len += 1;
-        assert!(verify_unified_trace_statement(&wrong_length, &trace, &proof, 8).is_err());
+        assert!(verify_unified_trace_statement(&wrong_length, &trace, &proof, 64).is_err());
         let mut wrong_commitment = statement.clone();
         wrong_commitment.trace_commitment[0] ^= 1;
-        assert!(verify_unified_trace_statement(&wrong_commitment, &trace, &proof, 8).is_err());
+        assert!(verify_unified_trace_statement(&wrong_commitment, &trace, &proof, 64).is_err());
         let mut wrong_program = statement.clone();
         wrong_program.program_hash[0] ^= 1;
-        assert!(verify_unified_trace_statement(&wrong_program, &trace, &proof, 8).is_err());
-        assert!(verify_unified_trace_statement(&wrong_program, &trace, &proof, 8).is_err());
+        assert!(verify_unified_trace_statement(&wrong_program, &trace, &proof, 64).is_err());
+        assert!(verify_unified_trace_statement(&wrong_program, &trace, &proof, 64).is_err());
         let mut wrong_ram = statement.clone();
         wrong_ram.initial_ram[0] ^= 1;
-        assert!(verify_unified_trace_statement(&wrong_ram, &trace, &proof, 8).is_err());
-        assert!(verify_unified_trace_statement(&wrong_ram, &trace, &proof, 8).is_err());
+        assert!(verify_unified_trace_statement(&wrong_ram, &trace, &proof, 64).is_err());
+        assert!(verify_unified_trace_statement(&wrong_ram, &trace, &proof, 64).is_err());
         let mut wrong_state = statement;
         wrong_state.final_state.pc += 4;
-        assert!(verify_unified_trace_statement(&wrong_state, &trace, &proof, 8).is_err());
+        assert!(verify_unified_trace_statement(&wrong_state, &trace, &proof, 64).is_err());
 
         let mut tampered = proof.clone();
         if let Some(cpu) = tampered.cpu.as_mut() {
             cpu.segments[0].value = cpu.segments[0].value + F2_128::from(1u64);
-            assert!(verify_unified_trace(&trace, &tampered, 8).is_err());
+            assert!(verify_unified_trace(&trace, &tampered, 64).is_err());
         } else {
             assert!(tampered.gated.is_some());
         }
@@ -7059,15 +7440,15 @@ mod tests {
         let mut tampered = proof.clone();
         tampered.access.ram.read.initial.rounds[0][0] =
             tampered.access.ram.read.initial.rounds[0][0] + F2_128::from(1u64);
-        assert!(verify_unified_trace(&trace, &tampered, 8).is_err());
+        assert!(verify_unified_trace(&trace, &tampered, 64).is_err());
 
         let mut broken = trace.clone();
         broken.rows[2].rd_val = 99;
-        assert!(verify_unified_trace(&broken, &proof, 8).is_err());
+        assert!(verify_unified_trace(&broken, &proof, 64).is_err());
 
         let mut broken_rom = trace;
         broken_rom.rom[0] ^= 1;
-        assert!(verify_unified_trace(&broken_rom, &proof, 8).is_err());
+        assert!(verify_unified_trace(&broken_rom, &proof, 64).is_err());
     }
 
     #[test]
@@ -7094,15 +7475,15 @@ mod tests {
         let trace = execute(&program, config()).unwrap();
         assert_eq!(trace.final_state.reg(3), 143);
 
-        let proof = prove_trace_proof(&trace, 8).unwrap();
+        let proof = prove_trace_proof(&trace, 64).unwrap();
         assert!(matches!(proof.rows[2], RowCpuProof::Mul(_)));
-        verify_trace_proof(&trace, &proof, 8).unwrap();
+        verify_trace_proof(&trace, &proof, 64).unwrap();
 
         let mut tampered = proof;
         if let RowCpuProof::Mul(spartan) = &mut tampered.rows[2] {
             spartan.vw = spartan.vw + F2_128::from(1u64);
         }
-        assert!(verify_trace_proof(&trace, &tampered, 8).is_err());
+        assert!(verify_trace_proof(&trace, &tampered, 64).is_err());
     }
 
     #[test]
@@ -7133,26 +7514,26 @@ mod tests {
         assert_eq!(trace.final_state.reg(4), u64::MAX);
         assert_eq!(trace.final_state.reg(5), 1);
 
-        let proof = prove_trace_proof(&trace, 8).unwrap();
+        let proof = prove_trace_proof(&trace, 64).unwrap();
         assert!(matches!(proof.rows[2], RowCpuProof::Mulh(_)));
         assert!(matches!(proof.rows[3], RowCpuProof::Mulhsu(_)));
         assert!(matches!(proof.rows[4], RowCpuProof::Mulhu(_)));
-        verify_trace_proof(&trace, &proof, 8).unwrap();
+        verify_trace_proof(&trace, &proof, 64).unwrap();
 
         let bytes = encode_trace_proof(&proof).unwrap();
         let decoded = decode_trace_proof(&bytes).unwrap();
-        verify_trace_proof(&trace, &decoded, 8).unwrap();
+        verify_trace_proof(&trace, &decoded, 64).unwrap();
         assert!(decode_trace_proof(&bytes[..bytes.len() / 2]).is_err());
 
         let mut wrong_rom = trace.clone();
         wrong_rom.rom[0] ^= 1;
-        assert!(verify_trace_proof(&wrong_rom, &proof, 8).is_err());
+        assert!(verify_trace_proof(&wrong_rom, &proof, 64).is_err());
 
         let mut tampered = proof;
         if let RowCpuProof::Mulh(spartan) = &mut tampered.rows[2] {
             spartan.vw = spartan.vw + F2_128::from(1u64);
         }
-        assert!(verify_trace_proof(&trace, &tampered, 8).is_err());
+        assert!(verify_trace_proof(&trace, &tampered, 64).is_err());
     }
 
     #[test]
@@ -7212,8 +7593,8 @@ mod tests {
             }
         }
 
-        let unified = prove_unified_trace(&trace, 8).unwrap();
-        verify_unified_trace(&trace, &unified, 8).unwrap();
+        let unified = prove_unified_trace(&trace, 64).unwrap();
+        verify_unified_trace(&trace, &unified, 64).unwrap();
         let mut tampered = unified;
         if let Some(gated) = tampered.gated.as_mut() {
             gated.proof.segments[0].value = gated.proof.segments[0].value + F2_128::from(1u64);
@@ -7221,7 +7602,7 @@ mod tests {
             tampered.cpu.as_mut().unwrap().segments[0].value =
                 tampered.cpu.as_mut().unwrap().segments[0].value + F2_128::from(1u64);
         }
-        assert!(verify_unified_trace(&trace, &tampered, 8).is_err());
+        assert!(verify_unified_trace(&trace, &tampered, 64).is_err());
     }
 
     #[test]
@@ -7249,9 +7630,9 @@ mod tests {
         let trace = execute(&program, config()).unwrap();
         assert_eq!(trace.final_state.reg(2), u64::MAX);
 
-        let proof = prove_trace_proof(&trace, 8).unwrap();
+        let proof = prove_trace_proof(&trace, 64).unwrap();
         assert!(matches!(proof.rows[3], RowCpuProof::Load(_)));
-        verify_trace_proof(&trace, &proof, 8).unwrap();
+        verify_trace_proof(&trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -7280,15 +7661,15 @@ mod tests {
         let trace = execute(&program, config()).unwrap();
         assert_eq!(trace.final_state.reg(3), 10);
 
-        let proof = prove_trace_proof(&trace, 8).unwrap();
+        let proof = prove_trace_proof(&trace, 64).unwrap();
         assert!(matches!(proof.rows[4], RowCpuProof::Amo(_)));
-        verify_trace_proof(&trace, &proof, 8).unwrap();
+        verify_trace_proof(&trace, &proof, 64).unwrap();
 
         let mut tampered = proof;
         if let RowCpuProof::Amo(spartan) = &mut tampered.rows[4] {
             spartan.vw = spartan.vw + F2_128::from(1u64);
         }
-        assert!(verify_trace_proof(&trace, &tampered, 8).is_err());
+        assert!(verify_trace_proof(&trace, &tampered, 64).is_err());
     }
 
     #[test]
@@ -7322,14 +7703,14 @@ mod tests {
         assert_eq!(trace.rows[5].reservation_before, Some(0x1000_0000));
         assert_eq!(trace.rows[5].reservation_after, None);
 
-        let proof = prove_trace_proof(&trace, 8).unwrap();
+        let proof = prove_trace_proof(&trace, 64).unwrap();
         assert!(matches!(proof.rows[3], RowCpuProof::Load(_)));
         assert!(matches!(proof.rows[5], RowCpuProof::Store(_)));
-        verify_trace_proof(&trace, &proof, 8).unwrap();
+        verify_trace_proof(&trace, &proof, 64).unwrap();
 
         let mut broken_reservation = trace.clone();
         broken_reservation.rows[3].reservation_after = None;
-        assert!(verify_trace_proof(&broken_reservation, &proof, 8).is_err());
+        assert!(verify_trace_proof(&broken_reservation, &proof, 64).is_err());
 
         let failed_program = ProgramImage::new(
             0x1000,
@@ -7349,9 +7730,9 @@ mod tests {
         assert!(failed_trace.rows[6].mem.is_none());
         assert_eq!(failed_trace.rows[6].reservation_after, None);
 
-        let failed_proof = prove_trace_proof(&failed_trace, 8).unwrap();
+        let failed_proof = prove_trace_proof(&failed_trace, 64).unwrap();
         assert!(matches!(failed_proof.rows[6], RowCpuProof::Skip));
-        verify_trace_proof(&failed_trace, &failed_proof, 8).unwrap();
+        verify_trace_proof(&failed_trace, &failed_proof, 64).unwrap();
     }
 
     #[test]
@@ -7382,8 +7763,8 @@ mod tests {
         assert_eq!(trace.final_state.reg(3), 16);
         assert_eq!(trace.final_state.reg(5), (-64i64) as u64);
 
-        let proof = prove_trace_proof(&trace, 8).unwrap();
-        verify_trace_proof(&trace, &proof, 8).unwrap();
+        let proof = prove_trace_proof(&trace, 64).unwrap();
+        verify_trace_proof(&trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -7437,9 +7818,9 @@ mod tests {
         assert_eq!(outcome.trace.rows[2].pc, 0x1004);
         assert!(outcome.trace.halted);
 
-        let proof = prove_unified_trace(&outcome.trace, 8).unwrap();
-        verify_unified_trace(&outcome.trace, &proof, 8).unwrap();
-        verify_unified_trace_statement(&outcome.statement, &outcome.trace, &proof, 8).unwrap();
+        let proof = prove_unified_trace(&outcome.trace, 64).unwrap();
+        verify_unified_trace(&outcome.trace, &proof, 64).unwrap();
+        verify_unified_trace_statement(&outcome.statement, &outcome.trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -7452,8 +7833,8 @@ mod tests {
         assert_eq!(outcome.trace.final_state.pc, 0x1006);
         assert!(outcome.trace.halted);
 
-        let proof = prove_unified_trace(&outcome.trace, 8).unwrap();
-        verify_unified_trace(&outcome.trace, &proof, 8).unwrap();
+        let proof = prove_unified_trace(&outcome.trace, 64).unwrap();
+        verify_unified_trace(&outcome.trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -7484,15 +7865,15 @@ mod tests {
         assert_eq!(outcome.trace.final_state.pc, 0x100a);
 
         for (index, row) in outcome.trace.rows.iter().enumerate() {
-            if let Some((system, witness)) = row_cpu_relation(row, 8).unwrap() {
+            if let Some((system, witness)) = row_cpu_relation(row, 64).unwrap() {
                 system.check(&witness).unwrap_or_else(|error| {
                     panic!("row {index} {}: {error}", row.instruction.op.name())
                 });
             }
         }
 
-        let proof = prove_unified_trace(&outcome.trace, 8).unwrap();
-        verify_unified_trace(&outcome.trace, &proof, 8).unwrap();
+        let proof = prove_unified_trace(&outcome.trace, 64).unwrap();
+        verify_unified_trace(&outcome.trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -7514,8 +7895,8 @@ mod tests {
         assert_eq!(outcome.trace.memory_writes().count(), 1);
         assert_eq!(outcome.trace.memory_reads().count(), 1);
 
-        let proof = prove_unified_trace(&outcome.trace, 8).unwrap();
-        verify_unified_trace(&outcome.trace, &proof, 8).unwrap();
+        let proof = prove_unified_trace(&outcome.trace, 64).unwrap();
+        verify_unified_trace(&outcome.trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -7558,11 +7939,11 @@ mod tests {
         assert_eq!(trace.final_state.reg(10), 0x7fff_ffff);
         assert_eq!(trace.final_state.reg(11), u64::MAX);
 
-        let proof = prove_trace_proof(&trace, 8).unwrap();
+        let proof = prove_trace_proof(&trace, 64).unwrap();
         for index in 2..=10 {
             assert!(matches!(proof.rows[index], RowCpuProof::W(_)));
         }
-        verify_trace_proof(&trace, &proof, 8).unwrap();
+        verify_trace_proof(&trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -7591,16 +7972,16 @@ mod tests {
         assert_eq!(trace.final_state.reg(3), 14);
         assert_eq!(trace.final_state.reg(4), 2);
 
-        let proof = prove_trace_proof(&trace, 8).unwrap();
+        let proof = prove_trace_proof(&trace, 64).unwrap();
         assert!(matches!(proof.rows[2], RowCpuProof::Divu(_)));
         assert!(matches!(proof.rows[3], RowCpuProof::Remu(_)));
-        verify_trace_proof(&trace, &proof, 8).unwrap();
+        verify_trace_proof(&trace, &proof, 64).unwrap();
 
         let mut tampered = proof;
         if let RowCpuProof::Divu(spartan) = &mut tampered.rows[2] {
             spartan.vw = spartan.vw + F2_128::from(1u64);
         }
-        assert!(verify_trace_proof(&trace, &tampered, 8).is_err());
+        assert!(verify_trace_proof(&trace, &tampered, 64).is_err());
     }
 
     #[test]
@@ -7627,12 +8008,12 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let proof = prove_chunked_trace(&trace, 8, 2).unwrap();
+        let proof = prove_chunked_trace(&trace, 64, 2).unwrap();
         let sizes = chunked_proof_sizes(&proof).unwrap();
         assert!(sizes.total() > 0 && sizes.access > 0 && sizes.cpu > 0);
         let aux = proof.aux.as_ref().expect("aux claims");
         assert!(aux.shout.is_some() && aux.shift_router.is_some() && aux.store_router.is_some());
-        verify_chunked_trace(&trace, &proof, 8).unwrap();
+        verify_chunked_trace(&trace, &proof, 64).unwrap();
 
         let mut tampered = proof;
         tampered
@@ -7651,7 +8032,7 @@ mod tests {
             .unwrap()
             .rounds[0][0]
             + F2_128::from(1u64);
-        assert!(verify_chunked_trace(&trace, &tampered, 8).is_err());
+        assert!(verify_chunked_trace(&trace, &tampered, 64).is_err());
     }
 
     #[test]
@@ -7679,9 +8060,9 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let proof = prove_chunked_trace(&trace, 8, 2).unwrap();
+        let proof = prove_chunked_trace(&trace, 64, 2).unwrap();
         assert_eq!(proof.chunks.len(), 4);
-        verify_chunked_trace(&trace, &proof, 8).unwrap();
+        verify_chunked_trace(&trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -7817,13 +8198,13 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let proof = prove_chunked_trace(&trace, 8, 2).unwrap();
+        let proof = prove_chunked_trace(&trace, 64, 2).unwrap();
         let mut tampered = proof;
         let aux = tampered.aux.as_mut().expect("aux claims");
         let shout = aux.shout.as_mut().expect("shout");
         let value = shout.rounds[0][0];
         shout.rounds[0][0] = value + F2_128::from(1u64);
-        assert!(verify_chunked_trace(&trace, &tampered, 8).is_err());
+        assert!(verify_chunked_trace(&trace, &tampered, 64).is_err());
     }
 
     #[test]
@@ -7853,14 +8234,14 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let proof = prove_chunked_trace(&trace, 8, 2).unwrap();
+        let proof = prove_chunked_trace(&trace, 64, 2).unwrap();
         assert!(proof.aux.is_some() || proof.shared_access.is_some());
         assert!(proof.access.ram.opening.is_none());
         assert!(proof.access.registers.opening.is_none());
         let mut tampered = proof;
         tampered.access.ram.read.initial.rounds[0][0] =
             tampered.access.ram.read.initial.rounds[0][0] + F2_128::from(1u64);
-        assert!(verify_chunked_trace(&trace, &tampered, 8).is_err());
+        assert!(verify_chunked_trace(&trace, &tampered, 64).is_err());
     }
 
     #[test]
@@ -7966,10 +8347,10 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let sequential = prove_chunked_trace_compact_sequential(&trace, 8, 2).unwrap();
-        let parallel = prove_chunked_trace(&trace, 8, 2).unwrap();
-        verify_chunked_trace(&trace, &sequential, 8).unwrap();
-        verify_chunked_trace(&trace, &parallel, 8).unwrap();
+        let sequential = prove_chunked_trace_compact_sequential(&trace, 64, 2).unwrap();
+        let parallel = prove_chunked_trace(&trace, 64, 2).unwrap();
+        verify_chunked_trace(&trace, &sequential, 64).unwrap();
+        verify_chunked_trace(&trace, &parallel, 64).unwrap();
         assert_eq!(
             bincode::serialize(&sequential).unwrap(),
             bincode::serialize(&parallel).unwrap()
@@ -8012,10 +8393,10 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let sequential = prove_chunked_trace_streaming_sequential(&trace, 8, 2).unwrap();
-        let parallel = prove_chunked_trace_streaming(&trace, 8, 2).unwrap();
-        verify_chunked_trace(&trace, &sequential, 8).unwrap();
-        verify_chunked_trace(&trace, &parallel, 8).unwrap();
+        let sequential = prove_chunked_trace_streaming_sequential(&trace, 64, 2).unwrap();
+        let parallel = prove_chunked_trace_streaming(&trace, 64, 2).unwrap();
+        verify_chunked_trace(&trace, &sequential, 64).unwrap();
+        verify_chunked_trace(&trace, &parallel, 64).unwrap();
         assert_eq!(
             bincode::serialize(&sequential).unwrap(),
             bincode::serialize(&parallel).unwrap()
@@ -8046,7 +8427,7 @@ mod tests {
             ],
         );
         let trace = execute(&program, config()).unwrap();
-        let proof = prove_chunked_trace_streaming(&trace, 8, 2).unwrap();
+        let proof = prove_chunked_trace_streaming(&trace, 64, 2).unwrap();
         assert_eq!(proof.chunks.len(), 3);
         assert_eq!(proof.chunks[0].end, 2);
         assert_eq!(proof.chunks[2].end, trace.rows.len());
@@ -8068,22 +8449,22 @@ mod tests {
             halted: trace.halted,
             exit_code: trace.exit_code,
         };
-        verify_chunked_trace(&trace, &proof, 8).unwrap();
+        verify_chunked_trace(&trace, &proof, 64).unwrap();
 
         let bytes = encode_chunked_proof(&proof).unwrap();
         assert!(!bytes.is_empty());
         let decoded = decode_chunked_proof(&bytes).unwrap();
-        verify_chunked_trace(&trace, &decoded, 8).unwrap();
+        verify_chunked_trace(&trace, &decoded, 64).unwrap();
         assert!(decode_chunked_proof(&bytes[..bytes.len() / 2]).is_err());
 
         let mut tampered = proof.clone();
         let cpu = tampered.chunks[1].cpu.as_mut().unwrap();
         cpu.vw = cpu.vw + F2_128::from(1u64);
-        assert!(verify_chunked_trace(&trace, &tampered, 8).is_err());
+        assert!(verify_chunked_trace(&trace, &tampered, 64).is_err());
 
         let mut tampered = proof;
         tampered.chain.chunks[1].state_after[0] ^= 1;
-        assert!(verify_chunked_trace(&trace, &tampered, 8).is_err());
+        assert!(verify_chunked_trace(&trace, &tampered, 64).is_err());
     }
 
     #[test]
@@ -8112,16 +8493,16 @@ mod tests {
         assert_eq!(trace.final_state.reg(3), (-14i64) as u64);
         assert_eq!(trace.final_state.reg(4), (-2i64) as u64);
 
-        let proof = prove_trace_proof(&trace, 8).unwrap();
+        let proof = prove_trace_proof(&trace, 64).unwrap();
         assert!(matches!(proof.rows[2], RowCpuProof::Div(_)));
         assert!(matches!(proof.rows[3], RowCpuProof::Rem(_)));
-        verify_trace_proof(&trace, &proof, 8).unwrap();
+        verify_trace_proof(&trace, &proof, 64).unwrap();
 
         let mut tampered = proof;
         if let RowCpuProof::Div(spartan) = &mut tampered.rows[2] {
             spartan.vw = spartan.vw + F2_128::from(1u64);
         }
-        assert!(verify_trace_proof(&trace, &tampered, 8).is_err());
+        assert!(verify_trace_proof(&trace, &tampered, 64).is_err());
     }
 
     #[test]
@@ -8164,12 +8545,12 @@ mod tests {
         assert_eq!(outcome.statement.output, b"hello");
         assert_eq!(outcome.trace.exit_code, Some(3));
 
-        let proof = prove_unified_trace(&outcome.trace, 8).unwrap();
-        verify_unified_trace_statement(&outcome.statement, &outcome.trace, &proof, 8).unwrap();
+        let proof = prove_unified_trace(&outcome.trace, 64).unwrap();
+        verify_unified_trace_statement(&outcome.statement, &outcome.trace, &proof, 64).unwrap();
 
         let mut tampered = outcome.statement.clone();
         tampered.output.push(b'!');
-        assert!(verify_unified_trace_statement(&tampered, &outcome.trace, &proof, 8).is_err());
+        assert!(verify_unified_trace_statement(&tampered, &outcome.trace, &proof, 64).is_err());
 
         let mut bad_output = outcome.trace.clone();
         bad_output.io_output[0] ^= 1;
@@ -8220,19 +8601,19 @@ mod tests {
         assert_eq!(outcome.trace.rows[4].extra_mem.len(), 2);
 
         for (index, row) in outcome.trace.rows.iter().enumerate() {
-            if let Some((system, witness)) = row_cpu_relation(row, 8).unwrap() {
+            if let Some((system, witness)) = row_cpu_relation(row, 64).unwrap() {
                 system.check(&witness).unwrap_or_else(|error| {
                     panic!("row {index} {}: {error}", row.instruction.op.name())
                 });
             }
         }
 
-        let proof = prove_unified_trace(&outcome.trace, 8).unwrap();
-        verify_unified_trace_statement(&outcome.statement, &outcome.trace, &proof, 8).unwrap();
+        let proof = prove_unified_trace(&outcome.trace, 64).unwrap();
+        verify_unified_trace_statement(&outcome.statement, &outcome.trace, &proof, 64).unwrap();
 
         let mut tampered = outcome.statement.clone();
         tampered.input[0] ^= 1;
-        assert!(verify_unified_trace_statement(&tampered, &outcome.trace, &proof, 8).is_err());
+        assert!(verify_unified_trace_statement(&tampered, &outcome.trace, &proof, 64).is_err());
 
         let mut bad_trace = outcome.trace.clone();
         bad_trace.rows[4].extra_mem[0].value ^= 1;
@@ -8286,8 +8667,8 @@ mod tests {
         assert_eq!(read_row.extra_mem[0].addr, 0x1000_0000);
         assert_eq!(read_row.extra_mem[1].addr, 0x1000_0008);
 
-        let proof = prove_unified_trace(&outcome.trace, 8).unwrap();
-        verify_unified_trace_statement(&outcome.statement, &outcome.trace, &proof, 8).unwrap();
+        let proof = prove_unified_trace(&outcome.trace, 64).unwrap();
+        verify_unified_trace_statement(&outcome.statement, &outcome.trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -8324,8 +8705,8 @@ mod tests {
         );
         assert_eq!(outcome.trace.rows[4].extra_mem.len(), 1);
 
-        let proof = prove_unified_trace(&outcome.trace, 8).unwrap();
-        verify_unified_trace_statement(&outcome.statement, &outcome.trace, &proof, 8).unwrap();
+        let proof = prove_unified_trace(&outcome.trace, 64).unwrap();
+        verify_unified_trace_statement(&outcome.statement, &outcome.trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -8356,8 +8737,8 @@ mod tests {
         assert_eq!(outcome.trace.final_state.reg(10), 0);
         assert!(outcome.trace.rows[4].extra_mem.is_empty());
 
-        let proof = prove_unified_trace(&outcome.trace, 8).unwrap();
-        verify_unified_trace_statement(&outcome.statement, &outcome.trace, &proof, 8).unwrap();
+        let proof = prove_unified_trace(&outcome.trace, 64).unwrap();
+        verify_unified_trace_statement(&outcome.statement, &outcome.trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -8387,10 +8768,10 @@ mod tests {
         assert_eq!(trace.rows[1].rd, Some(10));
         assert_eq!(trace.final_state.reg(1), 5);
 
-        let proof = prove_trace_proof(&trace, 8).unwrap();
+        let proof = prove_trace_proof(&trace, 64).unwrap();
         assert!(matches!(proof.rows[1], RowCpuProof::Skip));
         assert!(matches!(proof.rows[4], RowCpuProof::Skip));
-        verify_trace_proof(&trace, &proof, 8).unwrap();
+        verify_trace_proof(&trace, &proof, 64).unwrap();
     }
 
     #[test]
@@ -9006,9 +9387,9 @@ mod cpu_statement_tests {
             },
         )
         .unwrap();
-        let proof = prove_unified_trace(&trace, 8).unwrap();
+        let proof = prove_unified_trace(&trace, 64).unwrap();
         let statement = CoreStatement {
-            width: 8,
+            width: 64,
             shape: proof.shape.clone(),
         };
         let encoded = bincode::serialize(&statement).unwrap();
@@ -9091,10 +9472,10 @@ mod cpu_statement_tests {
             },
         )
         .unwrap();
-        let proof = prove_unified_trace(&trace, 8).unwrap();
+        let proof = prove_unified_trace(&trace, 64).unwrap();
         assert!(proof.gated.is_some());
         let statement = CpuStatement {
-            width: 8,
+            width: 64,
             shape: proof.shape.clone(),
         };
         verify_cpu_statement(&proof, &statement).unwrap();
@@ -9141,10 +9522,10 @@ mod cpu_statement_tests {
             },
         )
         .unwrap();
-        let proof = prove_unified_trace(&trace, 8).unwrap();
+        let proof = prove_unified_trace(&trace, 64).unwrap();
         assert!(proof.gated.is_some());
         let statement = CpuStatement {
-            width: 8,
+            width: 64,
             shape: proof.shape.clone(),
         };
         verify_cpu_statement(&proof, &statement).unwrap();

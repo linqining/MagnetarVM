@@ -80,7 +80,11 @@ impl PcTransitionRow {
         bits[self.relation.num_vars - 2] = false;
         bits[self.relation.num_vars - 1] = true;
         bits[self.sequential] = sequential;
-        let mask = (1u64 << self.width) - 1;
+        let mask = if self.width == 64 {
+            u64::MAX
+        } else {
+            (1u64 << self.width) - 1
+        };
         let next = if sequential {
             pc.wrapping_add(4)
         } else {

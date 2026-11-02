@@ -231,6 +231,139 @@ impl LazyExtraRows {
         }
     }
 
+    /// Single entry of the extra row at `offset`, if the row is nonzero.
+    ///
+    /// Every gated extra row carries at most one column, so streaming callers
+    /// can recover the row value without materializing the row list.
+    pub fn entry(&self, offset: usize) -> Option<(usize, F2_128)> {
+        let LazyExtraRows::Gated {
+            part,
+            width,
+            cycles,
+            base_cols,
+            pc,
+            next_pc,
+            one,
+            statement,
+        } = self;
+        let chain = cycles.saturating_sub(1);
+        if offset < chain * width {
+            let instance = offset / width;
+            let bit = offset % width;
+            let column = match part {
+                0 => instance * base_cols + next_pc[bit],
+                1 => instance * base_cols + one,
+                _ => (instance + 1) * base_cols + pc[bit],
+            };
+            return Some((column, F2_128::from(1u64)));
+        }
+        statement.as_ref()?;
+        let rest = offset - chain * width;
+        let which = rest / width;
+        let bit = rest % width;
+        if which > 1 || bit >= *width {
+            return None;
+        }
+        let (initial, final_pc) = statement.as_ref()?;
+        let (instance, pc_value) = if which == 0 {
+            (0usize, *initial)
+        } else {
+            (cycles.saturating_sub(1), *final_pc)
+        };
+        let local = match part {
+            0 => {
+                if which == 0 {
+                    pc[bit]
+                } else {
+                    next_pc[bit]
+                }
+            }
+            1 => *one,
+            _ => *one,
+        };
+        if *part == 2 && (pc_value >> bit) & 1 == 0 {
+            return Some((instance * base_cols + local, F2_128::from(0u64)));
+        }
+        Some((instance * base_cols + local, F2_128::from(1u64)))
+    }
+
+    /// Visit every entry of the extra rows owned by `instance`, in row order.
+    /// Local (inside one instance block) column range the lazy rows can touch.
+    /// A sum-check block outside this range has no extra-row contribution, so
+    /// callers can skip [`Self::for_each_instance_entry`] entirely.
+    pub fn local_column_range(&self) -> (usize, usize) {
+        let LazyExtraRows::Gated {
+            width, pc, next_pc, one, ..
+        } = self;
+        if *width == 0 {
+            return (0, 0);
+        }
+        let mut low = (*one).min(pc[0]).min(next_pc[0]);
+        let mut high = (*one).max(pc[*width - 1]).max(next_pc[*width - 1]);
+        if low > high {
+            std::mem::swap(&mut low, &mut high);
+        }
+        (low, high)
+    }
+
+    pub fn for_each_instance_entry(
+        &self,
+        instance: usize,
+        mut f: impl FnMut(usize, usize, F2_128),
+    ) {
+        let LazyExtraRows::Gated {
+            part,
+            width,
+            cycles,
+            base_cols,
+            pc,
+            next_pc,
+            one,
+            statement,
+        } = self;
+        let chain = cycles.saturating_sub(1);
+        if instance < chain {
+            for bit in 0..*width {
+                let column = match part {
+                    0 => instance * base_cols + next_pc[bit],
+                    1 => instance * base_cols + one,
+                    _ => (instance + 1) * base_cols + pc[bit],
+                };
+                f(instance * width + bit, column, F2_128::from(1u64));
+            }
+        }
+        let Some((initial, final_pc)) = statement else {
+            return;
+        };
+        for (which, pc_value) in [(0usize, *initial), (1usize, *final_pc)] {
+            let target = if which == 0 {
+                0
+            } else {
+                cycles.saturating_sub(1)
+            };
+            if target != instance {
+                continue;
+            }
+            for bit in 0..*width {
+                let local = match part {
+                    0 => {
+                        if which == 0 {
+                            pc[bit]
+                        } else {
+                            next_pc[bit]
+                        }
+                    }
+                    1 => *one,
+                    _ => *one,
+                };
+                if *part == 2 && (pc_value >> bit) & 1 == 0 {
+                    continue;
+                }
+                f(chain * width + which * width + bit, instance * base_cols + local, F2_128::from(1u64));
+            }
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -333,6 +466,19 @@ impl SpartanMatrix for SharedBlockMatrix {
     ) -> Result<Option<F2_128>, SpartanError> {
         SharedBlockMatrix::eval_mle_fast(self, row_point, col_point)
     }
+
+    fn block_shape(&self) -> Option<(usize, usize, usize)> {
+        Some((self.base.rows.len(), self.base.cols, self.instances))
+    }
+
+    fn eval_mle_shared(
+        &self,
+        row_point: &[F2_128],
+        col_point: &[F2_128],
+        shared: &crate::spartan::BlockEvalShared,
+    ) -> Result<Option<F2_128>, SpartanError> {
+        SharedBlockMatrix::eval_mle_fast_inner(self, row_point, col_point, Some(shared))
+    }
 }
 
 impl SharedBlockMatrix {
@@ -359,16 +505,19 @@ impl SharedBlockMatrix {
 
     /// Append sparse rows after the block-diagonal rows. Rows are padded to
     /// the next power of two so the matrix can be evaluated as an MLE.
+    ///
+    /// The padding is counted, not materialized: `base_rows * instances` is
+    /// already a large power of two at RV64 scale, so resizing to the next one
+    /// would transiently allocate hundreds of millions of empty rows (6 GiB at
+    /// `2^14`, ~100 GiB at `2^16`).
     pub fn with_extra_rows(mut self, mut extra: Vec<Vec<(usize, F2_128)>>) -> Self {
-        let total = (self.base.rows.len() * self.instances + extra.len()).next_power_of_two();
-        extra.resize(total - self.base.rows.len() * self.instances, Vec::new());
-        let mut zero_tail = 0;
+        let base_rows = self.base.rows.len() * self.instances;
+        let total = (base_rows + extra.len()).next_power_of_two();
         while extra.last().is_some_and(|row| row.is_empty()) {
             extra.pop();
-            zero_tail += 1;
         }
+        self.extra_zero_rows = total - base_rows - extra.len();
         self.extra = extra;
-        self.extra_zero_rows = zero_tail;
         self
     }
 
@@ -393,6 +542,55 @@ impl SharedBlockMatrix {
 
     pub fn cols(&self) -> usize {
         self.base.cols * self.instances
+    }
+
+    /// Base (shared) sparse matrix of the block-diagonal rows.
+    pub fn base_matrix(&self) -> &SparseMatrix {
+        &self.base
+    }
+
+    pub fn base_row_count(&self) -> usize {
+        self.base.rows.len()
+    }
+
+    pub fn base_col_count(&self) -> usize {
+        self.base.cols
+    }
+
+    /// Number of extra rows (before zero padding).
+    pub fn extra_row_count(&self) -> usize {
+        match &self.lazy_extra {
+            Some(lazy) => lazy.len(),
+            None => self.extra.len(),
+        }
+    }
+
+    pub fn lazy_extra_rows(&self) -> Option<&LazyExtraRows> {
+        self.lazy_extra.as_ref()
+    }
+
+    /// Value of the extra row at `offset` against a bit witness. Offsets past
+    /// the extra rows (zero padding) evaluate to zero.
+    pub fn extra_row_value(&self, offset: usize, bits: &crate::PackedBits) -> F2_128 {
+        if let Some(lazy) = &self.lazy_extra {
+            if offset >= lazy.len() {
+                return F2_128::from(0u64);
+            }
+            return match lazy.entry(offset) {
+                Some((column, coefficient)) => {
+                    if bits.get(column) {
+                        coefficient
+                    } else {
+                        F2_128::from(0u64)
+                    }
+                }
+                None => F2_128::from(0u64),
+            };
+        }
+        match self.extra.get(offset) {
+            Some(row) => dot_bits(row, bits),
+            None => F2_128::from(0u64),
+        }
     }
 
     pub fn mul_vec(&self, z: &[F2_128]) -> Result<Vec<F2_128>, SpartanError> {
@@ -450,6 +648,17 @@ impl SharedBlockMatrix {
         row_point: &[F2_128],
         col_point: &[F2_128],
     ) -> Result<Option<F2_128>, SpartanError> {
+        self.eval_mle_fast_inner(row_point, col_point, None)
+    }
+
+    /// Block-aware evaluation that can reuse the instance equality vectors and
+    /// `Σ eq·eq` term shared by every block matrix at the same point.
+    pub fn eval_mle_fast_inner(
+        &self,
+        row_point: &[F2_128],
+        col_point: &[F2_128],
+        shared: Option<&crate::spartan::BlockEvalShared>,
+    ) -> Result<Option<F2_128>, SpartanError> {
         let row_bits = self.rows().trailing_zeros() as usize;
         let col_bits = self.cols().trailing_zeros() as usize;
         if row_point.len() != row_bits || col_point.len() != col_bits {
@@ -463,26 +672,29 @@ impl SharedBlockMatrix {
         {
             return Ok(None);
         }
-        let local_bits = self.base.rows.len().trailing_zeros() as usize;
-        let local_col_bits = self.base.cols.trailing_zeros() as usize;
-        let base = self.base.eval_mle(
-            &row_point[..local_bits],
-            &col_point[..local_col_bits],
-        )?;
-        let instance_bits = self.instances.trailing_zeros() as usize;
-        let row_instance = &row_point[local_bits..local_bits + instance_bits];
-        let col_instance = &col_point[local_col_bits..];
-        let row_instance_eq = eq_vector_tensor(row_instance);
-        let col_instance_eq = eq_vector_tensor(col_instance);
-        let block_high = &row_point[local_bits + instance_bits..];
-        let zero_high = vec![F2_128::from(0u64); block_high.len()];
-        let block_weight = eq(block_high, &zero_high);
-        let mut instance_sum = F2_128::from(0u64);
-        for instance in 0..self.instances {
-            instance_sum =
-                instance_sum + row_instance_eq[instance] * col_instance_eq[instance];
-        }
-        let mut sum = base * instance_sum * block_weight;
+        let profile = std::env::var_os("MAGNETAR_PROFILE_EVAL").is_some();
+        let started = std::time::Instant::now();
+        let owned;
+        let shared = match shared {
+            Some(shared) => shared,
+            None => {
+                let Some(shared) = crate::spartan::BlockEvalShared::new(
+                    (self.base.rows.len(), self.base.cols, self.instances),
+                    row_point,
+                    col_point,
+                ) else {
+                    return Ok(None);
+                };
+                owned = shared;
+                &owned
+            }
+        };
+        let prepare = started.elapsed();
+        let base = self
+            .base
+            .eval_mle(&row_point[..shared.local_bits], &col_point[..shared.local_col_bits])?;
+        let base_time = started.elapsed();
+        let mut sum = base * shared.instance_sum * shared.block_weight;
         let extra_len = self
             .lazy_extra
             .as_ref()
@@ -499,16 +711,24 @@ impl SharedBlockMatrix {
         let high_index = extra_base >> extra_bits;
         let high_bits = bits(high_index, high_point.len());
         let high_eq = eq(high_point, &high_bits);
-        let col_local_eq = eq_vector_tensor(&col_point[..local_col_bits]);
-        let col_instance_eq = eq_vector_tensor(&col_point[local_col_bits..]);
+        let col_local_eq = &shared.col_local_eq;
+        let col_instance_eq = &shared.col_instance_eq;
+        if profile {
+            eprintln!(
+                "eval phase: prepare {:?} base {:?} extra-setup {:?}",
+                prepare,
+                base_time - prepare,
+                started.elapsed() - base_time
+            );
+        }
         if let Some(lazy) = &self.lazy_extra {
             if let Some(extra_sum) = lazy.eval_sum_factorized(
                 row_point,
                 extra_base,
                 extra_bits,
                 high_eq,
-                &col_local_eq,
-                &col_instance_eq,
+                col_local_eq,
+                col_instance_eq,
                 self.base.cols,
             ) {
                 sum = sum + extra_sum;
@@ -524,8 +744,8 @@ impl SharedBlockMatrix {
             sum = sum
                 + lazy.eval_sum(
                     &row_weights,
-                    &col_local_eq,
-                    &col_instance_eq,
+                    col_local_eq,
+                    col_instance_eq,
                     self.base.cols,
                 );
         } else {
@@ -631,6 +851,16 @@ impl SharedBlockMatrix {
         }
         Ok(sum)
     }
+}
+
+fn dot_bits(row: &[(usize, F2_128)], bits: &crate::PackedBits) -> F2_128 {
+    row.iter().fold(F2_128::from(0u64), |sum, (column, coefficient)| {
+        if bits.get(*column) {
+            sum + *coefficient
+        } else {
+            sum
+        }
+    })
 }
 
 #[cfg(test)]

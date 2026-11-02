@@ -11,7 +11,10 @@ use magnetar_memory::BinaryTwistWitness;
 use magnetar_proof::ProofError;
 use magnetar_transcript::Sha256Transcript;
 
-use crate::binary_twist::{eq_vector, replay_terms_derived, sample_point, sumcheck_terms};
+use crate::binary_twist::{
+    eq_vector, evaluate_points_at, fold_factors_in_place, replay_terms_derived, sample_point,
+    sumcheck_terms,
+};
 
 /// Public shape of a linear Twist instance, independent of the witness.
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
@@ -25,7 +28,12 @@ pub struct LinearTwistShape {
 /// once the stacked table has enough variables.
 pub(crate) fn linear_pcs(cycles: usize) -> P3BinaryPcs {
     if cycles >= 8192 {
-        P3BinaryPcs::with_params(100, 4, 24, 3)
+        // Rate 1/8 with 20 grinding bits and 8-way folding, the profile adopted
+        // for the selected PCS. The register-twist proof opens this PCS three
+        // times, so the 2^pow hashing dominates; rate-1/16 with 24 bits cost
+        // 41.6 s against 12.1 s per opening at RV64 `2^16`, and both profiles
+        // keep 100-bit security.
+        P3BinaryPcs::with_params(100, 3, 20, 3)
     } else {
         P3BinaryPcs::new(100)
     }
@@ -1202,6 +1210,50 @@ mod linear_twist_tests {
     use super::*;
 
     #[test]
+    fn indexed_fixed_sumcheck_matches_reference() {
+        let mut state = 0xfeed_face_dead_beefu64;
+        let mut fill = |len: usize| -> Vec<F2_128> {
+            (0..len)
+                .map(|_| {
+                    state = state
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    F2_128::from(state)
+                })
+                .collect()
+        };
+        let factors = (0..3).map(|_| fill(1 << 10)).collect::<Vec<_>>();
+        let challenges = fill(10);
+        let (reference_rounds, reference_terminal) =
+            fixed_sumcheck(factors.clone(), &challenges, |folded| {
+                (0..folded[0].len()).fold(F2_128::from(0u64), |sum, index| {
+                    sum + folded[0][index] * folded[1][index] * folded[2][index]
+                })
+            });
+        let mut indexed = factors.clone();
+        let (indexed_rounds, indexed_terminal) = fixed_sumcheck_indexed(
+            &mut indexed,
+            &challenges,
+            |folded| folded[0] * folded[1] * folded[2],
+        );
+        assert_eq!(reference_rounds, indexed_rounds);
+        assert_eq!(reference_terminal, indexed_terminal);
+        let mut expected = factors;
+        for challenge in &challenges {
+            expected = expected
+                .iter()
+                .map(|factor| {
+                    factor
+                        .chunks_exact(2)
+                        .map(|pair| pair[0] + *challenge * (pair[1] - pair[0]))
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+        }
+        assert_eq!(expected, indexed);
+    }
+
+    #[test]
     fn combined_linear_twist_round_trips() {
         let witness = register_witness();
         let proof = prove_linear_twist(&witness).unwrap();
@@ -1453,6 +1505,28 @@ pub(crate) fn fixed_sumcheck(
     }
     let _ = point;
     (rounds, summand(&factors))
+}
+
+/// Fused fixed-challenge sumcheck: identical round polynomials to
+/// [`fixed_sumcheck`], evaluated from the un-folded factor pairs so no folded
+/// copy is materialised, with the factors folded in place.
+pub(crate) fn fixed_sumcheck_indexed(
+    factors: &mut [Vec<F2_128>],
+    challenges: &[F2_128],
+    summand_at: impl Fn(&[F2_128]) -> F2_128 + Sync,
+) -> (Vec<Vec<F2_128>>, F2_128) {
+    let mut rounds = Vec::with_capacity(challenges.len());
+    for challenge in challenges {
+        rounds.push(evaluate_points_at(factors, 3, &summand_at));
+        fold_factors_in_place(factors, *challenge);
+    }
+    let terminal = summand_at(
+        &factors
+            .iter()
+            .map(|factor| factor[0])
+            .collect::<Vec<_>>(),
+    );
+    (rounds, terminal)
 }
 
 pub(crate) fn replay_fixed(

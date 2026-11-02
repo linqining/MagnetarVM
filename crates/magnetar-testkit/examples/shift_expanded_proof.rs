@@ -50,8 +50,8 @@ fn main() {
     let outcome = ReferencePipeline::run_expanded(&program, config, 8).unwrap();
     let trace = outcome.trace;
     assert_eq!(trace.final_state.reg(3), 0x234u64 << 9);
-    let proof = prove_unified_trace(&trace, 8).unwrap();
-    verify_unified_trace_statement(&outcome.statement, &trace, &proof, 8).unwrap();
+    let proof = prove_unified_trace(&trace, 64).unwrap();
+    verify_unified_trace_statement(&outcome.statement, &trace, &proof, 64).unwrap();
     println!(
         "expanded rows {} size {} B",
         trace.rows.len(),

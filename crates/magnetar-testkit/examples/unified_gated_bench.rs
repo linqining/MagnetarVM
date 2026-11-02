@@ -39,10 +39,10 @@ fn main() {
         },
     )
     .unwrap();
-    let proof = prove_unified_gated(&trace, 8).unwrap();
-    verify_unified_gated(&trace, &proof, 8).unwrap();
-    let revealed = magnetar_runtime::prove_unified_revealed(&trace, 8).unwrap();
-    magnetar_runtime::verify_unified_trace(&trace, &revealed, 8).unwrap();
+    let proof = prove_unified_gated(&trace, 64).unwrap();
+    verify_unified_gated(&trace, &proof, 64).unwrap();
+    let revealed = magnetar_runtime::prove_unified_revealed(&trace, 64).unwrap();
+    magnetar_runtime::verify_unified_trace(&trace, &revealed, 64).unwrap();
     println!(
         "revealed total {} opening {}",
         bincode::serialize(&revealed).unwrap().len(),

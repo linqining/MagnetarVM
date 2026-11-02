@@ -46,9 +46,9 @@ fn main() {
             scope.spawn(|| {
                 for _ in 0..10 {
                     let trace = trace();
-                    let direct = prove_unified_trace(&trace, 8).unwrap();
+                    let direct = prove_unified_trace(&trace, 64).unwrap();
                     let orchestrator = Orchestrator::new(ProtocolPlan::unified())
-                        .prove(&trace, 8)
+                        .prove(&trace, 64)
                         .unwrap();
                     let left = bincode::serialize(&direct).unwrap();
                     let right = bincode::serialize(&orchestrator).unwrap();

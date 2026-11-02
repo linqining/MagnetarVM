@@ -1,10 +1,45 @@
 # Streaming Selected Prover / PCS 重写交接文档
 
-状态：待实现  
+> 当前状态与交接入口见 [HANDOFF.md](HANDOFF.md)（[中文](handoff-zh.md)）。
+> 本文件保留最初的设计与阶段记录，其中“当前”数字已过期。
+
+状态：已实现（RV64 `2^16` 基线见 [STREAMING_SELECTED_PROVER_RESULTS.md](STREAMING_SELECTED_PROVER_RESULTS.md) /
+[中文](streaming-selected-prover-results-zh.md)）  
 分支：`virtual-claims-rewrite`  
 基线 commit：`62d135a`  
 适用目标：RV64（`WIDTH=64`）proof-only verifier 8 ms 级验证  
-当前阻塞：RV64 selected prover 内存爆炸，2^15/2^16 无法运行
+当前阻塞（已解决）：selected prover 与 unified 路径的内存爆炸均已消除。
+RV64 `2^16` 的完整 `paper_unified_bench` 可跑完：prove 273 s wall / 822 s CPU（本轮宿主机
+负载 40–53）、verify 在重载下 433 ms（更早低负载一轮为 33.8 ms）、峰值 **3.15 GiB**。
+本轮新增：见证位改为 `PackedBits`（512 MiB → 64 MiB，§3）；selected commit 加了 commit 闸门，
+不再与 mosaic commit 的码字/Merkle 瞬态叠加（`2^14` 峰值 1.75 → 1.13 GiB）；
+验证侧 trace Logup-Shout 改为 O(n) 折叠 + 按列并行，reader point 改绑 ROM 摘要而不是逐元素 absorb
+（`2^12` 下 70.9 → ~2 ms，`2^16` 下 393–450 → **28–31 ms**；verify CPU/次 515 → **206–213 ms**、稳态
+**60.9–64.4 ms**。第 11 轮把 claim 行和改到 slot 空间（`2^16` 23–37 → 10.8–12 ms）、
+shout 见证去掉逐周期分配（构建 15–18 → 7.1–7.6 ms），§7 第 9/11 轮）。
+selected PCS 参数为 **rate 1/2** + 20 位 grinding（内存优先档：`2^16` 峰值 **2.01 GiB**、
+`selected commit` 2.3 s、`selected open` 5.4 s、verify 稳态 34.8 ms；代价 proof 1,100,335 B，
+比 rate 1/4 多 15 %。三档 rate 的完整实测见结果文档 §7 的 rate 扫描）；
+验证侧为两波并发（claim leaf/行和/access/trace → lockstep/core）。
+验证侧已从 1.42 s（重建见证）降到 36.8 ms 量级；中间某版 117.8 ms 因跳过 selected lockstep 校验而
+不健全，已在结果文档 §9.4 记录并修复。实测阶梯（`paper_unified_bench`，rate 1/2 selected + rate 1/4 mosaic）：`2^16` 峰值 2.01–2.61 GiB /
+verify 34.8–84.3 ms、`2^17` 3.35 GiB / 181.4 ms、`2^18` 5.21 GiB / 215.2 ms、`2^19` **8.87 GiB** /
+478.3 ms。每次翻倍的峰值增量翻倍（+0.7–1.3、+1.86、+3.66 GiB），即随 cycle 线性；按此模型 `2^22`
+约 **55–60 GiB**，verify CPU/次约 **13 s**（论文 11–13 ms）。结论：微调已到尽头，剩下两项结构性工作
+——（a）验证侧把 claim 层与 trace Logup 的 O(rows) 工作换成已提交 claim 表（§9.8）；（b）内存侧把
+32 字节 Merkle 树摘要改小并采用位级码字（码字/树现分别占 `2^(N+11)`/`2^(N+12)` B）。细节见结果文档
+§6/§8 的阶梯表与模型。
+
+剩余的结构性差距：mosaic 表列与 selected PCS 码字
+仍是 16 B/域元素（`2^22` 下分别约 22 GiB 与 32 GiB，需 bit 打包）；trace Logup-Shout 原则上仍是
+O(cycles)，要变成 O(polylog) 需要提交 position 列（结果文档 §7 第 9 轮、§9）。verifier 8 ms
+目标仍是后续阶段。
+剩余问题：register Twist 在 `LINEAR_TWIST_MIN_CYCLES` 阈值附近（`2^12`/`2^13`）有 9–12 GiB
+瞬时峰值（既有行为，`binary_twist`，本次未改）。
+详见结果文档 §6：
+
+- [STREAMING_SELECTED_PROVER_RESULTS.md](STREAMING_SELECTED_PROVER_RESULTS.md)
+- [streaming-selected-prover-results-zh.md](streaming-selected-prover-results-zh.md)
 
 ---
 
@@ -475,6 +510,71 @@ proof bytes
 6. 完成 streaming 之后，才继续 Virtual Spartan / virtual claim routing / 8 ms verifier。
 
 ---
+
+## 9.0 既有漏洞（本轮发现并修复）：statement 比较对若干字段恒真
+
+`trace_claims::claims_to_trace` 会直接把 statement 的 `config`、`initial_state`、`final_state`、
+`rom`、`initial_ram` **复制**进合成 trace，而 `verify_native_unified` 随后又拿这些字段与 statement
+比较——因此除 `trace_len` 外，这几条比较恒真。实测证据：在
+`native_claim_layer_verifies_without_trace` 中把 `statement.final_state.pc ^= 4`，修复前**验证通过**。
+
+修复（`lib.rs`，O(1)）：在合成前对已认证 claim 行的端点做检查——
+
+* `claims[0].pc == statement.initial_state.pc`
+* `claims[last].next_pc == statement.final_state.pc`
+
+行内 pc 链由 selected lockstep 强制，claims 与见证由 claim target 绑定，所以这两个端点把 statement
+的起止状态钉到同一条已认证轨迹上。ROM 的绑定经由 trace Logup 的表（`witness.rom` 来自
+`statement.rom`）与公开 ROM 检查完成。新增三条篡改用例（initial pc / final pc / rom）全部被拒绝，
+正常证明仍通过；全量套件随后复跑。
+
+`initial_ram` 经实测**已被拒绝**：验证器用它重建 twist 见证并与证明里的承诺比对，篡改会被发现。
+当前四个 statement 篡改用例——initial pc、final pc、rom、initial_ram——全部被拒绝。
+
+## 9.1 下一项结构性切片：把 access 摘要换成 claim 根（可直接实施）
+
+验证侧目前对同一批 claim 行做三次独立的 O(rows) 检查，各自目的不同：
+
+| 检查 | `2^16` 成本 | 证明的事实 |
+| --- | --- | --- |
+| claim leaves（Merkle 根） | 7–9 ms | 行内容属于 statement 的 claim 根 |
+| claim row sums + 内层 sum-check | 11–16 ms | 行内容等于已提交见证在被 claim 列上的线性形式 |
+| `AccessStatement` + 串行摘要 | 12–14 ms | 行内容等于 statement 里那份内存/寄存器事件摘要 |
+
+第三项**可能是冗余的（落地前必须先证）**：它把「权威行」绑定到 statement，而权威性已经由第一项
+（行对 claim 根的 Merkle 校验）给出；内存与寄存器一致性由 twist/shout 的 Logup 论证在**同一批
+已认证行**上证明。也就是说，摘要只是把同一份行再哈希一遍，没有新信息——但这句话依赖两个前提：
+
+1. `prove_access` 构造 twist/shout 表所读的事件，与 claim 行是同一份数据（二者都从 trace 派生）；
+2. 这些表已由 mosaic 承诺（受 statement 的 `trace_commitment` 绑定）约束，且其 claims 在
+   `verify_core_statement` 中被逐点校验。
+
+**审查结论（2026-10-30）：暂不实施。** 逐文件核对后，前提 (2) 不成立：statement 里的
+`trace_commitment` 是 `trace_digest` 的副本，验证器并不用它把 mosaic 里的 ram/register 表
+绑到 claim 行；`access_claims_from_proof` 只按证明里的 commitments 重建开点，不引用 statement。
+也就是说，access 摘要目前可能是「已认证行的事件」与「已提交表」之间唯一的 statement 级连接，
+删掉它存在缺失连接的风险。要推进这一项，必须先补一个把表绑定到 statement 的检查（例如让
+`trace_commitment` 成为 mosaic 承诺的域分隔摘要，或在 core 校验里比较表承诺），再按上面的
+篡改用例验证；在那之前保留摘要。下一步优先做无争议的部分：trace Logup 内部的重复构建与
+剩余并行化（见结果文档 §7 第 11 轮）。
+
+实施（约 20–30 行，独立可测）：
+
+1. `Statement.access_statement_digest` 改为 claim 根的域分隔派生，例如
+   `sha256("magnetar-access-from-claims-v1" || trace_claim_root)`；`prove_*` 与
+   `Statement` 构造处同步。
+2. `verify_native_unified` 的 wave 1 去掉 `AccessStatement::from_claims` + `digest()` 分支，
+   改为直接比较 `statement.access_statement_digest` 与上述派生值（O(1)）。
+3. 保留 `AccessStatement::from_trace/from_claims/synthetic_trace`（其它路径与测试仍在用），
+   因此 `access_statement::tests` 不受影响。
+4. 篡改测试：改 `statement.access_statement_digest` 必须被拒；改 claim 行（内存事件）必须仍被拒
+   （后者由 claim sums + Logup 覆盖）——用现有 `native_claim_layer_verifies_without_trace` 的
+   篡改用例扩展一条即可。
+
+预期：`2^16` 的 CPU/次减少约 12–14 ms；wall 不变或略降（access 不在关键路径，wave 1 由
+claim sums 决定）。这一步不改线格式之外的语义，也不影响 proof 字节数（statement 是公开输入），
+适合作为「去掉 O(rows) 冗余检查」的第一刀；之后的 claim sums / leaves 两项才是真正需要
+提交 claim 表的工作（结果文档 §9.8）。
 
 ## 10. 关键文件清单
 

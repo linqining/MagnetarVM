@@ -31,8 +31,8 @@ fn native_trace_mode_omits_claim_proof() {
         },
     )
     .unwrap();
-    let proof = prove_unified_trace_dynamic_native_trace(&trace, 8).unwrap();
+    let proof = prove_unified_trace_dynamic_native_trace(&trace, 64).unwrap();
     assert!(proof.claim_proof.is_none());
     assert!(proof.trace_logup_shout.is_some());
-    verify_unified_trace(&trace, &proof, 8).unwrap();
+    verify_unified_trace(&trace, &proof, 64).unwrap();
 }

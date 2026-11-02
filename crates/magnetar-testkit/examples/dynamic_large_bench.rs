@@ -38,16 +38,16 @@ fn main() {
     {
         let chunk = 256usize;
         let started = Instant::now();
-        let compact = prove_chunked_trace_dynamic(&trace, 8, chunk).unwrap();
+        let compact = prove_chunked_trace_dynamic(&trace,64, chunk).unwrap();
         let compact_time = started.elapsed();
         let compact_bytes = bincode::serialize(&compact).unwrap().len();
-        verify_chunked_trace(&trace, &compact, 8).unwrap();
+        verify_chunked_trace(&trace, &compact, 64).unwrap();
 
         let started = Instant::now();
-        let streaming = prove_chunked_trace_streaming_dynamic(&trace, 8, chunk).unwrap();
+        let streaming = prove_chunked_trace_streaming_dynamic(&trace,64, chunk).unwrap();
         let streaming_time = started.elapsed();
         let streaming_bytes = bincode::serialize(&streaming).unwrap().len();
-        verify_chunked_trace(&trace, &streaming, 8).unwrap();
+        verify_chunked_trace(&trace, &streaming, 64).unwrap();
 
         println!(
             "rows={} chunk={chunk} compact={compact_bytes}B/{compact_time:?} streaming={streaming_bytes}B/{streaming_time:?}",

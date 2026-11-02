@@ -55,28 +55,28 @@ fn main() {
     .unwrap();
     for chunk in [1usize, 2] {
         let started = Instant::now();
-        let compact = prove_chunked_trace(&trace, 8, chunk).unwrap();
+        let compact = prove_chunked_trace(&trace,64, chunk).unwrap();
         let compact_time = started.elapsed();
         let compact_bytes = bincode::serialize(&compact).unwrap().len();
-        verify_chunked_trace(&trace, &compact, 8).unwrap();
+        verify_chunked_trace(&trace, &compact, 64).unwrap();
 
         let started = Instant::now();
-        let dynamic = prove_chunked_trace_dynamic(&trace, 8, chunk).unwrap();
+        let dynamic = prove_chunked_trace_dynamic(&trace,64, chunk).unwrap();
         let dynamic_time = started.elapsed();
         let dynamic_bytes = bincode::serialize(&dynamic).unwrap().len();
-        verify_chunked_trace(&trace, &dynamic, 8).unwrap();
+        verify_chunked_trace(&trace, &dynamic, 64).unwrap();
 
         let started = Instant::now();
-        let streaming = prove_chunked_trace_streaming(&trace, 8, chunk).unwrap();
+        let streaming = prove_chunked_trace_streaming(&trace,64, chunk).unwrap();
         let streaming_time = started.elapsed();
         let streaming_bytes = bincode::serialize(&streaming).unwrap().len();
-        verify_chunked_trace(&trace, &streaming, 8).unwrap();
+        verify_chunked_trace(&trace, &streaming, 64).unwrap();
 
         let started = Instant::now();
-        let stream_dynamic = prove_chunked_trace_streaming_dynamic(&trace, 8, chunk).unwrap();
+        let stream_dynamic = prove_chunked_trace_streaming_dynamic(&trace,64, chunk).unwrap();
         let stream_dynamic_time = started.elapsed();
         let stream_dynamic_bytes = bincode::serialize(&stream_dynamic).unwrap().len();
-        verify_chunked_trace(&trace, &stream_dynamic, 8).unwrap();
+        verify_chunked_trace(&trace, &stream_dynamic, 64).unwrap();
 
         println!(
             "chunk={chunk} rows={} compact={compact_bytes}B/{compact_time:?} dynamic={dynamic_bytes}B/{dynamic_time:?} stream={streaming_bytes}B/{streaming_time:?} stream_dynamic={stream_dynamic_bytes}B/{stream_dynamic_time:?}",

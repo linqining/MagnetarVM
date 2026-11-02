@@ -8,10 +8,10 @@ use magnetar_proof::ProofError;
 use magnetar_transcript::Sha256Transcript;
 
 use crate::binary_twist::{
-    eq_vector, replay_terms_derived, sample_point, sumcheck_terms,
+    eq_vector, replay_terms_derived, sample_point, sumcheck_terms_indexed,
 };
 use crate::linear_twist::{
-    eq_points_local, eval_mle, fixed_sumcheck, linear_pcs, replay_fixed,
+    eq_points_local, eval_mle, fixed_sumcheck_indexed, linear_pcs, replay_fixed,
     witness_shape, LinearTwistShape,
 };
 use crate::local_twist::{dense_onehot, flat, padded};
@@ -68,6 +68,7 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
     let cells = shape.cells();
     let cycles = shape.cycles;
     let cycle_bits = shape.cycle_bits();
+    let started = std::time::Instant::now();
     let columns = build_columns(witness);
     let read = dense_onehot(witness, false);
     let write = dense_onehot(witness, true);
@@ -80,17 +81,26 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
             inc_flat[cell * cycles + cycle] = inc[cycle];
         }
     }
+    if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
+        eprintln!("local tables: {:?}", started.elapsed());
+    }
+    let started = std::time::Instant::now();
     let pcs = linear_pcs(cycles);
-    let commitment = pcs
-        .commit_batch(&columns)
+    let prepared = pcs
+        .commit_batch_prepared(&columns)
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
     let mut transcript = Sha256Transcript::new("magnetar-local-shared");
     transcript.absorb(
         "commitment",
-        &bincode::serialize(&commitment).map_err(|error| ProofError::Pcs(error.to_string()))?,
+        &bincode::serialize(&prepared.commitment)
+            .map_err(|error| ProofError::Pcs(error.to_string()))?,
     );
     let gamma = sample_point(&mut transcript, 1)[0];
     let cycle_point = sample_point(&mut transcript, cycle_bits);
+    if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
+        eprintln!("local commit: {:?}", started.elapsed());
+    }
+    let started = std::time::Instant::now();
     let eq = eq_vector(&cycle_point, cycles);
     let mut eq_flat = vec![F2_128::from(0u64); cells * cycles];
     for cycle in 0..cycles {
@@ -98,21 +108,27 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
             eq_flat[cell * cycles + cycle] = eq[cycle];
         }
     }
-    let factors = vec![eq_flat, write_flat.clone(), inc_flat.clone(), val_flat.clone(), read_flat];
+    let mut factors = vec![eq_flat, write_flat.clone(), inc_flat, val_flat.clone(), read_flat];
+    if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
+        eprintln!("local rw factors: {:?}", started.elapsed());
+    }
+    let started = std::time::Instant::now();
     let gamma_copy = gamma;
-    let (rw_rounds, rw_challenges) = sumcheck_terms(
-        &factors,
+    let (rw_rounds, rw_challenges) = sumcheck_terms_indexed(
+        &mut factors,
         &vec![3usize; cells.trailing_zeros() as usize + cycle_bits],
         &mut transcript,
         move |folded| {
-            (0..folded[0].len()).fold(F2_128::from(0u64), |sum, index| {
-                sum + folded[0][index]
-                    * (folded[1][index] * folded[2][index]
-                        + folded[1][index] * folded[3][index]
-                        + gamma_copy * folded[4][index] * folded[3][index])
-            })
+            folded[0]
+                * (folded[1] * folded[2]
+                    + folded[1] * folded[3]
+                    + gamma_copy * folded[4] * folded[3])
         },
     )?;
+    if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
+        eprintln!("local rw sumcheck: {:?}", started.elapsed());
+    }
+    let started = std::time::Instant::now();
     let rk = rw_challenges[cycle_bits..].to_vec();
     let rj = rw_challenges[..cycle_bits].to_vec();
     let val_claim = eval_mle(&val_flat, &rj.iter().chain(&rk).copied().collect::<Vec<_>>());
@@ -132,17 +148,17 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
         })
         .collect::<Vec<_>>();
     wa_at_rk.resize(cycles, F2_128::from(0u64));
-    let val_factors = vec![wa_at_rk, inc.clone(), suffix];
-    let (val_rounds, val_challenges) = sumcheck_terms(
-        &val_factors,
+    let mut val_factors = vec![wa_at_rk, inc.clone(), suffix];
+    let (val_rounds, val_challenges) = sumcheck_terms_indexed(
+        &mut val_factors,
         &vec![3usize; cycle_bits],
         &mut transcript,
-        |folded| {
-            (0..folded[0].len()).fold(F2_128::from(0u64), |sum, index| {
-                sum + folded[0][index] * folded[1][index] * folded[2][index]
-            })
-        },
+        |folded| folded[0] * folded[1] * folded[2],
     )?;
+    if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
+        eprintln!("local val sumcheck: {:?}", started.elapsed());
+    }
+    let started = std::time::Instant::now();
     // Virtual address targets.
     let targets = vec![
         (false, rk.clone(), rj.clone()),
@@ -185,24 +201,26 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
     let coefficients = sample_point(&mut transcript, targets.len());
     let coefficients_copy = coefficients.clone();
     let groups_copy = groups.clone();
-    let (virtual_rounds, virtual_challenges) = sumcheck_terms(
-        &virtual_factors,
+    let (virtual_rounds, virtual_challenges) = sumcheck_terms_indexed(
+        &mut virtual_factors,
         &vec![shape.address_bits + 1; cycle_bits],
         &mut transcript,
         move |folded| {
-            (0..folded[0].len()).fold(F2_128::from(0u64), |sum, index| {
-                let mut value = F2_128::from(0u64);
-                for (group, coefficient) in groups_copy.iter().zip(&coefficients_copy) {
-                    let mut product = *coefficient;
-                    for factor in group {
-                        product = product * folded[*factor][index];
-                    }
-                    value = value + product;
+            let mut value = F2_128::from(0u64);
+            for (group, coefficient) in groups_copy.iter().zip(&coefficients_copy) {
+                let mut product = *coefficient;
+                for factor in group {
+                    product = product * folded[*factor];
                 }
-                sum + value
-            })
+                value = value + product;
+            }
+            value
         },
     )?;
+    if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
+        eprintln!("local virtual sumcheck: {:?}", started.elapsed());
+    }
+    let started = std::time::Instant::now();
     let (read_bits_start, read_valid_index, write_bits_start, write_valid_index, endpoint_start) = layout(shape);
     let address_columns = (0..2 * shape.address_bits + 2)
         .map(|index| read_bits_start + index)
@@ -236,15 +254,27 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
             .map(|index| eval_mle(&columns[read_bits_start + index], &virtual_challenges))
             .collect::<Vec<_>>(),
     ];
+    if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
+        eprintln!("local value claims: {:?}", started.elapsed());
+    }
+    let started = std::time::Instant::now();
     let opening = pcs
-        .open_batch(&columns, &values_points)
+        .open_batch_prepared(&prepared, &values_points)
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
+        eprintln!("local opening: {:?}", started.elapsed());
+    }
+    let started = std::time::Instant::now();
     let mut initial = witness.initial.clone();
     initial.resize(cells.next_power_of_two().max(2), F2_128::from(0u64));
     let mut final_value = witness.final_value.clone();
     final_value.resize(cells.next_power_of_two().max(2), F2_128::from(0u64));
     let endpoint_columns = vec![initial, final_value];
-    let _endpoint_commit = pcs
+    // The endpoint tables have one row per cell (`2^address_bits` rows at most),
+    // so they use the small-table profile: the cycle-table parameters would
+    // spend the full 2^pow grinding on a trivially small opening.
+    let endpoints_pcs = crate::linear_twist::linear_pcs(cells);
+    let _endpoint_commit = endpoints_pcs
         .commit_batch(&endpoint_columns)
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
     let endpoint_points = vec![P3BatchPoint {
@@ -255,9 +285,13 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
         eval_mle(&endpoint_columns[0], &rk),
         eval_mle(&endpoint_columns[1], &rk),
     ];
-    let endpoints_opening = pcs
+    let endpoints_opening = endpoints_pcs
         .open_batch(&endpoint_columns, &endpoint_points)
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
+        eprintln!("local endpoints: {:?}", started.elapsed());
+    }
+    let started = std::time::Instant::now();
     let _ = (read_valid_index, write_bits_start, write_valid_index, endpoint_start);
     // Final state rounds.
     let eq_cell = eq_vector(&rk, cells);
@@ -271,13 +305,15 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
         }
     }
     let final_rounds = {
-        let (rounds, _) = fixed_sumcheck(vec![eq_cell_flat, write_flat, inc_cell_flat], &rw_challenges, |folded| {
-            (0..folded[0].len()).fold(F2_128::from(0u64), |sum, index| {
-                sum + folded[0][index] * folded[1][index] * folded[2][index]
-            })
+        let mut final_factors = vec![eq_cell_flat, write_flat, inc_cell_flat];
+        let (rounds, _) = fixed_sumcheck_indexed(&mut final_factors, &rw_challenges, |folded| {
+            folded[0] * folded[1] * folded[2]
         });
         rounds
     };
+    if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
+        eprintln!("local final rounds: {:?}", started.elapsed());
+    }
     Ok(LocalSharedProof {
         shape,
         opening,
@@ -344,7 +380,8 @@ pub fn verify_local_shared(proof: &LocalSharedProof) -> Result<bool, ProofError>
         point: rk.clone(),
         columns: vec![0, 1],
     }];
-    if !pcs
+    let endpoints_pcs = crate::linear_twist::linear_pcs(cells);
+    if !endpoints_pcs
         .verify_batch(
             &proof.endpoints_opening,
             &endpoint_points,

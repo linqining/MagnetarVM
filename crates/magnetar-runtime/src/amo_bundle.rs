@@ -648,8 +648,8 @@ mod tests {
             },
         )
         .unwrap();
-        let proof = prove_amo_bundle(&trace, 8).unwrap();
-        verify_amo_bundle(&trace, 8, &proof).unwrap();
+        let proof = prove_amo_bundle(&trace, 64).unwrap();
+        verify_amo_bundle(&trace, 64, &proof).unwrap();
         let mut wrong = trace.clone();
         if let Some(row) = wrong
             .rows
@@ -658,7 +658,7 @@ mod tests {
         {
             row.rd_val = row.rd_val.wrapping_add(1);
         }
-        assert!(verify_amo_bundle(&wrong, 8, &proof).is_err());
+        assert!(verify_amo_bundle(&wrong, 64, &proof).is_err());
         let mut bad = trace.clone();
         if let Some(row) = bad
             .rows

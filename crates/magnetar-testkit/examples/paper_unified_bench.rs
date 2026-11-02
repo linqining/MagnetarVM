@@ -14,6 +14,43 @@ fn width() -> usize {
         .unwrap_or(64)
 }
 
+fn resident_bytes() -> u64 {
+    let pid = std::process::id().to_string();
+    let output = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid])
+        .output();
+    output
+        .ok()
+        .and_then(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .parse::<u64>()
+                .ok()
+        })
+        .unwrap_or(0)
+        * 1024
+}
+
+/// Process CPU time (user + system) in seconds, parsed from `ps`.
+fn process_cpu_seconds() -> Option<f64> {
+    let pid = std::process::id().to_string();
+    let output = std::process::Command::new("ps")
+        .args(["-o", "time=", "-p", &pid])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let text = text.trim();
+    let mut seconds = 0.0f64;
+    for part in text.split(':') {
+        seconds = seconds * 60.0 + part.parse::<f64>().ok()?;
+    }
+    Some(seconds)
+}
+
+fn gib(bytes: u64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+}
+
 fn main() {
     let adds = std::env::var("ADDS")
         .ok()
@@ -62,6 +99,21 @@ fn main() {
     };
     let use_trace_shout = std::env::var_os("TRACE_SHOUT").is_some();
     let no_claim = std::env::var_os("NO_CLAIM").is_some();
+    let profile = std::env::var_os("MAGNETAR_PROFILE_UNIFIED").is_some();
+    let peak = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sampler = profile.then(|| {
+        let peak = peak.clone();
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                peak.fetch_max(resident_bytes(), std::sync::atomic::Ordering::Relaxed);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        })
+    });
+    let prove_peak = peak.clone();
+    let cpu_before = process_cpu_seconds();
     let started = Instant::now();
     let proof = if use_trace_shout {
         let mut proof =
@@ -76,6 +128,12 @@ fn main() {
         prove_unified_trace_paper(&trace, width()).unwrap()
     };
     let prove = started.elapsed();
+    if let (Some(before), Some(after)) = (cpu_before, process_cpu_seconds()) {
+        eprintln!("prove cpu: {:.1} s", after - before);
+    }
+    if profile {
+        eprintln!("bench prove peak rss={:.2} GiB", gib(prove_peak.swap(0, std::sync::atomic::Ordering::Relaxed)));
+    }
     let sizes = unified_proof_sizes(&proof).unwrap();
     let serialized = bincode::serialize(&proof).unwrap();
     let bytes = serialized.len();
@@ -108,6 +166,31 @@ fn main() {
         verify_native_unified(&statement, &proof, width()).unwrap();
     }
     let verify = started.elapsed();
+    // Load-independent CPU cost: repeat the verification and diff the
+    // process CPU time reported by `ps`.
+    if let Ok(repeat) = std::env::var("MAGNETAR_VERIFY_CPU") {
+        let repeat = repeat.parse::<usize>().unwrap_or(25).max(1);
+        let cpu = process_cpu_seconds();
+        let wall = Instant::now();
+        for _ in 0..repeat {
+            let _ = verify_native_unified(&statement, &proof, width());
+        }
+        let wall = wall.elapsed();
+        if let (Some(before), Some(after)) = (cpu, process_cpu_seconds()) {
+            eprintln!(
+                "verify cpu: {:.1} ms/iter over {repeat} runs (wall {:.1} ms/iter)",
+                (after - before) * 1000.0 / repeat as f64,
+                wall.as_secs_f64() * 1000.0 / repeat as f64
+            );
+        }
+    }
+    if profile {
+        eprintln!("bench verify peak rss={:.2} GiB", gib(peak.load(std::sync::atomic::Ordering::Relaxed)));
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(sampler) = sampler {
+            sampler.join().unwrap();
+        }
+    }
     eprintln!("{sizes:?}");
     if let Some(claim) = &proof.claim_proof {
         eprintln!("claim_fields={:?}", claim.compact_field_sizes());

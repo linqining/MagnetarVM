@@ -3337,7 +3337,7 @@ struct MixedAluBranchRow {
     relation: BitRelation,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MixedAluBranchInput {
     Alu {
         left: u64,
@@ -3370,10 +3370,12 @@ pub enum MixedAluBranchInput {
     Divide {
         num: u64,
         den: u64,
+        is_rem: bool,
     },
     SignedDivide {
         num: u64,
         den: u64,
+        is_rem: bool,
     },
     Jump {
         target: u64,
@@ -3629,11 +3631,11 @@ impl MixedAluBranchRow {
             _ => (0x12, 0x34),
         };
         let (num, den) = match input {
-            MixedAluBranchInput::Divide { num, den } => (*num, *den),
+            MixedAluBranchInput::Divide { num, den, .. } => (*num, *den),
             _ => (0x60, 3),
         };
         let (snum, sden) = match input {
-            MixedAluBranchInput::SignedDivide { num, den } => (*num, *den),
+            MixedAluBranchInput::SignedDivide { num, den, .. } => (*num, *den),
             _ => (0x20, 3),
         };
         let mut bits = self.alu.witness_at(pc, left, right, op);
@@ -3892,6 +3894,34 @@ pub(crate) fn row_pc_correction(
     }
 }
 
+/// Bits of `value`, lowest first.
+fn claim_bits(value: u64, width: usize) -> impl Iterator<Item = bool> {
+    (0..width).map(move |bit| (value >> bit) & 1 == 1)
+}
+
+fn push_bits(
+    out: &mut Vec<(magnetar_constraint::VarId, bool)>,
+    vars: &[magnetar_constraint::VarId],
+    value: u64,
+) {
+    for (var, bit) in vars.iter().zip(claim_bits(value, vars.len())) {
+        out.push((*var, bit));
+    }
+}
+
+/// PC correction for a row decoded from claim data (the trace version only
+/// reads `instruction_len` and the decoded input).
+pub(crate) fn row_pc_correction_from_input(instruction_len: u8, input: &MixedAluBranchInput) -> bool {
+    if instruction_len != 2 {
+        return false;
+    }
+    match input {
+        MixedAluBranchInput::Jump { .. } => false,
+        MixedAluBranchInput::Fetch { .. } => !branch_taken(input),
+        _ => true,
+    }
+}
+
 pub fn mixed_alu_branch_rows_from_trace(
     trace: &magnetar_spec::Trace,
     width: usize,
@@ -3925,6 +3955,317 @@ fn dynamic_padding_input(mask: u8, final_pc: u64) -> MixedAluBranchInput {
             op: crate::simd_f2::GatedAluOp::Add,
         }
     }
+}
+
+/// Proof-only counterpart of [`mixed_alu_branch_rows_from_trace_dynamic`].
+///
+/// Decodes the per-cycle CPU row inputs from the authenticated claim rows the
+/// proof already carries (instruction word/length, register values, memory
+/// accesses) instead of a `Trace`. Returns `None` when a row cannot be decoded
+/// from claim data alone (the claim does not record the micro-op kind, so a
+/// fetch row is indistinguishable), letting callers fall back to the trace
+/// path.
+/// Like [`mixed_alu_branch_rows_from_claims`], but also reports whether the
+/// row's `rd` is produced by the decoded row circuit (the claim layer binds it
+/// only then; syscall and other fallback rows write `rd` outside the ALU).
+pub(crate) fn mixed_alu_branch_rows_and_flags_from_claims(
+    claims: &[crate::trace_claims::TraceClaim],
+) -> Option<Vec<(u64, MixedAluBranchInput, bool)>> {
+    let workers = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+        .clamp(1, 32)
+        .min(claims.len().max(1));
+    if workers <= 1 || claims.len() < 4096 {
+        return claims.iter().map(claim_row_input).collect();
+    }
+    let chunk = claims.len().div_ceil(workers);
+    let parts = std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for start in (0..claims.len()).step_by(chunk) {
+            let end = (start + chunk).min(claims.len());
+            let slice = &claims[start..end];
+            handles.push(scope.spawn(move || {
+                slice
+                    .iter()
+                    .map(claim_row_input)
+                    .collect::<Option<Vec<_>>>()
+            }));
+        }
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("claim row worker"))
+            .collect::<Vec<_>>()
+    });
+    let mut rows = Vec::with_capacity(claims.len());
+    for part in parts {
+        rows.extend(part?);
+    }
+    Some(rows)
+}
+
+/// Decode one claim row into its row-circuit input; `None` when the claim data
+/// cannot reproduce the row (the caller then falls back to the trace).
+fn claim_row_input(
+    claim: &crate::trace_claims::TraceClaim,
+) -> Option<(u64, MixedAluBranchInput, bool)> {
+    use crate::simd_f2::{GatedAluOp, GatedCpuRowInput};
+
+    let instruction = if claim.instruction_len == 4 {
+        magnetar_spec::decode(claim.instruction_word).ok()?
+    } else {
+        magnetar_spec::decode_compressed((claim.instruction_word & 0xffff) as u16).ok()?
+    };
+    let op = instruction.op;
+    let input = if matches!(op, magnetar_spec::Op::Ecall | magnetar_spec::Op::Ebreak)
+        && claim.next_pc == claim.pc
+    {
+        GatedCpuRowInput::Branch {
+            left: 0,
+            right: 0,
+            imm: 0,
+            kind: crate::branch_row::BranchKind::Beq,
+        }
+    } else if op == magnetar_spec::Op::Auipc {
+        GatedCpuRowInput::Alu {
+            left: claim.pc,
+            right: instruction.imm as u64,
+            op: GatedAluOp::Auipc,
+        }
+    } else if op == magnetar_spec::Op::Jal {
+        GatedCpuRowInput::Alu {
+            left: claim.pc,
+            right: instruction.imm as u64,
+            op: GatedAluOp::Jal,
+        }
+    } else if op == magnetar_spec::Op::Jalr {
+        GatedCpuRowInput::Alu {
+            left: claim.rs1_value,
+            right: instruction.imm as u64,
+            op: GatedAluOp::Jalr,
+        }
+    } else if matches!(op, magnetar_spec::Op::Div | magnetar_spec::Op::Rem) {
+        GatedCpuRowInput::SDiv {
+            num: claim.rs1_value,
+            den: claim.rs2_value,
+            out: claim.rd_value,
+            is_rem: op == magnetar_spec::Op::Rem,
+        }
+    } else if matches!(op, magnetar_spec::Op::Divu | magnetar_spec::Op::Remu) {
+        GatedCpuRowInput::Div {
+            num: claim.rs1_value,
+            den: claim.rs2_value,
+            out: claim.rd_value,
+            is_rem: op == magnetar_spec::Op::Remu,
+        }
+    } else if matches!(
+        op,
+        magnetar_spec::Op::Mul
+            | magnetar_spec::Op::Mulhu
+            | magnetar_spec::Op::Mulh
+            | magnetar_spec::Op::Mulhsu
+    ) {
+        GatedCpuRowInput::Mul {
+            left: claim.rs1_value,
+            right: claim.rs2_value,
+            out: claim.rd_value,
+            high: matches!(
+                op,
+                magnetar_spec::Op::Mulhu | magnetar_spec::Op::Mulh | magnetar_spec::Op::Mulhsu
+            ),
+            signed_a: matches!(op, magnetar_spec::Op::Mulh | magnetar_spec::Op::Mulhsu),
+            signed_b: op == magnetar_spec::Op::Mulh,
+        }
+    } else if matches!(
+        op,
+        magnetar_spec::Op::Beq
+            | magnetar_spec::Op::Bne
+            | magnetar_spec::Op::Blt
+            | magnetar_spec::Op::Bge
+            | magnetar_spec::Op::Bltu
+            | magnetar_spec::Op::Bgeu
+    ) {
+        GatedCpuRowInput::Branch {
+            left: claim.rs1_value,
+            right: claim.rs2_value,
+            imm: instruction.imm as u64,
+            kind: match op {
+                magnetar_spec::Op::Beq => crate::branch_row::BranchKind::Beq,
+                magnetar_spec::Op::Bne => crate::branch_row::BranchKind::Bne,
+                magnetar_spec::Op::Blt => crate::branch_row::BranchKind::Blt,
+                magnetar_spec::Op::Bge => crate::branch_row::BranchKind::Bge,
+                magnetar_spec::Op::Bltu => crate::branch_row::BranchKind::Bltu,
+                _ => crate::branch_row::BranchKind::Bgeu,
+            },
+        }
+    } else if let Some(kind) = match op {
+        magnetar_spec::Op::Sll | magnetar_spec::Op::Slli => {
+            Some(crate::simd_f2::BitShiftKind::Sll)
+        }
+        magnetar_spec::Op::Srl | magnetar_spec::Op::Srli => {
+            Some(crate::simd_f2::BitShiftKind::Srl)
+        }
+        magnetar_spec::Op::Sra | magnetar_spec::Op::Srai => {
+            Some(crate::simd_f2::BitShiftKind::Sra)
+        }
+        _ => None,
+    } {
+        let shamt = match op {
+            magnetar_spec::Op::Slli | magnetar_spec::Op::Srli | magnetar_spec::Op::Srai => {
+                u64::from(instruction.shamt)
+            }
+            _ => claim.rs2_value,
+        };
+        GatedCpuRowInput::Shift {
+            left: claim.rs1_value,
+            shamt,
+            kind,
+        }
+    } else if let Some(access) = claim.memory.first() {
+        let imm = instruction.imm as u64;
+        let value = if access.is_write {
+            access.value
+        } else {
+            claim.rd_value
+        };
+        GatedCpuRowInput::Memory {
+            rs1: claim.rs1_value,
+            imm,
+            value,
+            is_mem: true,
+        }
+    } else {
+        let Some(step) = crate::step_op_for(op) else {
+            return Some((
+                claim.pc,
+                MixedAluBranchInput::Alu {
+                    left: 0,
+                    right: 0,
+                    op: GatedAluOp::Add,
+                },
+                false,
+            ));
+        };
+        if crate::w_step_op_for(op).is_some()
+            || op.amo_width().is_some()
+            || crate::branch_op_for(op).is_some()
+        {
+            return Some((
+                claim.pc,
+                MixedAluBranchInput::Alu {
+                    left: 0,
+                    right: 0,
+                    op: GatedAluOp::Add,
+                },
+                false,
+            ));
+        }
+        let imm = instruction.imm as u64;
+        let (gated_op, right) = match step {
+            magnetar_cpu::StepOp::Xor => (GatedAluOp::Xor, claim.rs2_value),
+            magnetar_cpu::StepOp::And => (GatedAluOp::And, claim.rs2_value),
+            magnetar_cpu::StepOp::Or => (GatedAluOp::Or, claim.rs2_value),
+            magnetar_cpu::StepOp::Add => (GatedAluOp::Add, claim.rs2_value),
+            magnetar_cpu::StepOp::Sub => (GatedAluOp::Sub, claim.rs2_value),
+            magnetar_cpu::StepOp::Sltu => (GatedAluOp::Sltu, claim.rs2_value),
+            magnetar_cpu::StepOp::Slt => (GatedAluOp::Slt, claim.rs2_value),
+            magnetar_cpu::StepOp::Lui => (GatedAluOp::Lui, claim.rs2_value),
+            magnetar_cpu::StepOp::Addi => (GatedAluOp::Add, imm),
+            magnetar_cpu::StepOp::Xori => (GatedAluOp::Xor, imm),
+            magnetar_cpu::StepOp::Ori => (GatedAluOp::Or, imm),
+            magnetar_cpu::StepOp::Andi => (GatedAluOp::And, imm),
+            magnetar_cpu::StepOp::Slti => (GatedAluOp::Slt, imm),
+            magnetar_cpu::StepOp::Sltiu => (GatedAluOp::Sltu, imm),
+            // The trace decoder stops here; the claim cannot reproduce the
+            // remaining rows, so the caller falls back.
+            _ => return None,
+        };
+        GatedCpuRowInput::Alu {
+            left: claim.rs1_value,
+            right,
+            op: gated_op,
+        }
+    };
+    Some((claim.pc, mixed_input_from_gated(claim.pc, input, true)?, true))
+}
+
+fn mixed_input_from_gated(
+    pc: u64,
+    input: crate::simd_f2::GatedCpuRowInput,
+    halt_as_jump: bool,
+) -> Option<MixedAluBranchInput> {
+    use crate::simd_f2::GatedCpuRowInput;
+    Some(match input {
+        GatedCpuRowInput::Alu {
+            left,
+            right,
+            op: crate::simd_f2::GatedAluOp::Jal,
+        }
+        | GatedCpuRowInput::Alu {
+            left,
+            right,
+            op: crate::simd_f2::GatedAluOp::Jalr,
+        } => MixedAluBranchInput::Jump {
+            target: left.wrapping_add(right) & !1,
+        },
+        GatedCpuRowInput::Alu { left, right, op } => {
+            MixedAluBranchInput::Alu { left, right, op }
+        }
+        GatedCpuRowInput::Branch {
+            left,
+            right,
+            imm,
+            kind,
+        } => {
+            if halt_as_jump
+                && left == 0
+                && right == 0
+                && imm == 0
+                && kind == crate::branch_row::BranchKind::Beq
+            {
+                MixedAluBranchInput::Jump { target: pc }
+            } else {
+                MixedAluBranchInput::Fetch {
+                    left,
+                    right,
+                    imm,
+                    kind,
+                }
+            }
+        }
+        GatedCpuRowInput::Memory {
+            rs1,
+            imm,
+            value,
+            is_mem: true,
+        } => MixedAluBranchInput::Memory { rs1, imm, value },
+        GatedCpuRowInput::Shift { left, shamt, kind } => {
+            MixedAluBranchInput::Shift { left, shamt, kind }
+        }
+        GatedCpuRowInput::Mul {
+            left,
+            right,
+            high,
+            signed_a,
+            signed_b,
+            ..
+        } => MixedAluBranchInput::Multiply {
+            left,
+            right,
+            high,
+            signed_a,
+            signed_b,
+        },
+        GatedCpuRowInput::Div { num, den, is_rem, .. } => {
+            MixedAluBranchInput::Divide { num, den, is_rem }
+        }
+        GatedCpuRowInput::SDiv { num, den, .. } => MixedAluBranchInput::SignedDivide {
+            num,
+            den,
+            is_rem: false,
+        },
+        _ => return None,
+    })
 }
 
 fn mixed_alu_branch_rows_from_trace_mode(
@@ -4011,10 +4352,24 @@ fn mixed_alu_branch_rows_from_trace_mode(
                 },
             )),
             GatedCpuRowInput::Div { num, den, .. } => {
-                Ok((pc, MixedAluBranchInput::Divide { num, den }))
+                Ok((
+                    pc,
+                    MixedAluBranchInput::Divide {
+                        num,
+                        den,
+                        is_rem: false,
+                    },
+                ))
             }
             GatedCpuRowInput::SDiv { num, den, .. } => {
-                Ok((pc, MixedAluBranchInput::SignedDivide { num, den }))
+                Ok((
+                    pc,
+                    MixedAluBranchInput::SignedDivide {
+                        num,
+                        den,
+                        is_rem: false,
+                    },
+                ))
             }
             other => Err(RuntimeError::Proof(format!(
                 "mixed ALU+branch+memory row does not support {other:?}"
@@ -4096,8 +4451,9 @@ pub fn verify_alu_branch_trace<B: magnetar_proof::BitPcs>(
 
     let rows = mixed_alu_branch_rows_from_trace(trace, width)?;
     let (bits, cycles, _, initial_pc, _) = mixed_trace_bits(width, &rows, trace.final_state.pc)?;
+    let packed = magnetar_proof::PackedBits::from_bools(&bits);
     let expected = backend
-        .commit(&bits)
+        .commit(&packed)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     if backend.commitment_bytes(&expected) != backend.commitment_bytes(&proof.commitment) {
         return Err(RuntimeError::Proof(
@@ -4437,8 +4793,9 @@ pub fn verify_small_alu_branch_trace<B: magnetar_proof::BitPcs>(
     let with_memory = mask & MIXED_MEMORY != 0;
     let final_pc = trace.final_state.pc;
     let (bits, cycles, initial_pc) = small_trace_bits(width, &rows, final_pc, with_memory)?;
+    let packed = magnetar_proof::PackedBits::from_bools(&bits);
     let expected = backend
-        .commit(&bits)
+        .commit(&packed)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     if backend.commitment_bytes(&expected) != backend.commitment_bytes(&proof.commitment) {
         return Err(RuntimeError::Proof(
@@ -4581,23 +4938,21 @@ pub struct SelectedCpuClaims<C: Clone + std::fmt::Debug, O: Clone + std::fmt::De
     pub layout: magnetar_constraint::WitnessLayout,
     #[serde(skip)]
     pub segments: Vec<SelectedSegmentClaim>,
+    /// Claim target folded into the proof's inner sum-check. The verifier
+    /// recomputes the target from the authenticated rows and compares.
     #[serde(default)]
-    pub claim_root: [u8; 32],
-    #[serde(skip)]
-    pub claim_openings: Vec<crate::trace_claims::TraceClaimOpening>,
+    pub claim_binding: Option<DynamicClaimBinding>,
     pub proof: LockstepProof<C, O>,
 }
 
-/// Verify a selected CPU claim bundle against an independent claim proof,
-/// returning the authenticated row claims without reading the trace.
-pub fn verify_selected_claim_proof<C: Clone + std::fmt::Debug, O: Clone + std::fmt::Debug>(
-    claims: &SelectedCpuClaims<C, O>,
-    proof: &crate::trace_claims::ClaimProof,
-) -> Option<Vec<crate::trace_claims::TraceClaim>> {
-    if !verify_selected_claim_binding(claims, proof) {
-        return None;
-    }
-    proof.verify()
+/// Proof-only claim binding carried by a dynamic selected proof.
+///
+/// The witness is bound to this target through the inner sum-check and the
+/// single PCS opening, so no separate claim proof or opening is needed.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct DynamicClaimBinding {
+    pub target: F2_128,
+    pub columns_root: [u8; 32],
 }
 
 /// Check that authenticated row claims agree with the selected CPU claim
@@ -4627,30 +4982,6 @@ pub fn verify_selected_claim_consistency<C: Clone + std::fmt::Debug, O: Clone + 
         ));
     }
     Ok(())
-}
-
-/// Bind a selected CPU claim bundle to an independently serialized claim proof.
-pub fn verify_selected_claim_binding<C: Clone + std::fmt::Debug, O: Clone + std::fmt::Debug>(
-    claims: &SelectedCpuClaims<C, O>,
-    proof: &crate::trace_claims::ClaimProof,
-) -> bool {
-    if claims.claim_root != proof.root {
-        return false;
-    }
-    let selected = crate::trace_claims::verify_claims(claims.claim_root, &claims.claim_openings);
-    let canonical = proof.verify();
-    selected.is_some() && selected == canonical
-}
-
-/// Verify the trace claim openings carried by a selected CPU claim bundle
-/// without reading `trace.rows`.
-pub fn verify_selected_claim_openings<C: Clone + std::fmt::Debug, O: Clone + std::fmt::Debug>(
-    claims: &SelectedCpuClaims<C, O>,
-) -> Option<Vec<crate::trace_claims::TraceClaim>> {
-    if claims.claim_openings.is_empty() {
-        return None;
-    }
-    crate::trace_claims::verify_claims(claims.claim_root, &claims.claim_openings)
 }
 
 pub fn prove_selected_cpu_claims<B: magnetar_proof::BitPcs>(
@@ -4697,8 +5028,7 @@ pub fn prove_selected_cpu_claims<B: magnetar_proof::BitPcs>(
         final_pc,
         layout,
         segments,
-        claim_root: [0u8; 32],
-        claim_openings: Vec::new(),
+        claim_binding: None,
         proof,
     })
 }
@@ -4782,23 +5112,556 @@ pub fn verify_selected_cpu_claims<B: magnetar_proof::BitPcs>(
     }
 }
 
+/// Canonical claim schema: the column set, a dense column → slot table and the
+/// column-set root. It depends only on the layout (mask, width, cycles), because
+/// every row claims the same columns; only the values differ per row.
+pub(crate) struct DynamicClaimSchema {
+    pub columns: Vec<usize>,
+    pub block_cols: usize,
+    /// Block column -> index in `columns`, or `u32::MAX` when not claimed.
+    /// The row sums accumulate in this compact index space so their working
+    /// set (one field per slot) stays in L1 instead of the `block_cols`-sized
+    /// column array.
+    slot_of: Vec<u32>,
+    pub root: [u8; 32],
+}
+
+pub(crate) fn dynamic_claim_schema(
+    mask: u8,
+    width: usize,
+    matrix_cycles: usize,
+) -> Result<DynamicClaimSchema, RuntimeError> {
+    let original = DynamicMixedRow::build(mask, width)?;
+    let (_, mapping, layout) = segmented_dynamic_row(mask, width, matrix_cycles)?;
+    dynamic_claim_schema_with(&original, &mapping, layout.total_bits / matrix_cycles, matrix_cycles)
+}
+
+/// Claim schema from an already-built row and column mapping. The verifier
+/// builds both once and reuses them for the row sums, which is why this is
+/// separate from [`dynamic_claim_schema`].
+fn dynamic_claim_schema_with(
+    original: &DynamicMixedRow,
+    mapping: &[usize],
+    block_cols: usize,
+    matrix_cycles: usize,
+) -> Result<DynamicClaimSchema, RuntimeError> {
+    if !matrix_cycles.is_power_of_two() || block_cols == 0 {
+        return Err(RuntimeError::Proof("dynamic claim shape".into()));
+    }
+    // One representative input per kind is enough: a component's claimed
+    // columns do not depend on the operands, the flags or which one is selected.
+    let representatives = [
+        MixedAluBranchInput::Alu {
+            left: 0,
+            right: 0,
+            op: crate::simd_f2::GatedAluOp::Add,
+        },
+        MixedAluBranchInput::Fetch {
+            left: 0,
+            right: 1,
+            imm: 0,
+            kind: crate::branch_row::BranchKind::Beq,
+        },
+        MixedAluBranchInput::Memory {
+            rs1: 0x10,
+            imm: 0,
+            value: 0x40,
+        },
+        MixedAluBranchInput::Shift {
+            left: 0x12,
+            shamt: 2,
+            kind: crate::simd_f2::BitShiftKind::Sll,
+        },
+        MixedAluBranchInput::Multiply {
+            left: 0x12,
+            right: 0x34,
+            high: false,
+            signed_a: false,
+            signed_b: false,
+        },
+        MixedAluBranchInput::Divide {
+            num: 0x60,
+            den: 3,
+            is_rem: false,
+        },
+        MixedAluBranchInput::SignedDivide {
+            num: 0x20,
+            den: 3,
+            is_rem: false,
+        },
+        MixedAluBranchInput::Jump { target: 0 },
+    ];
+    let mut columns = Vec::new();
+    let mut emissions = Vec::new();
+    for input in &representatives {
+        let kind = input.kind();
+        for (index, component) in original.components.iter().enumerate() {
+            emissions.clear();
+            let selected = component.kind() == kind;
+            component.claim_interface_into(&mut emissions, input, selected);
+            let offset = original.offsets[index];
+            columns.extend(emissions.iter().map(|(var, _)| mapping[offset + *var]));
+        }
+    }
+    for bit in 0..original.width {
+        columns.push(mapping[original.pc[bit]]);
+        columns.push(mapping[original.next_pc[bit]]);
+    }
+    columns.push(mapping[original.one]);
+    columns.push(mapping[original.pc_correction]);
+    columns.sort_unstable();
+    columns.dedup();
+    let mut root_bytes = Vec::with_capacity(16 + columns.len() * 8);
+    root_bytes.extend_from_slice(&(matrix_cycles as u64).to_le_bytes());
+    root_bytes.extend_from_slice(&(block_cols as u64).to_le_bytes());
+    let mut slot_of = vec![u32::MAX; block_cols];
+    for (slot, column) in columns.iter().enumerate() {
+        if *column >= block_cols {
+            return Err(RuntimeError::Proof("claim column outside the block".into()));
+        }
+        slot_of[*column] = slot as u32;
+        root_bytes.extend_from_slice(&(*column as u64).to_le_bytes());
+    }
+    Ok(DynamicClaimSchema {
+        columns,
+        block_cols,
+        slot_of,
+        root: magnetar_transcript::sha256(&root_bytes),
+    })
+}
+
+/// Row-weighted column sums `Σ_cycle eq(row_point, cycle) · value(cycle, col)`,
+/// accumulated in one parallel pass over the claim rows.
+
+/// Row sums from an already-built row and column mapping (see
+/// [`dynamic_claim_schema_with`]).
+#[allow(clippy::too_many_arguments)]
+fn dynamic_claim_sums_with(
+    original: &DynamicMixedRow,
+    mapping: &[usize],
+    rows: &[crate::trace_claims::TraceClaim],
+    mask: u8,
+    matrix_cycles: usize,
+    schema: &DynamicClaimSchema,
+    row_point: &[F2_128],
+) -> Result<Vec<F2_128>, RuntimeError> {
+    if rows.is_empty() {
+        return Err(RuntimeError::Proof("dynamic claim shape".into()));
+    }
+    let inputs = mixed_alu_branch_rows_and_flags_from_claims(rows)
+        .ok_or_else(|| RuntimeError::Proof("dynamic claim row decode".into()))?;
+    if inputs.len() != rows.len() {
+        return Err(RuntimeError::Proof("dynamic claim row count".into()));
+    }
+    let final_pc = rows[rows.len() - 1].next_pc;
+    let weights = eq_table(row_point);
+    if weights.len() != matrix_cycles {
+        return Err(RuntimeError::Proof("dynamic claim point length".into()));
+    }
+    let workers = std::env::var("MAGNETAR_CLAIM_WORKERS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|count| count.get())
+                .unwrap_or(1)
+        })
+        .clamp(1, 32)
+        .min(matrix_cycles);
+    let chunk = matrix_cycles.div_ceil(workers);
+    let sums_started = std::time::Instant::now();
+    let partials = std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for start in (0..matrix_cycles).step_by(chunk) {
+            let end = (start + chunk).min(matrix_cycles);
+            let weights = &weights;
+            let inputs = &inputs;
+            let slot_of = &schema.slot_of;
+            handles.push(scope.spawn(move || {
+                // One accumulator per claimed slot: a few KB, so the sums and
+                // the stamps stay in L1 (the block-column arrays are 128 KB and
+                // 32 KB and miss it on every emission).
+                let mut col_sum = vec![F2_128::from(0u64); schema.columns.len()];
+                // A few columns are emitted by more than one field; each column
+                // contributes once per row. The stamp is the row index, so no
+                // per-row reset is needed.
+                let mut seen_row = vec![u32::MAX; schema.columns.len()];
+                let mut emissions = Vec::new();
+                for index in start..end {
+                    let (pc, next_pc, instruction_len, input) = if index < rows.len() {
+                        (
+                            inputs[index].0,
+                            rows[index].next_pc,
+                            rows[index].instruction_len,
+                            inputs[index].1,
+                        )
+                    } else {
+                        (final_pc, final_pc, 4, dynamic_padding_input(mask, final_pc))
+                    };
+                    claim_emission(
+                        original,
+                        mapping,
+                        &input,
+                        pc,
+                        next_pc,
+                        instruction_len,
+                        &mut emissions,
+                    );
+                    let weight = weights[index];
+                    let stamp = index as u32;
+                    for &(column, value) in &emissions {
+                        let slot = slot_of[column] as usize;
+                        // Columns outside the schema are not part of the
+                        // batched claim; skip them exactly like the previous
+                        // block-column accumulator did.
+                        if slot == u32::MAX as usize {
+                            continue;
+                        }
+                        if seen_row[slot] == stamp {
+                            continue;
+                        }
+                        seen_row[slot] = stamp;
+                        if value {
+                            col_sum[slot] = col_sum[slot] + weight;
+                        }
+                    }
+                }
+                Some(col_sum)
+            }));
+        }
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("claim worker"))
+            .collect::<Vec<_>>()
+    });
+    if std::env::var_os("MAGNETAR_PROFILE_VERIFY").is_some() {
+        eprintln!(
+            "dynamic claim row sums: {:?} ({} workers, {} rows)",
+            sums_started.elapsed(),
+            workers,
+            matrix_cycles
+        );
+    }
+    let mut col_sum = vec![F2_128::from(0u64); schema.columns.len()];
+    for partial in partials {
+        let Some(partial) = partial else {
+            return Err(RuntimeError::Proof(
+                "dynamic claim row decode".into(),
+            ));
+        };
+        for (slot, value) in col_sum.iter_mut().zip(partial) {
+            *slot = *slot + value;
+        }
+    }
+    Ok(col_sum)
+}
+
+/// Per-row claim emission: the mapped block column and value of every bit the
+/// *selected* component claims, plus the row-level PC/next-PC bits, the unit
+/// constant and the PC-correction flag. Non-selected components claim fixed
+/// values for a given input kind, which the schema folds into one per-kind
+/// constant instead of visiting per row.
+fn claim_emission(
+    original: &DynamicMixedRow,
+    mapping: &[usize],
+    input: &MixedAluBranchInput,
+    pc: u64,
+    next_pc: u64,
+    instruction_len: u8,
+    out: &mut Vec<(usize, bool)>,
+) {
+    out.clear();
+    let kind = input.kind();
+    for (index, component) in original.components.iter().enumerate() {
+        let selected = component.kind() == kind;
+        let begin = out.len();
+        component.claim_interface_into(out, input, selected);
+        let offset = original.offsets[index];
+        for pair in &mut out[begin..] {
+            pair.0 = mapping[offset + pair.0];
+        }
+    }
+    for bit in 0..original.width {
+        out.push((mapping[original.pc[bit]], (pc >> bit) & 1 == 1));
+        out.push((mapping[original.next_pc[bit]], (next_pc >> bit) & 1 == 1));
+    }
+    out.push((mapping[original.one], true));
+    out.push((
+        mapping[original.pc_correction],
+        row_pc_correction_from_input(instruction_len, input),
+    ));
+}
+
+/// Batched linear claim from the schema column set and the claim target.
+pub(crate) fn dynamic_claim_structure(
+    schema: &DynamicClaimSchema,
+    row_point: &[F2_128],
+    alpha: F2_128,
+    target: F2_128,
+) -> magnetar_proof::stream::LinearClaim {
+    let mut alpha_power = F2_128::from(1u64);
+    let mut columns = Vec::with_capacity(schema.columns.len());
+    for column in &schema.columns {
+        columns.push((*column, alpha_power));
+        alpha_power = alpha_power * alpha;
+    }
+    magnetar_proof::stream::LinearClaim {
+        row_point: row_point.to_vec(),
+        columns,
+        target,
+    }
+}
+
+/// Batched linear claim from the schema, the row-weighted column sums and the
+/// batching coefficient.
+pub(crate) fn dynamic_claim_from_sums(
+    schema: &DynamicClaimSchema,
+    row_point: &[F2_128],
+    alpha: F2_128,
+    col_sum: &[F2_128],
+) -> magnetar_proof::stream::LinearClaim {
+    let mut target = F2_128::from(0u64);
+    let mut alpha_power = F2_128::from(1u64);
+    for sum in col_sum {
+        target = target + alpha_power * *sum;
+        alpha_power = alpha_power * alpha;
+    }
+    dynamic_claim_structure(schema, row_point, alpha, target)
+}
+
+/// Claim point, batching coefficient and inner-sum-check fold weight, derived
+/// from the commitment and the claim column set (identical on both sides).
+pub(crate) fn dynamic_claim_challenges(
+    commitment_bytes: &[u8],
+    columns_root: &[u8; 32],
+    row_bits: usize,
+) -> (Vec<F2_128>, F2_128, F2_128) {
+    use magnetar_transcript::Sha256Transcript;
+    let mut transcript = Sha256Transcript::new("magnetar-dynamic-claim-v1");
+    transcript.absorb("commitment", commitment_bytes);
+    transcript.absorb("columns", columns_root);
+    let row_point = (0..row_bits)
+        .map(|_| {
+            let bytes = transcript.challenge_bytes("row", 16);
+            F2_128::from(u128::from_le_bytes(bytes.try_into().expect("16 bytes")))
+        })
+        .collect::<Vec<_>>();
+    let bytes = transcript.challenge_bytes("alpha", 16);
+    let alpha = F2_128::from(u128::from_le_bytes(bytes.try_into().expect("16 bytes")));
+    let bytes = transcript.challenge_bytes("fold", 16);
+    let gamma = F2_128::from(u128::from_le_bytes(bytes.try_into().expect("16 bytes")));
+    (row_point, alpha, gamma)
+}
+
+/// A dynamic claim folded into the lockstep inner sum-check.
+pub(crate) struct DynamicClaim {
+    pub claim: magnetar_proof::stream::LinearClaim,
+    pub gamma: F2_128,
+    pub columns_root: [u8; 32],
+}
+
+/// Build the folded claim from authenticated (or trace-derived) claim rows.
+pub(crate) fn dynamic_claim_for_rows(
+    mask: u8,
+    width: usize,
+    matrix_cycles: usize,
+    rows: &[crate::trace_claims::TraceClaim],
+    commitment_bytes: &[u8],
+) -> Result<DynamicClaim, RuntimeError> {
+    let original = DynamicMixedRow::build(mask, width)?;
+    let (_, mapping, layout) = segmented_dynamic_row(mask, width, matrix_cycles)?;
+    let schema = dynamic_claim_schema_with(
+        &original,
+        &mapping,
+        layout.total_bits / matrix_cycles,
+        matrix_cycles,
+    )?;
+    let row_bits = matrix_cycles.trailing_zeros() as usize;
+    let (row_point, alpha, gamma) =
+        dynamic_claim_challenges(commitment_bytes, &schema.root, row_bits);
+    let sums = dynamic_claim_sums_with(
+        &original,
+        &mapping,
+        rows,
+        mask,
+        matrix_cycles,
+        &schema,
+        &row_point,
+    )?;
+    let claim = dynamic_claim_from_sums(&schema, &row_point, alpha, &sums);
+    Ok(DynamicClaim {
+        claim,
+        gamma,
+        columns_root: schema.root,
+    })
+}
+
+/// The folded claim for a dynamic segment setup, derived from the trace.
+fn dynamic_claim_for_trace<B: magnetar_proof::BitPcs>(
+    setup: &DynamicSegmentSetup,
+    trace: &magnetar_spec::Trace,
+    commitment: &B::Commitment,
+    backend: &B,
+) -> Result<DynamicClaim, RuntimeError> {
+    let rows = trace
+        .rows
+        .iter()
+        .map(crate::trace_claims::TraceClaim::from_row)
+        .collect::<Vec<_>>();
+    dynamic_claim_for_rows(
+        setup.mask,
+        setup.row.width,
+        setup.cycles,
+        &rows,
+        &backend.commitment_bytes(commitment),
+    )
+}
+
+/// Verify the proof-only claim binding against the authenticated claim rows.
+///
+/// The folded claim for a selected dynamic proof, computed from the
+/// authenticated claim rows and the witness commitment.
+pub(crate) fn dynamic_claim_for_selected<B: magnetar_proof::BitPcs + Sync>(
+    selected: &SelectedCpuClaims<B::Commitment, B::Opening>,
+    rows: &[crate::trace_claims::TraceClaim],
+    backend: &B,
+) -> Result<DynamicClaim, RuntimeError>
+where
+    B::Commitment: Sync,
+    B::Opening: Sync,
+{
+    let matrix_cycles = if selected.matrix_cycles == 0 {
+        selected.cycles
+    } else {
+        selected.matrix_cycles
+    };
+    dynamic_claim_for_rows(
+        selected.mask,
+        selected.width,
+        matrix_cycles,
+        rows,
+        &backend.commitment_bytes(&selected.proof.commitment),
+    )
+}
+
+/// Check a prepared claim against the binding and verify the selected lockstep
+/// proof with the claim folded in.
+pub(crate) fn verify_dynamic_claim_binding_prepared<B: magnetar_proof::BitPcs + Sync>(
+    selected: &SelectedCpuClaims<B::Commitment, B::Opening>,
+    claim: &DynamicClaim,
+    backend: &B,
+) -> Result<(), RuntimeError>
+where
+    B::Commitment: Sync,
+    B::Opening: Sync,
+{
+    let binding = selected
+        .claim_binding
+        .as_ref()
+        .ok_or_else(|| RuntimeError::Proof("dynamic proof carries no claim binding".into()))?;
+    if claim.columns_root != binding.columns_root {
+        return Err(RuntimeError::Proof(
+            "dynamic claim column set mismatch".into(),
+        ));
+    }
+    if claim.claim.target != binding.target {
+        return Err(RuntimeError::Proof("dynamic claim target mismatch".into()));
+    }
+    verify_dynamic_segments_public_claim_point(
+        selected,
+        Some((&claim.claim, claim.gamma)),
+        backend,
+    )
+    .map(|_| ())
+    .map_err(|error| RuntimeError::Proof(error.to_string()))
+}
+
 pub fn prove_dynamic_cpu_claims<B: magnetar_proof::BitPcs>(
     trace: &magnetar_spec::Trace,
     width: usize,
     backend: &B,
 ) -> Result<SelectedCpuClaims<B::Commitment, B::Opening>, RuntimeError> {
-    let (proof, layout, mask, cycles) = prove_dynamic_segmented_trace(trace, width, backend)?;
+    prove_dynamic_cpu_claims_gated(trace, width, backend, None)
+}
+
+/// Selected CPU prover that waits for `gate` before committing the witness.
+///
+/// The commit allocates a codeword and Merkle tree proportional to the packed
+/// witness (1.5 GiB at RV64 `2^16`). Running it while the unified mosaic commit
+/// holds its own codeword sums the two transients; waiting until that stage is
+/// done keeps the process peak at the larger single transient instead.
+pub(crate) fn prove_dynamic_cpu_claims_after<B: magnetar_proof::BitPcs>(
+    trace: &magnetar_spec::Trace,
+    width: usize,
+    backend: &B,
+    gate: std::sync::mpsc::Receiver<()>,
+) -> Result<SelectedCpuClaims<B::Commitment, B::Opening>, RuntimeError> {
+    prove_dynamic_cpu_claims_gated(trace, width, backend, Some(gate))
+}
+
+fn prove_dynamic_cpu_claims_gated<B: magnetar_proof::BitPcs>(
+    trace: &magnetar_spec::Trace,
+    width: usize,
+    backend: &B,
+    gate: Option<std::sync::mpsc::Receiver<()>>,
+) -> Result<SelectedCpuClaims<B::Commitment, B::Opening>, RuntimeError> {
+    let setup = dynamic_segment_setup(trace, width)?;
+    if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
+        eprintln!("selected rss after setup: {:.2} GiB", crate::resident_gib());
+    }
+    let (_, s1, s2) = gated_shared_matrices_lazy(
+        &setup.row,
+        setup.cycles,
+        Some((setup.initial_pc, setup.final_pc)),
+    )?;
+    if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
+        eprintln!("selected rss after matrices: {:.2} GiB", crate::resident_gib());
+    }
+    if let Some(gate) = gate {
+        let _ = gate.recv();
+    }
+    let commit_started = std::time::Instant::now();
+    let commitment = backend
+        .commit(&setup.bits)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
+        eprintln!(
+            "selected witness commit: {:?} rss={:.2} GiB",
+            commit_started.elapsed(),
+            crate::resident_gib()
+        );
+    }
+    let claim_started = std::time::Instant::now();
+    let claim = dynamic_claim_for_trace(&setup, trace, &commitment, backend)?;
+    if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
+        eprintln!("selected claim target: {:?}", claim_started.elapsed());
+    }
+    if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
+        eprintln!("selected rss before proof: {:.2} GiB", crate::resident_gib());
+    }
+    let proof = prove_dynamic_segment_proof(
+        &setup,
+        &s1,
+        &s2,
+        backend,
+        None,
+        Some((&claim, &commitment)),
+    )?;
+    if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
+        eprintln!("selected rss after proof: {:.2} GiB", crate::resident_gib());
+    }
+    let (layout, mask, cycles) = (setup.layout.clone(), setup.mask, setup.cycles);
     let segments = selected_segment_claims(&layout, &proof)?;
-    let claim_tree = crate::trace_claims::TraceClaimTree::build(trace);
-    let claim_openings = (0..trace.rows.len())
-        .filter_map(|index| claim_tree.open(index))
-        .collect();
     // The layout is reconstructed by the verifier from the trace, so do not
     // serialize the per-cycle layout in the dynamic proof.
     let layout = magnetar_constraint::WitnessLayout {
         total_bits: 0,
         segments: Vec::new(),
     };
+    let claim_binding = Some(DynamicClaimBinding {
+        target: claim.claim.target,
+        columns_root: claim.columns_root,
+    });
     Ok(SelectedCpuClaims {
         op: SelectedOp::Dynamic,
         width,
@@ -4809,8 +5672,7 @@ pub fn prove_dynamic_cpu_claims<B: magnetar_proof::BitPcs>(
         final_pc: trace.final_state.pc,
         layout,
         segments,
-        claim_root: claim_tree.root(),
-        claim_openings,
+        claim_binding,
         proof,
     })
 }
@@ -4828,18 +5690,6 @@ where
         return Err(RuntimeError::Proof(
             "not a dynamic selected claim bundle".into(),
         ));
-    }
-    if !claims.claim_openings.is_empty() {
-        let claim_tree = crate::trace_claims::TraceClaimTree::build(trace);
-        if claims.claim_root != claim_tree.root()
-            || claims.claim_openings.len() != trace.rows.len()
-            || crate::trace_claims::verify_claims(claims.claim_root, &claims.claim_openings)
-                .is_none()
-        {
-            return Err(RuntimeError::Proof(
-                "dynamic selected claim openings do not match the trace".into(),
-            ));
-        }
     }
     if !claims.layout.segments.is_empty() && !claims.segments.is_empty() {
         let expected = selected_segment_claims(&claims.layout, &claims.proof)?;
@@ -4977,6 +5827,20 @@ impl PcComponent for JumpPcRow {
             _ => Ok(self.witness_bits(pc, 0)),
         }
     }
+
+    fn claim_interface_into(
+        &self,
+        out: &mut Vec<(magnetar_constraint::VarId, bool)>,
+        input: &MixedAluBranchInput,
+        _selected: bool,
+    ) {
+        let target = match input {
+            MixedAluBranchInput::Jump { target } => *target,
+            _ => 0,
+        };
+        push_bits(out, &self.target, target);
+        out.push((self.one, true));
+    }
 }
 
 trait PcComponent: Sync {
@@ -4986,6 +5850,18 @@ trait PcComponent: Sync {
     fn next_pc(&self) -> &[magnetar_constraint::VarId];
     fn one(&self) -> magnetar_constraint::VarId;
     fn witness(&self, pc: u64, input: &MixedAluBranchInput) -> Result<Vec<bool>, RuntimeError>;
+
+    /// The row's interface with the rest of the machine: the operand and
+    /// selector columns it takes from the input, plus the columns that carry
+    /// its result (bound to `rd_value`). The verified CPU relation determines
+    /// every other row column.
+    fn claim_interface_into(
+        &self,
+        out: &mut Vec<(magnetar_constraint::VarId, bool)>,
+        input: &MixedAluBranchInput,
+        _selected: bool,
+    );
+
 }
 
 impl PcComponent for AluPcRow {
@@ -5009,6 +5885,56 @@ impl PcComponent for AluPcRow {
             MixedAluBranchInput::Alu { left, right, op } => self.witness_at(pc, *left, *right, *op),
             _ => self.witness_at(pc, 0, 0, crate::simd_f2::GatedAluOp::Inactive),
         })
+    }
+
+    fn claim_interface_into(
+        &self,
+        out: &mut Vec<(magnetar_constraint::VarId, bool)>,
+        input: &MixedAluBranchInput,
+        _selected: bool,
+    ) {
+        use crate::simd_f2::GatedAluOp;
+        let (left, right, op) = match input {
+            MixedAluBranchInput::Alu { left, right, op } => (*left, *right, *op),
+            _ => (0, 0, GatedAluOp::Inactive),
+        };
+        let instr = &self.instr;
+        push_bits(out, &instr.a, left);
+        push_bits(out, &instr.b, right);
+        let (xor, and, or, add, sub, slt, slts, lui, auipc, jal, jalr) = match op {
+            GatedAluOp::Xor => (true, false, false, false, false, false, false, false, false, false, false),
+            GatedAluOp::And => (false, true, false, false, false, false, false, false, false, false, false),
+            GatedAluOp::Or => (false, false, true, false, false, false, false, false, false, false, false),
+            GatedAluOp::Add => (false, false, false, true, false, false, false, false, false, false, false),
+            GatedAluOp::Sub => (false, false, false, false, true, false, false, false, false, false, false),
+            GatedAluOp::Sltu => (false, false, false, false, false, true, false, false, false, false, false),
+            GatedAluOp::Slt => (false, false, false, false, false, false, true, false, false, false, false),
+            GatedAluOp::Lui => (false, false, false, false, false, false, false, true, false, false, false),
+            GatedAluOp::Auipc => (false, false, false, true, false, false, false, false, true, false, false),
+            GatedAluOp::Jal => (false, false, false, true, false, false, false, false, false, true, false),
+            GatedAluOp::Jalr => (false, false, false, true, false, false, false, false, false, false, true),
+            GatedAluOp::Inactive => (false, false, false, false, false, false, false, false, false, false, false),
+        };
+        for (var, value) in [
+            (instr.is_alu, xor || and || or || add || sub || slt || slts || lui || auipc || jal || jalr),
+            (instr.is_xor, xor),
+            (instr.is_and, and),
+            (instr.is_or, or),
+            (instr.is_add, add),
+            (instr.is_sub, sub),
+            (instr.is_slt, slt),
+            (instr.is_slts, slts),
+            (instr.is_lui, lui),
+            (instr.is_auipc, auipc),
+            (instr.is_jal, jal),
+            (instr.is_jalr, jalr),
+            (instr.slt_mode, slt || slts),
+            (instr.one, true),
+        ] {
+            out.push((var, value));
+        }
+        // The relation derives `out` from the claimed operands and selectors,
+        // so the result columns are not claimed here.
     }
 }
 
@@ -5039,6 +5965,39 @@ impl PcComponent for BranchPcRow {
             _ => self.witness_at(pc, 0, 0, 1, crate::branch_row::BranchKind::Beq),
         })
     }
+
+    fn claim_interface_into(
+        &self,
+        out: &mut Vec<(magnetar_constraint::VarId, bool)>,
+        input: &MixedAluBranchInput,
+        _selected: bool,
+    ) {
+        let (left, right, kind) = match input {
+            MixedAluBranchInput::Fetch {
+                left,
+                right,
+                kind,
+                ..
+            } => (*left, *right, *kind),
+            _ => (0, 1, crate::branch_row::BranchKind::Beq),
+        };
+        use crate::branch_row::BranchKind;
+        let instr = &self.instr;
+        push_bits(out, &instr.rs1, left);
+        push_bits(out, &instr.rs2, right);
+        for (var, value) in [
+            (instr.is_beq, kind == BranchKind::Beq),
+            (instr.is_bne, kind == BranchKind::Bne),
+            (instr.is_blt, kind == BranchKind::Blt),
+            (instr.is_bge, kind == BranchKind::Bge),
+            (instr.is_bltu, kind == BranchKind::Bltu),
+            (instr.is_bgeu, kind == BranchKind::Bgeu),
+            (instr.is_branch, true),
+            (instr.one, true),
+        ] {
+            out.push((var, value));
+        }
+    }
 }
 
 impl PcComponent for MemPcRow {
@@ -5065,6 +6024,23 @@ impl PcComponent for MemPcRow {
             _ => self.witness_at(pc, 0x10, 0, 0x40),
         })
     }
+
+    fn claim_interface_into(
+        &self,
+        out: &mut Vec<(magnetar_constraint::VarId, bool)>,
+        input: &MixedAluBranchInput,
+        _selected: bool,
+    ) {
+        let (rs1, imm, value) = match input {
+            MixedAluBranchInput::Memory { rs1, imm, value } => (*rs1, *imm, *value),
+            _ => (0x10, 0, 0x40),
+        };
+        let instr = &self.instr;
+        push_bits(out, &instr.adder.a, rs1);
+        push_bits(out, &instr.adder.b, imm);
+        out.push((instr.adder.gate, true));
+        push_bits(out, &instr.data_in, value);
+    }
 }
 
 impl PcComponent for ShiftPcRow {
@@ -5090,6 +6066,40 @@ impl PcComponent for ShiftPcRow {
             }
             _ => self.witness_at(pc, 0x12, 2, crate::simd_f2::BitShiftKind::Sll),
         })
+    }
+
+    fn claim_interface_into(
+        &self,
+        out: &mut Vec<(magnetar_constraint::VarId, bool)>,
+        input: &MixedAluBranchInput,
+        _selected: bool,
+    ) {
+        use crate::simd_f2::BitShiftKind;
+        let (left, shamt, kind) = match input {
+            MixedAluBranchInput::Shift { left, shamt, kind } => (*left, *shamt, *kind),
+            _ => (0x12, 2, BitShiftKind::Sll),
+        };
+        let instr = &self.instr;
+        // All three barrel-shift relations hold the same operands in the
+        // witness, so every one of them is claimed; the selectors carry the
+        // instruction choice and the verified relation derives the result.
+        for (relation, offset) in [
+            (&instr.sll, 0usize),
+            (&instr.srl, instr.srl_offset),
+            (&instr.sra, instr.sra_offset),
+        ] {
+            out.extend(relation.rs1.iter().zip(claim_bits(left, relation.rs1.len())).map(|(var, bit)| (*var + offset, bit)));
+            out.extend(relation.shamt.iter().zip(claim_bits(shamt, relation.shamt.len())).map(|(var, bit)| (*var + offset, bit)));
+        }
+        for (var, value) in [
+            (instr.is_sll, kind == BitShiftKind::Sll),
+            (instr.is_srl, kind == BitShiftKind::Srl),
+            (instr.is_sra, kind == BitShiftKind::Sra),
+            (instr.is_shift, true),
+            (instr.one, true),
+        ] {
+            out.push((var, value));
+        }
     }
 }
 
@@ -5121,6 +6131,36 @@ impl PcComponent for MulPcRow {
             _ => self.witness_at(pc, 0x12, 0x34),
         })
     }
+
+    fn claim_interface_into(
+        &self,
+        out: &mut Vec<(magnetar_constraint::VarId, bool)>,
+        input: &MixedAluBranchInput,
+        _selected: bool,
+    ) {
+        let (left, right, signed_a, signed_b) = match input {
+            MixedAluBranchInput::Multiply {
+                left,
+                right,
+                signed_a,
+                signed_b,
+                ..
+            } => (*left, *right, *signed_a, *signed_b),
+            _ => (0x12, 0x34, false, false),
+        };
+        let instr = &self.instr;
+        push_bits(out, &instr.a, left);
+        push_bits(out, &instr.b, right);
+        for (var, value) in [
+            (instr.is_mul, true),
+            (instr.signed_a, signed_a),
+            (instr.signed_b, signed_b),
+            (instr.one, true),
+        ] {
+            out.push((var, value));
+        }
+        // `product` follows from the claimed operands and sign flags.
+    }
 }
 
 impl PcComponent for DivPcRow {
@@ -5141,9 +6181,31 @@ impl PcComponent for DivPcRow {
     }
     fn witness(&self, pc: u64, input: &MixedAluBranchInput) -> Result<Vec<bool>, RuntimeError> {
         Ok(match input {
-            MixedAluBranchInput::Divide { num, den } => self.witness_at(pc, *num, *den),
+            MixedAluBranchInput::Divide { num, den, .. } => self.witness_at(pc, *num, *den),
             _ => self.witness_at(pc, 0x60, 3),
         })
+    }
+
+    fn claim_interface_into(
+        &self,
+        out: &mut Vec<(magnetar_constraint::VarId, bool)>,
+        input: &MixedAluBranchInput,
+        _selected: bool,
+    ) {
+        let (num, den, is_rem) = match input {
+            MixedAluBranchInput::Divide { num, den, is_rem } => (*num, *den, *is_rem),
+            _ => (0x60, 3, false),
+        };
+        let instr = &self.instr;
+        push_bits(out, &instr.num, num);
+        push_bits(out, &instr.den, den);
+        out.push((instr.is_div, true));
+        let (quotient, remainder) = if den == 0 {
+            (u64::MAX, num)
+        } else {
+            (num / den, num % den)
+        };
+        let _ = (quotient, remainder, is_rem);
     }
 }
 
@@ -5165,9 +6227,58 @@ impl PcComponent for SDivPcRow {
     }
     fn witness(&self, pc: u64, input: &MixedAluBranchInput) -> Result<Vec<bool>, RuntimeError> {
         Ok(match input {
-            MixedAluBranchInput::SignedDivide { num, den } => self.witness_at(pc, *num, *den),
+            MixedAluBranchInput::SignedDivide { num, den, .. } => self.witness_at(pc, *num, *den),
             _ => self.witness_at(pc, 0x20, 3),
         })
+    }
+
+    fn claim_interface_into(
+        &self,
+        out: &mut Vec<(magnetar_constraint::VarId, bool)>,
+        input: &MixedAluBranchInput,
+        _selected: bool,
+    ) {
+        let (num, den, is_rem) = match input {
+            MixedAluBranchInput::SignedDivide { num, den, is_rem } => (*num, *den, *is_rem),
+            _ => (0x20, 3, false),
+        };
+        let instr = &self.instr;
+        push_bits(out, &instr.num, num);
+        push_bits(out, &instr.den, den);
+        out.push((instr.is_sdiv, true));
+        let (a, b) = (num as i64, den as i64);
+        let (quotient, remainder) = if b == 0 {
+            (u64::MAX, num)
+        } else {
+            let q = a.wrapping_div(b) as u64;
+            let r = a.wrapping_rem(b) as u64;
+            (q, r)
+        };
+        let _ = (quotient, remainder, is_rem);
+        out.push((instr.one, true));
+    }
+}
+
+/// Reusable row-witness buffer: `clear` only resets the indices the previous
+/// row wrote, so rebuilding a witness costs `O(row support)` instead of
+/// `O(relation.num_vars)`.
+struct WitnessScratch {
+    bits: Vec<bool>,
+    touched: Vec<usize>,
+}
+
+impl WitnessScratch {
+    fn new(len: usize) -> Self {
+        Self {
+            bits: vec![false; len],
+            touched: Vec::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        for index in self.touched.drain(..) {
+            self.bits[index] = false;
+        }
     }
 }
 
@@ -5342,13 +6453,41 @@ impl DynamicMixedRow {
         input: &MixedAluBranchInput,
         pc_correction: bool,
     ) -> Result<Vec<bool>, RuntimeError> {
-        let mut bits = Vec::new();
-        for component in &self.components {
-            let mut instance = component.witness(pc, input)?;
-            instance.resize(component.relation().num_vars, false);
-            bits.extend(instance);
+        let mut scratch = WitnessScratch::new(self.relation.num_vars);
+        self.witness_at_scratch(&mut scratch, pc, input, pc_correction)?;
+        Ok(std::mem::take(&mut scratch.bits))
+    }
+
+    /// Build the row witness into a reusable scratch buffer.
+    ///
+    /// `witness_at` is called once per cycle on the verifier and prover paths;
+    /// allocating and zeroing a `relation.num_vars` (8192 at RV64) vector every
+    /// time dominated segment binding, so the scratch clears only the indices
+    /// that were set by the previous row.
+    fn witness_at_scratch(
+        &self,
+        scratch: &mut WitnessScratch,
+        pc: u64,
+        input: &MixedAluBranchInput,
+        pc_correction: bool,
+    ) -> Result<(), RuntimeError> {
+        scratch.clear();
+        if scratch.bits.len() < self.relation.num_vars {
+            scratch.bits.resize(self.relation.num_vars, false);
         }
-        bits.resize(self.relation.num_vars, false);
+        let mut touched = std::mem::take(&mut scratch.touched);
+        let mut offset = 0usize;
+        for component in &self.components {
+            let instance = component.witness(pc, input)?;
+            for (local, value) in instance.into_iter().enumerate() {
+                if value {
+                    scratch.bits[offset + local] = true;
+                    touched.push(offset + local);
+                }
+            }
+            offset += component.relation().num_vars;
+        }
+        let bits = &mut scratch.bits;
         let kind = input.kind();
         if !self
             .components
@@ -5360,21 +6499,28 @@ impl DynamicMixedRow {
             ));
         }
         for (index, selector) in self.selectors.iter().enumerate() {
-            bits[*selector] = self.components[index].kind() == kind;
+            let value = self.components[index].kind() == kind;
+            bits[*selector] = value;
+            touched.push(*selector);
         }
         for bit in 0..self.width {
             bits[self.pc[bit]] = (pc >> bit) & 1 == 1;
+            touched.push(self.pc[bit]);
         }
         for bit in 0..self.width {
             let mut next_value = false;
             for (index, component) in self.components.iter().enumerate() {
                 let value = bits[component.next_pc()[bit] + self.offsets[index]];
-                bits[self.ands[index][bit]] = bits[self.selectors[index]] && value;
-                next_value ^= bits[self.ands[index][bit]];
+                let and = &self.ands[index][bit];
+                bits[*and] = bits[self.selectors[index]] && value;
+                touched.push(*and);
+                next_value ^= bits[*and];
             }
             bits[self.raw_next[bit]] = next_value;
+            touched.push(self.raw_next[bit]);
         }
         bits[self.pc_correction] = pc_correction;
+        touched.push(self.pc_correction);
         let raw = (0..self.width).fold(0u64, |value, bit| {
             if bits[self.raw_next[bit]] {
                 value | (1 << bit)
@@ -5385,14 +6531,17 @@ impl DynamicMixedRow {
         let next = raw.wrapping_sub(if pc_correction { 2 } else { 0 });
         for bit in 0..self.width {
             bits[self.next_pc[bit]] = ((next >> bit) & 1) == 1;
+            touched.push(self.next_pc[bit]);
         }
         let addition = self
             .pc_step_add
             .witness(next, if pc_correction { 2 } else { 0 }, true);
         for (local, value) in addition.into_iter().enumerate() {
             bits[self.pc_step_offset + local] = value;
+            touched.push(self.pc_step_offset + local);
         }
-        Ok(bits)
+        scratch.touched = touched;
+        Ok(())
     }
 }
 
@@ -5495,8 +6644,9 @@ pub fn verify_dynamic_selected_trace<B: magnetar_proof::BitPcs>(
         mask |= MIXED_BRANCH;
     }
     let (bits, cycles, initial_pc) = dynamic_trace_bits(width, &rows, final_pc, mask)?;
+    let packed = magnetar_proof::PackedBits::from_bools(&bits);
     let expected = backend
-        .commit(&bits)
+        .commit(&packed)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     if backend.commitment_bytes(&expected) != backend.commitment_bytes(&proof.commitment) {
         return Err(RuntimeError::Proof(
@@ -5650,14 +6800,93 @@ type DynamicSegmentProof<C, O> = (
     usize,
 );
 
-pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
+struct DynamicSegmentSetup {
+    bits: magnetar_proof::PackedBits,
+    layout: magnetar_constraint::WitnessLayout,
+    mask: u8,
+    cycles: usize,
+    row: SegmentedDynamicRow,
+    initial_pc: u64,
+    final_pc: u64,
+}
+
+fn fill_input(
+    index: usize,
+    rows: &[(u64, MixedAluBranchInput)],
+    final_pc: u64,
+    mask: u8,
+) -> (u64, MixedAluBranchInput) {
+    let (pc, mut input) = if index < rows.len() {
+        rows[index]
+    } else {
+        (final_pc, dynamic_padding_input(mask, final_pc))
+    };
+    if index + 1 == rows.len() && final_pc == pc && mask & MIXED_JUMP == 0 {
+        input = MixedAluBranchInput::Fetch {
+            left: 0,
+            right: 0,
+            imm: 0,
+            kind: crate::branch_row::BranchKind::Beq,
+        };
+    }
+    (pc, input)
+}
+
+/// Fill the witness bits of cycles `start..end`, writing each instance's
+/// `base_cols`-bit block as whole words.
+#[allow(clippy::too_many_arguments)]
+fn fill_dynamic_instances(
+    words: &mut [u64],
+    start: usize,
+    end: usize,
+    per_instance: usize,
+    rows: &[(u64, MixedAluBranchInput)],
+    final_pc: u64,
+    mask: u8,
+    trace: &magnetar_spec::Trace,
+    original: &DynamicMixedRow,
+    row: &SegmentedDynamicRow,
+    mapping: &[usize],
+    base_cols: usize,
+) -> Result<(), RuntimeError> {
+    let mut scratch = WitnessScratch::new(original.relation.num_vars);
+    let mut block = vec![false; base_cols];
+    for (offset, index) in (start..end).enumerate() {
+        let (pc, input) = fill_input(index, rows, final_pc, mask);
+        let correction = row_pc_correction(trace.rows.get(index), &input);
+        original.witness_at_scratch(&mut scratch, pc, &input, correction)?;
+        block.fill(false);
+        for (from, to) in mapping.iter().enumerate() {
+            if scratch.bits[from] {
+                block[*to] = true;
+            }
+        }
+        if !row.relation.check(&block) {
+            return Err(RuntimeError::Proof(format!(
+                "dynamic row {index} relation fail"
+            )));
+        }
+        let target = &mut words[offset * per_instance..(offset + 1) * per_instance];
+        for (word, chunk) in target.iter_mut().zip(block.chunks(64)) {
+            let mut packed = 0u64;
+            for (bit, value) in chunk.iter().enumerate() {
+                if *value {
+                    packed |= 1u64 << bit;
+                }
+            }
+            *word = packed;
+        }
+    }
+    Ok(())
+}
+
+fn dynamic_segment_setup(
     trace: &magnetar_spec::Trace,
     width: usize,
-    backend: &B,
-) -> Result<DynamicSegmentProof<B::Commitment, B::Opening>, RuntimeError> {
-    use magnetar_proof::prove_lockstep_bits;
-
+) -> Result<DynamicSegmentSetup, RuntimeError> {
+    let setup_started = std::time::Instant::now();
     let rows = mixed_alu_branch_rows_from_trace_dynamic(trace, width)?;
+    if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() { eprintln!("setup rows decode: {:?} rss={:.2} GiB", setup_started.elapsed(), crate::resident_gib()); }
     let final_pc = trace.final_state.pc;
     let mut mask = mixed_rows_component_mask(&rows);
     if rows.len() < rows.len().next_power_of_two().max(2) {
@@ -5670,45 +6899,142 @@ pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
     let initial_pc = rows[0].0;
     let original = DynamicMixedRow::build(mask, width)?;
     let (row, mapping, layout) = segmented_dynamic_row(mask, width, cycles)?;
-    let (base_cols, s1, s2) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
+    if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() { eprintln!("setup layout build: {:?} rss={:.2} GiB", setup_started.elapsed(), crate::resident_gib()); }
+    if std::env::var_os("MAGNETAR_PROBE_GEOM").is_some() {
+        eprintln!(
+            "geom: vars={} constraints={} padded_rows={} base_cols={}",
+            row.relation.num_vars,
+            row.relation.rows.len(),
+            row.relation.rows.len().next_power_of_two(),
+            (row.relation.num_vars + 1).next_power_of_two().max(2),
+        );
+    }
+    let base_cols = (row.relation.num_vars + 1).next_power_of_two().max(2);
     if layout.total_bits != cycles * base_cols {
         return Err(RuntimeError::Proof(format!(
             "dynamic segmented layout mismatch: layout={} cycles={} base_cols={}",
             layout.total_bits, cycles, base_cols
         )));
     }
-    let mut bits = Vec::with_capacity(cycles * base_cols);
-    for index in 0..cycles {
-        let (pc, mut input) = if index < rows.len() {
-            rows[index]
+    let mut bits = magnetar_proof::PackedBits::zeroed(cycles * base_cols);
+    if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() { eprintln!("setup rss before witness fill: {:.2} GiB", crate::resident_gib()); }
+    // Reuse one witness scratch and one block buffer: allocating ~16 KB per
+    // cycle retained 0.7 GiB of allocator pages at RV64 `2^16` (the setup RSS
+    // jumped 0.43 -> 1.16 GiB in this loop). Fill the word-aligned instance
+    // blocks in parallel: each worker owns one contiguous run of cycles and
+    // writes its own `base_cols`-bit slice, so no two workers share a word.
+    let mut fill_error: Option<RuntimeError> = None;
+    if base_cols % 64 == 0 {
+        let per_instance = base_cols / 64;
+        let workers = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(1)
+            .clamp(1, cycles.max(1));
+        if workers == 1 {
+            fill_dynamic_instances(
+                &mut bits.words_mut()[..],
+                0,
+                cycles,
+                per_instance,
+                &rows,
+                final_pc,
+                mask,
+                trace,
+                &original,
+                &row,
+                &mapping,
+                base_cols,
+            )?;
         } else {
-            (final_pc, dynamic_padding_input(mask, final_pc))
-        };
-        if index + 1 == rows.len() && final_pc == pc && mask & MIXED_JUMP == 0 {
-            input = MixedAluBranchInput::Fetch {
-                left: 0,
-                right: 0,
-                imm: 0,
-                kind: crate::branch_row::BranchKind::Beq,
-            };
+            let chunk = cycles.div_ceil(workers);
+            let mut rest: &mut [u64] = bits.words_mut();
+            std::thread::scope(|scope| {
+                let mut handles = Vec::with_capacity(workers);
+                for worker in 0..workers {
+                    let start = worker * chunk;
+                    let end = (start + chunk).min(cycles);
+                    if start >= end {
+                        break;
+                    }
+                    let (head, tail) = rest.split_at_mut((end - start) * per_instance);
+                    rest = tail;
+                    let rows = &rows;
+                    let mapping = &mapping[..];
+                    let original = &original;
+                    let row = &row;
+                    handles.push(scope.spawn(move || {
+                        fill_dynamic_instances(
+                            head,
+                            start,
+                            end,
+                            per_instance,
+                            rows,
+                            final_pc,
+                            mask,
+                            trace,
+                            original,
+                            row,
+                            mapping,
+                            base_cols,
+                        )
+                    }));
+                }
+                for handle in handles {
+                    match handle.join() {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => {
+                            if fill_error.is_none() {
+                                fill_error = Some(error);
+                            }
+                        }
+                        Err(_) => {
+                            if fill_error.is_none() {
+                                fill_error = Some(RuntimeError::Proof(
+                                    "dynamic witness fill worker panicked".into(),
+                                ));
+                            }
+                        }
+                    }
+                }
+            });
         }
-        let correction = row_pc_correction(trace.rows.get(index), &input);
-        let source = original.witness_at(pc, &input, correction)?;
+    } else {
+        let mut scratch = WitnessScratch::new(original.relation.num_vars);
         let mut block = vec![false; base_cols];
-        for (from, to) in mapping.iter().enumerate() {
-            if source[from] {
-                block[*to] = true;
+        for index in 0..cycles {
+            let (pc, input) = fill_input(index, &rows, final_pc, mask);
+            let correction = row_pc_correction(trace.rows.get(index), &input);
+            original.witness_at_scratch(&mut scratch, pc, &input, correction)?;
+            block.fill(false);
+            for (from, to) in mapping.iter().enumerate() {
+                if scratch.bits[from] {
+                    block[*to] = true;
+                }
+            }
+            if !row.relation.check(&block) {
+                return Err(RuntimeError::Proof(format!("dynamic row {index} relation fail")));
+            }
+            for (to, value) in block.iter().enumerate() {
+                if *value {
+                    bits.set(index * base_cols + to, true);
+                }
             }
         }
-        if !row.relation.check(&block) {
-            return Err(RuntimeError::Proof(format!("dynamic row {index} relation fail")));
-        }
-        bits.extend(block);
+    }
+    if let Some(error) = fill_error {
+        return Err(error);
+    }
+    if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
+        eprintln!(
+            "setup fill: {:?} rss={:.2} GiB",
+            setup_started.elapsed(),
+            crate::resident_gib()
+        );
     }
     for instance in 0..cycles.saturating_sub(1) {
         for bit in 0..width {
-            let from = bits[instance * base_cols + row.next_pc()[bit]];
-            let to = bits[(instance + 1) * base_cols + row.pc()[bit]];
+            let from = bits.get(instance * base_cols + row.next_pc()[bit]);
+            let to = bits.get((instance + 1) * base_cols + row.pc()[bit]);
             if from != to {
                 return Err(RuntimeError::Proof(format!(
                     "dynamic row {instance} pc chain fail at bit {bit} from={from} to={to} pcvar={} nextvar={} base={base_cols}",
@@ -5720,9 +7046,9 @@ pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
     for (instance, pc) in [(0usize, initial_pc), (cycles - 1, final_pc)] {
         for bit in 0..width {
             let observed = if instance == 0 {
-                bits[instance * base_cols + row.pc()[bit]]
+                bits.get(instance * base_cols + row.pc()[bit])
             } else {
-                bits[instance * base_cols + row.next_pc()[bit]]
+                bits.get(instance * base_cols + row.next_pc()[bit])
             };
             if observed != ((pc >> bit) & 1 == 1) {
                 return Err(RuntimeError::Proof(format!(
@@ -5731,17 +7057,157 @@ pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
             }
         }
     }
-    let proof = prove_lockstep_bits(
-        &bits, &s1[0], &s1[1], &s1[2], &s2[0], &s2[1], &s2[2], &layout, backend,
-    )
+    if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
+        eprintln!(
+            "setup fill+check: {:?} rss={:.2} GiB",
+            setup_started.elapsed(),
+            crate::resident_gib()
+        );
+    }
+    Ok(DynamicSegmentSetup {
+        bits,
+        layout,
+        mask,
+        cycles,
+        row,
+        initial_pc,
+        final_pc,
+    })
+}
+
+pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
+    trace: &magnetar_spec::Trace,
+    width: usize,
+    backend: &B,
+) -> Result<DynamicSegmentProof<B::Commitment, B::Opening>, RuntimeError> {
+    let setup = dynamic_segment_setup(trace, width)?;
+    if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
+        eprintln!("selected rss after setup: {:.2} GiB", crate::resident_gib());
+    }
+    let (_, s1, s2) = gated_shared_matrices_lazy(
+        &setup.row,
+        setup.cycles,
+        Some((setup.initial_pc, setup.final_pc)),
+    )?;
+    if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
+        eprintln!("selected rss after matrices: {:.2} GiB", crate::resident_gib());
+    }
+    let commit_started = std::time::Instant::now();
+    let commitment = backend
+        .commit(&setup.bits)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
+        eprintln!(
+            "selected witness commit: {:?} rss={:.2} GiB",
+            commit_started.elapsed(),
+            crate::resident_gib()
+        );
+    }
+    let claim_started = std::time::Instant::now();
+    let claim = dynamic_claim_for_trace(&setup, trace, &commitment, backend)?;
+    if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
+        eprintln!("selected claim target: {:?}", claim_started.elapsed());
+    }
+    if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
+        eprintln!("selected rss before proof: {:.2} GiB", crate::resident_gib());
+    }
+    let proof = prove_dynamic_segment_proof(
+        &setup,
+        &s1,
+        &s2,
+        backend,
+        None,
+        Some((&claim, &commitment)),
+    )?;
+    if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
+        eprintln!("selected rss after proof: {:.2} GiB", crate::resident_gib());
+    }
+    Ok((proof, setup.layout, setup.mask, setup.cycles))
+}
+
+type SharedMatrices = [magnetar_proof::SharedBlockMatrix; 3];
+
+/// Prove a dynamic segment setup with an explicit streaming level (`None`
+/// selects the automatic memory-bounded level).
+fn prove_dynamic_segment_proof<B: magnetar_proof::BitPcs>(
+    setup: &DynamicSegmentSetup,
+    s1: &SharedMatrices,
+    s2: &SharedMatrices,
+    backend: &B,
+    level: Option<usize>,
+    claim: Option<(&DynamicClaim, &B::Commitment)>,
+) -> Result<LockstepProof<B::Commitment, B::Opening>, RuntimeError> {
+    let proof = match (level, claim) {
+        (Some(level), Some((claim, commitment))) => {
+            magnetar_proof::prove_lockstep_bits_streaming_claim_with_level(
+                &setup.bits,
+                &s1[0],
+                &s1[1],
+                &s1[2],
+                &s2[0],
+                &s2[1],
+                &s2[2],
+                &setup.layout,
+                backend,
+                (&claim.claim, claim.gamma),
+                commitment,
+                level,
+                level,
+            )
+        }
+        (Some(level), None) => magnetar_proof::prove_lockstep_bits_streaming_with_level(
+            &setup.bits,
+            &s1[0],
+            &s1[1],
+            &s1[2],
+            &s2[0],
+            &s2[1],
+            &s2[2],
+            &setup.layout,
+            backend,
+            level,
+            level,
+        ),
+        (None, Some((claim, commitment))) => magnetar_proof::prove_lockstep_bits_streaming_claim(
+            &setup.bits,
+            &s1[0],
+            &s1[1],
+            &s1[2],
+            &s2[0],
+            &s2[1],
+            &s2[2],
+            &setup.layout,
+            backend,
+            (&claim.claim, claim.gamma),
+            commitment,
+        ),
+        (None, None) => magnetar_proof::prove_lockstep_bits_streaming(
+            &setup.bits,
+            &s1[0],
+            &s1[1],
+            &s1[2],
+            &s2[0],
+            &s2[1],
+            &s2[2],
+            &setup.layout,
+            backend,
+        ),
+    }
     .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    Ok((proof, layout, mask, cycles))
+    Ok(proof.0)
 }
 
 /// Virtual-Spartan-style selected verifier: check the public CPU matrices/PCS
 /// from the proof, reconstruct the expected witness MLE from the claim rows,
-/// and bind the proof segment claims through the layout identity.
-pub fn verify_dynamic_segments_against_rows<B: magnetar_proof::BitPcs + Sync>(
+/// Bind every dynamic segment claim to the witness derived from the trace.
+///
+/// Each segment is evaluated on its own from the per-cycle row witnesses, and
+/// only the columns that can be nonzero are visited. The previous aggregate
+/// check materialized the whole `cycles * base_cols` bit witness and evaluated
+/// its MLE in one pass (`2^29` bits at RV64 `2^16`), which dominated proof
+/// verification; the per-segment form is also strictly stronger, because every
+/// claim is checked individually instead of once after summing with `eq` weights.
+fn bind_dynamic_segments<B: magnetar_proof::BitPcs + Sync>(
     trace: &magnetar_spec::Trace,
     claims: &SelectedCpuClaims<B::Commitment, B::Opening>,
     backend: &B,
@@ -5751,6 +7217,8 @@ where
     B::Commitment: Sync,
     B::Opening: Sync,
 {
+    let profile = std::env::var_os("MAGNETAR_PROFILE_VERIFY").is_some();
+    let started = std::time::Instant::now();
     let rows = mixed_alu_branch_rows_from_trace_dynamic(trace, width)?;
     let final_pc = trace.final_state.pc;
     let mut mask = mixed_rows_component_mask(&rows);
@@ -5761,40 +7229,8 @@ where
         mask |= MIXED_BRANCH;
     }
     let cycles = rows.len().next_power_of_two().max(2);
-    let initial_pc = rows[0].0;
     let original = DynamicMixedRow::build(mask, width)?;
     let (row, mapping, layout) = segmented_dynamic_row(mask, width, cycles)?;
-    let (base_cols, _, _) = gated_shared_matrices(&row, cycles, Some((initial_pc, final_pc)))?;
-    let mut bits = Vec::with_capacity(cycles * base_cols);
-    for index in 0..cycles {
-        let (pc, mut input) = if index < rows.len() {
-            rows[index]
-        } else {
-            (final_pc, dynamic_padding_input(mask, final_pc))
-        };
-        if index + 1 == rows.len() && final_pc == pc && mask & MIXED_JUMP == 0 {
-            input = MixedAluBranchInput::Fetch {
-                left: 0,
-                right: 0,
-                imm: 0,
-                kind: crate::branch_row::BranchKind::Beq,
-            };
-        }
-        let correction = row_pc_correction(trace.rows.get(index), &input);
-        let source = original.witness_at(pc, &input, correction)?;
-        let mut block = vec![false; base_cols];
-        for (from, to) in mapping.iter().enumerate() {
-            if source[from] {
-                block[*to] = true;
-            }
-        }
-        bits.extend(block);
-    }
-    if bits.len() != layout.total_bits {
-        return Err(RuntimeError::Proof(
-            "dynamic segment layout does not match witness bits".into(),
-        ));
-    }
     let ry = verify_dynamic_segments_public_point(claims, backend)?;
     if ry.len() != layout.total_bits.trailing_zeros() as usize {
         return Err(RuntimeError::Proof("dynamic segment point length".into()));
@@ -5802,20 +7238,172 @@ where
     if claims.proof.segments.len() != layout.segments.len() {
         return Err(RuntimeError::Proof("dynamic segment claim count".into()));
     }
-    let expected = magnetar_proof::eval_bits_mle(&bits, &ry)
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    let reconstructed = magnetar_proof::virtual_spartan::reconstruct_segment_claim(
-        &layout,
-        &claims.proof.segments,
-        &ry,
-    )
-    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    if expected != reconstructed {
-        return Err(RuntimeError::Proof(
-            "dynamic virtual segment claims do not match witness".into(),
-        ));
+    let block_cols = layout.total_bits / cycles;
+    if block_cols == 0 || !block_cols.is_power_of_two() {
+        return Err(RuntimeError::Proof("dynamic segment block shape".into()));
+    }
+    let log_block = block_cols.trailing_zeros() as usize;
+
+    // Columns that can ever be set: the relation's variables plus the PC
+    // columns. Everything else in a row is zero and contributes nothing.
+    let mut support = Vec::new();
+    for relation_row in &row.relation.rows {
+        support.extend(relation_row.a.iter().copied());
+        support.extend(relation_row.b.iter().copied());
+        support.extend(relation_row.c.iter().copied());
+    }
+    support.extend(row.pc.iter().copied());
+    support.extend(row.next_pc.iter().copied());
+    support.push(row.one);
+    support.sort_unstable();
+    support.dedup();
+    if let Some(last) = support.last() {
+        if *last >= original.relation.num_vars || *last >= mapping.len() {
+            return Err(RuntimeError::Proof("dynamic segment support shape".into()));
+        }
+    }
+    let to_of: Vec<usize> = support.iter().map(|from| mapping[*from]).collect();
+
+    let evaluate_segment = |segment_index: usize,
+                            low: &[F2_128],
+                            high: &[F2_128],
+                            phase_shift: usize|
+     -> Result<F2_128, RuntimeError> {
+        let segment = &layout.segments[segment_index];
+        if segment.offset % block_cols != 0 || segment.len % block_cols != 0 {
+            return Err(RuntimeError::Proof("dynamic segment layout shape".into()));
+        }
+        let start = segment.offset / block_cols;
+        let count = segment.len / block_cols;
+        if count == 0 || start + count > cycles {
+            return Err(RuntimeError::Proof("dynamic segment layout shape".into()));
+        }
+        let phase_mask = (1usize << phase_shift) - 1;
+        let mut scratch = WitnessScratch::new(original.relation.num_vars);
+        let mut value = F2_128::from(0u64);
+        for within in 0..count {
+            let index = start + within;
+            let (pc, mut input) = if index < rows.len() {
+                rows[index]
+            } else {
+                (final_pc, dynamic_padding_input(mask, final_pc))
+            };
+            if index + 1 == rows.len() && final_pc == pc && mask & MIXED_JUMP == 0 {
+                input = MixedAluBranchInput::Fetch {
+                    left: 0,
+                    right: 0,
+                    imm: 0,
+                    kind: crate::branch_row::BranchKind::Beq,
+                };
+            }
+            let correction = row_pc_correction(trace.rows.get(index), &input);
+            original.witness_at_scratch(&mut scratch, pc, &input, correction)?;
+            let source = &scratch.bits;
+            let low_phase = (within & phase_mask) << log_block;
+            let mut inner = F2_128::from(0u64);
+            for (slot, from) in support.iter().enumerate() {
+                if source[*from] {
+                    inner = inner + low[low_phase | to_of[slot]];
+                }
+            }
+            let weight = high[(index - start) >> phase_shift];
+            value = value + weight * inner;
+        }
+        Ok(value)
+    };
+
+    // All segments of a dynamic layout share one size, so the two-level
+    // equality tables and the cycle/column split are computed once.
+    let size_bits = layout.segments[0].len.trailing_zeros() as usize;
+    if size_bits < log_block || layout.segments.iter().any(|segment| segment.len != layout.segments[0].len) {
+        return Err(RuntimeError::Proof("dynamic segment shape".into()));
+    }
+    let low_bits = size_bits.min(16);
+    let phase_shift = low_bits - log_block;
+    let low = eq_table(&ry[..low_bits]);
+    let high = eq_table(&ry[low_bits..size_bits]);
+    let workers = std::env::var("MAGNETAR_VERIFY_WORKERS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|count| count.get())
+                .unwrap_or(1)
+        })
+        .max(1)
+        .min(layout.segments.len().max(1));
+    if workers > 1 {
+        let segment_count = layout.segments.len();
+        let names = &layout.segments;
+        let chunk = segment_count.div_ceil(workers);
+        std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(workers);
+            for first in (0..segment_count).step_by(chunk) {
+                let last = (first + chunk).min(segment_count);
+                let evaluate_segment = &evaluate_segment;
+                let low = &low;
+                let high = &high;
+                handles.push(scope.spawn(move || {
+                    for index in first..last {
+                        let expected = evaluate_segment(index, low, high, phase_shift)?;
+                        if claims.proof.segments[index].value != expected {
+                            return Err(RuntimeError::Proof(format!(
+                                "dynamic segment {} does not match claim witness",
+                                names[index].name
+                            )));
+                        }
+                    }
+                    Ok::<(), RuntimeError>(())
+                }));
+            }
+            for handle in handles {
+                handle.join().expect("dynamic segment worker")?;
+            }
+            Ok::<(), RuntimeError>(())
+        })
+    } else {
+        for index in 0..layout.segments.len() {
+            let expected = evaluate_segment(index, &low, &high, phase_shift)?;
+            if claims.proof.segments[index].value != expected {
+                return Err(RuntimeError::Proof(format!(
+                    "dynamic segment {} does not match claim witness",
+                    layout.segments[index].name
+                )));
+            }
+        }
+        Ok::<(), RuntimeError>(())
+    }?;
+    if profile {
+        eprintln!("dynamic segment binding: {:?}", started.elapsed());
     }
     Ok(())
+}
+
+fn eq_table(point: &[F2_128]) -> Vec<F2_128> {
+    let mut values = vec![F2_128::from(1u64)];
+    for challenge in point.iter().rev() {
+        let one_plus = F2_128::from(1u64) + *challenge;
+        let mut next = Vec::with_capacity(values.len() * 2);
+        for value in &values {
+            next.push(*value * one_plus);
+            next.push(*value * *challenge);
+        }
+        values = next;
+    }
+    values
+}
+
+pub fn verify_dynamic_segments_against_rows<B: magnetar_proof::BitPcs + Sync>(
+    trace: &magnetar_spec::Trace,
+    claims: &SelectedCpuClaims<B::Commitment, B::Opening>,
+    backend: &B,
+    width: usize,
+) -> Result<(), RuntimeError>
+where
+    B::Commitment: Sync,
+    B::Opening: Sync,
+{
+    bind_dynamic_segments(trace, claims, backend, width)
 }
 
 /// Verify a dynamic selected proof from its serialized-mask/layout metadata,
@@ -5840,7 +7428,54 @@ where
     B::Commitment: Sync,
     B::Opening: Sync,
 {
-    use magnetar_proof::verify_lockstep_bits_with_replacements_point;
+    // The proof's inner sum-check carries the folded claim; reconstruct its
+    // coefficient from the commitment and use the target stated in the proof.
+    // The target itself is authenticated by the claim layer (see
+    // `verify_dynamic_claim_binding`).
+    let context = match &claims.claim_binding {
+        Some(binding) => {
+            let matrix_cycles = if claims.matrix_cycles == 0 {
+                claims.cycles
+            } else {
+                claims.matrix_cycles
+            };
+            let schema = dynamic_claim_schema(claims.mask, claims.width, matrix_cycles)?;
+            if schema.root != binding.columns_root {
+                return Err(RuntimeError::Proof(
+                    "dynamic claim column set mismatch".into(),
+                ));
+            }
+            let (row_point, alpha, gamma) = dynamic_claim_challenges(
+                &backend.commitment_bytes(&claims.proof.commitment),
+                &schema.root,
+                matrix_cycles.trailing_zeros() as usize,
+            );
+            Some((
+                dynamic_claim_structure(&schema, &row_point, alpha, binding.target),
+                gamma,
+            ))
+        }
+        None => None,
+    };
+    verify_dynamic_segments_public_claim_point(
+        claims,
+        context.as_ref().map(|(claim, gamma)| (claim, *gamma)),
+        backend,
+    )
+}
+
+/// Claim-aware form of [`verify_dynamic_segments_public_point`]: the caller
+/// supplies the folded claim and its batching coefficient.
+pub fn verify_dynamic_segments_public_claim_point<B: magnetar_proof::BitPcs + Sync>(
+    claims: &SelectedCpuClaims<B::Commitment, B::Opening>,
+    claim: Option<(&magnetar_proof::stream::LinearClaim, F2_128)>,
+    backend: &B,
+) -> Result<Vec<F2_128>, RuntimeError>
+where
+    B::Commitment: Sync,
+    B::Opening: Sync,
+{
+    use magnetar_proof::verify_lockstep_bits_with_replacements_claim_point;
 
     if claims.op != SelectedOp::Dynamic {
         return Err(RuntimeError::Proof(
@@ -5858,7 +7493,7 @@ where
         matrix_cycles,
         Some((claims.initial_pc, claims.final_pc)),
     )?;
-    verify_lockstep_bits_with_replacements_point(
+    verify_lockstep_bits_with_replacements_claim_point(
         &s1[0],
         &s1[1],
         &s1[2],
@@ -5869,6 +7504,7 @@ where
         &claims.proof,
         backend,
         &[],
+        claim,
     )
     .map_err(|error| RuntimeError::Proof(error.to_string()))
 }
@@ -5957,133 +7593,7 @@ where
     B::Commitment: Sync,
     B::Opening: Sync,
 {
-    let matrix_cycles = if claims.matrix_cycles == 0 {
-        claims.cycles
-    } else {
-        claims.matrix_cycles
-    };
-    let (_, mapping, layout) = segmented_dynamic_row(claims.mask, claims.width, matrix_cycles)?;
-    let ry = verify_dynamic_segments_public_point(claims, backend)?;
-    if claims.proof.segments.len() != layout.segments.len() {
-        return Err(RuntimeError::Proof("dynamic segment count mismatch".into()));
-    }
-    let block_cols = layout.total_bits / matrix_cycles;
-    let rows = mixed_alu_branch_rows_from_trace_dynamic(trace, claims.width)?;
-    let final_pc = trace.final_state.pc;
-    let original = DynamicMixedRow::build(claims.mask, claims.width)?;
-    let block_for = |cycle: usize| -> Result<Vec<bool>, RuntimeError> {
-        let (pc, mut input) = if cycle < rows.len() {
-            rows[cycle]
-        } else {
-            (final_pc, dynamic_padding_input(claims.mask, final_pc))
-        };
-        if cycle + 1 == rows.len() && final_pc == pc && claims.mask & MIXED_JUMP == 0 {
-            input = MixedAluBranchInput::Fetch {
-                left: 0,
-                right: 0,
-                imm: 0,
-                kind: crate::branch_row::BranchKind::Beq,
-            };
-        }
-        let correction = row_pc_correction(trace.rows.get(cycle), &input);
-        let source = original.witness_at(pc, &input, correction)?;
-        let mut block = vec![false; block_cols];
-        for (from, to) in mapping.iter().enumerate() {
-            if source[from] {
-                block[*to] = true;
-            }
-        }
-        Ok(block)
-    };
-    let workers = std::thread::available_parallelism()
-        .map(|count| count.get().min(8))
-        .unwrap_or(1)
-        .max(1);
-    let blocks = if matrix_cycles >= 1024 && workers > 1 {
-        std::thread::scope(|scope| {
-            let chunk = matrix_cycles.div_ceil(workers);
-            let mut handles = Vec::with_capacity(workers);
-            for start in (0..matrix_cycles).step_by(chunk) {
-                let end = (start + chunk).min(matrix_cycles);
-                let block_for = &block_for;
-                handles.push(scope.spawn(move || {
-                    (start..end)
-                        .map(block_for)
-                        .collect::<Result<Vec<_>, RuntimeError>>()
-                }));
-            }
-            let mut blocks = Vec::with_capacity(matrix_cycles);
-            for handle in handles {
-                blocks.extend(handle.join().expect("dynamic router worker")?);
-            }
-            Ok::<_, RuntimeError>(blocks)
-        })?
-    } else {
-        (0..matrix_cycles)
-            .map(block_for)
-            .collect::<Result<Vec<_>, _>>()?
-    };
-    let check_segment = |segment_index: usize| -> Result<(), RuntimeError> {
-        let segment = &layout.segments[segment_index];
-        let start = segment.offset / block_cols;
-        let count = segment.len / block_cols;
-        if segment.offset % block_cols != 0
-            || count == 0
-            || start + count > blocks.len()
-            || count * block_cols != segment.len
-        {
-            return Err(RuntimeError::Proof("dynamic segment layout shape".into()));
-        }
-        let mut bits = Vec::with_capacity(segment.len);
-        for block in &blocks[start..start + count] {
-            bits.extend_from_slice(block);
-        }
-        let size_bits = segment.len.trailing_zeros() as usize;
-        let expected = bits
-            .iter()
-            .enumerate()
-            .fold(F2_128::from(0u64), |sum, (index, bit)| {
-                if !*bit {
-                    return sum;
-                }
-                let index_bits = (0..size_bits)
-                    .map(|bit| F2_128::from(((index >> bit) & 1) as u64))
-                    .collect::<Vec<_>>();
-                sum + eq_bits(&ry[..size_bits], &index_bits)
-            });
-        if claims.proof.segments[segment_index].value != expected {
-            return Err(RuntimeError::Proof(format!(
-                "dynamic segment {} does not match claim witness",
-                segment.name
-            )));
-        }
-        Ok(())
-    };
-    if layout.segments.len() >= 1024 && workers > 1 {
-        std::thread::scope(|scope| {
-            let chunk = layout.segments.len().div_ceil(workers);
-            let mut handles = Vec::with_capacity(workers);
-            for start in (0..layout.segments.len()).step_by(chunk) {
-                let end = (start + chunk).min(layout.segments.len());
-                let check_segment = &check_segment;
-                handles.push(scope.spawn(move || {
-                    for index in start..end {
-                        check_segment(index)?;
-                    }
-                    Ok::<(), RuntimeError>(())
-                }));
-            }
-            for handle in handles {
-                handle.join().expect("dynamic segment worker")?;
-            }
-            Ok(())
-        })
-    } else {
-        for index in 0..layout.segments.len() {
-            check_segment(index)?;
-        }
-        Ok(())
-    }
+    bind_dynamic_segments(trace, claims, backend, claims.width)
 }
 
 /// Proof-only dynamic claim verification: authenticate the ClaimProof rows,
@@ -6101,11 +7611,6 @@ where
     if claim_proof.root != statement.trace_claim_root {
         return Err(RuntimeError::Proof(
             "claim proof root does not match the statement".into(),
-        ));
-    }
-    if claims.claim_root != [0u8; 32] && claims.claim_root != claim_proof.root {
-        return Err(RuntimeError::Proof(
-            "selected claim root does not match the claim proof".into(),
         ));
     }
     let rows = claim_proof
@@ -6151,7 +7656,7 @@ where
     B::Commitment: Sync,
     B::Opening: Sync,
 {
-    use magnetar_proof::verify_lockstep_bits_with_witness;
+    use magnetar_proof::verify_lockstep_bits_with_witness_claim;
 
     let rows = mixed_alu_branch_rows_from_trace_dynamic(trace, width)?;
     let final_pc = trace.final_state.pc;
@@ -6205,8 +7710,24 @@ where
     if profile {
         eprintln!("selected verify bits: {:?}", bits_started.elapsed());
     }
+    let claim_started = std::time::Instant::now();
+    let claim_rows = trace
+        .rows
+        .iter()
+        .map(crate::trace_claims::TraceClaim::from_row)
+        .collect::<Vec<_>>();
+    let claim = dynamic_claim_for_rows(
+        mask,
+        width,
+        cycles,
+        &claim_rows,
+        &backend.commitment_bytes(&proof.commitment),
+    )?;
+    if profile {
+        eprintln!("selected verify claim: {:?}", claim_started.elapsed());
+    }
     let started = std::time::Instant::now();
-    verify_lockstep_bits_with_witness(
+    verify_lockstep_bits_with_witness_claim(
         &s1[0],
         &s1[1],
         &s1[2],
@@ -6216,7 +7737,8 @@ where
         &expected_layout,
         proof,
         backend,
-        &bits,
+        &magnetar_proof::PackedBits::from_bools(&bits),
+        Some((&claim.claim, claim.gamma)),
     )
     .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     if profile {
@@ -6261,7 +7783,7 @@ pub fn verify_gated_dual_batch_bits<B: magnetar_proof::BitPcs>(
     let (base_cols, s1, s2) = gated_shared_matrices(&row, rows.len(), None)?;
     let bits = gated_batch_bits(&row, base_cols, rows);
     let expected = backend
-        .commit(&bits)
+        .commit(&magnetar_proof::PackedBits::from_bools(&bits))
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     if backend.commitment_bytes(&expected) != backend.commitment_bytes(&proof.commitment) {
         return Err(RuntimeError::Proof(
@@ -6317,7 +7839,7 @@ pub fn verify_gated_dual_batch_bits_with_pc<B: magnetar_proof::BitPcs>(
         gated_shared_matrices(&row, rows.len(), Some((initial_pc, final_pc)))?;
     let bits = gated_batch_bits(&row, base_cols, rows);
     let expected = backend
-        .commit(&bits)
+        .commit(&magnetar_proof::PackedBits::from_bools(&bits))
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     if backend.commitment_bytes(&expected) != backend.commitment_bytes(&proof.commitment) {
         return Err(RuntimeError::Proof(
@@ -6398,7 +7920,7 @@ mod tests {
     fn dynamic_segmented_trace_binds_witness() {
         use magnetar_executor::execute;
         use magnetar_pcs::P3SharedPcs;
-        use magnetar_proof::RingSwitchPackedBitPcs;
+        use magnetar_proof::{BitPcs, RingSwitchPackedBitPcs};
         use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 
         let backend =
@@ -6479,14 +8001,27 @@ mod tests {
         for program in programs {
             let trace = execute(&program, config.clone()).unwrap();
             let (proof, layout, mask, cycles) =
-                prove_dynamic_segmented_trace(&trace, 8, &backend).unwrap();
+                prove_dynamic_segmented_trace(&trace, 64, &backend).unwrap();
             assert!(!layout.segments.is_empty());
             let claims = selected_segment_claims(&layout, &proof).unwrap();
             assert_eq!(claims.len(), layout.segments.len());
-            verify_dynamic_segmented_trace(&trace, &proof, &layout, 8, &backend).unwrap();
+            verify_dynamic_segmented_trace(&trace, &proof, &layout, 64, &backend).unwrap();
+            let claim_rows = trace
+                .rows
+                .iter()
+                .map(crate::trace_claims::TraceClaim::from_row)
+                .collect::<Vec<_>>();
+            let claim = dynamic_claim_for_rows(
+                mask,
+                64,
+                cycles,
+                &claim_rows,
+                &backend.commitment_bytes(&proof.commitment),
+            )
+            .unwrap();
             let selected = SelectedCpuClaims {
                 op: SelectedOp::Dynamic,
-                width: 8,
+                width: 64,
                 cycles: trace.rows.len().next_power_of_two().max(2),
                 matrix_cycles: cycles,
                 mask,
@@ -6494,8 +8029,10 @@ mod tests {
                 final_pc: trace.final_state.pc,
                 layout: magnetar_constraint::WitnessLayout::default(),
                 segments: claims,
-                claim_root: [0u8; 32],
-                claim_openings: Vec::new(),
+                                claim_binding: Some(DynamicClaimBinding {
+                    target: claim.claim.target,
+                    columns_root: claim.columns_root,
+                }),
                 proof: proof.clone(),
             };
             verify_dynamic_segments_public(&selected, &backend).unwrap();
@@ -6509,6 +8046,410 @@ mod tests {
             tampered.proof.segments[0].value =
                 tampered.proof.segments[0].value + magnetar_constraint::F2_128::from(1u64);
             assert!(verify_dynamic_segments_public(&tampered, &backend).is_err());
+        }
+    }
+
+    #[test]
+    fn claim_emission_stays_inside_the_schema() {
+        use magnetar_executor::execute;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+        let config = MachineConfig {
+            entry: 0x1000,
+            rom_base: 0x1000,
+            ram_base: 0x1000_0000,
+            ram_size: 0x200,
+            stack_top: 0x1000_0200,
+            max_cycles: 100,
+        };
+        let programs = vec![
+            vec![
+                Instruction { op: Op::Addi, rd: 1, rs1: 1, rs2: 0, imm: 5, shamt: 0 }.encode(),
+                Instruction { op: Op::Slli, rd: 1, rs1: 1, rs2: 0, imm: 0, shamt: 2 }.encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+            vec![
+                Instruction { op: Op::Lui, rd: 20, rs1: 0, rs2: 0, imm: 0x1000_0000, shamt: 0 }.encode(),
+                Instruction { op: Op::Lw, rd: 6, rs1: 20, rs2: 0, imm: 2, shamt: 0 }.encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+            vec![
+                Instruction { op: Op::Addi, rd: 1, rs1: 0, rs2: 0, imm: 3, shamt: 0 }.encode(),
+                Instruction { op: Op::Mul, rd: 3, rs1: 1, rs2: 1, imm: 0, shamt: 0 }.encode(),
+                Instruction { op: Op::Beq, rd: 0, rs1: 1, rs2: 1, imm: 4, shamt: 0 }.encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        ];
+        for rom in programs {
+            let trace = execute(&ProgramImage::new(0x1000, rom), config.clone()).unwrap();
+            let setup = dynamic_segment_setup(&trace, 64).unwrap();
+            let schema = dynamic_claim_schema(setup.mask, 64, setup.cycles).unwrap();
+            let original = DynamicMixedRow::build(setup.mask, 64).unwrap();
+            let (_, mapping, _) = segmented_dynamic_row(setup.mask, 64, setup.cycles).unwrap();
+            let claims = trace
+                .rows
+                .iter()
+                .map(crate::trace_claims::TraceClaim::from_row)
+                .collect::<Vec<_>>();
+            let inputs = mixed_alu_branch_rows_and_flags_from_claims(&claims).unwrap();
+            let mut emissions = Vec::new();
+            for (index, (pc, input, _)) in inputs.iter().enumerate() {
+                claim_emission(
+                    &original,
+                    &mapping,
+                    input,
+                    *pc,
+                    claims[index].next_pc,
+                    claims[index].instruction_len,
+                    &mut emissions,
+                );
+                let mut seen = vec![false; schema.block_cols];
+                let mut emitted_value = vec![false; schema.block_cols];
+                for &(column, value) in &emissions {
+                    assert!(
+                        schema.columns.binary_search(&column).is_ok(),
+                        "column {column} missing from the claim schema"
+                    );
+                    // A column can be claimed by several fields; the dedupe in
+                    // the row sums keeps the first value, so duplicates must
+                    // agree.
+                    if seen[column] {
+                        assert!(
+                            emitted_value[column] == value,
+                            "column {column} emitted twice with different values"
+                        );
+                        continue;
+                    }
+                    seen[column] = true;
+                    emitted_value[column] = value;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dynamic_claim_binding_verifies_without_the_witness() {
+        use magnetar_executor::execute;
+        use magnetar_pcs::P3SharedPcs;
+        use magnetar_proof::{BitPcs, RingSwitchPackedBitPcs};
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+        let backend =
+            RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
+        let config = MachineConfig {
+            entry: 0x1000,
+            rom_base: 0x1000,
+            ram_base: 0x1000_0000,
+            ram_size: 0x100,
+            stack_top: 0x1000_0100,
+            max_cycles: 10_000,
+        };
+        let mut rom = Vec::new();
+        for index in 0..8u64 {
+            rom.push(
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: index as i64 + 1,
+                    shamt: 0,
+                }
+                .encode(),
+            );
+        }
+        rom.push(Instruction::new(Op::Ecall).encode());
+        let trace = execute(&ProgramImage::new(0x1000, rom), config).unwrap();
+        let claims = prove_dynamic_cpu_claims(&trace, 64, &backend).unwrap();
+        let rows = trace
+            .rows
+            .iter()
+            .map(crate::trace_claims::TraceClaim::from_row)
+            .collect::<Vec<_>>();
+        // Cross-check: the claim target must equal sum(coeff * witness).
+        {
+            let setup = dynamic_segment_setup(&trace, 64).unwrap();
+            let schema = dynamic_claim_schema(setup.mask, 64, setup.cycles).unwrap();
+            let (row_point, alpha, _gamma) = dynamic_claim_challenges(
+                &backend.commitment_bytes(&claims.proof.commitment),
+                &schema.root,
+                setup.cycles.trailing_zeros() as usize,
+            );
+            let original = DynamicMixedRow::build(setup.mask, 64).unwrap();
+            let (_, mapping, _) = segmented_dynamic_row(setup.mask, 64, setup.cycles).unwrap();
+            let col_sum = dynamic_claim_sums_with(
+                &original,
+                &mapping,
+                &rows,
+                setup.mask,
+                setup.cycles,
+                &schema,
+                &row_point,
+            )
+            .unwrap();
+            let claim = dynamic_claim_from_sums(&schema, &row_point, alpha, &col_sum);
+            let dense = claim.slot_weights(schema.block_cols);
+            let log_block = schema.block_cols.trailing_zeros() as usize;
+            let weights = eq_table(&row_point);
+            let mut total = F2_128::from(0u64);
+            for index in setup.bits.iter_set() {
+                total = total
+                    + weights[index >> log_block] * dense[index & (schema.block_cols - 1)];
+            }
+            assert_eq!(total, claim.target, "claim target vs witness dot product");
+        }
+        let claim = dynamic_claim_for_selected(&claims, &rows, &backend).unwrap();
+        verify_dynamic_claim_binding_prepared(&claims, &claim, &backend).unwrap();
+
+        let mut tampered_target = claims.clone();
+        if let Some(binding) = tampered_target.claim_binding.as_mut() {
+            binding.target = binding.target + F2_128::from(1u64);
+        }
+        let prepared = dynamic_claim_for_selected(&tampered_target, &rows, &backend).unwrap();
+        assert!(verify_dynamic_claim_binding_prepared(&tampered_target, &prepared, &backend).is_err());
+
+        // `pc`/operands are claimed (the register values are bound by the
+        // register-claim layer), so a tampered PC must be rejected.
+        let mut tampered_rows = rows.clone();
+        tampered_rows[2].pc ^= 4;
+        let prepared = dynamic_claim_for_selected(&claims, &tampered_rows, &backend).unwrap();
+        assert!(verify_dynamic_claim_binding_prepared(&claims, &prepared, &backend).is_err());
+
+        let mut tampered_operands = rows.clone();
+        tampered_operands[2].rs1_value ^= 1;
+        let prepared = dynamic_claim_for_selected(&claims, &tampered_operands, &backend).unwrap();
+        assert!(verify_dynamic_claim_binding_prepared(&claims, &prepared, &backend).is_err());
+
+        let mut tampered_opening = claims.clone();
+        tampered_opening.proof.opening.s_hat_v[0] =
+            tampered_opening.proof.opening.s_hat_v[0] + F2_128::from(1u64);
+        let prepared = dynamic_claim_for_selected(&tampered_opening, &rows, &backend).unwrap();
+        assert!(verify_dynamic_claim_binding_prepared(&tampered_opening, &prepared, &backend).is_err());
+
+        let mut tampered_witness_bit = claims.clone();
+        tampered_witness_bit.proof.inner.round_polys[0][0] =
+            tampered_witness_bit.proof.inner.round_polys[0][0] + F2_128::from(1u64);
+        let prepared = dynamic_claim_for_selected(&tampered_witness_bit, &rows, &backend).unwrap();
+        assert!(verify_dynamic_claim_binding_prepared(&tampered_witness_bit, &prepared, &backend).is_err());
+    }
+
+    #[test]
+    fn claim_rows_decode_matches_the_trace_decoder() {
+        use magnetar_executor::execute;
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+        let config = MachineConfig {
+            entry: 0x1000,
+            rom_base: 0x1000,
+            ram_base: 0x1000_0000,
+            ram_size: 0x100,
+            stack_top: 0x1000_0100,
+            max_cycles: 10_000,
+        };
+        let programs = vec![
+            {
+                let mut rom = Vec::new();
+                for index in 0..8u64 {
+                    rom.push(
+                        Instruction {
+                            op: Op::Addi,
+                            rd: 1,
+                            rs1: 1,
+                            rs2: 0,
+                            imm: index as i64 + 1,
+                            shamt: 0,
+                        }
+                        .encode(),
+                    );
+                }
+                rom.push(Instruction::new(Op::Ecall).encode());
+                rom
+            },
+            vec![
+                Instruction {
+                    op: Op::Lui,
+                    rd: 20,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0x1000_0000,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Lw,
+                    rd: 6,
+                    rs1: 20,
+                    rs2: 0,
+                    imm: 2,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 1,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Addi,
+                    rd: 2,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction {
+                    op: Op::Slli,
+                    rd: 3,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: 0,
+                    shamt: 3,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        ];
+        for (index, rom) in programs.into_iter().enumerate() {
+            let trace = execute(&ProgramImage::new(0x1000, rom), config.clone()).unwrap();
+            let from_trace = mixed_alu_branch_rows_from_trace_dynamic(&trace, 64).unwrap();
+            let claims = trace
+                .rows
+                .iter()
+                .map(crate::trace_claims::TraceClaim::from_row)
+                .collect::<Vec<_>>();
+            let decoded = mixed_alu_branch_rows_and_flags_from_claims(&claims)
+                .map(|rows| rows.into_iter().map(|(pc, input, _)| (pc, input)).collect::<Vec<_>>());
+            assert_eq!(decoded.as_ref(), Some(&from_trace), "program {index}");
+        }
+    }
+
+    #[test]
+    fn streaming_lockstep_proof_matches_the_eager_proof_bytes() {
+        use magnetar_executor::execute;
+        use magnetar_pcs::P3SharedPcs;
+        use magnetar_proof::{prove_lockstep_bits_with_point, BitPcs, RingSwitchPackedBitPcs};
+        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+        let backend =
+            RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
+        let config = MachineConfig {
+            entry: 0x1000,
+            rom_base: 0x1000,
+            ram_base: 0x1000_0000,
+            ram_size: 0x100,
+            stack_top: 0x1000_0100,
+            max_cycles: 10_000,
+        };
+        let mut rom = Vec::new();
+        for index in 0..8u64 {
+            rom.push(
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: index as i64 + 1,
+                    shamt: 0,
+                }
+                .encode(),
+            );
+        }
+        rom.push(Instruction::new(Op::Ecall).encode());
+        let program = ProgramImage::new(0x1000, rom);
+        let trace = execute(&program, config).unwrap();
+
+        for width in [64usize] {
+            let setup = dynamic_segment_setup(&trace, width).unwrap();
+            let statement = Some((setup.initial_pc, setup.final_pc));
+            let (_, eager1, eager2) =
+                gated_shared_matrices(&setup.row, setup.cycles, statement).unwrap();
+            let (eager, eager_ry) = prove_lockstep_bits_with_point(
+                &setup.bits,
+                &eager1[0],
+                &eager1[1],
+                &eager1[2],
+                &eager2[0],
+                &eager2[1],
+                &eager2[2],
+                &setup.layout,
+                &backend,
+            )
+            .unwrap();
+            let eager_bytes = bincode::serialize(&eager).unwrap();
+            let (_, lazy1, lazy2) =
+                gated_shared_matrices_lazy(&setup.row, setup.cycles, statement).unwrap();
+            let auto =
+                prove_dynamic_segment_proof(&setup, &lazy1, &lazy2, &backend, None, None).unwrap();
+            assert_eq!(bincode::serialize(&auto).unwrap(), eager_bytes, "width {width}");
+            let mut levels = vec![0usize, 1, 2, 3, 5, 7];
+            let max_rows = magnetar_proof::SpartanMatrix::rows(&lazy1[0]);
+            levels.push(max_rows.trailing_zeros() as usize);
+            levels.push(usize::MAX / 2);
+            for level in levels {
+                let streamed =
+                    prove_dynamic_segment_proof(&setup, &lazy1, &lazy2, &backend, Some(level), None)
+                        .unwrap_or_else(|error| panic!("width {width} level {level}: {error}"));
+                assert_eq!(
+                    bincode::serialize(&streamed).unwrap(),
+                    eager_bytes,
+                    "width {width} level {level}"
+                );
+                magnetar_proof::verify_lockstep_bits_with_witness(
+                    &eager1[0],
+                    &eager1[1],
+                    &eager1[2],
+                    &eager2[0],
+                    &eager2[1],
+                    &eager2[2],
+                    &setup.layout,
+                    &streamed,
+                    &backend,
+                    &setup.bits,
+                )
+                .unwrap();
+            }
+            let _ = eager_ry;
+
+            // The folded claim must also be level-independent and verify
+            // against the same witness.
+            let commitment = backend.commit(&setup.bits).unwrap();
+            let claim = dynamic_claim_for_trace(&setup, &trace, &commitment, &backend).unwrap();
+            let claimed = prove_dynamic_segment_proof(
+                &setup,
+                &lazy1,
+                &lazy2,
+                &backend,
+                None,
+                Some((&claim, &commitment)),
+            )
+            .unwrap();
+            let claimed_bytes = bincode::serialize(&claimed).unwrap();
+            for level in [0usize, 1, 2, 3, 5, 7, usize::MAX / 2] {
+                let streamed = prove_dynamic_segment_proof(
+                    &setup,
+                    &lazy1,
+                    &lazy2,
+                    &backend,
+                    Some(level),
+                    Some((&claim, &commitment)),
+                )
+                .unwrap_or_else(|error| panic!("claim width {width} level {level}: {error}"));
+                assert_eq!(
+                    bincode::serialize(&streamed).unwrap(),
+                    claimed_bytes,
+                    "claim width {width} level {level}"
+                );
+            }
+            verify_dynamic_segmented_trace(&trace, &claimed, &setup.layout, width, &backend)
+                .unwrap();
         }
     }
 
@@ -6595,105 +8536,9 @@ mod tests {
         ];
         for program in programs {
             let trace = execute(&program, config.clone()).unwrap();
-            let (proof, layout) = prove_dynamic_selected_trace(&trace, 8, &backend).unwrap();
-            verify_dynamic_selected_trace(&trace, &proof, &layout, 8, &backend).unwrap();
+            let (proof, layout) = prove_dynamic_selected_trace(&trace, 64, &backend).unwrap();
+            verify_dynamic_selected_trace(&trace, &proof, &layout, 64, &backend).unwrap();
         }
-    }
-
-    #[test]
-    fn selected_claim_openings_recover_without_trace() {
-        use magnetar_executor::execute;
-        use magnetar_pcs::P3SharedPcs;
-        use magnetar_proof::RingSwitchPackedBitPcs;
-        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
-        let backend =
-            RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
-        let program = ProgramImage::new(
-            0x1000,
-            vec![
-                Instruction {
-                    op: Op::Addi,
-                    rd: 1,
-                    rs1: 0,
-                    rs2: 0,
-                    imm: 7,
-                    shamt: 0,
-                }
-                .encode(),
-                Instruction::new(Op::Ecall).encode(),
-            ],
-        );
-        let trace = execute(
-            &program,
-            MachineConfig {
-                entry: 0x1000,
-                rom_base: 0x1000,
-                ram_base: 0x1000_0000,
-                ram_size: 0x40,
-                stack_top: 0x1000_0040,
-                max_cycles: 10,
-            },
-        )
-        .unwrap();
-        let claims = prove_dynamic_cpu_claims(&trace, 8, &backend).unwrap();
-        let recovered = verify_selected_claim_openings(&claims).unwrap();
-        assert_eq!(recovered.len(), trace.rows.len());
-        assert_eq!(recovered[0].pc, 0x1000);
-        let mut tampered = claims.clone();
-        tampered.claim_openings[0].claim.instruction_len = 2;
-        assert!(verify_selected_claim_openings(&tampered).is_none());
-    }
-
-    #[test]
-    fn selected_claims_bind_to_independent_proof() {
-        use magnetar_executor::execute;
-        use magnetar_pcs::P3SharedPcs;
-        use magnetar_proof::RingSwitchPackedBitPcs;
-        use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
-        let backend =
-            RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
-        let program = ProgramImage::new(
-            0x1000,
-            vec![
-                Instruction {
-                    op: Op::Addi,
-                    rd: 1,
-                    rs1: 0,
-                    rs2: 0,
-                    imm: 7,
-                    shamt: 0,
-                }
-                .encode(),
-                Instruction::new(Op::Ecall).encode(),
-            ],
-        );
-        let trace = execute(
-            &program,
-            MachineConfig {
-                entry: 0x1000,
-                rom_base: 0x1000,
-                ram_base: 0x1000_0000,
-                ram_size: 0x40,
-                stack_top: 0x1000_0040,
-                max_cycles: 10,
-            },
-        )
-        .unwrap();
-        let claims = prove_dynamic_cpu_claims(&trace, 8, &backend).unwrap();
-        let proof = crate::trace_claims::ClaimProof::from_trace(&trace);
-        assert!(verify_selected_claim_binding(&claims, &proof));
-        let recovered = verify_selected_claim_proof(&claims, &proof).unwrap();
-        assert_eq!(recovered.len(), trace.rows.len());
-        verify_selected_claim_consistency(&claims, &recovered).unwrap();
-        let mut bad_link = recovered.clone();
-        bad_link[0].next_pc ^= 2;
-        assert!(verify_selected_claim_consistency(&claims, &bad_link).is_err());
-        let mut bad_len = recovered.clone();
-        bad_len[0].instruction_len = 8;
-        assert!(verify_selected_claim_consistency(&claims, &bad_len).is_err());
-        let mut bad = proof;
-        bad.openings[0].claim.pc ^= 2;
-        assert!(!verify_selected_claim_binding(&claims, &bad));
     }
 
     #[test]
@@ -6731,12 +8576,12 @@ mod tests {
             },
         )
         .unwrap();
-        let claims = prove_dynamic_cpu_claims(&trace, 8, &backend).unwrap();
-        verify_dynamic_segments_against_rows(&trace, &claims, &backend, 8).unwrap();
+        let claims = prove_dynamic_cpu_claims(&trace, 64, &backend).unwrap();
+        verify_dynamic_segments_against_rows(&trace, &claims, &backend, 64).unwrap();
         let mut tampered = claims.clone();
         tampered.proof.segments[0].value =
             tampered.proof.segments[0].value + magnetar_constraint::F2_128::from(1u64);
-        assert!(verify_dynamic_segments_against_rows(&trace, &tampered, &backend, 8).is_err());
+        assert!(verify_dynamic_segments_against_rows(&trace, &tampered, &backend, 64).is_err());
     }
 
     #[test]
@@ -6790,19 +8635,20 @@ mod tests {
         verify_lockstep_bits(&a0, &b0, &c0, &a1, &b1, &c1, &layout, &proof, &direct).unwrap();
 
         let packed = RevealingPackedBitPcs::new(pcs);
-        let p3_commitment = packed.commit(&packed_bits).unwrap();
+        let packed_view = magnetar_proof::PackedBits::from_bools(&packed_bits);
+        let p3_commitment = packed.commit(&packed_view).unwrap();
         let p3_point = (0..8)
             .map(|bit| magnetar_constraint::F2_128::from((bit % 2) as u64))
             .collect::<Vec<_>>();
-        let (p3_value, p3_opening) = packed.open(&packed_bits, &p3_point).unwrap();
+        let (p3_value, p3_opening) = packed.open(&packed_view, &p3_point).unwrap();
         assert!(packed
             .verify(&p3_commitment, &p3_point, p3_value, &p3_opening)
             .unwrap());
-        let commitment = packed.commit(&packed_bits).unwrap();
+        let commitment = packed.commit(&packed_view).unwrap();
         let point = (0..6)
             .map(|bit| magnetar_constraint::F2_128::from((bit % 2) as u64))
             .collect::<Vec<_>>();
-        let (value, opening) = packed.open(&packed_bits, &point).unwrap();
+        let (value, opening) = packed.open(&packed_view, &point).unwrap();
         assert!(packed.verify(&commitment, &point, value, &opening).unwrap());
         let proof =
             prove_lockstep_bits(&packed_bits, &a0, &b0, &c0, &a1, &b1, &c1, &layout, &packed)
@@ -6953,8 +8799,8 @@ mod tests {
         .unwrap();
         let backend =
             RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
-        let (proof, layout) = prove_alu_branch_trace(&trace, 8, &backend).unwrap();
-        verify_alu_branch_trace(&trace, &proof, &layout, 8, &backend).unwrap();
+        let (proof, layout) = prove_alu_branch_trace(&trace, 64, &backend).unwrap();
+        verify_alu_branch_trace(&trace, &proof, &layout, 64, &backend).unwrap();
     }
 
     #[test]
@@ -7006,8 +8852,8 @@ mod tests {
         .unwrap();
         let backend =
             RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
-        let (proof, layout) = prove_alu_branch_trace(&trace, 8, &backend).unwrap();
-        verify_alu_branch_trace(&trace, &proof, &layout, 8, &backend).unwrap();
+        let (proof, layout) = prove_alu_branch_trace(&trace, 64, &backend).unwrap();
+        verify_alu_branch_trace(&trace, &proof, &layout, 64, &backend).unwrap();
     }
 
     #[test]
@@ -7059,8 +8905,8 @@ mod tests {
         .unwrap();
         let backend =
             RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
-        let (proof, layout) = prove_alu_branch_trace(&trace, 8, &backend).unwrap();
-        verify_alu_branch_trace(&trace, &proof, &layout, 8, &backend).unwrap();
+        let (proof, layout) = prove_alu_branch_trace(&trace, 64, &backend).unwrap();
+        verify_alu_branch_trace(&trace, &proof, &layout, 64, &backend).unwrap();
     }
 
     #[test]
@@ -7108,8 +8954,8 @@ mod tests {
         .unwrap();
         let backend =
             RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
-        let (proof, layout) = prove_alu_branch_trace(&trace, 8, &backend).unwrap();
-        verify_alu_branch_trace(&trace, &proof, &layout, 8, &backend).unwrap();
+        let (proof, layout) = prove_alu_branch_trace(&trace, 64, &backend).unwrap();
+        verify_alu_branch_trace(&trace, &proof, &layout, 64, &backend).unwrap();
     }
 
     #[test]
@@ -7157,8 +9003,8 @@ mod tests {
         .unwrap();
         let backend =
             RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
-        let (proof, layout) = prove_alu_branch_trace(&trace, 8, &backend).unwrap();
-        verify_alu_branch_trace(&trace, &proof, &layout, 8, &backend).unwrap();
+        let (proof, layout) = prove_alu_branch_trace(&trace, 64, &backend).unwrap();
+        verify_alu_branch_trace(&trace, &proof, &layout, 64, &backend).unwrap();
     }
 
     #[test]
@@ -7245,9 +9091,9 @@ mod tests {
             },
         )
         .unwrap();
-        let rows = mixed_alu_branch_rows_from_trace_dynamic(&trace, 8).unwrap();
+        let rows = mixed_alu_branch_rows_from_trace_dynamic(&trace, 64).unwrap();
         let mask = mixed_rows_component_mask(&rows);
-        let original = DynamicMixedRow::build(mask, 8).unwrap();
+        let original = DynamicMixedRow::build(mask, 64).unwrap();
         let cycles = rows.len().next_power_of_two().max(2);
         let final_pc = trace.final_state.pc;
         for cycle in 0..cycles {
@@ -7337,9 +9183,9 @@ mod tests {
             },
         )
         .unwrap();
-        let rows = mixed_alu_branch_rows_from_trace(&trace, 8).unwrap();
+        let rows = mixed_alu_branch_rows_from_trace(&trace, 64).unwrap();
         let mask = mixed_rows_component_mask(&rows);
-        let original = DynamicMixedRow::build(mask, 8).unwrap();
+        let original = DynamicMixedRow::build(mask, 64).unwrap();
         for (pc, input) in rows {
             let bits = original.witness_at(pc, &input, false).unwrap();
             if !original.relation.check(&bits) {
@@ -7424,8 +9270,8 @@ mod tests {
         .unwrap();
         let backend =
             RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
-        let (proof, layout) = prove_small_alu_branch_trace(&trace, 8, &backend).unwrap();
-        verify_small_alu_branch_trace(&trace, &proof, &layout, 8, &backend).unwrap();
+        let (proof, layout) = prove_small_alu_branch_trace(&trace, 64, &backend).unwrap();
+        verify_small_alu_branch_trace(&trace, &proof, &layout, 64, &backend).unwrap();
     }
 
     #[test]
@@ -7473,7 +9319,7 @@ mod tests {
         .unwrap();
         let backend =
             RingSwitchPackedBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
-        assert!(prove_small_alu_branch_trace(&trace, 8, &backend).is_err());
+        assert!(prove_small_alu_branch_trace(&trace, 64, &backend).is_err());
     }
 
     #[test]
@@ -7521,8 +9367,8 @@ mod tests {
             );
         }
         eprintln!("final pc={:x}", trace.final_state.pc);
-        let (proof, layout) = prove_alu_branch_trace(&trace, 8, &backend).unwrap();
-        verify_alu_branch_trace(&trace, &proof, &layout, 8, &backend).unwrap();
+        let (proof, layout) = prove_alu_branch_trace(&trace, 64, &backend).unwrap();
+        verify_alu_branch_trace(&trace, &proof, &layout, 64, &backend).unwrap();
     }
 
     #[test]
@@ -7729,7 +9575,7 @@ mod tests {
         let initial = 0x1000;
         let final_pc = initial + 4 * 16;
         let claims =
-            prove_selected_cpu_claims(SelectedOp::Alu, 8, 16, initial, final_pc, &backend).unwrap();
+            prove_selected_cpu_claims(SelectedOp::Alu, 64, 16, initial, final_pc, &backend).unwrap();
         assert_eq!(claims.segments.len(), claims.layout.segments.len());
         verify_selected_cpu_claims(&claims, &backend).unwrap();
         let bytes = bincode::serialize(&claims).unwrap();
@@ -8836,7 +10682,7 @@ mod virtual_spec_tests {
             .collect::<Vec<_>>();
         let backend = DirectBitPcs::new(P3BinaryPcs::new(100));
         let (_, ry) = prove_lockstep_bits_with_point(
-            &bits,
+            &magnetar_proof::PackedBits::from_bools(&bits),
             &va0[0],
             &va0[1],
             &va0[2],
@@ -9618,7 +11464,7 @@ mod projection_tests {
         };
         let trace = execute(&program, config).unwrap();
         let rows =
-            crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, 8).unwrap();
+            crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(&trace, 64).unwrap();
         let cpu = crate::reservation_cpu_row::ReservationCpuRow::new(8);
         let pc_row = crate::pc_transition_row::PcTransitionRow::new(8);
         for (pc, input) in &rows {

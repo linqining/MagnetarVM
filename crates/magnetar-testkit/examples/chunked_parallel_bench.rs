@@ -40,13 +40,13 @@ fn main() {
         for (name, parallel) in [("sequential", false), ("parallel", true)] {
             let started = Instant::now();
             let proof = if parallel {
-                prove_chunked_trace_streaming(&trace, 8, chunk_size).unwrap()
+                prove_chunked_trace_streaming(&trace,64, chunk_size).unwrap()
             } else {
-                prove_chunked_trace_streaming_sequential(&trace, 8, chunk_size).unwrap()
+                prove_chunked_trace_streaming_sequential(&trace,64, chunk_size).unwrap()
             };
             let prove_time = started.elapsed();
             let started = Instant::now();
-            verify_chunked_trace(&trace, &proof, 8).unwrap();
+            verify_chunked_trace(&trace, &proof, 64).unwrap();
             let bytes = bincode::serialize(&proof).unwrap().len();
             println!(
                 "stream chunk={chunk_size} {name}: proof={bytes} prove={prove_time:?} verify={:?}",
@@ -59,13 +59,13 @@ fn main() {
         for (name, parallel) in [("sequential", false), ("parallel", true)] {
             let started = Instant::now();
             let proof = if parallel {
-                prove_chunked_trace(&trace, 8, chunk_size).unwrap()
+                prove_chunked_trace(&trace,64, chunk_size).unwrap()
             } else {
-                prove_chunked_trace_compact_sequential(&trace, 8, chunk_size).unwrap()
+                prove_chunked_trace_compact_sequential(&trace,64, chunk_size).unwrap()
             };
             let prove_time = started.elapsed();
             let started = Instant::now();
-            verify_chunked_trace(&trace, &proof, 8).unwrap();
+            verify_chunked_trace(&trace, &proof, 64).unwrap();
             let bytes = bincode::serialize(&proof).unwrap().len();
             println!(
                 "compact chunk={chunk_size} {name}: proof={bytes} prove={prove_time:?} verify={:?}",

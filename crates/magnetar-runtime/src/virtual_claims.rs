@@ -108,7 +108,7 @@ mod tests {
         )
         .unwrap();
         let backend = crate::protocol::selected_backend();
-        let proof = crate::simd_dual::prove_dynamic_cpu_claims(&trace, 8, &backend).unwrap();
+        let proof = crate::simd_dual::prove_dynamic_cpu_claims(&trace, 64, &backend).unwrap();
         let set = VirtualClaimSet::from_selected(&proof).unwrap();
         assert!(set.verify_root());
         assert!(!set.claims.is_empty());
@@ -238,13 +238,13 @@ mod virtual_cpu_tests {
         )
         .unwrap();
         let statement = statement(&trace);
-        let proof = crate::prove_unified_trace_paper(&trace, 8).unwrap();
+        let proof = crate::prove_unified_trace_paper(&trace, 64).unwrap();
         assert!(proof.selected_cpu.is_some());
-        let root = crate::verify_virtual_cpu_layer(&statement, &proof, 8).unwrap();
+        let root = crate::verify_virtual_cpu_layer(&statement, &proof, 64).unwrap();
         assert_eq!(root, proof.virtual_claim_root);
         let mut tampered = proof;
         tampered.virtual_claim_root[0] ^= 1;
-        assert!(crate::verify_virtual_cpu_layer(&statement, &tampered, 8).is_err());
+        assert!(crate::verify_virtual_cpu_layer(&statement, &tampered, 64).is_err());
     }
 
     #[test]
@@ -277,13 +277,13 @@ mod virtual_cpu_tests {
         )
         .unwrap();
         let statement = statement(&trace);
-        let proof = prove_virtual_cpu(&trace, 8).unwrap();
-        verify_virtual_cpu(&statement, &proof, 8).unwrap();
+        let proof = prove_virtual_cpu(&trace, 64).unwrap();
+        verify_virtual_cpu(&statement, &proof, 64).unwrap();
         let mut tampered = proof.clone();
         tampered.claims.claims[0].value = tampered.claims.claims[0].value + F2_128::from(1u64);
-        assert!(verify_virtual_cpu(&statement, &tampered, 8).is_err());
+        assert!(verify_virtual_cpu(&statement, &tampered, 64).is_err());
         let mut tampered = proof;
         tampered.final_pc ^= 1;
-        assert!(verify_virtual_cpu(&statement, &tampered, 8).is_err());
+        assert!(verify_virtual_cpu(&statement, &tampered, 64).is_err());
     }
 }

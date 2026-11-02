@@ -8,14 +8,26 @@
 
 use magnetar_constraint::F2_128;
 
-use crate::{Mle, Pcs, ProofError};
+use crate::{Mle, PackedBits, Pcs, ProofError};
 
 pub trait BitPcs {
     type Commitment: Clone + std::fmt::Debug;
     type Opening: Clone + std::fmt::Debug;
 
-    fn commit(&self, bits: &[bool]) -> Result<Self::Commitment, ProofError>;
-    fn open(&self, bits: &[bool], point: &[F2_128]) -> Result<(F2_128, Self::Opening), ProofError>;
+    fn commit(&self, bits: &PackedBits) -> Result<Self::Commitment, ProofError>;
+    fn open(&self, bits: &PackedBits, point: &[F2_128]) -> Result<(F2_128, Self::Opening), ProofError>;
+
+    /// Open a witness whose commitment the caller already computed. Backends
+    /// whose `open` needs the commitment internally can override this to skip
+    /// a second commit; the default ignores it.
+    fn open_with_commitment(
+        &self,
+        bits: &PackedBits,
+        point: &[F2_128],
+        _commitment: &Self::Commitment,
+    ) -> Result<(F2_128, Self::Opening), ProofError> {
+        self.open(bits, point)
+    }
     fn verify(
         &self,
         commitment: &Self::Commitment,
@@ -37,9 +49,9 @@ impl<P: Pcs> DirectBitPcs<P> {
         Self { pcs }
     }
 
-    fn values(bits: &[bool]) -> Vec<F2_128> {
-        bits.iter()
-            .map(|bit| F2_128::from(u64::from(*bit)))
+    fn values(bits: &PackedBits) -> Vec<F2_128> {
+        (0..bits.len())
+            .map(|index| F2_128::from(u64::from(bits.get(index))))
             .collect()
     }
 }
@@ -48,11 +60,11 @@ impl<P: Pcs> BitPcs for DirectBitPcs<P> {
     type Commitment = P::Commitment;
     type Opening = P::Opening;
 
-    fn commit(&self, bits: &[bool]) -> Result<Self::Commitment, ProofError> {
+    fn commit(&self, bits: &PackedBits) -> Result<Self::Commitment, ProofError> {
         self.pcs.commit(&Self::values(bits))
     }
 
-    fn open(&self, bits: &[bool], point: &[F2_128]) -> Result<(F2_128, Self::Opening), ProofError> {
+    fn open(&self, bits: &PackedBits, point: &[F2_128]) -> Result<(F2_128, Self::Opening), ProofError> {
         let values = Self::values(bits);
         let value = Mle::new(values.clone())?.eval(point)?;
         let opening = self.pcs.open(&values, point)?;
@@ -134,18 +146,31 @@ mod tests {
     }
 
     #[test]
-    fn avx2_and_scalar_packing_agree() {
-        let bits = (0..1024usize)
+    fn ring_switch_packing_is_the_little_endian_word_view() {
+        let bools = (0..1024usize)
             .map(|index| (index * index + 3 * index + 1) % 7 < 3)
             .collect::<Vec<_>>();
-        let scalar = RingSwitchPackedBitPcs::<TestPcs>::pack_scalar(&bits);
+        let bits = PackedBits::from_bools(&bools);
         let packed = RingSwitchPackedBitPcs::<TestPcs>::pack(&bits).unwrap();
-        assert_eq!(scalar, packed);
+        let expected = (0..8)
+            .map(|field| {
+                let mut word = 0u128;
+                for low in 0..128 {
+                    if bools[field * 128 + low] {
+                        word |= 1u128 << low;
+                    }
+                }
+                F2_128::from(word)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(packed, expected);
     }
 
     #[test]
     fn packed_and_direct_agree_on_all_points_128() {
-        let bits = (0..128).map(|index| index % 3 == 0).collect::<Vec<_>>();
+        let bits = PackedBits::from_bools(
+            &(0..128).map(|index| index % 3 == 0).collect::<Vec<_>>(),
+        );
         let direct = DirectBitPcs::new(TestPcs);
         let packed = PackedBitPcs::new(TestPcs);
         for mask in 0..128usize {
@@ -164,7 +189,9 @@ mod tests {
 
     #[test]
     fn packed_and_direct_agree_on_random_field_points() {
-        let bits = (0..128).map(|index| index % 5 == 0).collect::<Vec<_>>();
+        let bits = PackedBits::from_bools(
+            &(0..128).map(|index| index % 5 == 0).collect::<Vec<_>>(),
+        );
         let direct = DirectBitPcs::new(TestPcs);
         let packed = PackedBitPcs::new(TestPcs);
         for seed in 0..32u128 {
@@ -183,7 +210,7 @@ mod tests {
 
     #[test]
     fn packed_and_direct_compute_the_same_bit_value() {
-        let bits = [true, false, true, true, false, true, false, false];
+        let bits = PackedBits::from_bools(&[true, false, true, true, false, true, false, false]);
         let point = [F2_128::from(1u64), F2_128::from(0u64), F2_128::from(1u64)];
         let direct = DirectBitPcs::new(TestPcs);
         let packed = PackedBitPcs::new(TestPcs);
@@ -194,6 +221,21 @@ mod tests {
         assert!(packed
             .verify(&commitment, &point, packed_value, &opening)
             .unwrap());
+    }
+
+    #[test]
+    fn eq_vector_matches_pointwise_eq() {
+        let point = (1..=5)
+            .map(|index| F2_128::from((index * 7 + 3) as u64))
+            .collect::<Vec<_>>();
+        let table = RingSwitchPackedBitPcs::<TestPcs>::eq_vector(&point);
+        assert_eq!(table.len(), 1 << point.len());
+        for (index, value) in table.iter().enumerate() {
+            let bits = (0..point.len())
+                .map(|bit| F2_128::from(((index >> bit) & 1) as u64))
+                .collect::<Vec<_>>();
+            assert_eq!(*value, crate::eq(&point, &bits), "index {index}");
+        }
     }
 
     #[test]
@@ -223,7 +265,11 @@ mod tests {
 
     #[test]
     fn ring_switch_matches_direct_for_multi_field() {
-        let bits = (0..256).map(|index| index % 11 == 0).collect::<Vec<_>>();
+        let bits = PackedBits::from_bools(
+            &(0..256)
+                .map(|index| index % 11 == 0)
+                .collect::<Vec<_>>(),
+        );
         let point = (0..8)
             .map(|bit| F2_128::from((bit * 5 + 1) as u64))
             .collect::<Vec<_>>();
@@ -254,7 +300,7 @@ mod tests {
     #[test]
     fn direct_bit_pcs_opens_bit_mle() {
         let backend = DirectBitPcs::new(TestPcs);
-        let bits = [true, false, true, true];
+        let bits = PackedBits::from_bools(&[true, false, true, true]);
         let commitment = backend.commit(&bits).unwrap();
         let point = [F2_128::from(1u64), F2_128::from(0u64)];
         let (value, opening) = backend.open(&bits, &point).unwrap();
@@ -287,7 +333,7 @@ impl<P: Pcs> PackedBitPcs<P> {
         Self { pcs }
     }
 
-    fn pack(bits: &[bool]) -> Result<Vec<F2_128>, ProofError> {
+    fn pack(bits: &PackedBits) -> Result<Vec<F2_128>, ProofError> {
         if bits.is_empty() || !bits.len().is_power_of_two() {
             return Err(ProofError::NotPowerOfTwo(bits.len()));
         }
@@ -300,15 +346,15 @@ impl<P: Pcs> PackedBitPcs<P> {
         let low_bits = total_bits.min(7);
         let low_len = 1usize << low_bits;
         let high_len = bits.len() / low_len;
-        let mut packed = vec![F2_128::from(0u64); high_len];
-        for high in 0..high_len {
-            let mut value = F2_128::from(0u64);
-            for low in 0..low_len {
-                if bits[high * low_len + low] {
-                    value = value + F2_128::from(1u128 << low);
-                }
+        let mut packed = Vec::with_capacity(high_len);
+        if low_bits == 7 {
+            for high in 0..high_len {
+                packed.push(F2_128::from(bits.field_128(high)));
             }
-            packed[high] = value;
+        } else {
+            packed.push(F2_128::from(
+                bits.words().first().copied().unwrap_or(0) as u128,
+            ));
         }
         if packed.len() == 1 {
             packed.push(F2_128::from(0u64));
@@ -349,12 +395,12 @@ impl<P: Pcs> BitPcs for PackedBitPcs<P> {
     type Commitment = P::Commitment;
     type Opening = PackedOpening<P::Opening>;
 
-    fn commit(&self, bits: &[bool]) -> Result<Self::Commitment, ProofError> {
+    fn commit(&self, bits: &PackedBits) -> Result<Self::Commitment, ProofError> {
         let packed = Self::pack(bits)?;
         self.pcs.commit(&packed)
     }
 
-    fn open(&self, bits: &[bool], point: &[F2_128]) -> Result<(F2_128, Self::Opening), ProofError> {
+    fn open(&self, bits: &PackedBits, point: &[F2_128]) -> Result<(F2_128, Self::Opening), ProofError> {
         let packed = Self::pack(bits)?;
         let low_bits = point.len().min(7);
         let (_, high) = Self::high_point(point);
@@ -412,24 +458,22 @@ impl<P: Pcs> RevealingPackedBitPcs<P> {
         Self { pcs }
     }
 
-    #[allow(clippy::needless_range_loop)]
-    fn pack(bits: &[bool]) -> Result<Vec<F2_128>, ProofError> {
+    fn pack(bits: &PackedBits) -> Result<Vec<F2_128>, ProofError> {
         if bits.is_empty() || !bits.len().is_power_of_two() {
             return Err(ProofError::NotPowerOfTwo(bits.len()));
         }
-        let total_bits = bits.len().trailing_zeros() as usize;
-        let low_bits = total_bits.min(7);
+        let low_bits = (bits.len().trailing_zeros() as usize).min(7);
         let low_len = 1usize << low_bits;
         let high_len = bits.len() / low_len;
-        let mut packed = vec![F2_128::from(0u64); high_len];
-        for high in 0..high_len {
-            let mut value = F2_128::from(0u64);
-            for low in 0..low_len {
-                if bits[high * low_len + low] {
-                    value = value + F2_128::from(1u128 << low);
-                }
+        let mut packed = Vec::with_capacity(high_len);
+        if low_bits == 7 {
+            for high in 0..high_len {
+                packed.push(F2_128::from(bits.field_128(high)));
             }
-            packed[high] = value;
+        } else {
+            packed.push(F2_128::from(
+                bits.words().first().copied().unwrap_or(0) as u128,
+            ));
         }
         if packed.len() == 1 {
             packed.push(F2_128::from(0u64));
@@ -468,11 +512,11 @@ impl<P: Pcs> BitPcs for RevealingPackedBitPcs<P> {
     type Commitment = P::Commitment;
     type Opening = PackedTableOpening;
 
-    fn commit(&self, bits: &[bool]) -> Result<Self::Commitment, ProofError> {
+    fn commit(&self, bits: &PackedBits) -> Result<Self::Commitment, ProofError> {
         self.pcs.commit(&Self::pack(bits)?)
     }
 
-    fn open(&self, bits: &[bool], point: &[F2_128]) -> Result<(F2_128, Self::Opening), ProofError> {
+    fn open(&self, bits: &PackedBits, point: &[F2_128]) -> Result<(F2_128, Self::Opening), ProofError> {
         let packed = Self::pack(bits)?;
         let value = Self::eval(&packed, point);
         Ok((value, PackedTableOpening { packed }))
@@ -536,7 +580,7 @@ mod reveal_tests {
 
     #[test]
     fn revealing_backend_handles_multi_field_witness() {
-        let bits = (0..256).map(|index| index % 7 == 0).collect::<Vec<_>>();
+        let bits = crate::PackedBits::from_bools(&(0..256).map(|index| index % 7 == 0).collect::<Vec<_>>());
         let point = (0..8)
             .map(|bit| F2_128::from((bit * 3 + 1) as u64))
             .collect::<Vec<_>>();
@@ -562,12 +606,11 @@ pub struct RingSwitchOpening<O> {
 /// Hidden benchmark hook: pack bits with the hardware kernel or the scalar
 /// reference. Used by the testkit to measure the SIMD packing path.
 #[doc(hidden)]
-pub fn pack_bits_bench<P: Pcs>(bits: &[bool], hardware: bool) -> Result<Vec<F2_128>, ProofError> {
-    if hardware {
-        RingSwitchPackedBitPcs::<P>::pack(bits)
-    } else {
-        Ok(RingSwitchPackedBitPcs::<P>::pack_scalar(bits))
-    }
+pub fn pack_bits_bench<P: Pcs>(
+    bits: &crate::PackedBits,
+    _hardware: bool,
+) -> Result<Vec<F2_128>, ProofError> {
+    RingSwitchPackedBitPcs::<P>::pack(bits)
 }
 
 /// Multi-field packed backend implementing the DP24/Binius ring-switch
@@ -583,100 +626,18 @@ impl<P: Pcs> RingSwitchPackedBitPcs<P> {
         Self { pcs }
     }
 
-    fn pack(bits: &[bool]) -> Result<Vec<F2_128>, ProofError> {
+    fn pack(bits: &PackedBits) -> Result<Vec<F2_128>, ProofError> {
         if bits.len() < 256 || !bits.len().is_power_of_two() {
             return Err(ProofError::Pcs(
                 "ring-switch packing requires at least 256 bits".into(),
             ));
         }
-        #[cfg(target_arch = "x86_64")]
-        {
-            if std::is_x86_feature_detected!("avx2") {
-                // SAFETY: the length is checked above and the slice is at least
-                // 256 bytes, so four 32-byte loads per 128-bit chunk are in
-                // bounds; `bool` has a one-byte 0/1 representation.
-                return Ok(unsafe { Self::pack_avx2(bits) });
-            }
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            // SAFETY: NEON is baseline on aarch64; each load reads 16 bytes
-            // within a 128-byte chunk and `bool` is a 0/1 byte.
-            return Ok(unsafe { Self::pack_neon(bits) });
-        }
-        #[allow(unreachable_code)]
-        Ok(Self::pack_scalar(bits))
-    }
-
-    fn pack_scalar(bits: &[bool]) -> Vec<F2_128> {
-        let low_bits = 7;
-        let low_len = 1usize << low_bits;
-        let high_len = bits.len() / low_len;
-        let mut packed = vec![F2_128::from(0u64); high_len];
-        for (high, slot) in packed.iter_mut().enumerate() {
-            let mut word = 0u128;
-            for low in 0..low_len {
-                if bits[high * low_len + low] {
-                    word |= 1u128 << low;
-                }
-            }
-            *slot = F2_128::from(word);
-        }
-        packed
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    #[target_feature(enable = "avx2")]
-    unsafe fn pack_avx2(bits: &[bool]) -> Vec<F2_128> {
-        use std::arch::x86_64::{
-            __m256i, _mm256_cmpeq_epi8, _mm256_loadu_si256, _mm256_movemask_epi8,
-            _mm256_setzero_si256,
-        };
-        let low_len = 128usize;
-        let high_len = bits.len() / low_len;
-        let mut packed = vec![F2_128::from(0u64); high_len];
-        let zero: __m256i = _mm256_setzero_si256();
-        for (high, slot) in packed.iter_mut().enumerate() {
-            let ptr = bits.as_ptr().add(high * low_len) as *const __m256i;
-            let mut word = 0u128;
-            for group in 0..4usize {
-                let value = unsafe { _mm256_loadu_si256(ptr.add(group)) };
-                let equal = _mm256_cmpeq_epi8(value, zero);
-                let nonzero = !(_mm256_movemask_epi8(equal) as u32);
-                word |= u128::from(nonzero) << (group * 32);
-            }
-            *slot = F2_128::from(word);
-        }
-        packed
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    #[target_feature(enable = "neon")]
-    unsafe fn pack_neon(bits: &[bool]) -> Vec<F2_128> {
-        use std::arch::aarch64::{
-            vaddvq_u16, vget_high_u8, vget_low_u8, vld1q_s16, vld1q_u8, vmovl_u8, vshlq_u16,
-        };
-        let shift_values = [0i16, 1, 2, 3, 4, 5, 6, 7];
-        let shifts = unsafe { vld1q_s16(shift_values.as_ptr()) };
-        unsafe fn pack_u16(ptr: *const u8, shifts: std::arch::aarch64::int16x8_t) -> u16 {
-            let value = unsafe { vld1q_u8(ptr) };
-            let low = unsafe { vaddvq_u16(vshlq_u16(vmovl_u8(vget_low_u8(value)), shifts)) };
-            let high = unsafe { vaddvq_u16(vshlq_u16(vmovl_u8(vget_high_u8(value)), shifts)) };
-            low | (high << 8)
-        }
-        let low_len = 128usize;
-        let high_len = bits.len() / low_len;
-        let mut packed = vec![F2_128::from(0u64); high_len];
-        for (high, slot) in packed.iter_mut().enumerate() {
-            let ptr = bits.as_ptr().add(high * low_len);
-            let mut word = 0u128;
-            for group in 0..8usize {
-                let value = unsafe { pack_u16(ptr.add(group * 16) as *const u8, shifts) };
-                word |= u128::from(value) << (group * 16);
-            }
-            *slot = F2_128::from(word);
-        }
-        packed
+        // 128 consecutive bits are one field element, so the packed table is
+        // the witness words read as little-endian u128s: no shifting or SIMD
+        // transpose is needed.
+        Ok((0..bits.fields_128())
+            .map(|field| F2_128::from(bits.field_128(field)))
+            .collect())
     }
 
     fn transpose128(values: &[F2_128]) -> Vec<F2_128> {
@@ -774,14 +735,20 @@ impl<P: Pcs> RingSwitchPackedBitPcs<P> {
     }
 
     fn eq_vector(point: &[F2_128]) -> Vec<F2_128> {
-        (0..1usize << point.len())
-            .map(|index| {
-                let bits = (0..point.len())
-                    .map(|bit| F2_128::from(((index >> bit) & 1) as u64))
-                    .collect::<Vec<_>>();
-                crate::eq(point, &bits)
-            })
-            .collect()
+        // Doubling construction: `eq(point, index) = prod_b (index_b ? z_b : 1+z_b)`.
+        // Building it level by level avoids the per-index vector the previous
+        // implementation allocated (one heap allocation per table entry: 8.4 M
+        // at RV64 `2^16`, the largest term of the ring-switch opening).
+        let mut values = vec![F2_128::from(1u64); 1usize << point.len()];
+        for (bit, vertical) in point.iter().enumerate() {
+            let len = 1usize << bit;
+            for index in 0..len {
+                let value = values[index];
+                values[index] = value * (F2_128::from(1u64) + *vertical);
+                values[len + index] = value * *vertical;
+            }
+        }
+        values
     }
 
     fn evaluate(values: &[F2_128], point: &[F2_128]) -> F2_128 {
@@ -827,11 +794,90 @@ impl<P: Pcs> BitPcs for RingSwitchPackedBitPcs<P> {
     type Commitment = P::Commitment;
     type Opening = RingSwitchOpening<P::Opening>;
 
-    fn commit(&self, bits: &[bool]) -> Result<Self::Commitment, ProofError> {
+    fn commit(&self, bits: &PackedBits) -> Result<Self::Commitment, ProofError> {
         self.pcs.commit(&Self::pack(bits)?)
     }
 
-    fn open(&self, bits: &[bool], point: &[F2_128]) -> Result<(F2_128, Self::Opening), ProofError> {
+    fn open(&self, bits: &PackedBits, point: &[F2_128]) -> Result<(F2_128, Self::Opening), ProofError> {
+        Self::open_inner(self, bits, point, None)
+    }
+
+    fn open_with_commitment(
+        &self,
+        bits: &PackedBits,
+        point: &[F2_128],
+        commitment: &Self::Commitment,
+    ) -> Result<(F2_128, Self::Opening), ProofError> {
+        Self::open_inner(self, bits, point, Some(commitment))
+    }
+
+    fn verify(
+        &self,
+        commitment: &Self::Commitment,
+        point: &[F2_128],
+        value: F2_128,
+        opening: &Self::Opening,
+    ) -> Result<bool, ProofError> {
+        use magnetar_transcript::Sha256Transcript;
+
+        let high_bits = point.len() - 7;
+        if high_bits == 0 || opening.s_hat_v.len() != 128 || (1usize << high_bits) < 2 {
+            return Ok(false);
+        }
+        let prefix = &point[..7];
+        let suffix = &point[7..];
+        if Self::evaluate(&opening.s_hat_v, prefix) != value {
+            return Ok(false);
+        }
+        let mut transcript = Sha256Transcript::new("magnetar-ring-switch-v1");
+        transcript.absorb("commitment", &self.pcs.commitment_bytes(commitment));
+        for value in point {
+            transcript.absorb("point", &value.value().to_le_bytes());
+        }
+        for value in &opening.s_hat_v {
+            transcript.absorb("s-hat-v", &value.value().to_le_bytes());
+        }
+        let r_double = (0..7)
+            .map(|_| Self::challenge_field(&mut transcript, "row-batch"))
+            .collect::<Vec<_>>();
+        let eq_double = Self::eq_vector(&r_double);
+        let s_hat_u = Self::transpose_components(&opening.s_hat_v);
+        let sumcheck_claim = s_hat_u
+            .iter()
+            .zip(&eq_double)
+            .fold(F2_128::from(0u64), |sum, (a, b)| sum + *a * *b);
+        if opening.sumcheck.claimed_sum != sumcheck_claim {
+            return Ok(false);
+        }
+        let (ry, product) =
+            crate::verify_rounds(&opening.sumcheck, high_bits, 2, |round, values| {
+                Self::sumcheck_challenge(&mut transcript, round, values)
+            })?;
+        if !self
+            .pcs
+            .verify(commitment, &ry, opening.packed_value, &opening.pcs_opening)?
+        {
+            return Ok(false);
+        }
+        let a_at = Self::eval_rs_eq(suffix, &ry, &eq_double);
+        Ok(product == opening.packed_value * a_at)
+    }
+
+    fn commitment_bytes(&self, commitment: &Self::Commitment) -> Vec<u8> {
+        self.pcs.commitment_bytes(commitment)
+    }
+}
+
+impl<P: Pcs> RingSwitchPackedBitPcs<P> {
+    /// Opening implementation shared by `open` and `open_with_commitment`.
+    /// `known` lets the caller pass the commitment of `bits` it already holds,
+    /// which skips a full commit of the packed table.
+    fn open_inner(
+        &self,
+        bits: &PackedBits,
+        point: &[F2_128],
+        known: Option<&P::Commitment>,
+    ) -> Result<(F2_128, RingSwitchOpening<P::Opening>), ProofError> {
         use magnetar_transcript::Sha256Transcript;
 
         let profile = std::env::var_os("MAGNETAR_PROFILE_RING").is_some();
@@ -847,18 +893,61 @@ impl<P: Pcs> BitPcs for RingSwitchPackedBitPcs<P> {
         let prefix = &point[..7];
         let suffix = &point[7..];
         let eq_suffix = Self::eq_vector(suffix);
+        // 128 packed columns x 2^high_bits rows: iterate the set bits of each
+        // packed word instead of testing all 128, and split the rows across
+        // workers (the per-slot sums are XOR, so the reduction is exact).
         let mut s_hat_v = vec![F2_128::from(0u64); 128];
-        for (high, &weight) in eq_suffix.iter().enumerate() {
-            let packed_value = packed[high].value();
-            for (bit, value) in s_hat_v.iter_mut().enumerate() {
-                if (packed_value >> bit) & 1 == 1 {
-                    *value = *value + weight;
+        let workers = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(1)
+            .clamp(1, eq_suffix.len().max(1));
+        if workers > 1 && eq_suffix.len() >= 4096 {
+            let chunk = eq_suffix.len().div_ceil(workers);
+            let partials = std::thread::scope(|scope| {
+                let mut handles = Vec::with_capacity(workers);
+                for start in (0..eq_suffix.len()).step_by(chunk) {
+                    let end = (start + chunk).min(eq_suffix.len());
+                    let weights = &eq_suffix[start..end];
+                    let words = &packed[start..end];
+                    handles.push(scope.spawn(move || {
+                        let mut local = [F2_128::from(0u64); 128];
+                        for (weight, word) in weights.iter().zip(words) {
+                            let mut set = word.value();
+                            while set != 0 {
+                                let bit = set.trailing_zeros() as usize;
+                                local[bit] = local[bit] + *weight;
+                                set &= set - 1;
+                            }
+                        }
+                        local
+                    }));
+                }
+                handles
+                    .into_iter()
+                    .map(|handle| handle.join().expect("ring-switch worker"))
+                    .collect::<Vec<_>>()
+            });
+            for partial in partials {
+                for (slot, value) in s_hat_v.iter_mut().zip(partial) {
+                    *slot = *slot + value;
+                }
+            }
+        } else {
+            for (high, &weight) in eq_suffix.iter().enumerate() {
+                let mut set = packed[high].value();
+                while set != 0 {
+                    let bit = set.trailing_zeros() as usize;
+                    s_hat_v[bit] = s_hat_v[bit] + weight;
+                    set &= set - 1;
                 }
             }
         }
         let claim = Self::evaluate(&s_hat_v, prefix);
 
-        let commitment = self.pcs.commit(&packed)?;
+        let commitment = match known {
+            Some(commitment) => commitment.clone(),
+            None => self.pcs.commit(&packed)?,
+        };
         let mut transcript = Sha256Transcript::new("magnetar-ring-switch-v1");
         transcript.absorb("commitment", &self.pcs.commitment_bytes(&commitment));
         for value in point {
@@ -919,61 +1008,6 @@ impl<P: Pcs> BitPcs for RingSwitchPackedBitPcs<P> {
                 pcs_opening,
             },
         ))
-    }
-
-    fn verify(
-        &self,
-        commitment: &Self::Commitment,
-        point: &[F2_128],
-        value: F2_128,
-        opening: &Self::Opening,
-    ) -> Result<bool, ProofError> {
-        use magnetar_transcript::Sha256Transcript;
-
-        let high_bits = point.len() - 7;
-        if high_bits == 0 || opening.s_hat_v.len() != 128 || (1usize << high_bits) < 2 {
-            return Ok(false);
-        }
-        let prefix = &point[..7];
-        let suffix = &point[7..];
-        if Self::evaluate(&opening.s_hat_v, prefix) != value {
-            return Ok(false);
-        }
-        let mut transcript = Sha256Transcript::new("magnetar-ring-switch-v1");
-        transcript.absorb("commitment", &self.pcs.commitment_bytes(commitment));
-        for value in point {
-            transcript.absorb("point", &value.value().to_le_bytes());
-        }
-        for value in &opening.s_hat_v {
-            transcript.absorb("s-hat-v", &value.value().to_le_bytes());
-        }
-        let r_double = (0..7)
-            .map(|_| Self::challenge_field(&mut transcript, "row-batch"))
-            .collect::<Vec<_>>();
-        let eq_double = Self::eq_vector(&r_double);
-        let s_hat_u = Self::transpose_components(&opening.s_hat_v);
-        let sumcheck_claim = s_hat_u
-            .iter()
-            .zip(&eq_double)
-            .fold(F2_128::from(0u64), |sum, (a, b)| sum + *a * *b);
-        if opening.sumcheck.claimed_sum != sumcheck_claim {
-            return Ok(false);
-        }
-        let (ry, product) =
-            crate::verify_rounds(&opening.sumcheck, high_bits, 2, |round, values| {
-                Self::sumcheck_challenge(&mut transcript, round, values)
-            })?;
-        if !self
-            .pcs
-            .verify(commitment, &ry, opening.packed_value, &opening.pcs_opening)?
-        {
-            return Ok(false);
-        }
-        let a_at = Self::eval_rs_eq(suffix, &ry, &eq_double);
-        Ok(product == opening.packed_value * a_at)
-    }
-
-    fn commitment_bytes(&self, commitment: &Self::Commitment) -> Vec<u8> {
-        self.pcs.commitment_bytes(commitment)
+    
     }
 }

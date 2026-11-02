@@ -64,7 +64,7 @@ where
 {
     let trace = trace();
     let started = Instant::now();
-    let bundle = prove_gated_bundle_from_trace(&trace, 8, backend).expect("prove");
+    let bundle = prove_gated_bundle_from_trace(&trace,64, backend).expect("prove");
     let prove_time = started.elapsed();
     let cpu = bincode::serialize(&bundle.cpu).expect("cpu").len();
     let register = bundle
@@ -78,7 +78,7 @@ where
         .len();
     let claims = bincode::serialize(&bundle.claims).expect("claims").len();
     let started = Instant::now();
-    verify_gated_bundle_from_trace(&trace, 8, &bundle, backend).expect("verify");
+    verify_gated_bundle_from_trace(&trace,64, &bundle, backend).expect("verify");
     let verify_time = started.elapsed();
     println!(
         "{name}: cpu={cpu} register={register} aux={aux} shift={shift} claims={claims} total={} prove={prove_time:?} verify={verify_time:?}",

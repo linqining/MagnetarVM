@@ -162,6 +162,74 @@ pub fn split_segment_claims(
     Ok(claims)
 }
 
+/// Evaluate the multilinear extension of a bit slice without materializing the
+/// field-valued vector.
+pub fn eval_bits_slice_mle(
+    bits: &crate::PackedBits,
+    offset: usize,
+    point: &[F2_128],
+) -> F2_128 {
+    let len = if point.is_empty() {
+        1
+    } else {
+        1usize << point.len()
+    };
+    if offset + len > bits.len() {
+        return F2_128::from(0u64);
+    }
+    if point.is_empty() {
+        return F2_128::from(u64::from(bits.get(offset)));
+    }
+    let low_bits = point.len().min(16);
+    let low = crate::spartan::eq_vector_tensor(&point[..low_bits]);
+    let high = if point.len() > low_bits {
+        crate::spartan::eq_vector_tensor(&point[low_bits..])
+    } else {
+        vec![F2_128::from(1u64)]
+    };
+    let mut total = F2_128::from(0u64);
+    for (block, weight) in high.iter().enumerate() {
+        let start = offset + (block << low_bits);
+        let mut sum = F2_128::from(0u64);
+        for (bit, equality) in low.iter().enumerate() {
+            if bits.get(start + bit) {
+                sum = sum + *equality;
+            }
+        }
+        total = total + sum * *weight;
+    }
+    total
+}
+
+/// Split the full witness claim into per-segment claims directly from the bit
+/// witness, mirroring [`split_segment_claims`].
+pub fn split_segment_claims_bits(
+    layout: &WitnessLayout,
+    bits: &crate::PackedBits,
+    point: &[F2_128],
+) -> Result<Vec<SegmentClaim>, VirtualSpartanError> {
+    let total_bits = layout.total_bits.trailing_zeros() as usize;
+    if bits.len() != layout.total_bits {
+        return Err(VirtualSpartanError::WitnessLength {
+            expected: layout.total_bits,
+            actual: bits.len(),
+        });
+    }
+    if point.len() != total_bits {
+        return Err(VirtualSpartanError::PointLength {
+            expected: total_bits,
+            actual: point.len(),
+        });
+    }
+    let mut claims = Vec::with_capacity(layout.segments.len());
+    for segment in &layout.segments {
+        let size_bits = segment.len.trailing_zeros() as usize;
+        let value = eval_bits_slice_mle(bits, segment.offset, &point[..size_bits]);
+        claims.push(SegmentClaim { value });
+    }
+    Ok(claims)
+}
+
 pub fn reconstruct_segment_claim(
     layout: &WitnessLayout,
     claims: &[SegmentClaim],

@@ -114,16 +114,18 @@ pub struct PackedGroupProof {
     pub opening: RingSwitchOpening<P3MosaicOpening>,
 }
 
-fn bits(witness: &BinaryRouterWitness, spec: GroupSpec) -> Vec<bool> {
+fn bits(witness: &BinaryRouterWitness, spec: GroupSpec) -> magnetar_proof::PackedBits {
     let table = witness.table();
     let width = spec.width.next_power_of_two();
-    let mut bits = vec![false; width * witness.cycles];
+    let len = (width * witness.cycles).next_power_of_two().max(256);
+    let mut bits = magnetar_proof::PackedBits::zeroed(len);
     for off in 0..spec.width {
         for (cycle, value) in table.columns[spec.start + off].iter().enumerate() {
-            bits[cycle * width + off] = value.value() == 1;
+            if value.value() == 1 {
+                bits.set(cycle * width + off, true);
+            }
         }
     }
-    bits.resize(bits.len().next_power_of_two().max(256), false);
     bits
 }
 

@@ -54,6 +54,7 @@ pub struct TraceLogupShoutProof {
 }
 
 fn public_reader_point(
+    rom_binding: &[u8; 32],
     witness: &BinaryShoutWitness,
     columns: usize,
 ) -> Point<B> {
@@ -62,11 +63,10 @@ fn public_reader_point(
     transcript.absorb("cycle_bits", &(witness.cycle_bits as u64).to_le_bytes());
     transcript.absorb("cycles", &(witness.cycles as u64).to_le_bytes());
     transcript.absorb("columns", &(columns as u64).to_le_bytes());
-    for row in &witness.rom {
-        for value in row {
-            transcript.absorb("rom", &value.value().to_le_bytes());
-        }
-    }
+    // The ROM digest binds every value the per-element absorb used to cover,
+    // in one fixed-size absorb. Hashing the ROM element by element cost 272 ms
+    // at RV64 `2^16` (a `2^17`-instruction ROM) in the verifier.
+    transcript.absorb("rom", rom_binding);
     Point::new(
         (0..witness.cycle_bits)
             .map(|_| {
@@ -90,14 +90,193 @@ fn to_b(value: F2_128) -> B {
 }
 
 fn embed(position: usize) -> B {
-    (0..usize::BITS as usize)
-        .filter(|bit| (position >> bit) & 1 == 1)
-        .map(|bit| B::interpolation_node(1 << bit))
-        .sum()
+    // Sum of the interpolation nodes of `position`'s set bits. The 4-bit
+    // nibble tables make that 16 lookups and 15 additions instead of up to 64
+    // `interpolation_node` calls; the per-cycle embedding of `2^16` positions
+    // was the largest part of the trace Logup-Shout verifier's final stage.
+    static NIBBLES: std::sync::OnceLock<Vec<[B; 16]>> = std::sync::OnceLock::new();
+    let nibbles = NIBBLES.get_or_init(|| {
+        (0..usize::BITS as usize / 4)
+            .map(|nibble| {
+                let zero = B::from_repr(0);
+                let mut table = [zero; 16];
+                for value in 1..16usize {
+                    let bit = value.trailing_zeros() as usize;
+                    table[value] = table[value ^ (1 << bit)]
+                        + B::interpolation_node(1 << (4 * nibble + bit));
+                }
+                table
+            })
+            .collect()
+    });
+    let mut sum = B::from_repr(0);
+    let mut rest = position;
+    for table in nibbles {
+        sum += table[rest & 0xF];
+        rest >>= 4;
+    }
+    sum
+}
+
+/// Build the public ROM's column vectors across workers. The ROM has
+/// `columns` independent columns of `2^address_bits` rows, so the gather
+/// parallelizes cleanly; only the verifier's trace path uses it.
+fn rom_columns_parallel(witness: &BinaryShoutWitness) -> Vec<Vec<B>> {
+    let columns = witness.rom.first().map_or(0, |row| row.len());
+    let workers = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+        .max(1);
+    if workers == 1 || columns <= 1 {
+        return table_columns_from_witness(witness);
+    }
+    let chunk = columns.div_ceil(workers);
+    let mut out = Vec::with_capacity(columns);
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for first in (0..columns).step_by(chunk) {
+            let last = (first + chunk).min(columns);
+            let rom = &witness.rom;
+            handles.push(scope.spawn(move || {
+                (first..last)
+                    .map(|column| rom.iter().map(|row| to_b(row[column])).collect::<Vec<_>>())
+                    .collect::<Vec<_>>()
+            }));
+        }
+        for handle in handles {
+            out.extend(handle.join().expect("rom column worker"));
+        }
+    });
+    out
+}
+
+/// Evaluate independent column folds across workers, preserving order.
+fn parallel_evals(columns: &[&[B]], point: &Point<B>) -> Vec<B> {
+    let workers = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+        .max(1);
+    if workers == 1 || columns.len() <= 1 {
+        return columns.iter().map(|column| eval_mle(column, point)).collect();
+    }
+    let chunk = columns.len().div_ceil(workers);
+    let mut results = Vec::with_capacity(columns.len());
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for first in (0..columns.len()).step_by(chunk) {
+            let last = (first + chunk).min(columns.len());
+            let slice = &columns[first..last];
+            handles.push(scope.spawn(move || {
+                slice
+                    .iter()
+                    .map(|column| eval_mle(column, point))
+                    .collect::<Vec<_>>()
+            }));
+        }
+        for handle in handles {
+            results.extend(handle.join().expect("column worker"));
+        }
+    });
+    results
+}
+
+/// Fold a vector in place (last coordinate first, adjacent pairs). Returns
+/// `None` when the length does not match the point, so callers can fall back to
+/// the generic multilinear evaluation.
+fn fold_in_place(buffer: &mut Vec<B>, point: &Point<B>) -> Option<B> {
+    let coordinates = point.as_slice();
+    if buffer.len() != 1 << coordinates.len() {
+        return None;
+    }
+    for x in coordinates.iter().rev() {
+        let half = buffer.len() / 2;
+        for index in 0..half {
+            let low = buffer[2 * index];
+            buffer[index] = low + (buffer[2 * index + 1] - low) * *x;
+        }
+        buffer.truncate(half);
+    }
+    Some(buffer[0])
+}
+
+/// Evaluate `table_columns[c]` at `point` over the row order `positions`
+/// without materialising the gathered matrix: each worker builds one column
+/// straight into its fold buffer. The gathered reader columns were 25 MB at
+/// RV64 `2^16` (768 MB at `2^22`) and were only ever consumed by this fold.
+fn eval_gathered(table_column: &[B], positions: &[usize], point: &Point<B>) -> B {
+    let mut buffer = positions
+        .iter()
+        .map(|position| table_column[*position])
+        .collect::<Vec<_>>();
+    match fold_in_place(&mut buffer, point) {
+        Some(value) => value,
+        None => p3_multilinear_util::poly::Poly::new(buffer).eval_ext::<B>(point),
+    }
+}
+
+/// Reader claims (gathered from the public ROM at `positions`) and link claims
+/// (already column-major) in one fan-out.
+fn eval_reader_and_link(
+    table_columns: &[&[B]],
+    positions: &[usize],
+    link_columns: &[&[B]],
+    point: &Point<B>,
+) -> (Vec<B>, Vec<B>) {
+    let workers = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+        .max(1);
+    let readers = table_columns.len();
+    let total = readers + link_columns.len();
+    if workers == 1 || total <= 1 {
+        let claims = table_columns
+            .iter()
+            .map(|column| eval_gathered(column, positions, point))
+            .collect::<Vec<_>>();
+        let links = link_columns
+            .iter()
+            .map(|column| eval_mle(column, point))
+            .collect::<Vec<_>>();
+        return (claims, links);
+    }
+    let chunk = total.div_ceil(workers);
+    let mut results = Vec::with_capacity(total);
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for first in (0..total).step_by(chunk) {
+            let last = (first + chunk).min(total);
+            handles.push(scope.spawn(move || {
+                (first..last)
+                    .map(|task| {
+                        if task < readers {
+                            eval_gathered(table_columns[task], positions, point)
+                        } else {
+                            eval_mle(link_columns[task - readers], point)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            }));
+        }
+        for handle in handles {
+            results.extend(handle.join().expect("claim column worker"));
+        }
+    });
+    let links = results.split_off(readers);
+    (results, links)
 }
 
 fn eval_mle(values: &[B], point: &Point<B>) -> B {
-    p3_multilinear_util::poly::Poly::new(values.to_vec()).eval_ext::<B>(point)
+    // `Poly::eval_ext` switches to the packed split-eq tables above ten
+    // variables, which costs ~10 us per element here (40 ms at RV64 `2^12`).
+    // `fold_in_place` is the same interpolation order the packed path
+    // implements, in O(values.len()) additions and multiplications. Measured:
+    // folding through `F2_128` instead of `B` gave no speedup (both are the same
+    // tower; the stage is bound by word traffic), so fold `B` directly.
+    let mut buffer = values.to_vec();
+    match fold_in_place(&mut buffer, point) {
+        Some(value) => value,
+        None => p3_multilinear_util::poly::Poly::new(buffer).eval_ext::<B>(point),
+    }
 }
 
 fn reader_point(commitment_bytes: &[u8], cycle_bits: usize) -> Point<B> {
@@ -480,6 +659,7 @@ pub fn verify_logup_shout_against_witness(
 
 pub fn prove_trace_logup_shout(
     witness: &BinaryShoutWitness,
+    rom_binding: [u8; 32],
 ) -> Result<TraceLogupShoutProof, RuntimeError> {
     let table_columns = table_columns_from_witness(witness);
     let position_values = positions(witness)?;
@@ -492,7 +672,7 @@ pub fn prove_trace_logup_shout(
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    let point = public_reader_point(witness, columns);
+    let point = public_reader_point(&rom_binding, witness, columns);
     let claims = (0..columns)
         .map(|column| eval_mle(&reader_columns[column], &point))
         .collect::<Vec<_>>();
@@ -551,6 +731,7 @@ pub fn prove_trace_logup_shout(
 pub fn verify_trace_logup_shout(
     proof: &TraceLogupShoutProof,
     witness: &BinaryShoutWitness,
+    rom_binding: &[u8; 32],
 ) -> Result<(), RuntimeError> {
     if proof.cycles != 1usize << proof.cycle_bits
         || proof.address_bits != witness.address_bits
@@ -566,22 +747,20 @@ pub fn verify_trace_logup_shout(
             "trace logup Shout statement mismatch".into(),
         ));
     }
-    let table_columns = table_columns_from_witness(witness);
+    let profile = std::env::var_os("MAGNETAR_PROFILE_VERIFY").is_some();
+    let stage_started = std::time::Instant::now();
+    let table_columns = rom_columns_parallel(witness);
     let position_values = positions(witness)?;
+    if profile {
+        eprintln!("trace logup columns+positions: {:?}", stage_started.elapsed());
+    }
     if table_columns.len() != proof.columns {
         return Err(RuntimeError::Proof(
             "trace logup Shout column mismatch".into(),
         ));
     }
-    let reader_columns = (0..proof.columns)
-        .map(|column| {
-            position_values
-                .iter()
-                .map(|position| table_columns[column][*position])
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    let point = public_reader_point(witness, proof.columns);
+    let stage_started = std::time::Instant::now();
+    let point = public_reader_point(rom_binding, witness, proof.columns);
     let expected_point = point
         .iter()
         .rev()
@@ -592,18 +771,36 @@ pub fn verify_trace_logup_shout(
             "trace logup Shout reader point mismatch".into(),
         ));
     }
-    let claims = (0..proof.columns)
-        .map(|column| eval_mle(&reader_columns[column], &point))
-        .collect::<Vec<_>>();
+    // Reader and link claims fold at the same point; one fan-out over both
+    // groups costs a single round of worker spawns instead of two.
     let link_columns = witness
         .link_columns()
         .into_iter()
-        .map(|column| column.iter().map(|value| to_b(*value)).collect::<Vec<B>>())
+        .map(|column| column.iter().map(|value| to_b(*value)).collect::<Vec<_>>())
         .collect::<Vec<_>>();
-    let expected_link_claims = link_columns
+    if profile {
+        eprintln!("trace logup point build: {:?}", stage_started.elapsed());
+    }
+    let stage_started = std::time::Instant::now();
+    let table_slices = table_columns
         .iter()
-        .map(|column| eval_mle(column, &point))
+        .map(|column| column.as_slice())
         .collect::<Vec<_>>();
+    let link_slices = link_columns
+        .iter()
+        .map(|column| column.as_slice())
+        .collect::<Vec<_>>();
+    let (claims, expected_link_claims) =
+        eval_reader_and_link(&table_slices, &position_values, &link_slices, &point);
+    if profile {
+        eprintln!(
+            "trace logup reader+link claims ({} + {} cols x {} rows): {:?}",
+            proof.columns,
+            link_columns.len(),
+            position_values.len(),
+            stage_started.elapsed()
+        );
+    }
     if proof
         .link_claims
         .iter()
@@ -614,6 +811,7 @@ pub fn verify_trace_logup_shout(
             "trace logup Shout link claims mismatch".into(),
         ));
     }
+    let stage_started = std::time::Instant::now();
     let readers = [Reader {
         point: &point,
         claims: &claims,
@@ -640,21 +838,35 @@ pub fn verify_trace_logup_shout(
         &mut pushforward_challenger,
     )
     .map_err(|error| RuntimeError::Proof(format!("trace logup Shout pushforwards: {error:?}")))?;
+    if profile {
+        eprintln!("trace logup pushforwards rebuild: {:?}", stage_started.elapsed());
+    }
+    let stage_started = std::time::Instant::now();
     let mut logup = proof.logup.clone();
     logup.pushforwards = pushforwards;
     let mut verifier_challenger = challenger();
     let output = logup
         .verify(&lookups, &mut verifier_challenger)
         .map_err(|error| RuntimeError::Proof(format!("trace logup Shout reduction: {error:?}")))?;
+    if profile {
+        eprintln!("trace logup reduction verify: {:?}", stage_started.elapsed());
+    }
+    let stage_started = std::time::Instant::now();
     let table_point = Point::new(output.table_point.as_slice().to_vec());
-    for (column, claim) in output.tables[0].column_claims.iter().enumerate() {
-        let values = witness
-            .rom
-            .iter()
-            .map(|row| to_b(row[column]))
-            .collect::<Vec<_>>();
-        let direct = eval_mle(&values, &table_point);
-        if direct != *claim {
+    // The ROM columns were already gathered for the reader side above; the
+    // table claims fold the same vectors, so reuse them instead of building a
+    // second copy (25 MB and 1.5 M conversions at RV64 `2^16`).
+    let rom_slices = table_columns
+        .iter()
+        .map(|column| column.as_slice())
+        .collect::<Vec<_>>();
+    let direct_claims = parallel_evals(&rom_slices, &table_point);
+    for (column, (direct, claim)) in direct_claims
+        .iter()
+        .zip(&output.tables[0].column_claims)
+        .enumerate()
+    {
+        if direct != claim {
             return Err(RuntimeError::Proof(format!(
                 "trace logup Shout table claim mismatch at column {column}"
             )));
@@ -669,6 +881,9 @@ pub fn verify_trace_logup_shout(
         return Err(RuntimeError::Proof(
             "trace logup Shout position claim mismatch".into(),
         ));
+    }
+    if profile {
+        eprintln!("trace logup final claims: {:?}", stage_started.elapsed());
     }
     Ok(())
 }

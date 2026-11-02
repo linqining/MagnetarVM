@@ -141,7 +141,13 @@ impl AmoAddRow {
         let mut bits = self.add.witness(old, operand, GatedAluOp::Add);
         bits.resize(self.relation.num_vars, false);
         bits[self.relation.num_vars - 1] = true;
-        let mask = (1u64 << self.width) - 1;
+        // A width-64 word has no spare bit; `1u64 << 64` wraps to 1 and would
+        // mask every value to zero.
+        let mask = if self.width == 64 {
+            u64::MAX
+        } else {
+            (1u64 << self.width) - 1
+        };
         let value = old.wrapping_add(operand) & mask;
         for bit in 0..self.width {
             bits[self.old[bit]] = (old >> bit) & 1 == 1;

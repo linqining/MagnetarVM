@@ -221,8 +221,8 @@ fn guest_elf_reads_and_writes_through_the_pipeline() {
     assert_eq!(outcome.statement.output, b"ABCDEFGH");
     assert_eq!(outcome.trace.exit_code, Some(0));
 
-    let proof = prove_unified_trace(&outcome.trace, 8).unwrap();
-    verify_unified_trace(&outcome.trace, &proof, 8).unwrap();
+    let proof = prove_unified_trace(&outcome.trace, 64).unwrap();
+    verify_unified_trace(&outcome.trace, &proof, 64).unwrap();
 }
 
 fn write_u16(buffer: &mut [u8], offset: usize, value: u16) {
@@ -276,8 +276,8 @@ fn compressed_guest_elf_runs_through_the_pipeline() {
     assert_eq!(outcome.trace.final_state.reg(1), 8);
     assert!(outcome.trace.halted);
 
-    let proof = prove_unified_trace(&outcome.trace, 8).unwrap();
-    verify_unified_trace(&outcome.trace, &proof, 8).unwrap();
+    let proof = prove_unified_trace(&outcome.trace, 64).unwrap();
+    verify_unified_trace(&outcome.trace, &proof, 64).unwrap();
 }
 
 #[test]
@@ -333,6 +333,6 @@ fn guest_elf_runs_through_the_reference_pipeline() {
     assert!(outcome.trace.halted);
     check_trace(&outcome.trace).unwrap();
 
-    let proof = prove_unified_trace(&outcome.trace, 8).unwrap();
-    verify_unified_trace(&outcome.trace, &proof, 8).unwrap();
+    let proof = prove_unified_trace(&outcome.trace, 64).unwrap();
+    verify_unified_trace(&outcome.trace, &proof, 64).unwrap();
 }

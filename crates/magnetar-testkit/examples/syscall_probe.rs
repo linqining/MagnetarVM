@@ -54,7 +54,7 @@ fn main() {
             trace.rows.len(),
             trace.final_state.reg(10)
         );
-        match prove_unified_trace(&trace, 8).and_then(|proof| verify_unified_proof(&proof)) {
+        match prove_unified_trace(&trace, 64).and_then(|proof| verify_unified_proof(&proof)) {
             Ok(()) => println!("{name} proof ok"),
             Err(error) => println!("{name} proof FAIL {error}"),
         }

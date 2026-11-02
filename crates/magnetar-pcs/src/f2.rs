@@ -776,18 +776,20 @@ impl BitPcs for NativeF2BitPcs {
     type Commitment = NativeF2LigeroCommitment;
     type Opening = NativeF2LigeroOpening;
 
-    fn commit(&self, bits: &[bool]) -> Result<Self::Commitment, ProofError> {
-        let values = bits
-            .iter()
-            .map(|bit| F2::from_u64(u64::from(*bit)))
+    fn commit(&self, bits: &magnetar_proof::PackedBits) -> Result<Self::Commitment, ProofError> {
+        let values = (0..bits.len())
+            .map(|index| F2::from_u64(u64::from(bits.get(index))))
             .collect::<Vec<_>>();
         self.params(values.len()).commit(&values)
     }
 
-    fn open(&self, bits: &[bool], point: &[F2_128]) -> Result<(F2_128, Self::Opening), ProofError> {
-        let values = bits
-            .iter()
-            .map(|bit| F2::from_u64(u64::from(*bit)))
+    fn open(
+        &self,
+        bits: &magnetar_proof::PackedBits,
+        point: &[F2_128],
+    ) -> Result<(F2_128, Self::Opening), ProofError> {
+        let values = (0..bits.len())
+            .map(|index| F2::from_u64(u64::from(bits.get(index))))
             .collect::<Vec<_>>();
         let pcs = self.params(values.len());
         let opening = pcs.open(&values, point)?;

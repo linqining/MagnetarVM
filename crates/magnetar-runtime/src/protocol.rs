@@ -571,7 +571,7 @@ mod tests {
             },
         )
         .expect("trace");
-        let proof = crate::prove_unified_trace(&trace, 8).expect("proof");
+        let proof = crate::prove_unified_trace(&trace, 64).expect("proof");
         let expected = bincode::serialize(&proof).expect("encode");
 
         let bundle = ProofBundle::from_unified(&proof);
@@ -582,7 +582,7 @@ mod tests {
         let restored = decoded.into_unified().expect("restore unified proof");
         let actual = bincode::serialize(&restored).expect("encode restored");
         assert_eq!(expected, actual);
-        crate::verify_unified_trace(&trace, &restored, 8).expect("verify restored");
+        crate::verify_unified_trace(&trace, &restored, 64).expect("verify restored");
     }
     #[test]
     fn twist_reducer_is_a_claim_reducer() {
@@ -1114,25 +1114,25 @@ mod phase_tests {
             },
         )
         .unwrap();
-        let proof = crate::prove_unified_trace_auto(&trace, 8).expect("high-mul proof");
+        let proof = crate::prove_unified_trace_auto(&trace, 64).expect("high-mul proof");
         assert!(proof.selected_cpu.is_some());
         assert!(proof.gated.is_none());
-        crate::verify_unified_trace(&trace, &proof, 8).expect("verify high-mul");
+        crate::verify_unified_trace(&trace, &proof, 64).expect("verify high-mul");
     }
 
     #[test]
     fn unified_auto_selects_native_dynamic() {
         let trace = trace();
-        let proof = crate::prove_unified_trace_auto(&trace, 8).expect("auto proof");
+        let proof = crate::prove_unified_trace_auto(&trace, 64).expect("auto proof");
         assert!(proof.selected_cpu.is_some());
         assert!(proof.gated.is_none());
-        crate::verify_unified_trace(&trace, &proof, 8).expect("verify auto proof");
+        crate::verify_unified_trace(&trace, &proof, 64).expect("verify auto proof");
     }
 
     #[test]
     fn unified_dynamic_native_round_trips() {
         let trace = trace();
-        let full = crate::prove_unified_trace(&trace, 8).expect("full");
+        let full = crate::prove_unified_trace(&trace, 64).expect("full");
         eprintln!(
             "full shout={} packed={} shift={} store={}",
             full.shout.is_some(),
@@ -1141,7 +1141,7 @@ mod phase_tests {
             full.store_router.is_some()
         );
         let proof =
-            crate::prove_unified_trace_dynamic_native(&trace, 8).expect("native dynamic proof");
+            crate::prove_unified_trace_dynamic_native(&trace, 64).expect("native dynamic proof");
         eprintln!(
             "native shout={} packed={} shift={} store={}",
             proof.shout.is_some(),
@@ -1149,15 +1149,15 @@ mod phase_tests {
             proof.shift_router.is_some(),
             proof.store_router.is_some()
         );
-        let result = crate::verify_unified_trace(&trace, &proof, 8);
+        let result = crate::verify_unified_trace(&trace, &proof, 64);
         assert!(result.is_ok(), "{result:?}");
     }
 
     #[test]
     fn unified_dynamic_variant_round_trips() {
         let trace = trace();
-        let proof = crate::prove_unified_trace_dynamic(&trace, 8).expect("dynamic proof");
-        crate::verify_unified_trace(&trace, &proof, 8).expect("verify dynamic proof");
+        let proof = crate::prove_unified_trace_dynamic(&trace, 64).expect("dynamic proof");
+        crate::verify_unified_trace(&trace, &proof, 64).expect("verify dynamic proof");
         assert!(proof.gated.is_none());
         assert!(proof.cpu.is_none());
         assert!(proof.e5_opening.is_none());
@@ -1167,33 +1167,33 @@ mod phase_tests {
     #[test]
     fn unified_dynamic_selected_without_e5_opening() {
         let trace = trace();
-        let mut proof = crate::prove_unified_trace(&trace, 8).expect("unified proof");
+        let mut proof = crate::prove_unified_trace(&trace, 64).expect("unified proof");
         proof.gated = None;
         proof.cpu = None;
         proof.e5_opening = None;
         proof.opening = None;
-        let claims = crate::simd_dual::prove_dynamic_cpu_claims(&trace, 8, &selected_backend())
+        let claims = crate::simd_dual::prove_dynamic_cpu_claims(&trace, 64, &selected_backend())
             .expect("dynamic selected claims");
         proof.selected_cpu = Some(claims);
-        let result = crate::verify_unified_trace(&trace, &proof, 8);
+        let result = crate::verify_unified_trace(&trace, &proof, 64);
         assert!(result.is_ok(), "{result:?}");
     }
 
     #[test]
     fn unified_proof_verifies_dynamic_selected_cpu_claims() {
         let trace = trace();
-        let mut proof = crate::prove_unified_trace(&trace, 8).expect("unified proof");
-        let claims = crate::simd_dual::prove_dynamic_cpu_claims(&trace, 8, &selected_backend())
+        let mut proof = crate::prove_unified_trace(&trace, 64).expect("unified proof");
+        let claims = crate::simd_dual::prove_dynamic_cpu_claims(&trace, 64, &selected_backend())
             .expect("dynamic selected claims");
         proof.selected_cpu = Some(claims);
-        crate::verify_unified_trace(&trace, &proof, 8)
+        crate::verify_unified_trace(&trace, &proof, 64)
             .expect("verify with dynamic selected claims");
     }
 
     #[test]
     fn unified_proof_verifies_attached_selected_cpu_claims() {
         let trace = trace();
-        let mut proof = crate::prove_unified_trace(&trace, 8).expect("unified proof");
+        let mut proof = crate::prove_unified_trace(&trace, 64).expect("unified proof");
         let initial = trace.rows[0].pc;
         let claims = crate::simd_dual::prove_selected_cpu_claims(
             crate::simd_dual::SelectedOp::Alu,
@@ -1205,7 +1205,7 @@ mod phase_tests {
         )
         .expect("selected claims");
         proof.selected_cpu = Some(claims);
-        crate::verify_unified_trace(&trace, &proof, 8).expect("verify with selected claims");
+        crate::verify_unified_trace(&trace, &proof, 64).expect("verify with selected claims");
     }
 
     #[test]
@@ -1213,16 +1213,16 @@ mod phase_tests {
         let trace = trace();
         let plan = ProtocolPlan::unified();
         plan.validate().expect("valid plan");
-        let direct = crate::prove_unified_inner(&trace, 8).expect("inner proof");
+        let direct = crate::prove_unified_inner(&trace, 64).expect("inner proof");
         let orchestrator = Orchestrator::new(plan);
-        let proof = orchestrator.prove(&trace, 8).expect("orchestrated proof");
+        let proof = orchestrator.prove(&trace, 64).expect("orchestrated proof");
         assert_eq!(
             bincode::serialize(&direct).unwrap(),
             bincode::serialize(&proof).unwrap()
         );
         let bundle = ProofBundle::from_unified(&proof);
         orchestrator.plan().check_bundle(&bundle).expect("bundle");
-        orchestrator.verify(&trace, &proof, 8).expect("verify");
+        orchestrator.verify(&trace, &proof, 64).expect("verify");
     }
 
     #[test]
@@ -1305,7 +1305,7 @@ mod plan_tests {
         let broken = ProtocolPlan::unified()
             .with_execution(vec![ExecutionStage::Access, ExecutionStage::Cpu]);
         let error = Orchestrator::new(broken)
-            .prove(&trace, 8)
+            .prove(&trace, 64)
             .expect_err("access before commit must fail");
         assert!(error.to_string().contains("access stage before commit"));
     }
@@ -1331,6 +1331,12 @@ pub(crate) struct UnifiedProveContext<'a> {
     register_index: usize,
     ram_index: usize,
     rom_index: usize,
+    /// Whether the unified CPU witness (`z`), its mosaic column and the gated
+    /// component/shift/active tables were materialized. The dynamic selected
+    /// path sets this to `false`: those columns are discarded from the proof
+    /// (the selected lockstep proof replaces them) and materializing them costs
+    /// `O(cycles * base_cols)` memory.
+    cpu_columns: bool,
     trace_witness: crate::trace_commitment::TraceWitness,
     trace_index: usize,
     trace_table: P3MosaicTable,
@@ -1559,8 +1565,20 @@ fn opening_pcs_from_bits(max_bits: usize) -> P3BinaryPcs {
     if max_bits <= 5 {
         P3BinaryPcs::with_params(100, 3, 24, 2)
     } else {
-        P3BinaryPcs::with_params(100, 3, 21, 2)
+        // Rate 1/4: the codeword is half the rate-1/8 size, which halves the
+        // commit peak; the query count (a library function of the rate and the
+        // 21 grinding bits) grows to keep 100 bits. Rate 1/2 was measured at
+        // `2^16` and rejected: it grew the peak (2.01 -> 3.07 GiB), the proof
+        // (+152 KB) and the verify cost (34.8 -> 52.4 ms), so the mosaic keeps
+        // rate 1/4 even though the selected PCS uses rate 1/2.
+        P3BinaryPcs::with_params(100, 2, 21, 2)
     }
+}
+
+/// The PCS used by the core (mosaic) opening; must match the prover's
+/// [`opening_pcs`] for the same table sizes.
+pub(crate) fn core_opening_pcs() -> P3BinaryPcs {
+    opening_pcs_from_bits(6)
 }
 
 fn opening_pcs(tables: &[P3MosaicTable]) -> P3BinaryPcs {
@@ -1576,7 +1594,7 @@ fn opening_pcs(tables: &[P3MosaicTable]) -> P3BinaryPcs {
 struct E5Prepared {
     mosaic: PackedMosaic,
     component_of: std::collections::BTreeMap<(usize, usize), usize>,
-    bits: Vec<bool>,
+    bits: magnetar_proof::PackedBits,
     field_tables: Vec<usize>,
 }
 
@@ -1611,11 +1629,13 @@ fn e5_prepare(
     if mosaic.values.len() < 256 {
         return Ok(None);
     }
-    let bits = mosaic
-        .values
-        .iter()
-        .map(|value| value.value() & 1 == 1)
-        .collect();
+    let bits = magnetar_proof::PackedBits::from_bools(
+        &mosaic
+            .values
+            .iter()
+            .map(|value| value.value() & 1 == 1)
+            .collect::<Vec<_>>(),
+    );
     Ok(Some(E5Prepared {
         mosaic,
         component_of,
@@ -1629,9 +1649,20 @@ fn e5_backend() -> RingSwitchPackedBitPcs<P3BinaryPcs> {
 }
 
 pub fn selected_backend() -> RingSwitchPackedBitPcs<P3BinaryPcs> {
-    // Rate-1/16 code with 16 grinding bits and 8-way folding gives the
-    // smallest selected-witness opening in the P3 parameter sweep.
-    RingSwitchPackedBitPcs::new(P3BinaryPcs::with_params(100, 4, 24, 3))
+    // Rate-1/2 code with 20 grinding bits and 8-way folding — the
+    // memory-first dial, chosen because the target is the paper's `2^22`
+    // memory envelope. Measured at RV64 `2^16` (same host, load-annotated):
+    //   rate 1/8: commit 8.7–15.2 s, open 12.1–15.1 s, peak 3.15–4.03 GiB,
+    //             proof 919,759 B
+    //   rate 1/4: commit 3.8 s,      open 12.0 s,      peak 3.11–3.17 GiB,
+    //             proof 955,311 B
+    //   rate 1/2: commit 2.0 s,      open 8.9 s,       peak 2.18 GiB,
+    //             proof 1,100,335 B
+    // The codeword and Merkle tree scale as 2^log_inv_rate over the packed
+    // witness, so this halves them again; the proof grows 15 % against rate
+    // 1/4 and verification time is unchanged within noise (rate 1/4 measured
+    // 78 vs 147 ms CPU/iteration for rate 1/8 at `2^14`).
+    RingSwitchPackedBitPcs::new(P3BinaryPcs::with_params(100, 1, 20, 3))
 }
 
 type E5Layout = (
@@ -1757,17 +1788,64 @@ impl<'a> UnifiedProveContext<'a> {
         width: usize,
         group: Option<usize>,
     ) -> Result<Self, RuntimeError> {
+        Self::new_inner(trace, width, group, true)
+    }
+
+    /// Build the unified context without the CPU witness column, the gated
+    /// component/shift/active tables and the E5 commitment.
+    ///
+    /// The dynamic selected proof replaces `proof.cpu`/`proof.gated`, and its
+    /// caller discards `e5_opening`/`field_opening`/`opening`, so those tables
+    /// only waste memory (several `cols`-length columns at RV64 scale).
+    pub(crate) fn new_without_cpu_columns(
+        trace: &'a Trace,
+        width: usize,
+        group: Option<usize>,
+    ) -> Result<Self, RuntimeError> {
+        Self::new_inner(trace, width, group, false)
+    }
+
+    fn new_inner(
+        trace: &'a Trace,
+        width: usize,
+        group: Option<usize>,
+        cpu_columns: bool,
+    ) -> Result<Self, RuntimeError> {
         check_trace_linkage(trace)?;
+        let debug_tables = std::env::var_os("MAGNETAR_DEBUG_TABLES").is_some();
+        if debug_tables {
+            eprintln!("context start rss={:.2} GiB", crate::resident_gib());
+        }
         let witness = BinaryTwistWitness::from_trace(trace)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         witness
             .validate()
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        if debug_tables {
+            eprintln!(
+                "after twist witness rss={:.2} GiB (cycles {}, addrs {})",
+                crate::resident_gib(),
+                witness.cycles,
+                witness.read_address.len()
+            );
+        }
         let tables =
             batch_tables(&witness).map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        let (system, cpu_witness) = merged_cpu_system(trace, width)?;
-        let z = witness_vector(&system, &cpu_witness)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        if debug_tables {
+            eprintln!("after batch tables rss={:.2} GiB", crate::resident_gib());
+        }
+        let (system, cpu_witness, z) = if cpu_columns {
+            let (system, cpu_witness) = merged_cpu_system(trace, width)?;
+            let z = witness_vector(&system, &cpu_witness)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            (system, cpu_witness, z)
+        } else {
+            (
+                ConstraintSystem::new(0),
+                magnetar_constraint::Witness::new(Vec::new()),
+                Vec::new(),
+            )
+        };
 
         let shout_witness = BinaryShoutWitness::from_trace(trace).ok();
         let shift_router_witness =
@@ -1784,7 +1862,7 @@ impl<'a> UnifiedProveContext<'a> {
                 .filter(|rows| !rows.is_empty() && rows.len().is_power_of_two())
                 .is_some();
         let mut mosaic_tables = Vec::new();
-        let ram_index = if shared_cpu {
+        let ram_index = if shared_cpu || !cpu_columns {
             0usize
         } else {
             mosaic_tables.push(P3MosaicTable {
@@ -1833,9 +1911,10 @@ impl<'a> UnifiedProveContext<'a> {
             columns: vec![trace_witness.values.clone()],
         };
         mosaic_tables.push(trace_table.clone());
-        let pcs = opening_pcs(&mosaic_tables);
 
-        let gated_input =
+        let gated_input = if !cpu_columns {
+            None
+        } else {
             crate::reservation_cpu_row::reservation_cpu_rows_from_trace_full(trace, width)
                 .ok()
                 .filter(|rows| width <= 128 && !rows.is_empty() && rows.len().is_power_of_two())
@@ -1871,7 +1950,8 @@ impl<'a> UnifiedProveContext<'a> {
                         cycles,
                         group,
                     },
-                );
+                )
+        };
         let component_index = if let Some(input) = &gated_input {
             let (data, address, pc) = gated_component_columns(trace, width, input.cycles)?;
             let index = mosaic_tables.len();
@@ -1903,6 +1983,13 @@ impl<'a> UnifiedProveContext<'a> {
             None
         };
 
+        // The gated component/shift/active tables are appended above; pick the
+        // PCS profile from the complete table list. Choosing it before these
+        // pushes left a width-64 trace whose largest table lands past the
+        // small-table threshold with the small-table PCS while the verifier
+        // derived the large-table profile from the commitment.
+        let pcs = opening_pcs(&mosaic_tables);
+
         Ok(Self {
             trace,
             width,
@@ -1924,6 +2011,7 @@ impl<'a> UnifiedProveContext<'a> {
             register_index,
             ram_index,
             rom_index,
+            cpu_columns,
             trace_witness,
             trace_index,
             trace_table,
@@ -1957,6 +2045,23 @@ impl<'a> UnifiedProveContext<'a> {
     }
 
     pub(crate) fn commit(&mut self) -> Result<(), RuntimeError> {
+        if std::env::var_os("MAGNETAR_DEBUG_TABLES").is_some() {
+            let mut bytes = 0u64;
+            for (index, table) in self.mosaic_tables.iter().enumerate() {
+                let rows = table.columns.first().map_or(0, |column| column.len());
+                bytes += (rows * table.columns.len() * 16) as u64;
+                eprintln!("table {index}: rows={rows} cols={}", table.columns.len());
+            }
+            eprintln!("mosaic bytes: {:.2} GiB", bytes as f64 / (1u64 << 30) as f64);
+        }
+        if !self.cpu_columns {
+            let commitment = self
+                .pcs
+                .commit_mosaic(&self.mosaic_tables)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            self.commitment = Some(commitment);
+            return Ok(());
+        }
         if let Some(prepared) = e5_prepare(&self.mosaic_tables, self.trace_index)? {
             let backend = e5_backend();
             let e5_commitment = backend
@@ -2194,11 +2299,13 @@ impl<'a> UnifiedProveContext<'a> {
             self.cpu_ry = None;
         }
         if let Some(input) = &self.gated_input {
-            let bits = input
-                .z
-                .iter()
-                .map(|value| value.value() == 1)
-                .collect::<Vec<_>>();
+            let bits = magnetar_proof::PackedBits::from_bools(
+                &input
+                    .z
+                    .iter()
+                    .map(|value| value.value() == 1)
+                    .collect::<Vec<_>>(),
+            );
             let backend = magnetar_proof::RingSwitchPackedBitPcs::new(P3SharedPcs::new(
                 100,
                 Vec::new(),
@@ -2277,6 +2384,26 @@ impl<'a> UnifiedProveContext<'a> {
                 .ok_or_else(|| RuntimeError::Proof("missing commitment".into()))?;
             let _ = commitment;
             self.packed_shout = Some(packed);
+        }
+        Ok(())
+    }
+
+    /// Bind the Logup-Shout ROM claim into the mosaic opening. Mirrors
+    /// `logup_shout_router_link_claims`.
+    pub(crate) fn add_logup_shout_rom(
+        &mut self,
+        point: &[F2_128],
+        values: &[F2_128],
+    ) -> Result<(), RuntimeError> {
+        let tables = self.commitment.as_ref().map_or(0, |c| c.tables.len());
+        if tables > self.rom_index {
+            self.points.push(magnetar_pcs::P3MosaicPoint {
+                table: self.rom_index,
+                point: point.to_vec(),
+                columns: (0..values.len()).collect(),
+                next_columns: Vec::new(),
+            });
+            self.values.push(values.to_vec());
         }
         Ok(())
     }
@@ -3394,7 +3521,7 @@ mod metadata_tests {
         )
         .expect("trace");
         let (system, witness, metadata) =
-            crate::merged_cpu_system_with_metadata(&trace, 8).expect("merged system");
+            crate::merged_cpu_system_with_metadata(&trace, 64).expect("merged system");
         assert_eq!(metadata.total_len(), witness.values().len());
         assert!(metadata.total_len() <= system.num_vars);
         let mut expected_offset = 0;
@@ -3441,10 +3568,14 @@ mod metadata_tests {
             (small.log_inv_rate, small.pow_bits, small.log_folding_factor),
             (3, 24, 2)
         );
+        // Rate 1/4: the codeword is half the rate-1/8 size, which halves the
+        // commit peak; the query count (a library function of the rate and the
+        // 21 grinding bits) grows to keep 100 bits. Rate 1/2 was measured and
+        // rejected (it raised the peak, the proof and the verify cost).
         let large = super::opening_pcs(&[table(6)]);
         assert_eq!(
             (large.log_inv_rate, large.pow_bits, large.log_folding_factor),
-            (3, 21, 2)
+            (2, 21, 2)
         );
     }
 }

@@ -10,7 +10,7 @@
 use crate::bit_pcs::BitPcs;
 use crate::virtual_spartan::{
     reconstruct_segment_claim, route_segment_claims_by_owner, split_segment_claims,
-    RoutedSegmentClaim, SegmentClaim, VirtualSpartanError,
+    split_segment_claims_bits, RoutedSegmentClaim, SegmentClaim, VirtualSpartanError,
 };
 use crate::{
     eq, prove_product2, prove_product4, prove_product6, verify_rounds, Mle, Pcs, ProofError,
@@ -73,6 +73,83 @@ pub trait SpartanMatrix: Sync {
     ) -> Result<Option<F2_128>, SpartanError> {
         Ok(None)
     }
+
+    /// `(base_rows, base_cols, instances)` when the matrix repeats one base
+    /// matrix once per instance, letting callers share the instance equality
+    /// vectors across several matrices evaluated at the same point.
+    fn block_shape(&self) -> Option<(usize, usize, usize)> {
+        None
+    }
+
+    fn eval_mle_shared(
+        &self,
+        row_point: &[F2_128],
+        col_point: &[F2_128],
+        _shared: &BlockEvalShared,
+    ) -> Result<Option<F2_128>, SpartanError> {
+        self.eval_mle_fast(row_point, col_point)
+    }
+}
+
+/// Equality vectors shared by every block matrix evaluated at the same point.
+pub struct BlockEvalShared {
+    pub local_bits: usize,
+    pub local_col_bits: usize,
+    pub instance_bits: usize,
+    pub row_instance_eq: Vec<F2_128>,
+    pub col_instance_eq: Vec<F2_128>,
+    pub col_local_eq: Vec<F2_128>,
+    /// `Σ_i eq(row_instance, i)·eq(col_instance, i)` and the block-high weight;
+    /// both depend only on the points, so every block matrix at the same point
+    /// shares them.
+    pub instance_sum: F2_128,
+    pub block_weight: F2_128,
+}
+
+impl BlockEvalShared {
+    pub fn new(shape: (usize, usize, usize), row_point: &[F2_128], col_point: &[F2_128]) -> Option<Self> {
+        let (base_rows, base_cols, instances) = shape;
+        if !base_rows.is_power_of_two() || !base_cols.is_power_of_two() || !instances.is_power_of_two() {
+            return None;
+        }
+        let local_bits = base_rows.trailing_zeros() as usize;
+        let local_col_bits = base_cols.trailing_zeros() as usize;
+        let instance_bits = instances.trailing_zeros() as usize;
+        if row_point.len() < local_bits + instance_bits
+            || col_point.len() < local_col_bits + instance_bits
+        {
+            return None;
+        }
+        // The three equality tables are independent; build them together.
+        let (row_instance_eq, col_instance_eq, col_local_eq) = std::thread::scope(|scope| {
+            let first = scope.spawn(|| {
+                eq_vector_tensor(&row_point[local_bits..local_bits + instance_bits])
+            });
+            let second = scope.spawn(|| eq_vector_tensor(&col_point[local_col_bits..]));
+            let third = scope.spawn(|| eq_vector_tensor(&col_point[..local_col_bits]));
+            (
+                first.join().expect("eq worker"),
+                second.join().expect("eq worker"),
+                third.join().expect("eq worker"),
+            )
+        });
+        let mut instance_sum = F2_128::from(0u64);
+        for instance in 0..instances {
+            instance_sum = instance_sum + row_instance_eq[instance] * col_instance_eq[instance];
+        }
+        let block_high = &row_point[local_bits + instance_bits..];
+        let block_weight = eq(block_high, &vec![F2_128::from(0u64); block_high.len()]);
+        Some(Self {
+            local_bits,
+            local_col_bits,
+            instance_bits,
+            row_instance_eq,
+            col_instance_eq,
+            col_local_eq,
+            instance_sum,
+            block_weight,
+        })
+    }
 }
 
 impl SpartanMatrix for SparseMatrix {
@@ -131,13 +208,44 @@ fn eval_mles_parallel(
             c1.eval_mle(rx, ry)?,
         ]);
     }
+    // All six matrices have the same block shape, so the instance equality
+    // vectors and the `Σ eq·eq` term are computed once and shared.
+    let shared_started = std::time::Instant::now();
+    let shared = {
+        let shapes = [
+            a0.block_shape(),
+            b0.block_shape(),
+            c0.block_shape(),
+            a1.block_shape(),
+            b1.block_shape(),
+            c1.block_shape(),
+        ];
+        match shapes[0] {
+            Some(shape) if shapes.iter().all(|candidate| *candidate == Some(shape)) => {
+                BlockEvalShared::new(shape, rx, ry)
+            }
+            _ => None,
+        }
+    };
+    if std::env::var_os("MAGNETAR_PROFILE_EVAL").is_some() {
+        eprintln!(
+            "eval_mles shared={} in {:?}",
+            shared.is_some(),
+            shared_started.elapsed()
+        );
+    }
+    let eval = |matrix: &dyn SpartanMatrix| match shared.as_ref() {
+        Some(shared) => matrix.eval_mle_shared(rx, ry, shared),
+        None => matrix.eval_mle_fast(rx, ry),
+    };
+    let eval = &eval;
     let fast = std::thread::scope(|scope| {
-        let a0h = scope.spawn(|| a0.eval_mle_fast(rx, ry));
-        let b0h = scope.spawn(|| b0.eval_mle_fast(rx, ry));
-        let c0h = scope.spawn(|| c0.eval_mle_fast(rx, ry));
-        let a1h = scope.spawn(|| a1.eval_mle_fast(rx, ry));
-        let b1h = scope.spawn(|| b1.eval_mle_fast(rx, ry));
-        let c1h = scope.spawn(|| c1.eval_mle_fast(rx, ry));
+        let a0h = scope.spawn(move || eval(a0));
+        let b0h = scope.spawn(move || eval(b0));
+        let c0h = scope.spawn(move || eval(c0));
+        let a1h = scope.spawn(move || eval(a1));
+        let b1h = scope.spawn(move || eval(b1));
+        let c1h = scope.spawn(move || eval(c1));
         let values = [
             a0h.join().expect("fast-eval worker"),
             b0h.join().expect("fast-eval worker"),
@@ -375,6 +483,8 @@ pub enum SpartanError {
     Verification(&'static str),
     #[error("SIMD instance count must be nonzero")]
     EmptySimd,
+    #[error("streaming prover: {0}")]
+    Streaming(String),
     #[error(transparent)]
     Virtual(#[from] VirtualSpartanError),
 }
@@ -512,7 +622,8 @@ pub fn prove_spartan_bits<B: BitPcs>(
     let cz_mle = Mle::new(cz.to_vec())?;
 
     let row_bits = a.rows().trailing_zeros() as usize;
-    let commitment = backend.commit(witness_bits)?;
+    let packed = crate::PackedBits::from_bools(witness_bits);
+    let commitment = backend.commit(&packed)?;
     let transcript = RefCell::new(Sha256Transcript::new("spartan-reference-v1"));
     let tau = {
         let mut transcript = transcript.borrow_mut();
@@ -569,7 +680,7 @@ pub fn prove_spartan_bits<B: BitPcs>(
     }
 
     let vw = z_mle.eval(&ry)?;
-    let (opened, opening) = backend.open(witness_bits, &ry)?;
+    let (opened, opening) = backend.open(&packed, &ry)?;
     if opened != vw {
         return Err(SpartanError::ClaimMismatch {
             expected: vw,
@@ -1473,12 +1584,281 @@ pub fn prove_lockstep_bits<B: BitPcs>(
     layout: &WitnessLayout,
     backend: &B,
 ) -> Result<LockstepProof<B::Commitment, B::Opening>, SpartanError> {
-    Ok(prove_lockstep_bits_with_point(bits, a0, b0, c0, a1, b1, c1, layout, backend)?.0)
+    let packed = crate::PackedBits::from_bools(bits);
+    Ok(prove_lockstep_bits_with_point(&packed, a0, b0, c0, a1, b1, c1, layout, backend)?.0)
+}
+
+/// Streaming variant of [`prove_lockstep_bits_with_point`] for the shared
+/// block-matrix representation.
+///
+/// Every large intermediate (the six matvec vectors, the six MLE copies, the
+/// equality vector and the row-combination/left vectors) is derived from the
+/// bit witness on demand, so the peak memory is bounded by the configured
+/// streaming level instead of by `rows` and `cols`. The transcript, the
+/// opening and every proof field are identical to the eager path.
+#[allow(clippy::too_many_arguments)]
+pub fn prove_lockstep_bits_streaming<B: BitPcs>(
+    bits: &crate::PackedBits,
+    a0: &crate::SharedBlockMatrix,
+    b0: &crate::SharedBlockMatrix,
+    c0: &crate::SharedBlockMatrix,
+    a1: &crate::SharedBlockMatrix,
+    b1: &crate::SharedBlockMatrix,
+    c1: &crate::SharedBlockMatrix,
+    layout: &WitnessLayout,
+    backend: &B,
+) -> Result<(LockstepProof<B::Commitment, B::Opening>, Vec<F2_128>), SpartanError> {
+    prove_lockstep_bits_streaming_inner(
+        bits,
+        [a0, b0, c0, a1, b1, c1],
+        layout,
+        backend,
+        None,
+        None,
+    )
+}
+
+/// Streaming lockstep prover with a batched linear claim folded into the inner
+/// sum-check.
+///
+/// The claim is added to the inner left vector as `+ γ·coefficient`, so the
+/// committed witness is bound to the claim target with the *same* sum-check and
+/// the *same* PCS opening as the segment claims. The commitment must be the one
+/// already computed from `bits` (the claim challenges are derived from it).
+#[allow(clippy::too_many_arguments)]
+pub fn prove_lockstep_bits_streaming_claim<B: BitPcs>(
+    bits: &crate::PackedBits,
+    a0: &crate::SharedBlockMatrix,
+    b0: &crate::SharedBlockMatrix,
+    c0: &crate::SharedBlockMatrix,
+    a1: &crate::SharedBlockMatrix,
+    b1: &crate::SharedBlockMatrix,
+    c1: &crate::SharedBlockMatrix,
+    layout: &WitnessLayout,
+    backend: &B,
+    claim: (&crate::stream::LinearClaim, F2_128),
+    commitment: &B::Commitment,
+) -> Result<(LockstepProof<B::Commitment, B::Opening>, Vec<F2_128>), SpartanError> {
+    prove_lockstep_bits_streaming_inner(
+        bits,
+        [a0, b0, c0, a1, b1, c1],
+        layout,
+        backend,
+        None,
+        Some((claim.0, claim.1, commitment)),
+    )
+}
+
+/// Streaming lockstep prover with an explicit recompute level for the outer
+/// and inner sum-checks (see [`crate::stream::auto_level`]). Used by tests to
+/// pin every phase of the engine to the eager result.
+#[allow(clippy::too_many_arguments)]
+pub fn prove_lockstep_bits_streaming_with_level<B: BitPcs>(
+    bits: &crate::PackedBits,
+    a0: &crate::SharedBlockMatrix,
+    b0: &crate::SharedBlockMatrix,
+    c0: &crate::SharedBlockMatrix,
+    a1: &crate::SharedBlockMatrix,
+    b1: &crate::SharedBlockMatrix,
+    c1: &crate::SharedBlockMatrix,
+    layout: &WitnessLayout,
+    backend: &B,
+    outer_level: usize,
+    inner_level: usize,
+) -> Result<(LockstepProof<B::Commitment, B::Opening>, Vec<F2_128>), SpartanError> {
+    prove_lockstep_bits_streaming_inner(
+        bits,
+        [a0, b0, c0, a1, b1, c1],
+        layout,
+        backend,
+        Some((outer_level, inner_level)),
+        None,
+    )
+}
+
+/// Streaming lockstep prover with an explicit recompute level and a folded
+/// linear claim. Used by tests to pin every phase of the claim merge.
+#[allow(clippy::too_many_arguments)]
+pub fn prove_lockstep_bits_streaming_claim_with_level<B: BitPcs>(
+    bits: &crate::PackedBits,
+    a0: &crate::SharedBlockMatrix,
+    b0: &crate::SharedBlockMatrix,
+    c0: &crate::SharedBlockMatrix,
+    a1: &crate::SharedBlockMatrix,
+    b1: &crate::SharedBlockMatrix,
+    c1: &crate::SharedBlockMatrix,
+    layout: &WitnessLayout,
+    backend: &B,
+    claim: (&crate::stream::LinearClaim, F2_128),
+    commitment: &B::Commitment,
+    outer_level: usize,
+    inner_level: usize,
+) -> Result<(LockstepProof<B::Commitment, B::Opening>, Vec<F2_128>), SpartanError> {
+    prove_lockstep_bits_streaming_inner(
+        bits,
+        [a0, b0, c0, a1, b1, c1],
+        layout,
+        backend,
+        Some((outer_level, inner_level)),
+        Some((claim.0, claim.1, commitment)),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prove_lockstep_bits_streaming_inner<B: BitPcs>(
+    bits: &crate::PackedBits,
+    matrices: [&crate::SharedBlockMatrix; 6],
+    layout: &WitnessLayout,
+    backend: &B,
+    levels: Option<(usize, usize)>,
+    claim: Option<(&crate::stream::LinearClaim, F2_128, &B::Commitment)>,
+) -> Result<(LockstepProof<B::Commitment, B::Opening>, Vec<F2_128>), SpartanError> {
+    let profiles = std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some();
+    let rows = crate::stream::LockstepRows::new(bits, matrices)?;
+    let started = std::time::Instant::now();
+    let commitment = match claim {
+        Some((_, _, commitment)) => commitment.clone(),
+        None => backend.commit(bits)?,
+    };
+    if profiles {
+        match claim {
+            Some(_) => eprintln!("selected commit: reused ({:?})", started.elapsed()),
+            None => eprintln!("selected commit: {:?}", started.elapsed()),
+        }
+    }
+    let transcript = RefCell::new(Sha256Transcript::new("lockstep-reference-v1"));
+    let tau = {
+        let mut transcript = transcript.borrow_mut();
+        transcript.absorb("commitment", &backend.commitment_bytes(&commitment));
+        transcript.absorb("rows", &(rows.rows() as u64).to_le_bytes());
+        transcript.absorb("cols", &(bits.len() as u64).to_le_bytes());
+        (0..rows.row_bits())
+            .map(|_| challenge_field(&mut transcript, "tau"))
+            .collect::<Vec<_>>()
+    };
+    let alpha = {
+        let mut transcript = transcript.borrow_mut();
+        challenge_field(&mut transcript, "relation-batch")
+    };
+    let started = std::time::Instant::now();
+    let outer_level = levels.map_or_else(
+        || crate::stream::auto_level(rows.row_bits()),
+        |(outer, _)| outer,
+    );
+    let outer = crate::stream::prove_product6_rows(
+        &rows,
+        &tau,
+        alpha,
+        outer_level,
+        |round, values| round_challenge(&transcript, "outer-round", round, values),
+    )?;
+    if outer.proof.claimed_sum != F2_128::from(0u64) {
+        return Err(SpartanError::ClaimMismatch {
+            expected: F2_128::from(0u64),
+            actual: outer.proof.claimed_sum,
+        });
+    }
+    let rx = outer.challenges;
+    if profiles {
+        eprintln!("selected product6: {:?}", started.elapsed());
+    }
+    let [va0, vb0, vc0, va1, vb1, vc1] = outer.terminal;
+    let (r0, r1) = {
+        let mut transcript = transcript.borrow_mut();
+        for value in [va0, vb0, vc0, va1, vb1, vc1] {
+            absorb_field(&mut transcript, "claim", value);
+        }
+        (
+            challenge_field(&mut transcript, "batch0"),
+            challenge_field(&mut transcript, "batch1"),
+        )
+    };
+    let (claim_target, gamma) = claim
+        .map(|(claim, gamma, _)| (claim.target, gamma))
+        .unwrap_or((F2_128::from(0u64), F2_128::from(0u64)));
+    let expected_inner_claim = va0
+        + r0 * vb0
+        + r0 * r0 * vc0
+        + alpha * (va1 + r1 * vb1 + r1 * r1 * vc1)
+        + gamma * claim_target;
+    let started = std::time::Instant::now();
+    let mut columns = crate::stream::ColumnRows::new(
+        bits,
+        &rows,
+        [
+            F2_128::from(1u64),
+            r0,
+            r0 * r0,
+            alpha,
+            alpha * r1,
+            alpha * r1 * r1,
+        ],
+        &rx,
+    )?;
+    if let Some((claim, gamma, _)) = claim {
+        columns = columns.with_claim(claim, gamma)?;
+    }
+    if profiles {
+        eprintln!("selected row-combinations: {:?}", started.elapsed());
+    }
+    let started = std::time::Instant::now();
+    let inner_level = levels.map_or_else(
+        || crate::stream::auto_level(columns.column_bits()),
+        |(_, inner)| inner,
+    );
+    let inner = crate::stream::prove_product2_columns(
+        &columns,
+        inner_level,
+        |round, values| round_challenge(&transcript, "inner-round", round, values),
+    )?;
+    if inner.proof.claimed_sum != expected_inner_claim {
+        return Err(SpartanError::ClaimMismatch {
+            expected: expected_inner_claim,
+            actual: inner.proof.claimed_sum,
+        });
+    }
+    if profiles {
+        eprintln!("selected product2: {:?}", started.elapsed());
+    }
+    let ry = inner.challenges;
+    let vw = inner.right;
+    let started = std::time::Instant::now();
+    let segments = split_segment_claims_bits(layout, bits, &ry)?;
+    if profiles {
+        eprintln!("selected segments: {:?}", started.elapsed());
+    }
+    let started = std::time::Instant::now();
+    let (opened, opening) = backend.open_with_commitment(bits, &ry, &commitment)?;
+    if profiles {
+        eprintln!("selected open: {:?}", started.elapsed());
+    }
+    if opened != vw {
+        return Err(SpartanError::ClaimMismatch {
+            expected: vw,
+            actual: opened,
+        });
+    }
+    Ok((
+        LockstepProof {
+            commitment,
+            v_a0: va0,
+            v_b0: vb0,
+            v_c0: vc0,
+            v_a1: va1,
+            v_b1: vb1,
+            v_c1: vc1,
+            outer: outer.proof,
+            inner: inner.proof,
+            segments,
+            opening,
+        },
+        ry,
+    ))
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn prove_lockstep_bits_with_point<B: BitPcs>(
-    bits: &[bool],
+    bits: &crate::PackedBits,
     a0: &dyn SpartanMatrix,
     b0: &dyn SpartanMatrix,
     c0: &dyn SpartanMatrix,
@@ -1488,9 +1868,8 @@ pub fn prove_lockstep_bits_with_point<B: BitPcs>(
     layout: &WitnessLayout,
     backend: &B,
 ) -> Result<(LockstepProof<B::Commitment, B::Opening>, Vec<F2_128>), SpartanError> {
-    let z = bits
-        .iter()
-        .map(|bit| F2_128::from(u64::from(*bit)))
+    let z = (0..bits.len())
+        .map(|index| F2_128::from(u64::from(bits.get(index))))
         .collect::<Vec<_>>();
     let profile = std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some();
     let started = std::time::Instant::now();
@@ -1888,6 +2267,40 @@ pub fn verify_lockstep_bits_with_replacements_point<B: BitPcs>(
         backend,
         replacements,
         None,
+        None,
+    )
+}
+
+/// Verify a streaming lockstep proof whose inner sum-check was folded with a
+/// linear claim, using only the proof, the public matrices and the claimed
+/// segment values.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_lockstep_bits_with_replacements_claim_point<B: BitPcs>(
+    a0: &dyn SpartanMatrix,
+    b0: &dyn SpartanMatrix,
+    c0: &dyn SpartanMatrix,
+    a1: &dyn SpartanMatrix,
+    b1: &dyn SpartanMatrix,
+    c1: &dyn SpartanMatrix,
+    layout: &WitnessLayout,
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    backend: &B,
+    replacements: &[Option<F2_128>],
+    claim: Option<(&crate::stream::LinearClaim, F2_128)>,
+) -> Result<Vec<F2_128>, SpartanError> {
+    verify_lockstep_bits_with_replacements_point_inner(
+        a0,
+        b0,
+        c0,
+        a1,
+        b1,
+        c1,
+        layout,
+        proof,
+        backend,
+        replacements,
+        None,
+        claim,
     )
 }
 
@@ -1902,7 +2315,7 @@ pub fn verify_lockstep_bits_with_witness<B: BitPcs>(
     layout: &WitnessLayout,
     proof: &LockstepProof<B::Commitment, B::Opening>,
     backend: &B,
-    witness_bits: &[bool],
+    witness_bits: &crate::PackedBits,
 ) -> Result<Vec<F2_128>, SpartanError> {
     verify_lockstep_bits_with_replacements_point_inner(
         a0,
@@ -1916,6 +2329,39 @@ pub fn verify_lockstep_bits_with_witness<B: BitPcs>(
         backend,
         &[],
         Some(witness_bits),
+        None,
+    )
+}
+
+/// Witness-checking verifier for a proof whose inner sum-check carries a
+/// folded linear claim.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_lockstep_bits_with_witness_claim<B: BitPcs>(
+    a0: &dyn SpartanMatrix,
+    b0: &dyn SpartanMatrix,
+    c0: &dyn SpartanMatrix,
+    a1: &dyn SpartanMatrix,
+    b1: &dyn SpartanMatrix,
+    c1: &dyn SpartanMatrix,
+    layout: &WitnessLayout,
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    backend: &B,
+    witness_bits: &crate::PackedBits,
+    claim: Option<(&crate::stream::LinearClaim, F2_128)>,
+) -> Result<Vec<F2_128>, SpartanError> {
+    verify_lockstep_bits_with_replacements_point_inner(
+        a0,
+        b0,
+        c0,
+        a1,
+        b1,
+        c1,
+        layout,
+        proof,
+        backend,
+        &[],
+        Some(witness_bits),
+        claim,
     )
 }
 
@@ -1931,7 +2377,8 @@ fn verify_lockstep_bits_with_replacements_point_inner<B: BitPcs>(
     proof: &LockstepProof<B::Commitment, B::Opening>,
     backend: &B,
     replacements: &[Option<F2_128>],
-    witness_bits: Option<&[bool]>,
+    witness_bits: Option<&crate::PackedBits>,
+    claim: Option<(&crate::stream::LinearClaim, F2_128)>,
 ) -> Result<Vec<F2_128>, SpartanError> {
     if a0.rows() != a1.rows()
         || b0.rows() != a1.rows()
@@ -1977,10 +2424,14 @@ fn verify_lockstep_bits_with_replacements_point_inner<B: BitPcs>(
             challenge_field(&mut transcript, "batch1"),
         )
     };
+    let (claim_target, claim_gamma) = claim
+        .map(|(claim, gamma)| (claim.target, gamma))
+        .unwrap_or((F2_128::from(0u64), F2_128::from(0u64)));
     let expected_inner_claim = proof.v_a0
         + r0 * proof.v_b0
         + r0 * r0 * proof.v_c0
-        + alpha * (proof.v_a1 + r1 * proof.v_b1 + r1 * r1 * proof.v_c1);
+        + alpha * (proof.v_a1 + r1 * proof.v_b1 + r1 * r1 * proof.v_c1)
+        + claim_gamma * claim_target;
     if proof.inner.claimed_sum != expected_inner_claim {
         return Err(SpartanError::Verification("lockstep inner claim mismatch"));
     }
@@ -2020,16 +2471,25 @@ fn verify_lockstep_bits_with_replacements_point_inner<B: BitPcs>(
     if profile {
         eprintln!("lockstep verify eval_mles: {:?}", eval_started.elapsed());
     }
+    let claim_at = if let Some((claim, gamma)) = claim {
+        if claim.row_point.len() > ry.len() {
+            return Err(SpartanError::Dimensions);
+        }
+        let log_block = ry.len() - claim.row_point.len();
+        gamma * claim.eval(&ry[..log_block], &ry[log_block..])
+    } else {
+        F2_128::from(0u64)
+    };
     let expected_inner =
-        (a0_at + r0 * b0_at + r0 * r0 * c0_at + alpha * (a1_at + r1 * b1_at + r1 * r1 * c1_at))
+        (a0_at + r0 * b0_at + r0 * r0 * c0_at + alpha * (a1_at + r1 * b1_at + r1 * r1 * c1_at)
+            + claim_at)
             * vw;
     if inner_final != expected_inner {
         return Err(SpartanError::Verification("lockstep inner mismatch"));
     }
     if let Some(bits) = witness_bits {
-        let values = bits
-            .iter()
-            .map(|bit| F2_128::from(u64::from(*bit)))
+        let values = (0..bits.len())
+            .map(|index| F2_128::from(u64::from(bits.get(index))))
             .collect::<Vec<_>>();
         let mle = Mle::new(values)?;
         if mle.eval(&ry)? != vw {

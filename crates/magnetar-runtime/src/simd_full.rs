@@ -587,12 +587,12 @@ mod gated_trace_tests {
             },
         )
         .unwrap();
-        let rows = gated_rows_from_trace_padded(&trace, 8).unwrap();
+        let rows = gated_rows_from_trace_padded(&trace, 64).unwrap();
         assert_eq!(rows.len(), 8);
         let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
         let backend = DirectBitPcs::new(pcs);
-        let (proof, layout) = prove_gated_dual_batch_bits(8, &rows, &backend).unwrap();
-        verify_gated_dual_batch_bits(8, &rows, &proof, &layout, &backend).unwrap();
+        let (proof, layout) = prove_gated_dual_batch_bits(64, &rows, &backend).unwrap();
+        verify_gated_dual_batch_bits(64, &rows, &proof, &layout, &backend).unwrap();
     }
 
     #[test]
@@ -645,7 +645,7 @@ mod gated_trace_tests {
             },
         )
         .unwrap();
-        let rows = gated_rows_from_trace_padded(&trace, 8).unwrap();
+        let rows = gated_rows_from_trace_padded(&trace, 64).unwrap();
         assert_eq!(rows.len(), 4);
         assert!(matches!(
             rows.last().unwrap().1,
@@ -695,12 +695,12 @@ mod gated_trace_tests {
             },
         )
         .expect("trace");
-        let rows = gated_rows_from_trace(&trace, 8).expect("rows");
+        let rows = gated_rows_from_trace(&trace, 64).expect("rows");
         assert_eq!(rows.len(), 4);
         let pcs = P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new());
         let backend = DirectBitPcs::new(pcs);
-        let (proof, layout) = prove_gated_dual_batch_bits(8, &rows, &backend).expect("prove");
-        verify_gated_dual_batch_bits(8, &rows, &proof, &layout, &backend).expect("verify");
+        let (proof, layout) = prove_gated_dual_batch_bits(64, &rows, &backend).expect("prove");
+        verify_gated_dual_batch_bits(64, &rows, &proof, &layout, &backend).expect("verify");
     }
 }
 
@@ -749,7 +749,7 @@ mod auipc_trace_tests {
             },
         )
         .unwrap();
-        let rows = gated_rows_from_trace(&trace, 8).unwrap();
+        let rows = gated_rows_from_trace(&trace, 64).unwrap();
         assert!(matches!(
             rows[0].1,
             GatedCpuRowInput::Alu {
@@ -797,14 +797,14 @@ mod auipc_trace_tests {
             },
         )
         .unwrap();
-        let rows = gated_rows_from_trace(&trace, 8).unwrap();
+        let rows = gated_rows_from_trace(&trace, 64).unwrap();
         assert!(matches!(rows[1].1, GatedCpuRowInput::Mul { .. }));
         use crate::simd_dual::{prove_gated_dual_batch_bits, verify_gated_dual_batch_bits};
         use magnetar_pcs::P3SharedPcs;
         use magnetar_proof::DirectBitPcs;
         let backend = DirectBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
-        let (proof, layout) = prove_gated_dual_batch_bits(8, &rows, &backend).unwrap();
-        verify_gated_dual_batch_bits(8, &rows, &proof, &layout, &backend).unwrap();
+        let (proof, layout) = prove_gated_dual_batch_bits(64, &rows, &backend).unwrap();
+        verify_gated_dual_batch_bits(64, &rows, &proof, &layout, &backend).unwrap();
     }
 
     #[test]
@@ -845,7 +845,7 @@ mod auipc_trace_tests {
             },
         )
         .unwrap();
-        let rows = gated_rows_from_trace(&trace, 8).unwrap();
+        let rows = gated_rows_from_trace(&trace, 64).unwrap();
         assert!(matches!(
             rows[1].1,
             GatedCpuRowInput::Mul { high: true, .. }
@@ -854,8 +854,8 @@ mod auipc_trace_tests {
         use magnetar_pcs::P3SharedPcs;
         use magnetar_proof::DirectBitPcs;
         let backend = DirectBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
-        let (proof, layout) = prove_gated_dual_batch_bits(8, &rows, &backend).unwrap();
-        verify_gated_dual_batch_bits(8, &rows, &proof, &layout, &backend).unwrap();
+        let (proof, layout) = prove_gated_dual_batch_bits(64, &rows, &backend).unwrap();
+        verify_gated_dual_batch_bits(64, &rows, &proof, &layout, &backend).unwrap();
     }
 
     #[test]
@@ -920,7 +920,7 @@ mod auipc_trace_tests {
                 row.pc, row.instruction.op, row.rs1, row.rs2, row.rs1_val, row.rs2_val
             );
         }
-        let rows = gated_rows_from_trace(&trace, 8).unwrap();
+        let rows = gated_rows_from_trace(&trace, 64).unwrap();
         for (pc, input) in &rows {
             if let GatedCpuRowInput::Div { num, den, out, .. } = input {
                 eprintln!("div row pc={pc:x} num={num} den={den} out={out}");
@@ -931,8 +931,8 @@ mod auipc_trace_tests {
         use magnetar_pcs::P3SharedPcs;
         use magnetar_proof::DirectBitPcs;
         let backend = DirectBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
-        let (proof, layout) = prove_gated_dual_batch_bits(8, &rows, &backend).unwrap();
-        verify_gated_dual_batch_bits(8, &rows, &proof, &layout, &backend).unwrap();
+        let (proof, layout) = prove_gated_dual_batch_bits(64, &rows, &backend).unwrap();
+        verify_gated_dual_batch_bits(64, &rows, &proof, &layout, &backend).unwrap();
     }
 
     #[test]
@@ -1027,14 +1027,14 @@ mod auipc_trace_tests {
             },
         )
         .unwrap();
-        let rows = gated_rows_from_trace(&trace, 8).unwrap();
+        let rows = gated_rows_from_trace(&trace, 64).unwrap();
         assert_eq!(rows.len(), 8);
         use crate::simd_dual::{prove_gated_dual_batch_bits, verify_gated_dual_batch_bits};
         use magnetar_pcs::P3SharedPcs;
         use magnetar_proof::DirectBitPcs;
         let backend = DirectBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
-        let (proof, layout) = prove_gated_dual_batch_bits(8, &rows, &backend).unwrap();
-        verify_gated_dual_batch_bits(8, &rows, &proof, &layout, &backend).unwrap();
+        let (proof, layout) = prove_gated_dual_batch_bits(64, &rows, &backend).unwrap();
+        verify_gated_dual_batch_bits(64, &rows, &proof, &layout, &backend).unwrap();
     }
 
     #[test]
@@ -1129,14 +1129,14 @@ mod auipc_trace_tests {
             },
         )
         .unwrap();
-        let rows = gated_rows_from_trace(&trace, 8).unwrap();
+        let rows = gated_rows_from_trace(&trace, 64).unwrap();
         assert_eq!(rows.len(), 8);
         use crate::simd_dual::{prove_gated_dual_batch_bits, verify_gated_dual_batch_bits};
         use magnetar_pcs::P3SharedPcs;
         use magnetar_proof::DirectBitPcs;
         let backend = DirectBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
-        let (proof, layout) = prove_gated_dual_batch_bits(8, &rows, &backend).unwrap();
-        verify_gated_dual_batch_bits(8, &rows, &proof, &layout, &backend).unwrap();
+        let (proof, layout) = prove_gated_dual_batch_bits(64, &rows, &backend).unwrap();
+        verify_gated_dual_batch_bits(64, &rows, &proof, &layout, &backend).unwrap();
     }
 
     #[test]
@@ -1177,14 +1177,14 @@ mod auipc_trace_tests {
             },
         )
         .unwrap();
-        let rows = gated_rows_from_trace(&trace, 8).unwrap();
+        let rows = gated_rows_from_trace(&trace, 64).unwrap();
         assert_eq!(rows.len(), 2);
         use crate::simd_dual::{prove_gated_dual_batch_bits, verify_gated_dual_batch_bits};
         use magnetar_pcs::P3SharedPcs;
         use magnetar_proof::DirectBitPcs;
         let backend = DirectBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
-        let (proof, layout) = prove_gated_dual_batch_bits(8, &rows, &backend).unwrap();
-        verify_gated_dual_batch_bits(8, &rows, &proof, &layout, &backend).unwrap();
+        let (proof, layout) = prove_gated_dual_batch_bits(64, &rows, &backend).unwrap();
+        verify_gated_dual_batch_bits(64, &rows, &proof, &layout, &backend).unwrap();
     }
 
     #[test]
@@ -1234,7 +1234,7 @@ mod auipc_trace_tests {
             },
         )
         .unwrap();
-        let rows = gated_rows_from_trace(&trace, 8).unwrap();
+        let rows = gated_rows_from_trace(&trace, 64).unwrap();
         assert!(matches!(
             rows[0].1,
             GatedCpuRowInput::Branch {
@@ -1246,8 +1246,8 @@ mod auipc_trace_tests {
         use magnetar_pcs::P3SharedPcs;
         use magnetar_proof::DirectBitPcs;
         let backend = DirectBitPcs::new(P3SharedPcs::new(100, Vec::new(), Vec::new(), Vec::new()));
-        let (proof, layout) = prove_gated_dual_batch_bits(8, &rows, &backend).unwrap();
-        verify_gated_dual_batch_bits(8, &rows, &proof, &layout, &backend).unwrap();
+        let (proof, layout) = prove_gated_dual_batch_bits(64, &rows, &backend).unwrap();
+        verify_gated_dual_batch_bits(64, &rows, &proof, &layout, &backend).unwrap();
     }
 
     #[test]
@@ -1297,7 +1297,7 @@ mod auipc_trace_tests {
             },
         )
         .unwrap();
-        let rows = gated_rows_from_trace(&trace, 8).unwrap();
+        let rows = gated_rows_from_trace(&trace, 64).unwrap();
         assert!(rows.iter().any(|(_, input)| matches!(
             input,
             GatedCpuRowInput::Alu {
@@ -1345,7 +1345,7 @@ mod auipc_trace_tests {
             },
         )
         .unwrap();
-        let rows = gated_rows_from_trace(&trace, 8).unwrap();
+        let rows = gated_rows_from_trace(&trace, 64).unwrap();
         assert!(matches!(
             rows[0].1,
             GatedCpuRowInput::Alu {

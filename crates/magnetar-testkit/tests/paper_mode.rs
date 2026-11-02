@@ -32,7 +32,7 @@ fn paper_mode_committed_shout_round_trips() {
         max_cycles: 10_000,
     };
     let trace = execute(&program, config).unwrap();
-    let proof = prove_unified_trace_paper(&trace, 8).unwrap();
+    let proof = prove_unified_trace_paper(&trace, 64).unwrap();
     assert!(proof.logup_shout.is_some());
     assert!(proof.trace_logup_shout.is_none());
     assert!(proof.claim_proof.is_some());
@@ -54,9 +54,9 @@ fn paper_mode_committed_shout_round_trips() {
         halted: trace.halted,
         exit_code: trace.exit_code,
     };
-    verify_native_unified(&statement, &proof, 8).unwrap();
+    verify_native_unified(&statement, &proof, 64).unwrap();
 
     let mut bad_root = proof.clone();
     bad_root.virtual_claim_root[0] ^= 1;
-    assert!(verify_native_unified(&statement, &bad_root, 8).is_err());
+    assert!(verify_native_unified(&statement, &bad_root, 64).is_err());
 }

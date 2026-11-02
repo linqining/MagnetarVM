@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(" group  bytes   prove_ms  verify_ms");
     for group in [2usize, 4] {
         let started = Instant::now();
-        let proof = prove_unified_trace_group(&trace, 8, group)?;
+        let proof = prove_unified_trace_group(&trace,64, group)?;
         let prove_ms = started.elapsed().as_secs_f64() * 1000.0;
         let started = Instant::now();
         verify_unified_proof(&proof)?;

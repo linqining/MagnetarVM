@@ -37,30 +37,30 @@ fn main() {
     .unwrap();
 
     let started = Instant::now();
-    let full = prove_unified_trace(&trace, 8).unwrap();
+    let full = prove_unified_trace(&trace, 64).unwrap();
     let full_time = started.elapsed();
     let full_bytes = bincode::serialize(&full).unwrap().len();
     let started = Instant::now();
-    verify_unified_trace(&trace, &full, 8).unwrap();
+    verify_unified_trace(&trace, &full, 64).unwrap();
     let full_verify = started.elapsed();
 
     let started = Instant::now();
-    let dynamic = prove_unified_trace_dynamic(&trace, 8).unwrap();
+    let dynamic = prove_unified_trace_dynamic(&trace, 64).unwrap();
     let dynamic_time = started.elapsed();
     let dynamic_bytes = bincode::serialize(&dynamic).unwrap().len();
     let started = Instant::now();
-    verify_unified_trace(&trace, &dynamic, 8).unwrap();
+    verify_unified_trace(&trace, &dynamic, 64).unwrap();
     let dynamic_verify = started.elapsed();
 
     println!("full={full_bytes}B prove={full_time:?} verify={full_verify:?}");
     println!("dynamic={dynamic_bytes}B prove={dynamic_time:?} verify={dynamic_verify:?}");
 
     let started = Instant::now();
-    let native = prove_unified_trace_dynamic_native(&trace, 8).unwrap();
+    let native = prove_unified_trace_dynamic_native(&trace, 64).unwrap();
     let native_time = started.elapsed();
     let native_bytes = bincode::serialize(&native).unwrap().len();
     let started = Instant::now();
-    verify_unified_trace(&trace, &native, 8).unwrap();
+    verify_unified_trace(&trace, &native, 64).unwrap();
     let native_verify = started.elapsed();
     println!("native={native_bytes}B prove={native_time:?} verify={native_verify:?}");
 }

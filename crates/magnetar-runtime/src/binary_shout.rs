@@ -31,7 +31,7 @@ pub struct BinaryShoutWitness {
     pub address1: Vec<Vec<F2_128>>,
     pub is_32: Vec<F2_128>,
     pub valid: Vec<F2_128>,
-    pub read_value: Vec<Vec<F2_128>>,
+    pub read_value: Vec<[F2_128; 12]>,
 }
 
 impl BinaryShoutWitness {
@@ -56,11 +56,17 @@ impl BinaryShoutWitness {
                 rom[2 * index + 1][0] = F2_128::from(u64::from(*word >> 16));
             }
         }
-        let mut address0 = vec![vec![F2_128::from(0u64); cycles]; address_bits];
-        let mut address1 = vec![vec![F2_128::from(0u64); cycles]; address_bits];
+        // The address columns are built from `indices` after phase 1, one
+        // exact-size column per bit: zero-filling them first cost 33.5 MB at
+        // RV64 `2^16` (2 GB at `2^22`) for data that is overwritten anyway.
         let mut is_32 = vec![F2_128::from(0u64); cycles];
         let mut valid = vec![F2_128::from(0u64); cycles];
-        let mut read_value = vec![vec![F2_128::from(0u64); columns]; cycles];
+        // One inline row per cycle: per-cycle `Vec`s cost an allocation each
+        // (65 536 of them at RV64 `2^16`), which dominated the shot-witness
+        // rebuild the trace Logup-Shout verifier performs.
+        let mut read_value = vec![[F2_128::from(0u64); 12]; cycles];
+        let profile = std::env::var_os("MAGNETAR_PROFILE_VERIFY").is_some();
+        let preprocess_started = std::time::Instant::now();
         let preprocessed = preprocess(
             &ProgramImage::new(trace.initial_state.pc, trace.rom.clone()),
             MachineConfig {
@@ -73,6 +79,10 @@ impl BinaryShoutWitness {
             },
         )
         .ok();
+        if profile {
+            eprintln!("shout preprocess: {:?}", preprocess_started.elapsed());
+        }
+        let loop_started = std::time::Instant::now();
         let bytecode = preprocessed.as_ref().map(|program| {
             program
                 .bytecode
@@ -80,116 +90,205 @@ impl BinaryShoutWitness {
                 .map(|row| (row.micro_pc, row))
                 .collect::<HashMap<_, _>>()
         });
-        for (cycle, row) in trace.rows.iter().enumerate() {
-            if row.instruction_len != 2 && row.instruction_len != 4 {
-                return Err(ProofError::Pcs(
-                    "BinaryShout supports 16-bit and 32-bit instructions".into(),
-                ));
-            }
-            let offset = row
-                .micro_pc
-                .checked_sub(trace.config.rom_base)
-                .ok_or_else(|| ProofError::Pcs("row pc is below the ROM base".into()))?;
-            if offset % 2 != 0 {
-                return Err(ProofError::Pcs("row pc is not halfword aligned".into()));
-            }
-            let index = if word_mode {
-                if offset % 4 != 0 {
-                    return Err(ProofError::Pcs("word-mode PC is not word aligned".into()));
+        // Per-cycle work is independent: phase 1 fills the cycle-major columns
+        // (read values, valid/is_32, ROM indices) in parallel chunks, phase 2
+        // fills the address-bit columns one worker per bit, and only the ROM
+        // row writes stay serial (they touch shared instruction rows, but with
+        // identical values). At RV64 `2^16` the serial loop was a large part of
+        // the verifier's trace Logup-Shout stage.
+        let workers = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(1)
+            .max(1);
+        let mut indices = vec![(0usize, 0usize); cycles];
+        let chunk = cycles.div_ceil(workers).max(1);
+        let mut failure: Option<ProofError> = None;
+        std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            let mut read_rest = &mut read_value[..];
+            let mut valid_rest = &mut valid[..];
+            let mut is32_rest = &mut is_32[..];
+            let mut idx_rest = &mut indices[..];
+            for first in (0..cycles).step_by(chunk) {
+                // `cycles` is padded to a power of two; rows past the trace
+                // stay at their default (invalid, zero) values.
+                if first >= trace.rows.len() {
+                    break;
                 }
-                usize::try_from(offset / 4)
-                    .map_err(|_| ProofError::Pcs("ROM index overflows usize".into()))?
-            } else {
-                usize::try_from(offset / 2)
-                    .map_err(|_| ProofError::Pcs("ROM index overflows usize".into()))?
-            };
-            let high = if word_mode {
-                index
-            } else {
-                index + usize::from(row.instruction_len == 4)
-            };
-            if high >= cells {
-                return Err(ProofError::Pcs("row pc is outside the ROM table".into()));
+                let len = (first + chunk).min(cycles).min(trace.rows.len()) - first;
+                let (read_part, read_tail) = read_rest.split_at_mut(len);
+                read_rest = read_tail;
+                let (valid_part, valid_tail) = valid_rest.split_at_mut(len);
+                valid_rest = valid_tail;
+                let (is32_part, is32_tail) = is32_rest.split_at_mut(len);
+                is32_rest = is32_tail;
+                let (idx_part, idx_tail) = idx_rest.split_at_mut(len);
+                idx_rest = idx_tail;
+                let rows = &trace.rows[first..first + len];
+                let bytecode = bytecode.as_ref();
+                let rom_base = trace.config.rom_base;
+                handles.push(scope.spawn(move || -> Result<(), ProofError> {
+                    for (offset_index, row) in rows.iter().enumerate() {
+                        if row.instruction_len != 2 && row.instruction_len != 4 {
+                            return Err(ProofError::Pcs(
+                                "BinaryShout supports 16-bit and 32-bit instructions".into(),
+                            ));
+                        }
+                        let offset = row.micro_pc.checked_sub(rom_base).ok_or_else(|| {
+                            ProofError::Pcs("row pc is below the ROM base".into())
+                        })?;
+                        if offset % 2 != 0 {
+                            return Err(ProofError::Pcs(
+                                "row pc is not halfword aligned".into(),
+                            ));
+                        }
+                        let index = if word_mode {
+                            if offset % 4 != 0 {
+                                return Err(ProofError::Pcs(
+                                    "word-mode PC is not word aligned".into(),
+                                ));
+                            }
+                            usize::try_from(offset / 4).map_err(|_| {
+                                ProofError::Pcs("ROM index overflows usize".into())
+                            })?
+                        } else {
+                            usize::try_from(offset / 2).map_err(|_| {
+                                ProofError::Pcs("ROM index overflows usize".into())
+                            })?
+                        };
+                        let high = if word_mode {
+                            index
+                        } else {
+                            index + usize::from(row.instruction_len == 4)
+                        };
+                        if high >= cells {
+                            return Err(ProofError::Pcs(
+                                "row pc is outside the ROM table".into(),
+                            ));
+                        }
+                        valid_part[offset_index] = F2_128::from(1u64);
+                        is32_part[offset_index] = if word_mode {
+                            F2_128::from(0u64)
+                        } else {
+                            F2_128::from(u64::from(row.instruction_len == 4))
+                        };
+                        let bytecode_row =
+                            bytecode.and_then(|rows| rows.get(&row.micro_pc).copied());
+                        let (shift_kind, shift_shamt, store_width, is_halt) =
+                            if let Some(bytecode_row) = bytecode_row {
+                                let shift_kind = bytecode_row
+                                    .selectors
+                                    .shift
+                                    .map_or(0, |route| match route.kind {
+                                        ShiftKind::LogicalLeft => 1,
+                                        ShiftKind::LogicalRight => 2,
+                                        ShiftKind::ArithmeticRight => 3,
+                                    });
+                                let shift_shamt = bytecode_row
+                                    .selectors
+                                    .shift
+                                    .map_or(0, |route| u64::from(route.shamt));
+                                let store_width = bytecode_row
+                                    .selectors
+                                    .store_width
+                                    .map_or(0, |width| u64::from(width.bytes() as u8));
+                                (
+                                    shift_kind,
+                                    shift_shamt,
+                                    store_width,
+                                    u64::from(bytecode_row.selectors.is_halt),
+                                )
+                            } else {
+                                let shift_kind = match row.instruction.op {
+                                    Op::Sll | Op::Slli => 1u64,
+                                    Op::Srl | Op::Srli => 2,
+                                    Op::Sra | Op::Srai => 3,
+                                    _ => 0,
+                                };
+                                let shift_shamt = if shift_kind == 0 {
+                                    0
+                                } else if matches!(
+                                    row.instruction.op,
+                                    Op::Slli | Op::Srli | Op::Srai
+                                ) {
+                                    u64::from(row.instruction.shamt)
+                                } else {
+                                    row.rs2_val & 0x3f
+                                };
+                                let store_width = row
+                                    .mem
+                                    .filter(|access| access.is_write)
+                                    .map_or(0, |access| u64::from(access.width));
+                                (shift_kind, shift_shamt, store_width, 0)
+                            };
+                        read_part[offset_index] = [
+                            F2_128::from(u64::from(row.instruction_word)),
+                            F2_128::from(u64::from(row.instruction_len)),
+                            F2_128::from(row.instruction.op as u64),
+                            F2_128::from(u64::from(row.instruction.rd)),
+                            F2_128::from(u64::from(row.instruction.rs1)),
+                            F2_128::from(u64::from(row.instruction.rs2)),
+                            F2_128::from(row.instruction.imm as u64),
+                            F2_128::from(shift_kind),
+                            F2_128::from(shift_shamt),
+                            F2_128::from(store_width),
+                            F2_128::from(row.pc),
+                            F2_128::from(is_halt),
+                        ];
+                        idx_part[offset_index] = (index, high);
+                    }
+                    Ok(())
+                }));
             }
-            valid[cycle] = F2_128::from(1u64);
-            is_32[cycle] = if word_mode {
-                F2_128::from(0u64)
-            } else {
-                F2_128::from(u64::from(row.instruction_len == 4))
-            };
-            let bytecode_row = bytecode
-                .as_ref()
-                .and_then(|rows| rows.get(&row.micro_pc).copied());
-            let (shift_kind, shift_shamt, store_width, is_halt) = if let Some(bytecode_row) =
-                bytecode_row
-            {
-                let shift_kind = bytecode_row
-                    .selectors
-                    .shift
-                    .map_or(0, |route| match route.kind {
-                        ShiftKind::LogicalLeft => 1,
-                        ShiftKind::LogicalRight => 2,
-                        ShiftKind::ArithmeticRight => 3,
-                    });
-                let shift_shamt = bytecode_row
-                    .selectors
-                    .shift
-                    .map_or(0, |route| u64::from(route.shamt));
-                let store_width = bytecode_row
-                    .selectors
-                    .store_width
-                    .map_or(0, |width| u64::from(width.bytes() as u8));
-                (
-                    shift_kind,
-                    shift_shamt,
-                    store_width,
-                    u64::from(bytecode_row.selectors.is_halt),
-                )
-            } else {
-                let shift_kind = match row.instruction.op {
-                    Op::Sll | Op::Slli => 1u64,
-                    Op::Srl | Op::Srli => 2,
-                    Op::Sra | Op::Srai => 3,
-                    _ => 0,
-                };
-                let shift_shamt = if shift_kind == 0 {
-                    0
-                } else if matches!(row.instruction.op, Op::Slli | Op::Srli | Op::Srai) {
-                    u64::from(row.instruction.shamt)
-                } else {
-                    row.rs2_val & 0x3f
-                };
-                let store_width = row
-                    .mem
-                    .filter(|access| access.is_write)
-                    .map_or(0, |access| u64::from(access.width));
-                (shift_kind, shift_shamt, store_width, 0)
-            };
-            let metadata = vec![
-                F2_128::from(u64::from(row.instruction_word)),
-                F2_128::from(u64::from(row.instruction_len)),
-                F2_128::from(row.instruction.op as u64),
-                F2_128::from(u64::from(row.instruction.rd)),
-                F2_128::from(u64::from(row.instruction.rs1)),
-                F2_128::from(u64::from(row.instruction.rs2)),
-                F2_128::from(row.instruction.imm as u64),
-                F2_128::from(shift_kind),
-                F2_128::from(shift_shamt),
-                F2_128::from(store_width),
-                F2_128::from(row.pc),
-                F2_128::from(is_halt),
-            ];
-            for column in 1..columns {
-                rom[index][column] = metadata[column];
-                if row.instruction_len == 4 {
-                    rom[high][column] = metadata[column];
+            for handle in handles {
+                if let Err(error) = handle.join().expect("shout cycle worker") {
+                    failure.get_or_insert(error);
                 }
             }
+        });
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        let indices_ref = &indices;
+        let (address0, address1) = std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(address_bits);
             for bit in 0..address_bits {
-                address0[bit][cycle] = F2_128::from(((index >> bit) & 1) as u64);
-                address1[bit][cycle] = F2_128::from(((high >> bit) & 1) as u64);
+                handles.push(scope.spawn(move || {
+                    let column0 = indices_ref
+                        .iter()
+                        .map(|&(index, _)| F2_128::from(((index >> bit) & 1) as u64))
+                        .collect::<Vec<_>>();
+                    let column1 = indices_ref
+                        .iter()
+                        .map(|&(_, high)| F2_128::from(((high >> bit) & 1) as u64))
+                        .collect::<Vec<_>>();
+                    (column0, column1)
+                }));
             }
-            read_value[cycle] = metadata;
+            let mut columns0 = Vec::with_capacity(address_bits);
+            let mut columns1 = Vec::with_capacity(address_bits);
+            for handle in handles {
+                let (column0, column1) = handle.join().expect("shout address worker");
+                columns0.push(column0);
+                columns1.push(column1);
+            }
+            (columns0, columns1)
+        });
+        for (cycle, (index, high)) in indices.iter().enumerate() {
+            // Padded cycles keep the default index 0; they must not write
+            // zeros over the real ROM row 0.
+            if valid[cycle].value() == 0 {
+                continue;
+            }
+            for column in 1..columns {
+                rom[*index][column] = read_value[cycle][column];
+                if is_32[cycle].value() != 0 && *high != *index {
+                    rom[*high][column] = read_value[cycle][column];
+                }
+            }
+        }
+        if profile {
+            eprintln!("shout cycle loop: {:?}", loop_started.elapsed());
         }
         Ok(Self {
             address_bits,

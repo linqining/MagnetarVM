@@ -37,22 +37,22 @@ fn logup_shout_and_native_handle_compressed_trace() {
 
     // Native selected CPU still lacks compressed PC rows; auto must fall back
     // to the reference proof and verify.
-    let dynamic = magnetar_runtime::prove_unified_trace_dynamic_native(&trace, 8);
+    let dynamic = magnetar_runtime::prove_unified_trace_dynamic_native(&trace, 64);
     eprintln!(
         "dynamic compressed result: {:?}",
         dynamic.as_ref().map(|_| ())
     );
-    let dynamic = magnetar_runtime::prove_unified_trace_dynamic_native(&trace, 8);
+    let dynamic = magnetar_runtime::prove_unified_trace_dynamic_native(&trace, 64);
     eprintln!(
         "dynamic compressed result: {:?}",
         dynamic.as_ref().map(|_| ())
     );
     let started = std::time::Instant::now();
-    let native = prove_unified_trace_auto(&trace, 8).unwrap();
+    let native = prove_unified_trace_auto(&trace, 64).unwrap();
     let prove = started.elapsed();
     let bytes = bincode::serialize(&native).unwrap().len();
     let started = std::time::Instant::now();
-    verify_unified_trace(&trace, &native, 8).unwrap();
+    verify_unified_trace(&trace, &native, 64).unwrap();
     eprintln!(
         "compressed native fallback proof={bytes}B prove={prove:?} verify={:?}",
         started.elapsed()
@@ -103,13 +103,16 @@ fn native_dynamic_handles_more_compressed_programs() {
     for (name, rom) in programs {
         let trace = execute(&ProgramImage::new(0x1000, rom), config.clone())
             .unwrap_or_else(|error| panic!("{name} execute: {error:?}"));
-        let proof = magnetar_runtime::prove_unified_trace_auto(&trace, 8)
+        let proof = magnetar_runtime::prove_unified_trace_auto(&trace, 64)
             .unwrap_or_else(|error| panic!("{name} prove: {error:?}"));
+        // `prove_unified_trace_auto` takes the native dynamic path for these
+        // programs, which carries the trace logup Shout instead of the paper
+        // logup Shout. Either form must be present.
         assert!(
-            proof.logup_shout.is_some(),
-            "{name} did not use logup Shout"
+            proof.logup_shout.is_some() || proof.trace_logup_shout.is_some(),
+            "{name} did not carry a logup Shout proof"
         );
-        magnetar_runtime::verify_unified_trace(&trace, &proof, 8)
+        magnetar_runtime::verify_unified_trace(&trace, &proof, 64)
             .unwrap_or_else(|error| panic!("{name} verify: {error:?}"));
     }
 }

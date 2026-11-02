@@ -246,7 +246,7 @@ fn main() {
     };
     for (name, program) in cases() {
         let trace = execute(&program, config.clone()).unwrap();
-        let proof = prove_unified_trace(&trace, 8).unwrap();
+        let proof = prove_unified_trace(&trace, 64).unwrap();
         match verify_unified_proof(&proof) {
             Ok(()) => println!("{name} ok"),
             Err(error) => println!("{name} FAIL {error}"),

@@ -283,7 +283,7 @@ mod tests {
         let reg = statement.register_witness().unwrap();
         assert_eq!(format!("{real_mem:?}"), format!("{mem:?}"));
         assert_eq!(format!("{real_reg:?}"), format!("{reg:?}"));
-        let proof = crate::prove_unified_trace(&trace, 8).unwrap();
+        let proof = crate::prove_unified_trace(&trace, 64).unwrap();
         statement.verify_access(&proof).unwrap();
     }
 }
