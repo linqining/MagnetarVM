@@ -145,6 +145,11 @@ claims-to-trace 0.77。
 13. **segment claims 重写**：per-width 共享 eq tensor + 64-bit word 扫描 + 每
     segment 一线程，`selected segments` 在 `2^16` 从 1.20 s 降到 **9 ms**（claims
     逐位一致、proof 字节不变；串行尾约省 1.19 s 墙钟）。
+14. **register-twist Access sum-check**：`evaluate_points_at` 在 `r==0` / `r==1`
+    时直接取因子值、每个因子对只读一次（旧实现对每个评估点都做一次乘法，包括
+    两个平凡点）。`local_shared_bench ROWS=65536` 同二进制 A/B：Access CPU
+    5.31 → **4.70 s（-11.5 %）**，`rw` -0.35 s、final rounds -0.17 s；claims 与
+    proof 字节不变；`MAGNETAR_LEGACY_EVAL_POINTS=1` 保留旧路径供 A/B。
 
 外围阶段（并行轨）：vendored p3 的 `Keccak256Hash16` 没有转发 `hash_many`，
 Merkle 树退回逐条 hash；修复后 p3 CPU 降 2.1–2.7×，Commit/Opening 约减半。
@@ -188,6 +193,16 @@ Merkle 树退回逐条 hash；修复后 p3 CPU 降 2.1–2.7×，Commit/Opening 
   峰值 4.05–4.3 GiB（2^12 的 claim 表码字只有 ~16 MB，可以排除），而 `ADDS=1023`
   与 `2^16` 只有 2.1–2.4 GiB；benchmark 内存看门狗抓到了它。在引用小规模峰值前
   先定位这个非单调瞬态。
+- **PoW grind 的开销在不同 opening 间非单调。** RV64 `2^16` 下 selected opening
+  （`pow=20`）grind 花 0.29 CPU-s，local Twist opening（`pow=20`、transcript 更长）
+  0.93 CPU-s，而 mosaic opening（`pow=21`、难度最高）只有 0.02 CPU-s。独立
+  challenger grind 随前缀长度单调上升（21 bit 下 64 B 前缀 0.14 CPU-s、512 B
+  2.06 s），所以 mosaic opening 应在 ~0.6 CPU-s 附近；这个差异目前无法解释。
+  三个 opening 的 grind 合计 ~1.2 CPU-s，低于优化阈值——碰 `vendor/plonky3` 的
+  grind 之前先把它搞清楚。
+- **闸门要编所有 target，而不只是 tests。** `cargo test --workspace` 不会编
+  `magnetar-pcs` 的 examples，这就是一个坏掉的 `p3_stage_probe` 混过「655 绿」的
+  原因。最终闸门要加 `cargo build --workspace --examples --release`。
 - **一次只跑一个重任务。** 本轮宿主空闲内存一度低于 1.5 GiB。所有 example 都装了
   `install_memory_watchdog`（`MAGNETAR_MAX_RSS_GIB`，默认 4 GiB），
   `protocol_determinism` 默认 20 对（1.99 GiB；旧 120 对默认峰值 5.75 GiB），

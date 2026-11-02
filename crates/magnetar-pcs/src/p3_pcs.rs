@@ -318,6 +318,16 @@ impl P3BinaryPcs {
             .map_err(|error| ProofError::Pcs(error.to_string()))?,
             Err(error) => return Err(ProofError::Pcs(error.to_string())),
         };
+        if profile_pcs() {
+            eprintln!(
+                "pcs backend: vars={num_variables} security={} rate={} pow={} fold={} queries={}",
+                config.security_level(),
+                config.log_inv_rate(),
+                config.pow_bits(),
+                config.log_folding_factor(),
+                config.num_queries()
+            );
+        }
         P3PcsBackend::new(config, Self::mmcs(), Self::mmcs())
             .map_err(|error| ProofError::Pcs(error.to_string()))
     }

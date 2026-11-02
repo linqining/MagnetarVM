@@ -83,9 +83,9 @@ fn process_cpu_seconds() -> f64 {
     magnetar_proof::process_cpu_seconds()
 }
 
-fn totals(
-) -> &'static std::sync::Mutex<std::collections::HashMap<&'static str, (u64, std::time::Duration)>>
-{
+fn totals() -> &'static std::sync::Mutex<
+    std::collections::HashMap<&'static str, (u64, std::time::Duration, f64)>,
+> {
     TOTALS.get_or_init(Default::default)
 }
 
@@ -332,6 +332,33 @@ fn install_memory_watchdog(default_gib: f64) -> std::thread::JoinHandle<()> {
     })
 }
 
+/// Direct measurement of the PoW grind: how many CPU seconds one `grind(bits)`
+/// costs on a challenger with a fixed prefix. This is the phase the AVX/NEON
+/// batched Keccak path cannot serve, so it is measured on its own.
+fn grind_case() {
+    use p3_binary_field::{BinaryChallenger, BinaryField128, TowerLevel};
+    use p3_challenger::{CanObserve, GrindingChallenger, HashChallenger};
+    use p3_keccak::Keccak256Hash;
+    type Ch = BinaryChallenger<
+        BinaryField128,
+        HashChallenger<u8, Keccak256Hash, 32>,
+    >;
+    for (bits, prefix_values) in [(20usize, 4usize), (21, 4), (21, 32), (21, 0)] {
+        let mut challenger = Ch::from_hasher(Vec::new(), Keccak256Hash);
+        for index in 0..prefix_values {
+            challenger.observe(BinaryField128::from_repr((index as u128) * 7 + 1));
+        }
+        let cpu_started = process_cpu_seconds();
+        let started = Instant::now();
+        let witness = challenger.grind(bits);
+        let cpu = process_cpu_seconds() - cpu_started;
+        let wall = started.elapsed();
+        println!(
+            "grind bits={bits} prefix={prefix_values} values: wall={wall:?} cpu={cpu:.3}s"
+        );
+    }
+}
+
 fn main() {
     let _watchdog = install_memory_watchdog(2.0);
     init_spans();
@@ -344,6 +371,9 @@ fn main() {
     }
     if cases.contains("local") {
         local_twist();
+    }
+    if cases.contains("grind") {
+        grind_case();
     }
     dump_spans();
 }

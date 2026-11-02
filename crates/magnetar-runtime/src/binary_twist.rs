@@ -1144,10 +1144,117 @@ pub(crate) fn sumcheck_terms(
     Ok((polynomials, challenges))
 }
 
+/// A/B knob: `MAGNETAR_LEGACY_EVAL_POINTS=1` routes the round-polynomial
+/// evaluation back to the shipped loop. Timing only, never bytes.
+fn legacy_eval_points() -> bool {
+    static LEGACY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
+    match LEGACY.load(std::sync::atomic::Ordering::Relaxed) {
+        2 => {
+            let value = u8::from(std::env::var_os("MAGNETAR_LEGACY_EVAL_POINTS").is_some());
+            LEGACY.store(value, std::sync::atomic::Ordering::Relaxed);
+            value == 1
+        }
+        value => value == 1,
+    }
+}
+
+/// Accumulate the round-polynomial samples over one range of factor pairs.
+///
+/// The folded value at evaluation point `p` is `a + p·(a + b)`, where `a` and
+/// `b` are the factor's two values at that pair. In the binary tower field
+/// `p = 0` gives exactly `a` and `p = 1` gives exactly `b`, so those two points
+/// need no field multiplication; the shipped loop multiplied at every point.
+/// Every factor pair's two values are read once and shared by all points.
+fn evaluate_points_range(
+    factors: &[Vec<F2_128>],
+    points: usize,
+    start: usize,
+    end: usize,
+    summand_at: &(impl Fn(&[F2_128]) -> F2_128 + Sync),
+    local: &mut [F2_128],
+) {
+    let count = factors.len();
+    let mut even_values = vec![F2_128::from(0u64); count];
+    let mut odd_values = vec![F2_128::from(0u64); count];
+    let mut slopes = vec![F2_128::from(0u64); count];
+    let mut folded = vec![F2_128::from(0u64); count];
+    for index in start..end {
+        let (even, odd) = (2 * index, 2 * index + 1);
+        for (slot, factor) in factors.iter().enumerate() {
+            let a = factor[even];
+            let b = factor[odd];
+            even_values[slot] = a;
+            odd_values[slot] = b;
+            slopes[slot] = a + b;
+        }
+        local[0] = local[0] + summand_at(&even_values);
+        if points > 1 {
+            local[1] = local[1] + summand_at(&odd_values);
+        }
+        for (point, target) in local.iter_mut().enumerate().skip(2) {
+            let r = F2_128::from(point as u64);
+            for (slot, (a, slope)) in even_values.iter().zip(&slopes).enumerate() {
+                folded[slot] = *a + r * *slope;
+            }
+            *target = *target + summand_at(&folded);
+        }
+    }
+}
+
 /// Evaluate the round polynomial at `points` evaluation points in one pass over
 /// the factor pairs. `summand_at` receives the per-factor folded value at each
 /// multilinear index, so no folded copy of any factor is materialised.
 pub(crate) fn evaluate_points_at(
+    factors: &[Vec<F2_128>],
+    points: usize,
+    summand_at: &(impl Fn(&[F2_128]) -> F2_128 + Sync),
+) -> Vec<F2_128> {
+    if legacy_eval_points() {
+        return evaluate_points_at_legacy(factors, points, summand_at);
+    }
+    let len = factors[0].len();
+    let pairs = len / 2;
+    let requested = std::env::var("MAGNETAR_SUMCHECK_THREADS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|count| count.get())
+                .unwrap_or(1)
+        });
+    let workers = requested.max(1).min(pairs.div_ceil(4096).max(1));
+    let mut polynomial = vec![F2_128::from(0u64); points];
+    if workers > 1 {
+        let partials = std::thread::scope(|scope| {
+            let chunk = pairs.div_ceil(workers);
+            let mut handles = Vec::with_capacity(workers);
+            for start in (0..pairs).step_by(chunk) {
+                let end = (start + chunk).min(pairs);
+                let factors: &[Vec<F2_128>] = factors;
+                handles.push(scope.spawn(move || {
+                    let mut local = vec![F2_128::from(0u64); points];
+                    evaluate_points_range(factors, points, start, end, summand_at, &mut local);
+                    local
+                }));
+            }
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("sumcheck worker"))
+                .collect::<Vec<_>>()
+        });
+        for partial in partials {
+            for (target, value) in polynomial.iter_mut().zip(partial) {
+                *target = *target + value;
+            }
+        }
+    } else {
+        evaluate_points_range(factors, points, 0, pairs, summand_at, &mut polynomial);
+    }
+    polynomial
+}
+
+/// The shipped round-polynomial evaluation, kept for the A/B switch above.
+pub(crate) fn evaluate_points_at_legacy(
     factors: &[Vec<F2_128>],
     points: usize,
     summand_at: &(impl Fn(&[F2_128]) -> F2_128 + Sync),

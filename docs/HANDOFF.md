@@ -161,6 +161,13 @@ Details, measurements and the rejected experiments are in results §11.
     scanning and one thread per segment take `selected segments` 1.20 s → **9 ms**
     at `2^16` (claims bit-identical, proof bytes unchanged; ~1.19 s of serial-tail
     wall).
+14. **Register-twist Access sum-checks**: `evaluate_points_at` now returns the
+    factor value directly for `r == 0` / `r == 1` and reads each factor pair once
+    (the old implementation multiplied for every evaluation point, including the
+    two trivial ones). Same-binary A/B on `local_shared_bench ROWS=65536`:
+    Access CPU 5.31 → **4.70 s** (-11.5 %), `rw` -0.35 s and final rounds -0.17 s.
+    Claims and proof bytes unchanged; `MAGNETAR_LEGACY_EVAL_POINTS=1` keeps the old
+    path for A/B.
 
 Peripheral stages (parallel track): the vendored p3 `Keccak256Hash16` did not
 forward `hash_many`, so Merkle trees hashed serially; forwarding it cut p3 CPU
@@ -222,6 +229,19 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
   that), while `ADDS=1023` and `2^16` peak at 2.1–2.4 GiB; the benchmark
   memory watchdog caught it. Root-cause the non-monotonic transient before
   quoting small-scale peaks.
+- **PoW grind cost is non-monotone across openings.** At RV64 `2^16` the
+  selected opening (`pow=20`) spends 0.29 CPU-s in `grind`, the local Twist
+  opening (`pow=20`, longer transcript) 0.93 CPU-s, yet the mosaic opening
+  (`pow=21`, the highest difficulty) only 0.02 CPU-s. A standalone challenger
+  grind scales with prefix length as expected (0.14 CPU-s at a 64 B prefix,
+  2.06 s at 512 B, both 21 bits), so the mosaic opening should sit near
+  0.6 CPU-s; the discrepancy is unexplained. Total grind across the three
+  openings is ~1.2 CPU-s, below the optimization threshold -- understand it
+  before touching `vendor/plonky3` for grind.
+- **Build every target, not just tests.** `cargo test --workspace` does not build
+  `magnetar-pcs` examples, which is how a broken `p3_stage_probe` slipped past a
+  "655 green" run. Add `cargo build --workspace --examples --release` to the gate
+  list.
 - **One heavy run at a time.** The host had <1.5 GiB free memory during this
   round. Every example installs `install_memory_watchdog` (`MAGNETAR_MAX_RSS_GIB`,
   default 4 GiB), `protocol_determinism` defaults to 20 pairs (1.99 GiB, the old
