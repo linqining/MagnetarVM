@@ -1,7 +1,10 @@
 # 交接文档 — MagnetarVM streaming selected prover（RV64）
 
-状态：**增量优化阶段**，分支 `virtual-claims-rewrite`，最新 commit `386c2e8`
-加 2026-11-03 的 `2^16` 优化轮（最终闸门通过后提交），2026-11-03。
+状态：**增量优化阶段**，分支 `virtual-claims-rewrite`，2026-11-03 的 `2^16`
+优化轮已提交（`1b26b4e` 优化+polylog claim 表、`9e805f2` segment claims 重写、
+`f310f82`/`faf3b72`/`ac8e4a4` M4a committed-Shout 骨架/主体/opt-in 修复、
+`bd04687` Access sum-check）。提交后最终闸门：**659 passed / 0 failed**、
+`cargo build --workspace --examples --release` 绿。
 英文主文档：[HANDOFF.md](HANDOFF.md)。
 实测数据与逐轮记录：[STREAMING_SELECTED_PROVER_RESULTS.md](STREAMING_SELECTED_PROVER_RESULTS.md)
 （[中文](streaming-selected-prover-results-zh.md)）。早期设计：[STREAMING_SELECTED_PROVER_HANDOFF.md](STREAMING_SELECTED_PROVER_HANDOFF.md)。

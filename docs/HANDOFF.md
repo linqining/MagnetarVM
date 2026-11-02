@@ -1,8 +1,11 @@
 # Handoff — MagnetarVM streaming selected prover (RV64)
 
 Status: **incremental optimization phase**, branch `virtual-claims-rewrite`,
-latest commit `386c2e8` plus the 2026-11-03 `2^16` optimization round
-(uncommitted until the final gate), 2026-11-03.
+2026-11-03 `2^16` optimization round committed (`1b26b4e` optimization +
+polylog claim table, `9e805f2` segment-claim rewrite, `f310f82`/`faf3b72`/`ac8e4a4`
+M4a committed-Shout skeleton/body/opt-in fixes, `bd04687` Access sum-check).
+Final gate on the committed tree: **659 passed / 0 failed**,
+`cargo build --workspace --examples --release` green.
 Chinese sibling: [handoff-zh.md](handoff-zh.md).
 Measurements and per-round history: [STREAMING_SELECTED_PROVER_RESULTS.md](STREAMING_SELECTED_PROVER_RESULTS.md)
 ([中文](streaming-selected-prover-results-zh.md)). Background design: [STREAMING_SELECTED_PROVER_HANDOFF.md](STREAMING_SELECTED_PROVER_HANDOFF.md).
