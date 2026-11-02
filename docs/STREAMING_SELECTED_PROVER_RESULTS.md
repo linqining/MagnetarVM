@@ -1284,10 +1284,10 @@ equality gate stays green. Branch `virtual-claims-rewrite`.
 
 | | before round (§1) | after round |
 | --- | --- | --- |
-| prove wall | 70.4 s | **38.3–38.6 s** (host load 14–66; 53.8–59.3 s before §11.3 item 8) |
-| prove CPU (user+sys) | ≈800 s | **320.7–325.4 s** (421.6–434.9 s before item 8) |
-| verify wall | 29.6 ms | **24.7–25.1 ms** (27.4 ms measured in the first A/B run; legacy row path 46.0 ms, §11.6) |
-| peak RSS | 2.26 GiB | **2.03 GiB** (2.38 GiB before item 8's chunk buffers shrank the products) |
+| prove wall | 70.4 s | **31.4–34.6 s** (host load 15–66; 38.3–38.6 s before item 9, 53.8–59.3 s before item 8) |
+| prove CPU (user+sys) | ≈800 s | **274.2–274.9 s** (321–325 s before item 9, ≈800 s at the start) |
+| verify wall | 29.6 ms | **24.7–27.2 ms** (legacy row path 46.0 ms, §11.6) |
+| peak RSS | 2.26 GiB | **1.94–2.01 GiB** (2.03 GiB before item 9) |
 | proof bytes | 861,407 B | **1,018,152 B** (claim-table format, §11.6) |
 
 The claim table is now the default: on the same `2^16` binary it replaces the
@@ -1312,7 +1312,7 @@ environment switches described in §11.4).
 | unified Opening | 3.38 s | **1.99 s** |
 | selected setup | 0.48 s | 0.40 s (`setup fill+check`) |
 | selected witness commit | 0.95 s | **0.32 s** |
-| `product6` (outer scan) | 43.2 s | **24.5 s** (probe run: 24.5 s at load 74; 27.2 s inside the full pipeline) |
+| `product6` (outer scan) | 43.2 s | **18.18–18.36 s** (24.5–25.0 s before item 9) |
 | `product2` (inner scan) | 23.4 s | **10.6–11.2 s** after item 8's chunked fill (24.5 s before it) |
 | selected segments | 1.17 s | **0.009 s** (rewritten, §11.3 item 7) |
 | selected open | 0.92 s | **0.84 s** |
@@ -1389,6 +1389,22 @@ p3 hash fix (§11.5): `Commit` and `Opening` roughly halved.
    **prove 38.31/38.64 s, prove CPU 320.7/325.4 s, verify 24.71/25.12 ms, peak
    2.03 GiB, product6 24.90/24.98 s, product2 11.16/10.61 s**, proof unchanged
    at 1,018,153 B.
+9. **Packed CSR + an algebraically reduced pair polynomial** (`prove_product6_rows`).
+   The 2^14 profile showed product6 is 96.5 % phase 1 and phase 1 is bound by the
+   per-block pair/eq arithmetic (~21 `F2_128` multiplies per block), not by the
+   row scan. Two changes: (a) when every lockstep coefficient is one (asserted at
+   construction) each CSR entry becomes one `u32` (`word_off:u16 | shift:u6 |
+   slot:u3`) instead of a 32-byte tuple, with the instance base and local row
+   cursor hoisted out of the row loop; (b) the pair polynomial uses
+   `eq1 - eq0 = high*(f1 - f0) = high` (char 2: `2*tau - 1 = 1`) and the
+   Karatsuba identity for the p1 cross terms, dropping 21 -> 17 multiplies per
+   block; the <=8192-entry high table is pre-scaled with `scale`/`f0` per round.
+   Same-binary A/B at 2^14: phase-1 CPU 50.10 -> **37.34 CPU-s (-25.5 %; pair
+   -21.4 %, CSR -5.1 %)**, product6 wall -23 %, whole prove wall -15.3 %.
+   `MAGNETAR_P6_LEGACY_CSR`/`MAGNETAR_P6_LEGACY_PAIR` keep the old paths for A/B.
+   Final 2^16 numbers after item 9: **prove 31.40/31.84/34.63 s, CPU
+   274.2/274.9 s, verify 24.7–27.2 ms, peak 1.94–2.01 GiB**, proof unchanged
+   (1,018,153 B).
 
 Peripheral stages (teammate track, same tree): `Keccak256Hash16` in the
 vendored p3 code did not forward `hash_many`, so the Merkle trees fell back to

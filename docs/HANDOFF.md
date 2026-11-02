@@ -10,8 +10,8 @@ Chinese sibling: [handoff-zh.md](handoff-zh.md).
 Measurements and per-round history: [STREAMING_SELECTED_PROVER_RESULTS.md](STREAMING_SELECTED_PROVER_RESULTS.md)
 ([中文](streaming-selected-prover-results-zh.md)). Background design: [STREAMING_SELECTED_PROVER_HANDOFF.md](STREAMING_SELECTED_PROVER_HANDOFF.md).
 
-Headline at RV64 `2^16` (2026-11-03 round, host load 14–66): **prove 38.3–38.6 s
-(prove CPU 320.7–325.4 s vs ≈800 s before), verify 24.7–25.1 ms, peak 2.03 GiB**. The
+Headline at RV64 `2^16` (2026-11-03 round, host load 15–66): **prove 31.4–34.6 s
+(prove CPU 274.2–274.9 s vs ≈800 s before), verify 24.7–27.2 ms, peak 1.94–2.01 GiB**. The
 streaming prover is still byte-identical to the eager path; the *proof file* is
 1,018,152 B because the polylog claim layer (results §11.6) now commits the
 claim table and attaches it to `ClaimProof` -- with the claim table off the same
@@ -66,7 +66,8 @@ core count is low.
 
 | cycles | prove | verify | peak RSS | proof |
 | --- | --- | --- | --- | --- |
-| `2^16` (2026-11-03, chunked inner scan) | **38.3–38.6 s** | **24.7–25.1 ms** | **2.03 GiB** | 1,018,153 B† |
+| `2^16` (2026-11-03, packed CSR + fast pair) | **31.4–34.6 s** | **24.7–27.2 ms** | **1.94–2.01 GiB** | 1,018,153 B† |
+| `2^16` (2026-11-03, chunked inner scan only) | 38.3–38.6 s | 24.7–25.1 ms | 2.03 GiB | 1,018,153 B† |
 | `2^16` (2026-11-03, before chunked inner scan) | 53.8–59.3 s | 27.3–27.4 ms | 2.04–2.38 GiB | 1,018,152 B† |
 | `2^16` (2026-10-31) | 70.4 s | 29.6 ms | 2.26 GiB | 861,407 B |
 | `2^17` | **147.6 s** | 55.8 ms | 4.60 GiB | 942,535 B |
@@ -80,11 +81,11 @@ gave 335 s and 437 s with 5.7–7.8 GiB peak and were discarded. A linear fit
 through the measured points projects ≈20 GiB at `2^22` (supersedes the earlier
 55–60 GiB model, which came from the 32-byte-digest build).
 
-`2^16` stage split after the chunked inner scan (load 14–66): unified Access
-2.05/1.97, Opening 2.11/2.18; selected `product6` **24.90/24.98**, `product2`
-**11.16/10.61** (was 24.5 before results §11.3 item 8), segments **0.009**,
-selected open ~0.85. `product6` is now ~65 % of prove and the largest single
-term. The earlier splits were: (load 37–72) context 0.31, Commit 0.52, Access
+`2^16` stage split after the packed CSR + fast pair (load 15–65): selected
+`product6` **18.18/18.36**, `product2` **10.59/10.63** (was 24.5 before results
+§11.3 item 8 and 24.9 before item 9), segments **0.009**, selected open ~0.85;
+unified Access ~2.0, Opening ~2.1. `product6` is still the largest term at
+~55 % of prove. The earlier splits were: (load 37–72) context 0.31, Commit 0.52, Access
 2.63, Opening 1.99, witness commit 0.30, `product6` 26.0, `product2` 24.9;
 (load 70–90) context 0.48, Commit 1.19, Access 2.56, Opening 3.38, setup 0.48,
 witness commit 0.95, `product6` 43.2, `product2` 23.4, segments 1.17, selected
@@ -172,6 +173,13 @@ Details, measurements and the rejected experiments are in results §11.
     103 -> 74 s; `2^16` inner recompute 226 -> **108 CPU-s (-52 %)**, so
     `product2` should fall from 24.5 to ~12 s on a quiet host
     (`MAGNETAR_P2_BLOCKWISE=1` keeps the old path for A/B).
+15. **Packed CSR + reduced pair polynomial** (results §11.3 item 9): one `u32`
+    per sparse entry (asserted unit coefficients), hoisted instance/local
+    cursors, `eq1 - eq0 = high` (char 2), Karatsuba p1, pre-scaled eq high
+    table: 21 -> 17 multiplies per block. `2^14` phase-1 CPU 50.10 -> 37.34
+    CPU-s (-25.5 %), product6 wall -23 %, whole prove wall -15.3 %; final
+    `2^16` **prove 31.4-34.6 s / CPU 274 s**, `product6` 18.2-18.4 s,
+    `product2` 10.6 s, peak 1.94-2.01 GiB.
 14. **Register-twist Access sum-checks**: `evaluate_points_at` now returns the
     factor value directly for `r == 0` / `r == 1` and reads each factor pair once
     (the old implementation multiplied for every evaluation point, including the

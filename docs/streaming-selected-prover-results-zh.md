@@ -967,10 +967,10 @@ cargo test --release --offline -p magnetar-runtime --lib streaming_lockstep_proo
 
 | | 本轮之前（§1） | 本轮之后 |
 | --- | --- | --- |
-| prove wall | 70.4 s | **38.3–38.6 s**（宿主 load 14–66；chunk 前为 53.8–59.3 s） |
-| prove CPU（user+sys） | ≈800 s | **320.7–325.4 s**（chunk 前 421.6–434.9 s） |
-| verify wall | 29.6 ms | **24.7–25.1 ms**（首轮 A/B 为 27.4 ms；legacy 行路径 46.0 ms，§11.6） |
-| 峰值 RSS | 2.26 GiB | **2.03 GiB**（chunk 前 2.38 GiB） |
+| prove wall | 70.4 s | **31.4–34.6 s**（宿主 load 15–66；item 9 前 38.3–38.6 s、chunk 前 53.8–59.3 s） |
+| prove CPU（user+sys） | ≈800 s | **274.2–274.9 s**（item 9 前 321–325 s，起点 ≈800 s） |
+| verify wall | 29.6 ms | **24.7–27.2 ms**（legacy 行路径 46.0 ms，§11.6） |
+| 峰值 RSS | 2.26 GiB | **1.94–2.01 GiB**（item 9 前 2.03 GiB） |
 | proof 字节 | 861,407 B | **1,018,152 B**（claim 表格式，见 §11.6） |
 
 claim 表现在是默认开启：同一个 2^16 二进制上，它替掉 `O(rows)` 的 claim 行和，
@@ -989,7 +989,7 @@ verify 从 46.0 → 27.4 ms，代价是 +157 KB proof；2^10 上「表路径慢 
 | unified Opening | 3.38 s | **1.99 s** |
 | selected setup | 0.48 s | 0.40 s（`setup fill+check`） |
 | selected witness commit | 0.95 s | **0.32 s** |
-| `product6`（外层扫描） | 43.2 s | **24.5 s**（独立 probe：24.5 s@load 74；全链路内 27.2 s） |
+| `product6`（外层扫描） | 43.2 s | **18.18–18.36 s**（item 9 前 24.5–25.0 s） |
 | `product2`（内层扫描） | 23.4 s | 内层 budget 22 时 27.5 s；本轮把内层 budget 提到 24（§11.3 第 4 条），全链路实测 24.5 s；第 8 条的 chunk 填充再让该 stage CPU 减半 |
 | selected segments | 1.17 s | **0.009 s**（已重写，§11.3 第 7 条） |
 | selected open | 0.92 s | **0.84 s** |
