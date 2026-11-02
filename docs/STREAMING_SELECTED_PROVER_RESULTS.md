@@ -1284,7 +1284,7 @@ equality gate stays green. Branch `virtual-claims-rewrite`.
 
 | | before round (§1) | after round |
 | --- | --- | --- |
-| prove wall | 70.4 s | **55.5–59.3 s** (host load 14–72) |
+| prove wall | 70.4 s | **53.8–59.3 s** (host load 14–72) |
 | prove CPU (user+sys) | ≈800 s | **421.6–434.9 s** |
 | verify wall | 29.6 ms | **27.4 ms** with the claim table, **46.0 ms** on the legacy row path (§11.6) |
 | peak RSS | 2.26 GiB | **2.38 GiB** (claim table on; 2.19 GiB with it off) |
@@ -1314,7 +1314,7 @@ environment switches described in §11.4).
 | selected witness commit | 0.95 s | **0.32 s** |
 | `product6` (outer scan) | 43.2 s | **24.5 s** (probe run: 24.5 s at load 74; 27.2 s inside the full pipeline) |
 | `product2` (inner scan) | 23.4 s | **24.5 s** at inner budget 22 → the round moved the inner budget to 24, see §11.3 (4) |
-| selected segments | 1.17 s | 1.20 s |
+| selected segments | 1.17 s | **0.009 s** (rewritten, §11.3 item 7) |
 | selected open | 0.92 s | **0.84 s** |
 
 The two streaming products still dominate, but the outer scan is no longer the
@@ -1360,8 +1360,19 @@ p3 hash fix (§11.5): `Commit` and `Opening` roughly halved.
 6. **Memory watchdog for benchmarks** (`magnetar_testkit::install_memory_watchdog`,
    `MAGNETAR_MAX_RSS_GIB`, default 4 GiB): every example that runs a proof
    aborts before it can push the host into swap. `protocol_determinism` now
-   defaults to 4 threads x 10 rounds (40 pairs) instead of 120 concurrent pairs
-   -- the old default peaked at 5.75 GiB.
+   defaults to 2 threads x 10 rounds (20 pairs) instead of 120 concurrent pairs
+   -- the old default peaked at 5.75 GiB, the new default 1.99 GiB.
+
+7. **Segment claims rewritten** (`split_segment_claims_bits`): the per-segment
+   reference evaluator rebuilt an equality tensor for every segment, read the
+   witness bit by bit, and ran single-threaded. A per-width shared equality
+   tensor, 64-bit word scanning over the set-bit iterator (same accumulation
+   order) and one thread per segment (results collected in layout order) take
+   `selected segments` from 298/304 ms to 3.1/2.6 ms at `2^14` and from 1.20 s
+   to **9 ms** at `2^16`. Claims are bit-identical to the reference evaluator
+   (`split_bits_claims_match_the_reference_evaluator`), the streaming/eager
+   proof bytes are unchanged (859,845 B at `2^14`), and the stage sits in the
+   serial tail, so the ~1.19 s at `2^16` is wall-clock.
 
 Peripheral stages (teammate track, same tree): `Keccak256Hash16` in the
 vendored p3 code did not forward `hash_many`, so the Merkle trees fell back to

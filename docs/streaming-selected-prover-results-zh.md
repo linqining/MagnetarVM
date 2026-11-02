@@ -967,7 +967,7 @@ cargo test --release --offline -p magnetar-runtime --lib streaming_lockstep_proo
 
 | | 本轮之前（§1） | 本轮之后 |
 | --- | --- | --- |
-| prove wall | 70.4 s | **55.5–59.3 s**（宿主 load 14–72） |
+| prove wall | 70.4 s | **53.8–59.3 s**（宿主 load 14–72） |
 | prove CPU（user+sys） | ≈800 s | **421.6–434.9 s** |
 | verify wall | 29.6 ms | **27.4 ms**（claim 表开）/ **46.0 ms**（legacy 行路径，§11.6） |
 | 峰值 RSS | 2.26 GiB | **2.38 GiB**（claim 表开；关时 2.19 GiB） |
@@ -991,7 +991,7 @@ verify 从 46.0 → 27.4 ms，代价是 +157 KB proof；2^10 上「表路径慢 
 | selected witness commit | 0.95 s | **0.32 s** |
 | `product6`（外层扫描） | 43.2 s | **24.5 s**（独立 probe：24.5 s@load 74；全链路内 27.2 s） |
 | `product2`（内层扫描） | 23.4 s | 内层 budget 22 时 27.5 s；本轮把内层 budget 提到 24（§11.3 第 4 条），全链路实测 24.5 s |
-| selected segments | 1.17 s | 1.20 s |
+| selected segments | 1.17 s | **0.009 s**（已重写，§11.3 第 7 条） |
 | selected open | 0.92 s | **0.84 s** |
 
 两个 streaming product 仍占大头，但外层已不再是一枝独秀。外围阶段也因 teammate 的 p3 hash 修复（§11.5）明显下降：Commit/Opening 约减半。
@@ -1004,7 +1004,9 @@ verify 从 46.0 → 27.4 ms，代价是 +157 KB proof；2^10 上「表路径慢 
 3. **工作窃取式轮内调度**（`parallel_chunks`）。这台机器是 6 性能核 + 6 能效核，固定均分会给能效核留下 straggler（轮时间最多慢 1.3×）；现在 worker 从共享计数器领 chunk。域加法是 XOR，partial sum 的合并与谁处理哪块无关，所以 proof 字节不变。
 4. **内层 level budget 22 → 24**（`auto_level_inner`）。内层（列空间）sum-check 原本要重算 `column_bits-(budget-1)` 轮；多 2 bit budget = 固定 `2^24×16B×2 = 512 MiB` level 数组，换掉 8 轮里的 2 轮全列扫描（内层 stage 的 -25 %；2^16 峰值 +0.5 GiB）。`MAGNETAR_INNER_BUDGET_LOG` 可覆盖。
 5. **可比的测量手段**：所有 env 门控的阶段打印现在都带累计进程 CPU 时间（`magnetar_proof::process_cpu_seconds`，`getrusage`）；streaming 阶段加了同二进制诊断开关（`MAGNETAR_STREAM_WORKERS`、`MAGNETAR_LIVE_FULL`、`MAGNETAR_P2_FUSED`、`MAGNETAR_INNER_BUDGET_LOG`）。这是本轮 A/B 在共享机器上仍然可信的原因。
-6. **benchmark 内存看门狗**（`magnetar_testkit::install_memory_watchdog`，`MAGNETAR_MAX_RSS_GIB`，默认 4 GiB）：任何跑证明的 example 在把宿主推进 swap 之前直接 abort。`protocol_determinism` 默认改成 4 线程 × 10 轮（40 对），旧的 120 对并发峰值 5.75 GiB。
+6. **benchmark 内存看门狗**（`magnetar_testkit::install_memory_watchdog`，`MAGNETAR_MAX_RSS_GIB`，默认 4 GiB）：任何跑证明的 example 在把宿主推进 swap 之前直接 abort。`protocol_determinism` 默认改成 2 线程 × 10 轮（20 对，1.99 GiB），旧的 120 对并发峰值 5.75 GiB。
+
+7. **segment claims 重写**（`split_segment_claims_bits`）：原实现每个 segment 重建 eq tensor、逐 bit 读见证、单线程；改成 per-width 共享 eq tensor + 64-bit word 扫描（set-bit 迭代、累加顺序不变）+ 每 segment 一线程（按 layout 顺序收集）。`selected segments` 在 `2^14` 从 298/304 ms 降到 3.1/2.6 ms，在 `2^16` 从 1.20 s 降到 **9 ms**；claims 与参考求值器逐位一致（`split_bits_claims_match_the_reference_evaluator`），`2^14` proof 字节不变（859,845 B）；该阶段在串行尾，2^16 省约 1.19 s 墙钟。
 
 外围阶段（teammate 轨道，同一棵树）：vendored p3 里的 `Keccak256Hash16` 没有转发 `hash_many`，Merkle 树全走逐条 hash；转发后叶子批量哈希，p3 CPU 降 2.1–2.7×（selected 2.4×、mosaic 2.7×、local 2.1×）。另外：`open_batch_prepared` 去掉 prepared 数据的 deep clone（2^16 下 -0.5 GiB memcpy）、`P3BinaryPcs::commit/open` 单次表转换、register-access 建表去冗余（Access 独立测量 7.6 → 5.0 CPU-s）、context 无 CPU 列时跳过 reservation 行构建。
 

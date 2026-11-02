@@ -50,7 +50,7 @@ ROWS=65536 MAGNETAR_PROFILE_LOCAL=1 target/release/examples/local_shared_bench
 
 # Gates
 cargo test --workspace --release          # 651 tests
-target/release/examples/protocol_determinism   # 120 concurrent prove/verify, width 64
+target/release/examples/protocol_determinism   # 20 concurrent pairs by default (PROTOCOL_THREADS/ROUNDS)
 ```
 
 **Host hygiene.** A 1-minute load average is not enough on this machine: an iOS
@@ -63,7 +63,7 @@ core count is low.
 
 | cycles | prove | verify | peak RSS | proof |
 | --- | --- | --- | --- | --- |
-| `2^16` (2026-11-03, load 14–72) | **55.5–59.3 s** | **27.4 ms** | **2.38 GiB** | 1,018,152 B† |
+| `2^16` (2026-11-03, load 14–72) | **53.8–59.3 s** | **27.3–27.4 ms** | **2.04–2.38 GiB** | 1,018,152 B† |
 | `2^16` (2026-10-31) | 70.4 s | 29.6 ms | 2.26 GiB | 861,407 B |
 | `2^17` | **147.6 s** | 55.8 ms | 4.60 GiB | 942,535 B |
 | `2^18` | 321.5 s (pre-fusion) | 161.5 ms | 7.73 GiB | 1,050,900 B |
@@ -78,8 +78,8 @@ through the measured points projects ≈20 GiB at `2^22` (supersedes the earlier
 
 `2^16` stage split (2026-11-03 round, load 37–72): unified context 0.31,
 Commit 0.52, Access 2.63 (register twist), Opening 1.99; selected setup 0.40,
-witness commit 0.32, `product6` **24.5**, `product2` **24.5** (inner level
-budget 24, see results §11.3), segments 1.20, selected open 0.84. The two
+witness commit 0.30, `product6` **26.0**, `product2` **24.9** (inner level
+budget 24, see results §11.3), segments **0.009**, selected open 1.06. The two
 streaming products are still ≈90 % of the prover, and `product2` is now the
 largest single term. The previous split (load 70–90) was: context 0.48,
 Commit 1.19, Access 2.56, Opening 3.38; setup 0.48, witness commit 0.95,
@@ -156,7 +156,11 @@ Details, measurements and the rejected experiments are in results §11.
     and the streaming stages have same-binary diagnostic switches. Wall-clock
     A/B is unusable on this shared host (see §6).
 12. **Benchmark memory watchdog** and a smaller default `protocol_determinism`
-    (40 pairs; the old 120-pair default peaked at 5.75 GiB).
+    (20 pairs, 1.99 GiB; the old 120-pair default peaked at 5.75 GiB).
+13. **Segment claims rewritten**: shared per-width equality tensors, 64-bit word
+    scanning and one thread per segment take `selected segments` 1.20 s → **9 ms**
+    at `2^16` (claims bit-identical, proof bytes unchanged; ~1.19 s of serial-tail
+    wall).
 
 Peripheral stages (parallel track): the vendored p3 `Keccak256Hash16` did not
 forward `hash_many`, so Merkle trees hashed serially; forwarding it cut p3 CPU
