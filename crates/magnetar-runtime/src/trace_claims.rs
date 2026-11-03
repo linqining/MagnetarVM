@@ -447,6 +447,15 @@ enum ClaimProofWire {
         #[serde(default)]
         committed_shout: Option<crate::claim_shout::CommittedShoutProof>,
     },
+    /// M5 v4: the claim table commitment only; no row blob / row Merkle data.
+    ///
+    /// Appended last so the earlier variant indices (and therefore old encoded
+    /// proofs) are unchanged.
+    TableOnly {
+        table: crate::claim_table::ClaimTableProof,
+        #[serde(default)]
+        committed_shout: Option<crate::claim_shout::CommittedShoutProof>,
+    },
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -760,6 +769,15 @@ fn complete_claim_proof(root: [u8; 32], claims: Vec<TraceClaim>) -> ClaimProof {
 
 impl serde::Serialize for ClaimProof {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // M5 v4: row payload removed; only the claim table travels.
+        if !self.complete && self.openings.is_empty() && self.reg_blob.is_none() && self.table.is_some()
+        {
+            return ClaimProofWire::TableOnly {
+                table: self.table.clone().expect("table present"),
+                committed_shout: self.committed_shout.clone(),
+            }
+            .serialize(serializer);
+        }
         if let Some(blob) = &self.reg_blob {
             ClaimProofWire::CompactRegs {
                 root: self.root,
@@ -870,6 +888,17 @@ impl<'de> serde::Deserialize<'de> for ClaimProof {
                 table,
                 committed_shout,
             }),
+            ClaimProofWire::TableOnly {
+                table,
+                committed_shout,
+            } => Ok(Self {
+                root: [0u8; 32],
+                complete: false,
+                openings: Vec::new(),
+                reg_blob: None,
+                table: Some(table),
+                committed_shout,
+            }),
         }
     }
 }
@@ -928,6 +957,26 @@ impl ClaimProof {
             table: None,
             committed_shout: None,
         }
+    }
+
+    /// M5 v4: claim-table-only proof (no row payload travels).
+    pub fn from_v4_table(table: crate::claim_table::ClaimTableProof) -> Self {
+        Self {
+            root: [0u8; 32],
+            complete: false,
+            openings: Vec::new(),
+            reg_blob: None,
+            table: Some(table),
+            committed_shout: None,
+        }
+    }
+
+    /// Is this the M5 v4 table-only encoding (no rows travel)?
+    pub fn is_v4_table_only(&self) -> bool {
+        !self.complete
+            && self.openings.is_empty()
+            && self.reg_blob.is_none()
+            && self.table.is_some()
     }
 
     /// Verify a compact register-derived claim proof against the statement's

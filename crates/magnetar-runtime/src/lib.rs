@@ -2903,9 +2903,11 @@ pub fn prove_unified_trace_paper(
         .claim_proof
         .as_ref()
         .and_then(|claims| claims.table.clone());
-    proof.claim_proof = Some(crate::trace_claims::ClaimProof::from_trace_reg(trace));
-    if let Some(claims) = proof.claim_proof.as_mut() {
-        claims.table = claim_table;
+    if !crate::claim_table::claims_v4_enabled() {
+        proof.claim_proof = Some(crate::trace_claims::ClaimProof::from_trace_reg(trace));
+        if let Some(claims) = proof.claim_proof.as_mut() {
+            claims.table = claim_table;
+        }
     }
     if let Some(selected) = &proof.selected_cpu {
         if let Ok(set) = crate::virtual_claims::VirtualClaimSet::from_selected(selected) {
@@ -3091,6 +3093,18 @@ fn prove_unified_trace_dynamic_native_profile_inner(
                     claims.table = Some(table);
                 }
                 proof.trace_claim_root = binding_root;
+                // M5 v4: the row payload (blob/full openings + row Merkle root)
+                // is replaced by the claim-table commitment. The verifier side of
+                // v4 is dependency-gated (see `verify_native_unified`).
+                if crate::claim_table::claims_v4_enabled() {
+                    if let Some(claims) = proof.claim_proof.as_mut() {
+                        claims.complete = false;
+                        claims.openings.clear();
+                        claims.reg_blob = None;
+                        claims.root = [0u8; 32];
+                    }
+                    proof.trace_claim_root = crate::claim_table::statement_claim_root(trace);
+                }
             } else {
                 proof.trace_claim_root = crate::trace_claims::TraceClaimTree::build(trace).root();
             }
@@ -3758,6 +3772,21 @@ pub fn verify_unified_trace(
     proof: &UnifiedTraceProof,
     width: usize,
 ) -> Result<(), RuntimeError> {
+    let v4 = crate::claim_table::claims_v4_enabled();
+    let table_only = proof
+        .claim_proof
+        .as_ref()
+        .is_some_and(|claims| claims.is_v4_table_only());
+    if v4 && !table_only {
+        return Err(RuntimeError::Proof(
+            "M5 v4 mode: proof carries row claims (pre-M5 proof?)".into(),
+        ));
+    }
+    if !v4 && table_only {
+        return Err(RuntimeError::Proof(
+            "pre-M5 verifier mode: proof carries the M5 v4 table-only claim encoding".into(),
+        ));
+    }
     let rows_root = crate::trace_claims::TraceClaimTree::build(trace).root();
     // Native proofs bind the committed claim table in the composed root;
     // legacy proofs carry the row root directly.
@@ -3892,6 +3921,32 @@ pub fn verify_native_unified(
     if proof.width != width {
         return Err(RuntimeError::Proof(
             "proof width does not match the requested width".into(),
+        ));
+    }
+    // M5 v4: the claim table commitment replaces the row Merkle root/blob.
+    // Mixing the two encodings is rejected explicitly so an old proof is never
+    // silently interpreted under the new statement root (and vice versa).
+    let v4 = crate::claim_table::claims_v4_enabled();
+    let claim_payload = proof.claim_proof.as_ref();
+    let table_only = claim_payload.is_some_and(|claims| claims.is_v4_table_only());
+    if v4 && !table_only {
+        return Err(RuntimeError::Proof(
+            "M5 v4 mode: proof carries row claims (pre-M5 proof?)".into(),
+        ));
+    }
+    if !v4 && table_only {
+        return Err(RuntimeError::Proof(
+            "pre-M5 verifier mode: proof carries the M5 v4 table-only claim encoding".into(),
+        ));
+    }
+    if v4 {
+        // Dependency: deriving the O(1) access digest from the claim root is
+        // only sound once the claim table commits the memory/register data
+        // columns (§C.11 / §9.1). Until then the v4 verifier deliberately
+        // refuses rather than accepting an unbound access layer.
+        return Err(RuntimeError::Proof(
+            "M5 v4 verifier pending: access binding requires the T memory/register data columns"
+                .into(),
         ));
     }
     // M4b: the classic Shout proofs and the committed linear Shout are mutually
@@ -10100,5 +10155,100 @@ mod m4b_paper_tests {
         );
 
         std::env::remove_var("MAGNETAR_LINEAR_SHOUT");
+    }
+}
+
+#[cfg(test)]
+/// M5 v4 tests. They flip process-wide env switches, so run them with
+/// `--ignored --test-threads=1`: two of them racing on `MAGNETAR_CLAIM_V4` can
+/// make each other fail even though both pass in isolation.
+mod m5_v4_tests {
+    use super::*;
+    use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+    fn config() -> MachineConfig {
+        MachineConfig {
+            entry: 0x1000,
+            rom_base: 0x1000,
+            ram_base: 0x1000_0000,
+            ram_size: 0x40,
+            stack_top: 0x1000_0040,
+            max_cycles: 100,
+        }
+    }
+
+    fn program() -> ProgramImage {
+        ProgramImage::new(
+            0x1000,
+            vec![
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 0,
+                    rs2: 0,
+                    imm: 7,
+                    shamt: 0,
+                }
+                .encode(),
+                Instruction::new(Op::Ecall).encode(),
+            ],
+        )
+    }
+
+    #[test]
+    fn v4_root_binds_table_and_shout_components() {
+        let root = crate::claim_table::claim_shout_v4_root(&[1u8; 32], &[2u8; 32]);
+        assert_ne!(root, [0u8; 32]);
+        assert_ne!(root, crate::claim_table::claim_shout_v4_root(&[1u8; 32], &[3u8; 32]));
+        assert_ne!(root, crate::claim_table::claim_shout_v4_root(&[2u8; 32], &[2u8; 32]));
+        // v3 and v4 domains are separated.
+        let v3 = crate::claim_table::claim_shout_v3_root(&[1u8; 32], &[2u8; 32]);
+        assert_ne!(root, v3);
+    }
+
+    #[test]
+    fn v4_claims_switches_default_off() {
+        assert!(!crate::claim_table::claims_v4_enabled());
+        assert!(!crate::claim_table::classic_claims_enabled());
+    }
+
+    #[test]
+    #[ignore = "sets MAGNETAR_CLAIM_V4 process-wide"]
+    fn v4_table_only_roundtrip_pending_verifier() {
+        std::env::set_var("MAGNETAR_CLAIM_V4", "1");
+        let outcome = ReferencePipeline::run(&program(), config(), 1).unwrap();
+        let proof = prove_unified_trace_paper(&outcome.trace, 64).unwrap();
+        let claims = proof.claim_proof.as_ref().unwrap();
+        assert!(claims.is_v4_table_only(), "v4 proof still carries row claims");
+        assert!(claims.table.is_some());
+        assert!(claims.openings.is_empty());
+        assert!(claims.reg_blob.is_none());
+        // Wire: no row payload survives the round-trip.
+        let bytes = serialize_unified_proof(&proof).unwrap();
+        let decoded = deserialize_unified_proof(&bytes).unwrap();
+        assert!(decoded.claim_proof.as_ref().unwrap().is_v4_table_only());
+        // Verifier side is dependency-gated until the T memory/register columns
+        // are committed (§C.11): it must refuse rather than accept unbound access.
+        let error = verify_native_unified(&outcome.statement, &proof, 64).unwrap_err();
+        assert!(
+            format!("{error:?}").contains("M5 v4 verifier pending"),
+            "unexpected v4 verifier error: {error:?}"
+        );
+        std::env::remove_var("MAGNETAR_CLAIM_V4");
+    }
+
+    #[test]
+    #[ignore = "sets MAGNETAR_CLAIM_V4 process-wide"]
+    fn v4_rejects_row_payload_proof() {
+        std::env::remove_var("MAGNETAR_CLAIM_V4");
+        let outcome = ReferencePipeline::run(&program(), config(), 1).unwrap();
+        let proof = prove_unified_trace_paper(&outcome.trace, 64).unwrap();
+        std::env::set_var("MAGNETAR_CLAIM_V4", "1");
+        let error = verify_native_unified(&outcome.statement, &proof, 64).unwrap_err();
+        assert!(
+            format!("{error:?}").contains("proof carries row claims"),
+            "unexpected mixing error: {error:?}"
+        );
+        std::env::remove_var("MAGNETAR_CLAIM_V4");
     }
 }

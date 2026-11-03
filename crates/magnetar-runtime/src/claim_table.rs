@@ -259,7 +259,73 @@ pub fn claim_shout_v3_root(
     magnetar_transcript::sha256(&bytes)
 }
 
+/// M5 v4 opt-in: drop the row Merkle root from the statement binding and bind
+/// the claim table commitment directly.
+pub fn claims_v4_enabled() -> bool {
+    let classic = matches!(
+        std::env::var("MAGNETAR_CLASSIC_CLAIMS").ok().as_deref(),
+        Some("1" | "on" | "true" | "yes")
+    );
+    !classic
+        && matches!(
+            std::env::var("MAGNETAR_CLAIM_V4").ok().as_deref(),
+            Some("1" | "on" | "true" | "yes")
+        )
+}
+
+/// Legacy row-root binding (M2/M3) escape hatch for A/B.
+pub fn classic_claims_enabled() -> bool {
+    matches!(
+        std::env::var("MAGNETAR_CLASSIC_CLAIMS").ok().as_deref(),
+        Some("1" | "on" | "true" | "yes")
+    )
+}
+
+/// Domain of the M5 v4 composed statement root.
+const CLAIM_SHOUT_V4_DOMAIN: &[u8] = b"claim-shout-v4";
+
+/// M5 v4 composed root: claim-table commitment only (no row Merkle root), plus
+/// the M4b committed Shout tables when the linear path is enabled.
+///
+/// When the linear Shout path is off, the shout component is 32 zero bytes so
+/// the root layout is unambiguous in both modes.
+pub fn claim_shout_v4_root(
+    claim_table_root: &[u8; 32],
+    shout_tables_root: &[u8; 32],
+) -> [u8; 32] {
+    let mut bytes = CLAIM_SHOUT_V4_DOMAIN.to_vec();
+    bytes.extend_from_slice(claim_table_root);
+    bytes.extend_from_slice(shout_tables_root);
+    magnetar_transcript::sha256(&bytes)
+}
+
+/// Table-only v4 statement root (host side).
+pub fn statement_claim_root_v4(
+    trace: &magnetar_spec::Trace,
+    table_root: &[u8; 32],
+) -> Result<[u8; 32], RuntimeError> {
+    let shout_tables_root = if crate::logup_shout::linear_shout_enabled()
+        && !crate::logup_shout::classic_logup_enabled()
+    {
+        crate::logup_shout::committed_statement_data(trace)?.table_root
+    } else {
+        [0u8; 32]
+    };
+    Ok(claim_shout_v4_root(table_root, &shout_tables_root))
+}
+
 pub fn statement_claim_root(trace: &magnetar_spec::Trace) -> [u8; 32] {
+    if claims_v4_enabled() && claim_table_enabled() {
+        if let Ok(columns) = claim_table_columns(trace) {
+            let bits = claim_table_bits(&columns);
+            if let Ok(commitment) = commit_claim_table(&bits) {
+                let table_root = claim_table_root(&commitment);
+                if let Ok(root) = statement_claim_root_v4(trace, &table_root) {
+                    return root;
+                }
+            }
+        }
+    }
     if claim_table_enabled() && crate::logup_shout::linear_shout_enabled() {
         if let Ok(data) = crate::logup_shout::committed_statement_data(trace) {
             return data.statement_root;
