@@ -1138,12 +1138,12 @@ assert）；register ops 固定 3 个/cycle（rd/rs1/rs2，各带 present/index/
 
 | 组 | 列（bit） | 数量/cycle |
 | --- | --- | --- |
-| memory 事件（M 个/cycle） | 每事件：present 1 + is_write 1 + width 2 + addr 64 + value 64 | M × 132 |
+| memory 事件（M 个/cycle） | 每事件：present 1 + is_write 1 + **width 4** + addr 64 + value 64（width 是字节数 1/2/4/8） | M × 134 |
 | register ops（3/cycle） | 每个：present 1 + index 5 + value 64 | 3 × 70 = 210 |
-| 合计（M=2，取执行器上界） | — | **474** |
+| 合计（M=2，取执行器上界） | memory 2×134 + register 3×70 | **478** |
 
-现有 T_bits：schema ≈336 + M4 数据 46 ≈382 列；扩展后 ≈856 列 → slot 数 **512 → 1024**（仍在
-2 的幂内一次补齐）。这样 access 关系与现有 M2/M3 target 关系共用同一个 `T_bits` commitment 和同一次
+现有 T_bits 的 slot 数为 512（schema 列 padded）；追加 access 478 列后为 990 → slot 数 **512 → 1024**
+（在 2 的幂内一次补齐）。这样 access 关系与现有 M2/M3 target 关系共用同一个 `T_bits` commitment 和同一次
 ring-switch opening（多 group selector sum-check，见 C.12.4），**不需要第三个 commitment**。
 
 Host 派生规则（与 M2/M3 同信任模型）：statement 构造时逐 cycle 从 trace claims 填列；padding cycle 全 0；
@@ -1165,7 +1165,7 @@ claim）把「T_access 列的 MLE」与 claim 绑定。推荐做法：扩展现�
 - selector 位把多组合并进**一次** slot 维 sum-check + **一次** ring opening（proof 增量主要是 sumcheck
   多项式与轮数：+~200 B；T_bits 变大带来的 opening 路径略增 ~5–15 KB）。
 
-Prover 成本：每个 group 需按列折叠（slots_per_group × cycles 位加法）；2 个 access group × ~474 列 ×
+Prover 成本：每个 group 需按列折叠（slots_per_group × cycles 位加法）；2 个 access group × ~478 列 ×
 2^16 cycles ≈ 62M bit-ops（可与 claim 表 prover 同线程），量级与 M2/M3 的 target 关系相当，预计 +0.2–0.5 s
 （2^16，需实测）。Verifier：sum-check 轮数 = log2(slots)+selector_bits ≈ 11–12 轮 + 一次 ring opening
 （与现有 claim_rel 同一次打开），预计 **+1–2 ms**。
