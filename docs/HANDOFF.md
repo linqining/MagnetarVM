@@ -320,7 +320,11 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
 - **M4 v3 committed-pushforward linear Shout (uncommitted WIP).** `UnifiedTraceProof`
   gains a `committed_logup_shout` field (`#[serde(default)]`, `None` on the default
   path), so pre-M4v3 unified-proof bytes differ (trailing serde field only; no
-  stored goldens depend on it). Opt-in switch: `MAGNETAR_LINEAR_SHOUT=1`;
+  stored goldens depend on it). The v3 statement root is
+  `H("claim-shout-v3" || v1 claim binding || batched tables root)` where the batch
+  covers `T_word`/`T_pos`/`T_pf` (one commitment, one batch opening; reader point
+  sampled from `rom_hash` + `trace_len` so the pushforward table is fixed before
+  the commitment). Opt-in switch: `MAGNETAR_LINEAR_SHOUT=1`;
   `MAGNETAR_CLASSIC_LOGUP=1` forces the legacy witnessed trace Logup-Shout path.
   When enabled, a verifier that receives a proof without the field rejects it
   ("pre-M4v3 proof"). The statement root becomes

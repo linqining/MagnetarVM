@@ -247,19 +247,15 @@ pub fn claim_table_enabled() -> bool {
 /// Domain of the M4 v3 composed statement root.
 const CLAIM_SHOUT_V3_DOMAIN: &[u8] = b"claim-shout-v3";
 
-/// M4 v3 composed root: binds the M2/M3 claim table plus the committed Shout
-/// tables (`T_word`, `T_pos`) and the committed pushforward table.
+/// M4 v3 composed root: binds the M2/M3 claim table plus the batched committed
+/// Shout tables (`T_word`, `T_pos`, `T_pf`), which share one PCS commitment.
 pub fn claim_shout_v3_root(
     claim_binding_v1: &[u8; 32],
-    word_root: &[u8; 32],
-    pos_root: &[u8; 32],
-    pushforward_root: &[u8; 32],
+    tables_root: &[u8; 32],
 ) -> [u8; 32] {
     let mut bytes = CLAIM_SHOUT_V3_DOMAIN.to_vec();
     bytes.extend_from_slice(claim_binding_v1);
-    bytes.extend_from_slice(word_root);
-    bytes.extend_from_slice(pos_root);
-    bytes.extend_from_slice(pushforward_root);
+    bytes.extend_from_slice(tables_root);
     magnetar_transcript::sha256(&bytes)
 }
 

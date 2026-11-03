@@ -862,3 +862,189 @@ product pushforward): each carries a full rate-1/8 query set. Next iteration:
 
 Until then M4v3 stays opt-in. A quiet-host four-metric A/B is required before
 any default flip.
+
+### C.9.2 M4v3 修订：单次 batch opening + 公开 FS reader point（代码已写，未 build）
+
+#### 实测问题（安静窗口需复测，以下 proof 字节数可信）
+
+| 2^16 | 默认 trace | `MAGNETAR_LINEAR_SHOUT=1` |
+| --- | --- | --- |
+| proof | 1,018,154 B | 1,523,394 B（+505 KB） |
+| `committed_logup_shout` | — | 514,689 B |
+| verify CPU/iter | 155.3 ms（高负载，仅方向参考） | 97.0 ms |
+
+`committed_logup_shout` 的构成（prove 侧打印，2^16）：**4 个独立 P3 opening 每个
+126–127 KB**（word / pos / reduction / product）+ logup* 本体仅 **8.5 KB** +
+bindings 40 B。即：proof 超标的根因是**打开次数**，不是 logup 证明本身；经典 25 列
+batch opening 的 245 KB 历史数字也不适用于本路径（trace 版 logup 本体很小）。
+
+#### 修订设计（已落地到代码）
+
+1. **一个 batch commitment 覆盖三张表**：`T_word`、`T_pos`、`T_pf`（pushforward）都
+   pad 到同一 arity `L = 2^max(cycle_bits, address_bits)`，用 `commit_batch` 一次提交。
+2. **一个 `open_batch` 覆盖所有点**：reader point（列0）、logup position point（列1）、
+   fraction reduction 的 Table-block 点（列2）、product point（列2），一次
+   `P3BatchOpening`；`verify_batch` 一次校验全部值。目标 `committed_logup_shout`
+   ≈ 一个 opening（~127 KB）+ logup 8.5 KB ≈ **140 KB**。
+3. **row point 用公开 statement 数据作 FS 种子**：reader point =
+   `sample(domain ‖ rom_hash ‖ trace_len ‖ cycle_bits ‖ address_bits)`（全部来自
+   trace/statement 公开数据），因此 statement 构造时可以先算 reader point → 再算
+   pushforward 表 → 再形成 batch commitment，**无循环依赖**；prover/verifier 用
+   `rom_hash(trace.rom)` / `rom_hash(statement.rom)` 重放同一套抽样。
+   **双重绑定**：batch commitment 在调 `prove_committed` **之前**形成，binder 返回
+   `committed_tables_root(commitment)`（规范化编码的 sha256）作为 transcript binding，
+   verifier 从 proof 的 commitment 重算同一 digest 后传给 `verify_committed`；此外
+   verifier 校验 `proof.opening.commitment` 与 `proof.table_commitment` 一致。
+   statement v3 root 仍为 `H("claim-shout-v3" ‖ v1 claim binding ‖ tables_root)`，把同一
+   commitment 再绑一次（statement 绑定 + transcript 绑定双保险）。
+4. 旧的按表 commitment/opening 字段删除；`T_word/T_pos/T_pf` 的 evals 仍逐点携带
+   （每个 16 B）。pushforward 的 transcript binding 不再是常量占位：prover 在
+   `prove_committed` 前 commit 三张表并把 commitment digest 交给 binder，verifier 用
+   proof 的 commitment 重算；另有 `opening.commitment == table_commitment` 一致性检查。
+5. statement 绑定仍在：host 侧 `committed_statement_data(trace)` 重算同一个 batch
+   commitment（同 trust model），verifier 用证明里的 commitment 重组 v3 root 与
+   statement 比对。
+
+#### 验收线现实评估（重要）
+
+- 单次 batch opening 预计 ~127 KB（查询集合共享，列只增加叶数据）→ 总 proof ≈
+  `1,018,154 − 9,449(经典 trace logup) + ~140,000` ≈ **1.15 MB**，仍高于 Lead 的
+  ≤1.0 MB 线。**当前 TRACE_SHOUT 路径的 proof 结构里没有可删的大 Shout 字段**，
+  因此 ≤1.0 MB 只有两条现实路径：
+  (a) **M4b（推荐）**：把 committed 验证接到 paper/default 路径，替换现有
+      `shout`/`packed_shout`/`field_opening` 等 proof 字段（paper 2^16 proof 为
+      1,018,152 B，这些字段合计预计 >100–200 KB），净增 ≤ 100 KB 才能进 1.0 MB；
+  (b) 降低 P3 安全性参数（100→64 bit 查询数下降约 36%，opening ~81 KB），但属
+      soundness 取舍，需 Lead 单独批准，不建议默认。
+- verify 方向：2^16 trace 路径 412.7 ms（默认，含 witness 重建）→ 62.9 ms（opt-in），
+  CPU 155→97 ms；但默认 paper 路径本身只有 24.7–27.2 ms，所以 opt-in 只有落到
+  M4b 的 paper 路径才有机会把「默认 verify」降到 ~25 ms 以下（替换未校验的 Shout
+  检查 + 复用现有 mosaic opening 的前景需 M4b 设计）。
+- **本轮测量在 load 480–650 下进行，wall 数字不可信，CPU 与 proof 字节可参考**；
+  安静窗口需复测。
+
+#### 任务 2 结论：`verify_native trace_logup: X ms` 标签不是双跑
+
+代码里该 `eprintln!` 在 committed/classic 分支之后的公共位置打印，衡量的是整个
+logup stage 的耗时，不是经典重建又跑了一遍；opt-in 时 `trace_logup_shout` 为 `None`
+（prover 只在 classic 分支产它），经典重建分支不可达。已修：标签改为
+`verify_native logup stage`，并新增 `verify_native committed logup`（committed 分支）
+与 `verify_native classic trace logup witness build`（classic 分支）。
+
+#### 任务 3 结论：logup* 本体不需要压
+
+2^16 实测 `logup` 字段 **8,512 B**（fraction GKR + product sumcheck），占 committed
+字段 <2%；经典 25 列 245 KB 是 paper logup 的 batch opening，与此路径无关。压缩重点
+只在 PCS 打开次数（已由本修订解决）。
+
+
+#### C.9.2-D Lead 决策（记录在案，2026-11-03 晚）
+
+1. batch-opening 设计+代码采纳；`trace_logup` 标签复用已确认、标签拆分认可；
+   `logup*` 本体 8.5 KB 不压。
+2. **不降 P3 安全参数**（100-bit 保持）：选项 (b)（降安全性换 proof）**否决**。
+3. 验收线分层：
+   - **M4v3 opt-in（native/TRACE_SHOUT 路径）中间验收线**：批处理后
+     `committed_logup_shout ≤ 150 KB`、总 proof `≤ 1.2 MB`、2^16 verify **wall ≤18 ms**
+     （安静机采集）、peak `≤2.6 GiB`。达到即算 milestone，**默认仍关**。
+   - **切默认门槛**：完成 **M4b（paper/default 路径替换 `shout`/`packed_shout`/
+     `field_opening` 相关字段）**且总 proof `≤1.0 MB`、verify wall `≤12 ms`
+     （与论文 8–12 ms 目标一致）时才切默认。
+4. 宿主危险期间**零 build/零 bench**；下一轮由 Lead 发「恢复」信号后：
+   (a) 编译 batch-opening WIP（预计 1–2 轮小错）+ `cargo check -p p3-multi-stark` /
+   `-p magnetar-runtime` + `cargo test --release -p magnetar-runtime --lib logup`/`claim`；
+   (b) 编译绿后 commit（Lead review diff 摘要 + 测试输出），再给测量窗口
+   （2^14 A/B → 2^16，只测 verify CPU/proof/peak；wall 仅在 load<20 时采集）；
+   (c) 期间纯代码做 M4b 设计 → §C.10。
+
+### C.10 M4b 设计：paper/default 路径替换经典 Shout 字段
+
+状态：**代码已写、待编译**（纯代码阶段，零 build/零 bench；恢复窗口第一件事是
+`git diff --stat` + 关键函数存在性自检，然后编译）。目标：把 M4v3 的 committed-pushforward
+linear Shout 接到 **paper/default 路径**，替换该路径现有的 `shout` / `packed_shout`
+字段及其 verifier 检查，使「切默认」的总 proof ≤1.0 MB、verify wall ≤12 ms（需与 M5
+一起完成）。
+
+#### C.10.1 现状（paper/default 路径）
+
+- Prover：`UnifiedProveContext` 在 `Shout` stage 生成 `shout`（`BinaryShoutProof`）与
+  `packed_shout`（`PackedShoutProof`），`finish()` 写入
+  `UnifiedTraceProof.{shout, packed_shout, shout_index}`；这些证明的 aux claims 由
+  `prove_opening` 折进统一 `opening`（`P3MosaicOpening`）。
+- **paper 路径还额外携带经典 `logup_shout`**（`prove_unified_trace_paper` 用
+  `prove_logup_shout` 的 25 列 mosaic opening，并把 `pushforwards` 清空）；该字段的
+  logup 恒等式在 verifier 侧只被折 link claims、**未被校验**——M4b 用 committed 版本
+  替换它，同时闭合这个 soundness 缺口。
+- Verifier：statement-only 的 `verify_core_statement` 中：
+  - `binary_shout::verify_binary_shout_from_proof` → aux `(point, value)` 追加到
+    `points/values`，再 `pcs.verify_mosaic(opening, …)`；
+  - `packed_shout::verify_packed_shout` + `shout_router_link_claims`；
+  - dynamic 路径没有 shift/store router 索引，因此 router 相关 claims 实际为空。
+- 已知数字（2^16，安静窗口需复测）：paper/default proof **1,018,152 B**；verify wall
+  24.7–27.2 ms；M2/M3 claim table 约 157 KB 已包含其中。
+
+#### C.10.2 替换方案
+
+1. **Prover**（`lib.rs` + `protocol.rs`）：
+   - 当 `MAGNETAR_LINEAR_SHOUT=1`：在 `Shout` stage 跳过经典 `shout`/`packed_shout`
+     证明生成（新增 `UnifiedProveContext` 选项 `skip_classic_shout`，同时不把它们的
+     aux claims 折进 `opening`），`finish()` 里两字段保持 `None`；
+   - 用 trace 重建 `BinaryShoutWitness::from_trace(trace)`（prover 侧有 trace），调用
+     `prove_committed_logup_shout(witness, &rom_hash(trace.rom), trace_len)`，附加到
+     `UnifiedTraceProof.committed_logup_shout`（字段已存在，`#[serde(default)]`）；
+   - statement 构造无需改动：`claim_table::statement_claim_root(trace)` 已在 env 下委托
+     `logup_shout::committed_statement_data(trace)` 生成 v3 root。
+2. **Verifier**（`verify_core_statement` + `verify_native_unified`）：
+   - `committed_logup_shout` 存在时：跳过 `shout`/`packed_shout` 的检查与 aux claims，
+     改为
+     (a) `claim_proof` 的 `root`+`table.root` → v1 binding → 与 proof 的 batch commitment
+         重组 v3 root，与 `statement.trace_claim_root` 比对（statement 绑定）；
+     (b) `verify_committed_logup_shout(committed, &statement.rom, &rom_hash(&statement.rom),
+         statement.trace_len)`（一次 batch opening + logup 归约 + O(rom) word 检查）；
+   - enabled 但缺失 → `PRE_M4V3_ERROR`；committed 存在但经典字段同时存在（旧 prover）→
+     拒绝（避免 opening claims 双份）。
+3. **字段/wire**：`shout`/`packed_shout` 保留字段名与 serde default（旧 proof 可识别但
+   在 opt-in 下拒绝）；新 proof 中二者为 None。`field_opening` 属寄存器/trace claim
+   路径，M4b 不动（M5 再处理）。
+
+#### C.10.3 proof 净减估算与验收
+
+| 项 | 2^16 估算 | 说明 |
+| --- | --- | --- |
+| 当前 paper proof | 1,018,152 B | 已实测（M2/M3 后） |
+| + committed_logup_shout | ≈ +148 KB | batch opening ~127 KB + logup 8.5 KB + evals |
+| − `shout`（BinaryShoutProof） | −? KB | 安静窗口用 `unified_proof_sizes` 实测 |
+| − `packed_shout`（PackedShoutProof） | −? KB | 同上 |
+| − 经典 `logup_shout`（25 列 opening） | −? KB（历史约 245 KB 量级） | 替换对象 |
+| − 折进 opening 的 aux claims | −? KB | 随 opening 字段一起变小 |
+| 目标 | **≤1.0 MB** | 需要前两项 ≥~180 KB |
+
+**待实测**：paper 模式 `UnifiedProofSizes` 的
+`shout`/`packed_shout`/`logup_shout`/`opening` 精确值（安静窗口，默认 env 跑一次即可）。
+替换 `logup_shout` 一项就可能带来 ~100 KB 级净减；加上两个经典 Shout 字段，≤1.0 MB
+的目标比最初估计更接近。
+
+**verify ≤12 ms 的前提**：M4b 单独只替换 Shout 检查（paper 路径 verify 变化 = −
+binary_shout/packed_shout 校验 − aux opening 校验 + committed 校验 ≈ 净 ±2–4 ms），
+达不到 12 ms；需 **M5**（删行 blob/行 Merkle/decode/`claims_to_trace` 的 ~10–12 ms）
+同一切换窗口完成。因此切默认 = M4b + M5 联合验收。
+
+#### C.10.4 A/B 计划（恢复后的安静窗口）
+
+1. 先跑 paper 模式默认 env，记录 `UnifiedProofSizes` 的
+   `shout`/`packed_shout`/`opening`/`field_opening` 基线（只读，不改代码）；
+2. M4b 实现 + 编译绿后：paper 默认 vs `MAGNETAR_LINEAR_SHOUT=1`，2^14/2^16 各 2 次，
+   报 verify CPU/iter、proof 总量与分量、peak；wall 仅在 load<20 时采；
+3. 达标（≤1.0 MB、≤12 ms、peak ≤2.6 GiB）后再做 M5 联合验收并决定切默认；否则保持
+   opt-in 并把数字写入 docs。
+
+#### C.10.5 改动清单
+
+| 文件 | 改动 |
+| --- | --- |
+| `crates/magnetar-runtime/src/protocol.rs` | `UnifiedProveContext` 增加 `skip_classic_shout` 选项；`finish()` 条件置 None；`Shout` stage 条件跳过 |
+| `crates/magnetar-runtime/src/lib.rs` | paper prover 附加 committed proof；`verify_core_statement` 分支；statement-only 绑定；标签 |
+| `crates/magnetar-runtime/src/logup_shout.rs` | 复用（batch 版），无需新类型 |
+| `crates/magnetar-runtime/src/trace_claims.rs` | 无改动（字段在 `UnifiedTraceProof`） |
+| 单测 | paper 路径 opt-in round-trip（需临时 env 注入）、statement 绑定 tamper、经典字段共存拒绝、opening claims 不双份 |
+| docs | 本节 + HANDOFF §6 transition rules |

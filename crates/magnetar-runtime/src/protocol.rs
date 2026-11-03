@@ -1360,6 +1360,9 @@ pub(crate) struct UnifiedProveContext<'a> {
     gated_claims: Option<crate::GatedCpuClaims>,
     gated_ry: Option<Vec<F2_128>>,
     packed_shout: Option<crate::packed_shout::PackedShoutProof>,
+    /// M4b: skip the classic Shout stage proofs (`shout`/`packed_shout`); the
+    /// committed-pushforward linear Shout replaces them on the paper path.
+    skip_classic_shout: bool,
     table_batches: Vec<crate::TableBatchProof>,
     opening: Option<magnetar_pcs::P3MosaicOpening>,
     e5: Option<E5Prepared>,
@@ -1806,6 +1809,14 @@ impl<'a> UnifiedProveContext<'a> {
         Self::new_inner(trace, width, group, false)
     }
 
+    /// M4b: skip the classic Shout stage proof (`shout`) and its packed variant.
+    ///
+    /// The tables stay in the committed mosaic (the verifier does not need their
+    /// aux claims); only the proof fields and their opening claims are dropped.
+    pub(crate) fn set_skip_classic_shout(&mut self, skip: bool) {
+        self.skip_classic_shout = skip;
+    }
+
     fn new_inner(
         trace: &'a Trace,
         width: usize,
@@ -2065,6 +2076,7 @@ impl<'a> UnifiedProveContext<'a> {
             gated_claims: None,
             gated_ry: None,
             packed_shout: None,
+            skip_classic_shout: false,
             table_batches: Vec::new(),
             opening: None,
             e5: None,
@@ -2155,6 +2167,9 @@ impl<'a> UnifiedProveContext<'a> {
     }
 
     pub(crate) fn prove_shout(&mut self) -> Result<(), RuntimeError> {
+        if self.skip_classic_shout {
+            return Ok(());
+        }
         let (Some(witness), Some((index, _)), Some(commitment)) =
             (&self.shout_witness, &self.shout_table, &self.commitment)
         else {
@@ -2408,6 +2423,9 @@ impl<'a> UnifiedProveContext<'a> {
             self.gated_ry = None;
         }
         if let Some(witness) = &self.shout_witness {
+            if self.skip_classic_shout {
+                return Ok(());
+            }
             let packed = crate::packed_shout::prove_packed_shout(witness)?;
             let commitment = self
                 .commitment
