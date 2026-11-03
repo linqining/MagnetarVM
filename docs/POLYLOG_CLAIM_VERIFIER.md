@@ -1077,3 +1077,149 @@ a regression. The `<= 12 ms` default-flip gate therefore still needs M5's
 2^16 paper default (host starved the process, wall invalid): proof 1,199,746 B,
 `logup_shout` 187,281 B, opening 240,561 B, verify CPU 77.8 ms/iter, peak
 1.40 GiB. The 2^16 opt-in run is deferred until the host calms down.
+
+### C.11 M5 设计全文（补回丢失稿）：删除行 blob/行 Merkle/行重建，claim 表唯一真相
+
+状态：M5 scaffold 已作为 patch 写出（TableOnly wire + v4 root + 互斥诊断 + 依赖门控，默认关）；完整 v4
+verifier 依赖 **M5b（T 的 memory/register 数据列）**。
+
+#### C.11.1 删除对象与当前成本（2^16）
+
+| 对象 | 现状 | 成本 | M5 替代 |
+| --- | --- | --- | --- |
+| claim 行 blob | inflate + bincode decode | **1.0 ms**；blob 静态估算 **≈2,412 B**（`claim` 159,156 − 表证明 156,744；2^10 交叉验证 ≈197 B） | 删除；行不再是 verifier 输入 |
+| 行 Merkle 根（claim leaves） | 逐组哈希所有行 → 求根 | **3.8–4.1 ms** | statement root 直接绑定 `T` 的 PCS commitment |
+| `claims_to_trace`/TraceRow 重建 | claims → synthetic Trace | **0.77 ms** + 下游派生 | trace Logup 已由 M4 删除；端点改 O(1)（selected pc vs statement pc；`cycles=2^cycle_bits`） |
+| access 摘要（`AccessStatement::from_claims` + 串行 digest） | O(rows) 事件收集 | **6.7 ms** | M5b：O(1) digest 由 claim 表 root 派生 + access 校验改为对 `T` 数据列的 relation（见 §C.12） |
+| claim 行和 | 已由 M2/M3 `T` 关系替换 | 已消失 | 保留 `MAGNETAR_CLAIM_ROWS=1` legacy 回退 |
+
+#### C.11.2 statement v4
+
+`trace_claim_root = H("claim-shout-v4" ‖ claim_table_root ‖ shout_tables_root)`（linear Shout off 时
+shout 分量为 32 零字节）；`MAGNETAR_CLAIM_V4=1`、`MAGNETAR_CLASSIC_CLAIMS=1` 回退；v4 与旧 proof 互相明确
+拒绝（`M5 v4 mode: proof carries row claims` / `pre-M5 verifier mode: … table-only…`）。wire 新增
+`ClaimProofWire::TableOnly`（**追加在枚举末尾**，旧 variant 索引不变，旧 proof 编码兼容）。
+
+#### C.11.3 健全性映射
+
+行数据不再进 proof 后：claim 表值 ← statement root + PCS 打开 + `claim_rel`；执行语义 ← `claim_rel`
+target + selected lockstep/gating；Shout/ROM ← M4b 的 host-derived `T_word` + O(rom) + committed
+logup；端点/trace_len ← O(1)；access ← M5b 的 T 数据列 relation。伪造 rows 必须同时伪造 `T`
+commitment（statement root 固定）与关系证明（`claim_rel` 拒绝）。tamper 清单：表 commitment/root、T
+slot、target、旧 proof 拒绝、v4/legacy wire 混用拒绝、无 blob round-trip（paper/native）、access
+digest/端点 tamper。
+
+#### C.11.4 与 M4b 的联合验收
+
+当前 paper 2^16 verify wall 24.7–27.2 ms；M5 删除行路径 ≈ **−12.3 ms**（leaves 3.8–4.1 + decode 1.0 +
+claims-to-trace 0.77）；access 6.7 ms 由 M5b 取代（目标净省 **≥5.6 ms**，见 §C.12.6）。M4b 实测 2^14
+verify CPU +5.4 ms（补上 Shout 校验缺口）、prove CPU −12 s、proof −22.8 KB。M4b+M5(+M5b) 的预算若落在
+14–19 ms 仍高于 12 ms，需按 §C.12 的 M6 候选（合并 opening 校验/复核重复摘要）继续压缩。
+
+### C.12 M5b 设计：T 增加 memory/register 数据列，access 摘要 O(1)
+
+状态记录：M5 scaffold patch 已保存（`/tmp/m5/m5_row_blob_removal.diff`，默认关、verifier 依赖门控）；M5b 为设计稿，翻转 M5 v4 gate 的前提。
+
+状态：设计（未动代码）。目标：让 M5 v4 verifier 在**不重建 claims/事件**的前提下校验 access 层，
+删除 6.7 ms 的 `AccessStatement::from_claims` + digest；这是翻转 M5 v4 依赖门控的前提。
+
+#### C.12.1 需要的 access/aux 事件字段（来自 `TraceClaim`/`TraceMemClaim`）
+
+`AccessStatement` 当前由 claims 重建（`access_statement.rs`）：
+- `config`、`initial_ram`、`initial_state`：来自 statement（公开，O(1) 校验，不需提交列）；
+- `memory_events: Vec<MemoryEvent{cycle, access{addr, value, width, is_write}}>`：来自每个 claim 的
+  `memory: Vec<TraceMemClaim{cycle, addr, value, width, is_write}>`；
+- `register_ops: Vec<RegisterOp{rs1/rs2/rd 存在性与索引, rs1_val/rs2_val/rd_val}>`：每 cycle 一条。
+
+执行器每行的 memory 事件数有上限（M 个/cycle，按 `TraceRow.memory` 上限；host 在 statement 构造时
+assert）；register ops 固定 3 个/cycle（rd/rs1/rs2，各带 present/index/value）。
+
+#### C.12.2 列清单与 slot 布局（推荐：并入现有 T_bits，不新建 commitment）
+
+| 组 | 列（bit） | 数量/cycle |
+| --- | --- | --- |
+| memory 事件（M 个/cycle） | 每事件：present 1 + is_write 1 + width 2 + addr 64 + value 64 | M × 132 |
+| register ops（3/cycle） | 每个：present 1 + index 5 + value 64 | 3 × 70 = 210 |
+| 合计（M=2，取执行器上界） | — | **474** |
+
+现有 T_bits：schema ≈336 + M4 数据 46 ≈382 列；扩展后 ≈856 列 → slot 数 **512 → 1024**（仍在
+2 的幂内一次补齐）。这样 access 关系与现有 M2/M3 target 关系共用同一个 `T_bits` commitment 和同一次
+ring-switch opening（多 group selector sum-check，见 C.12.4），**不需要第三个 commitment**。
+
+Host 派生规则（与 M2/M3 同信任模型）：statement 构造时逐 cycle 从 trace claims 填列；padding cycle 全 0；
+memory 事件数不足 M 的 cycle 用 present=0 补；register present 直接来自 claim 的 `*_present`。statement root
+把 `T_bits` commitment 摘要作为唯一 claim 表根（v4）。
+
+#### C.12.3 claim relation 数量/成本
+
+access 校验需要两类 claim：
+- RAM twist claims：`binary_twist::verify_binary_twist_from_proof(&proof.access.ram, …)` 输出的 claim 集合；
+- register twist claims：同上（`proof.access.registers`）。
+这两组 claim 是「事件列在 twist 求值点的多重线性函数」的线性组合：twist 的每个 bit 权重由 verifier
+抽到的求值点公开决定，因此可以用**一条 claim relation**（公开系数，value = verifier 从 twist proof 读出的
+claim）把「T_access 列的 MLE」与 claim 绑定。推荐做法：扩展现有 `claim_rel` 为 **multi-point/multi-group**
+（与 M4a 原语相同）：
+- group 0：M2/M3 claim target（现有）；
+- group 1：RAM 事件列 @ twist 点；
+- group 2：register 事件列 @ twist 点；
+- selector 位把多组合并进**一次** slot 维 sum-check + **一次** ring opening（proof 增量主要是 sumcheck
+  多项式与轮数：+~200 B；T_bits 变大带来的 opening 路径略增 ~5–15 KB）。
+
+Prover 成本：每个 group 需按列折叠（slots_per_group × cycles 位加法）；2 个 access group × ~474 列 ×
+2^16 cycles ≈ 62M bit-ops（可与 claim 表 prover 同线程），量级与 M2/M3 的 target 关系相当，预计 +0.2–0.5 s
+（2^16，需实测）。Verifier：sum-check 轮数 = log2(slots)+selector_bits ≈ 11–12 轮 + 一次 ring opening
+（与现有 claim_rel 同一次打开），预计 **+1–2 ms**。
+
+#### C.12.4 access verifier 替换后的检查链
+
+1. statement：`access_statement_digest = H("magnetar-access-v4" ‖ claim_table_root)`（O(1)，host 构造；
+   verifier 重算比对；不再 `from_claims`）；
+2. 验 `proof.access` 的 twist 证明：`verify_binary_twist_from_proof(ram/registers)`（现有 O(log) 检查）；
+3. **新**：claim relation 的 group 1/2 把 twist claim 与 `T_access` 列的 MLE 绑定（一次 opening 内完成）；
+4. 初始状态：`initial_ram`/`initial_state` 为公开 statement 数据，O(|initial_ram| + width) 校验（现有，
+   非 O(rows)）；
+5. 端点/长度：selected pc vs statement + `cycles`/`trace_len` O(1)；
+6. 删除：`AccessStatement::from_claims`、`synthetic_trace()`、`memory_witness()`、`register_witness()` 及
+   `verify_trace_access_shared` 的 witness-rebuild 部分（保留 twist 校验本体）。
+
+#### C.12.5 proof 增量与尺寸
+
+| 项 | 估算 |
+| --- | --- |
+| T_bits slots 512→1024（commitment 不变、opening 路径 +log） | **+5–15 KB** |
+| access 关系（并入现有一次 ring opening；sumcheck +selector） | **+~1 KB 以内** |
+| access witness 不再进 proof（本来也不在） | 0 |
+| 行 blob/行根删除（M5） | −≈2.5 KB |
+| **M5b 净 proof 变化** | **≈ +3–13 KB**（相对 M4b+M5；2^16 目标仍 ≤1.0 MB 量级） |
+
+#### C.12.6 verify 时间预算（目标：真正删掉 6.7 access + 5.6 行路径）
+
+- 删除：access 摘要 **−6.7 ms**；claim leaves −3.8…−4.1；decode −1.0；claims-to-trace −0.77；
+  （行路径合计 −11.6…−12.6 ms）
+- 新增：access claim relation 的 sumcheck 校验 + 与现有 claim_rel 共享的 ring opening 校验
+  **+1–2 ms**（T_bits slots 翻倍让每轮 MLE 长度 ×2，sumcheck 轮数 +1）
+- **净收益 ≈ −9.6…−11.6 ms**：足以把 M4b+M5 的 14–19 ms 预算压向 ~8–12 ms，支撑「切默认 ≤12 ms」
+  门槛；若实测 >12 ms，按 §C.12.7 的 M6 候选继续。
+
+#### C.12.7 tamper 测试清单（M5b）
+
+1. `T_access` 任一列 tamper（addr/value/width/write/present）→ claim relation 拒绝；
+2. RAM twist claim tamper → relation value 不符拒绝；
+3. register twist claim/索引 tamper → 拒绝；
+4. 列交换（addr↔value、rs1↔rs2 列分组）→ relation 系数不符拒绝；
+5. padding/present tamper（把 padding cycle 标成 present 或反之）→ 关系/twist 拒绝；
+6. 初始 RAM/state tamper（公开 statement）→ O(1) 检查拒绝；
+7. 旧 v1/v3/v4-without-access 证明拒绝（错误文案区分）；
+8. paper/native round-trip（`#[ignore]` + 进程级 env，单跑）；
+9. access digest 派生 tamper（`H(...)` 输入换）→ 拒绝。
+
+#### C.12.8 实施顺序与 open items
+
+1. host 列派生 + T_bits slot 扩展 + v4 root（与 M5 scaffold 合并）；
+2. `claim_rel` 的 multi-group 扩展（M4a 原语已有，移植到 `claim_table`）；
+3. access verifier 的 witness-free 变体（twist 校验 + relation，删 from_claims）；
+4. statement `access_statement_digest` O(1) 派生 + 旧 proof 拒绝；
+5. 测试矩阵 + 安静窗口测量（proof/verify CPU/peak）。
+Open：执行器每 cycle memory 事件上界 M 的精确值（决定列数；若 >2 需 512→2048 slots，proof 增量与
+prover 成本重估）；twist claim 与 bit 列的系数是否与现有 `claim_rel` 的公开系数推导兼容（M4a 原语的
+multi-point 版已覆盖该形态）。
