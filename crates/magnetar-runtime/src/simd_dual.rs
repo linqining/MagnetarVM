@@ -5631,6 +5631,10 @@ fn prove_dynamic_cpu_claims_gated<B: magnetar_proof::BitPcs>(
             crate::resident_gib()
         );
     }
+    // The padded field copy the commit needed has been dropped; the committed
+    // batch itself stays live for the opening. No-op unless
+    // MAGNETAR_RELEASE_TRANSIENTS=1.
+    magnetar_proof::alloc_release::release("selected commit");
     let claim_started = std::time::Instant::now();
     let claim = dynamic_claim_for_trace(&setup, trace, &commitment, backend)?;
     if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
@@ -5650,6 +5654,9 @@ fn prove_dynamic_cpu_claims_gated<B: magnetar_proof::BitPcs>(
     if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
         eprintln!("selected rss after proof: {:.2} GiB", crate::resident_gib());
     }
+    // The selected opening is done: its prepared data and the product level
+    // arrays have been dropped.
+    magnetar_proof::alloc_release::release("selected opening");
     let (layout, mask, cycles) = (setup.layout.clone(), setup.mask, setup.cycles);
     let segments = selected_segment_claims(&layout, &proof)?;
     // The layout is reconstructed by the verifier from the trace, so do not
@@ -7103,6 +7110,10 @@ pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
             crate::resident_gib()
         );
     }
+    // The padded field copy the commit needed has been dropped; the committed
+    // batch itself stays live for the opening. No-op unless
+    // MAGNETAR_RELEASE_TRANSIENTS=1.
+    magnetar_proof::alloc_release::release("selected commit");
     let claim_started = std::time::Instant::now();
     let claim = dynamic_claim_for_trace(&setup, trace, &commitment, backend)?;
     if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
@@ -7122,6 +7133,9 @@ pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
     if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
         eprintln!("selected rss after proof: {:.2} GiB", crate::resident_gib());
     }
+    // The selected opening is done: its prepared data and the product level
+    // arrays have been dropped.
+    magnetar_proof::alloc_release::release("selected opening");
     Ok((proof, setup.layout, setup.mask, setup.cycles))
 }
 

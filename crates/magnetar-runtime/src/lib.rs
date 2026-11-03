@@ -3050,6 +3050,17 @@ fn prove_unified_trace_dynamic_native_profile_inner(
                 stage: format!("{stage:?}"),
                 duration: started.elapsed(),
             });
+            // Access and Opening are the unified stages that drop large
+            // transients. No-op unless MAGNETAR_RELEASE_TRANSIENTS=1.
+            match stage {
+                crate::protocol::ExecutionStage::Access => {
+                    magnetar_proof::alloc_release::release("unified Access");
+                }
+                crate::protocol::ExecutionStage::Opening => {
+                    magnetar_proof::alloc_release::release("unified Opening");
+                }
+                _ => {}
+            }
             if std::env::var_os("MAGNETAR_PROFILE_UNIFIED").is_some() {
                 eprintln!(
                     "unified {stage:?}: {:?} rss={:.2} GiB",
@@ -3066,6 +3077,7 @@ fn prove_unified_trace_dynamic_native_profile_inner(
             stage: "Finish".into(),
             duration: started.elapsed(),
         });
+        magnetar_proof::alloc_release::release("unified finish");
         proof.gated = None;
         proof.cpu = None;
         proof.e5_opening = None;

@@ -598,6 +598,7 @@ pub enum ProofError {
     DimensionMismatch,
 }
 
+pub mod alloc_release;
 pub mod bit_pcs;
 pub mod dual_field;
 pub mod f2_protocol;

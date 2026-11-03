@@ -95,10 +95,14 @@ pub fn install_memory_watchdog(default_gib: f64) -> std::thread::JoinHandle<()> 
     eprintln!("memory watchdog: limit {limit_gib:.2} GiB");
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_millis(100));
+        record_footprint();
         if let Some(peak) = peak_rss_bytes() {
             if peak > limit_bytes {
+                let footprint = peak_footprint_bytes()
+                    .map(|bytes| format!("{:.2} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0)))
+                    .unwrap_or_else(|| "unavailable".to_owned());
                 eprintln!(
-                    "memory watchdog: peak RSS {:.2} GiB exceeded the {limit_gib:.2} GiB limit; aborting",
+                    "memory watchdog: peak RSS {:.2} GiB (peak footprint {footprint}) exceeded the {limit_gib:.2} GiB limit; aborting",
                     peak as f64 / (1024.0 * 1024.0 * 1024.0)
                 );
                 std::process::abort();
@@ -126,4 +130,36 @@ pub fn peak_rss_bytes() -> Option<u64> {
     {
         Some(maxrss.saturating_mul(1024))
     }
+}
+
+/// Current physical footprint of this process, in bytes (macOS `phys_footprint`).
+///
+/// [`peak_rss_bytes`] reads `getrusage().ru_maxrss`, which counts libmalloc's
+/// `MADV_FREE_REUSABLE` pages; the footprint excludes them, so it is the number
+/// the OS charges against the memory-pressure limit. `None` where the platform
+/// has no equivalent. See `docs/MEMORY_PATH.md` §3.1.
+pub fn footprint_bytes() -> Option<u64> {
+    magnetar_proof::alloc_release::phys_footprint_bytes()
+}
+
+/// Best footprint sample seen by the watchdog (or by an earlier call).
+static PEAK_FOOTPRINT_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Record one footprint sample in the peak tracker.
+fn record_footprint() {
+    if let Some(current) = footprint_bytes() {
+        PEAK_FOOTPRINT_BYTES.fetch_max(current, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Peak physical footprint of this process, in bytes.
+///
+/// The watchdog samples it every 100 ms; `peak_footprint_bytes()` also samples
+/// on every call, so read it after the prove. Pair it with [`peak_rss_bytes`]
+/// when reporting a memory number: RSS counts pages the allocator has freed but
+/// not returned, the footprint does not. `None` off macOS.
+pub fn peak_footprint_bytes() -> Option<u64> {
+    let current = footprint_bytes()?;
+    let peak = PEAK_FOOTPRINT_BYTES.fetch_max(current, std::sync::atomic::Ordering::Relaxed);
+    Some(peak.max(current))
 }

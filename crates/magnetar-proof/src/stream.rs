@@ -908,6 +908,10 @@ where
         });
         arrays
     };
+    // Phase 2 works on `arrays`; the level store is not read again. Releasing
+    // it here keeps the transient from overlapping the rest of the prove
+    // (memory only, no value or ordering change).
+    drop(stored);
     let remaining = n - level;
     // The live prefix is more than half of `rows`, so ceil-halving it
     // `remaining` times lands on exactly one entry: the trailing entries of the
@@ -998,13 +1002,16 @@ where
         claimed_sum = eq_values[0]
             * (value[0] * value[1] - value[2] + alpha * (value[3] * value[4] - value[5]));
     }
+    let terminal = arrays[0];
+    drop(arrays);
+    crate::alloc_release::release("product6");
     Ok(OuterSumcheck {
         proof: SumcheckProof {
             claimed_sum,
             round_polys,
         },
         challenges,
-        terminal: arrays[0],
+        terminal,
     })
 }
 
@@ -1753,14 +1760,19 @@ where
     if n == 0 {
         claimed_sum = left[0] * right[0];
     }
+    let left_value = left[0];
+    let right_value = right[0];
+    drop(left);
+    drop(right);
+    crate::alloc_release::release("product2");
     Ok(InnerSumcheck {
         proof: SumcheckProof {
             claimed_sum,
             round_polys,
         },
         challenges,
-        left: left[0],
-        right: right[0],
+        left: left_value,
+        right: right_value,
     })
 }
 

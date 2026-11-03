@@ -1854,6 +1854,7 @@ fn prove_lockstep_bits_streaming_inner<B: BitPcs>(
             actual: opened,
         });
     }
+    crate::alloc_release::release("lockstep products");
     Ok((
         LockstepProof {
             commitment,
