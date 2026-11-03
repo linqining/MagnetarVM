@@ -1,12 +1,16 @@
 # Handoff — MagnetarVM streaming selected prover (RV64)
 
-Status: **incremental optimization phase**, branch `virtual-claims-rewrite`,
-2026-11-03 `2^16` optimization round committed (`1b26b4e` optimization +
-polylog claim table, `9e805f2` segment-claim rewrite, `f310f82`/`faf3b72`/`ac8e4a4`
-M4a committed-Shout skeleton/body/opt-in fixes, `bd04687` Access sum-check,
-`21c38c7` chunked inner scan, `a3a6e9c` packed CSR + fast pair polynomial).
-Final gate on the committed tree: **666 passed / 0 failed**,
-`cargo build --workspace --examples --release` green.
+Status: **incremental optimization phase (Part 1 closed, Part 2 in progress)**,
+branch `virtual-claims-rewrite`. Commits through `9e2e407`: `1b26b4e`
+(2^16 optimization + polylog claim table), `9e805f2` (segment claims),
+`a3a6e9c` (packed CSR + fast pair), `e320cf9` (M4v3 batched committed-Shout
+opening + M4b paper-path replacement, opt-in), `9556746` (M5 scaffold:
+table-only claim proof + v4 statement root), `d61ea71` (allocator-release hooks
++ phys_footprint instrumentation), `9e2e407` (M5b phase 1: committed access
+columns + O(1) access digest). Full workspace gate on the M4v3+M5 tree:
+**670 passed / 0 failed / 3 ignored**; `cargo build --workspace --examples
+--release` green. The M5b phase 1 tree adds a 362-test runtime suite pass
+(claim 53, access_table 4, byte equality green).
 
 **Part 1 (2^16 optimization) is closed**: prove 70.4 -> **31.4-34.6 s** (CPU
 ~800 -> **274 s**, 2.9x less work), verify 29.6 -> **24.7-27.2 ms**, peak
@@ -21,7 +25,10 @@ Measurements and per-round history: [STREAMING_SELECTED_PROVER_RESULTS.md](STREA
 ([中文](streaming-selected-prover-results-zh.md)). Background design: [STREAMING_SELECTED_PROVER_HANDOFF.md](STREAMING_SELECTED_PROVER_HANDOFF.md).
 
 Headline at RV64 `2^16` (2026-11-03 round, host load 15–66): **prove 31.4–34.6 s
-(prove CPU 274.2–274.9 s vs ≈800 s before), verify 24.7–27.2 ms, peak 1.94–2.01 GiB**. The
+(prove CPU 274.2–274.9 s vs ≈800 s before), verify 24.7–27.2 ms, peak 1.94–2.01 GiB**.
+After the M5b-era instrumentation the native default peak measures **1.41 GiB
+RSS / 1.82 GiB phys_footprint** (the `drop(stored)` free); the paper-path and
+opt-in rows are in §2.1. The
 streaming prover is still byte-identical to the eager path; the *proof file* is
 1,018,152 B because the polylog claim layer (results §11.6) now commits the
 claim table and attaches it to `ClaimProof` -- with the claim table off the same
@@ -87,9 +94,32 @@ core count is low.
 † proof size is the claim-table format; the streaming proof itself is still
 byte-identical to the eager path. See results §11.6.
 `2^18`/`2^19` predate the fused scan and the ring-switch fix; two loaded re-runs
-gave 335 s and 437 s with 5.7–7.8 GiB peak and were discarded. A linear fit
-through the measured points projects ≈20 GiB at `2^22` (supersedes the earlier
-55–60 GiB model, which came from the 32-byte-digest build).
+gave 335 s and 437 s with 5.7–7.8 GiB peak and were discarded. **The ≈20 GiB
+`2^22` projection below is retracted**: the constant staircase deltas were
+allocator reuse, not a model. A Merkle tree lives together with its codeword, so
+the mosaic commit/opening alone forces >=32 GiB live and the hard lower bound is
+>=37 GiB (model 60–90 GiB); see [MEMORY_PATH.md](MEMORY_PATH.md) and results §8.
+
+### 2.1 Opt-in paths and the M4b/M4v3 trade (2^16, `d61ea71`, load 20–90)
+
+`verify CPU/iter` comes from `MAGNETAR_VERIFY_CPU=20` (the verifier runs two
+waves, so CPU > wall); peak is RSS and phys_footprint; wall is not comparable
+across rows.
+
+| 2^16 run | proof | verify CPU/iter | footprint | RSS |
+| --- | --- | --- | --- | --- |
+| native default (`TRACE_SHOUT=1`) | 1,018,154 B | 158.2 ms | 1.82 GiB | 1.41 GiB |
+| native `MAGNETAR_LINEAR_SHOUT=1` (M4v3) | 1,169,602 B (+151 KB) | **101.6 ms (-36 %)** | 2.06 GiB | 1.81 GiB |
+| paper default | 1,199,746 B | 96.9 ms | **2.61 GiB** | 2.07 GiB |
+| paper `MAGNETAR_LINEAR_SHOUT=1` (M4b) | 1,169,602 B (-30 KB) | **87.7 ms (-9.5 %)** | **1.99 GiB (-0.62)** | 1.44 GiB |
+
+The paper M4b opt-in is better on all four metrics because it drops the classic
+25-column `logup_shout` mosaic opening (the paper path's memory peak) *and*
+closes the paper verifier's "Shout carried but not verified" gap; the native
+M4v3 opt-in instead trades +151 KB of proof for -36 % verify CPU. Both stay
+off by default; flipping the paper path needs an env-on full gate, the tamper
+matrix and dual-mode test assertions first (docs/POLYLOG_CLAIM_VERIFIER.md
+§C.13).
 
 `2^16` stage split after the packed CSR + fast pair (load 15–65): selected
 `product6` **18.18/18.36**, `product2` **10.59/10.63** (was 24.5 before results
@@ -197,6 +227,42 @@ Details, measurements and the rejected experiments are in results §11.
     Access CPU 5.31 → **4.70 s** (-11.5 %), `rw` -0.35 s and final rounds -0.17 s.
     Claims and proof bytes unchanged; `MAGNETAR_LEGACY_EVAL_POINTS=1` keeps the old
     path for A/B.
+15. **M4v3 batched committed Shout opening** (`e320cf9`): the committed Shout's
+    word/position/pushforward tables are padded to one arity and committed with
+    one `commit_batch_prepared`, then opened with one `open_batch_prepared`; the
+    pushforward is committed *before* the transcript binds it and the binder is
+    the digest of that commitment (the constant-zero placeholder that shipped in
+    the first draft was a soundness gap). The reader point is derived from
+    public data (`rom_hash || trace_len || arity`), which breaks the circular
+    "commit pushforward vs derive reader point" dependency.
+    `committed_logup_shout` at `2^16`: 514,689 -> **160,897 B**. Vendored p3
+    `logup_star` gained an additive committed-pushforward API only (old paths
+    untouched).
+16. **M4b paper-path replacement** (`e320cf9`): on the paper path the opt-in
+    skips the classic `shout`/`packed_shout` stage proofs and the classic
+    25-column `logup_shout` mosaic opening and attaches the committed linear
+    Shout instead; the verifier rejects proofs carrying both encodings and the
+    statement-free core verifier rejects committed Shout (it needs the public
+    ROM). This also closes the paper verifier's "Shout carried but not verified"
+    gap and measured strictly better on all four metrics (§2.1).
+17. **M5 scaffold** (`9556746`): `ClaimProofWire::TableOnly` appended at the end
+    of the enum (old encodings unchanged), v4 statement root
+    `H("claim-shout-v4" || claim_table_root || shout_tables_root)`,
+    mixed-encoding rejection in both directions, and a deliberate dependency
+    gate: the v4 verifier refuses until the claim table commits the access
+    columns.
+18. **M5b phase 1** (`9e2e407`): the claim table gains 478 access columns (2
+    memory events/cycle x 268 bits + 3 register ops/cycle x 210 bits) on top of
+    512 schema slots = 1024 combined slots, a single combined packed-bit table
+    commitment, and `access_statement_digest = H("magnetar-access-v4" ||
+    v4_table_root)`. All default off (`MAGNETAR_ACCESS_COLUMNS=1` requires
+    `MAGNETAR_CLAIM_V4=1`).
+19. **Memory instrumentation and the footprint metric** (`d61ea71`): default-off
+    allocator-release hooks plus `phys_footprint` sampling in the testkit
+    watchdog. macOS counts freed-but-reusable pages in RSS but not in the OS
+    footprint, so peaks must be quoted as both. The non-gated `drop(stored)` in
+    the outer product scan alone dropped the native default peak to **1.41 GiB
+    RSS / 1.82 GiB footprint**.
 
 Peripheral stages (parallel track): the vendored p3 `Keccak256Hash16` did not
 forward `hash_many`, so Merkle trees hashed serially; forwarding it cut p3 CPU
@@ -206,32 +272,38 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
 
 ## 5. Open work, in priority order
 
-1. **Committed claim columns → polylog verifier** (the only route to the paper's
-   8 ms). Today the verifier is `O(rows)`: claim row sums re-emit ~336 columns
-   per row, and the trace Logup rebuilds the Shout witness from the claim-derived
-   trace. Design sketch in results §9.8; touches the claim schema, the proof
-   format, and both prover/verifier. It also needs a tamper test per layer
-   through the top-level entry point.
-2. **`product2` is now the largest single term** (24.5 s of 55.5 s). The fused
-   block loop was measured 35 % *slower* (results §11.5) and is parked behind
-   `MAGNETAR_P2_FUSED`; the next levers are amortising `fill_left`'s per-block
-   overhead over larger column chunks (round 0's block is two columns) and a
-   tighter CSR layout. Re-check the inner level budget on a quiet host
-   (24 is the current default; 23 trades one scan for -256 MiB).
-3. **Memory: bit-level / smaller codeword.** The peak is codewords and Merkle
-   trees (selected witness commit 2.07 GiB, mosaic commit/opening 5.0/6.0 GiB at
-   `2^18`), linear in `cycles`; ≈21 GiB projected at `2^22` against the paper's
-   6.4 GiB (the 512 MiB inner level arrays are fixed, not linear).
-4. **Refresh the `2^17`–`2^19` rows** with the memory watchdog and one run at a
-   time; they are marked pre-fusion and the host had <1.5 GiB free during the
-   round.
-5. **Claim layer M4/M5**: the claim table commitment is in the tree (M2/M3),
-   the row blob is still carried, so the proof is 1,136,696 B until M4/M5
-   remove it (results §11.6, docs/POLYLOG_CLAIM_VERIFIER.md).
+1. **M5b phase 2: access verifier without the witness** (the remaining path to
+   the paper's 8-12 ms). **2a**: binary_twist read-only accessors (approved
+   additive-only boundary exception) + the access verifier's twist check and
+   O(cells) initial-column binding. **2b**: a separate cells-dimension
+   packed-bit table for the final RAM values bound into the v4 statement root,
+   the multi-group `claim_rel` binding the twist claims to the committed access
+   columns, the v4 gate flip, and the 9-case tamper matrix. Design:
+   `docs/POLYLOG_CLAIM_VERIFIER.md` §C.12.
+2. **Paper-path M4b default flip.** The opt-in is better on proof, verify CPU and
+   footprint (§2.1), so it is the natural default once (a) a full gate runs with
+   the switch on, (b) the file-level tamper matrix passes with it on, and (c)
+   the tests that assert the classic wire become dual-mode.
+3. **Allocator-release interleaved A/B** (`MAGNETAR_RELEASE_TRANSIENTS=1`): the
+   single runs were order-confounded. Judge by RSS -5 % with phys_footprint not
+   rising; if only RSS moves it is a reporting-metric win, not pressure relief.
+   Design: `docs/MEMORY_PATH.md` §3.1.
+4. **Refresh the `2^17`-`2^19` rows** with the memory watchdog and one run at a
+   time; they are marked pre-fusion and the host was routinely swapping during
+   the M4/M5 rounds. The corrected `2^22` model (§2 note, MEMORY_PATH.md)
+   changes what the staircase is for: 2^20 is the decision point, 2^21 is not
+   runnable on this 36 GiB host.
+5. **Memory path implementation** (`MEMORY_PATH.md`): context lifetime/dedup
+   first (behaviour-neutral, -0.3-0.6 GiB at 2^16 and -12-19 GiB at 2^22), then
+   bit-pack mosaic commitments/twist witnesses, then the 128 -> 64-bit committed
+   alphabet. After all four the floor is still 26-30 GiB, so the paper envelope
+   needs a different commitment family or streaming codewords.
 6. Rejected on purpose: raising the *outer* stream budget above 22 (trades
    ~11 % of `product6` for +0.4 GiB at `2^16` and ~+25 GiB at `2^22`), caching
    scale-linear PCS data across stages (the deep clone removal was kept, the
-   cache was not), and the fused inner block loop (35 % slower).
+   cache was not), the fused inner block loop (35 % slower), an 8-byte Merkle
+   digest (only ~32-bit collision strength, far below the 100-bit target), and
+   lowering the P3 security parameter from 100 bits for proof size.
 
 ## 6. Traps and invariants
 
@@ -280,13 +352,13 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
   M4 revision must use the linear `logup_shout` machinery and commit (or open)
   the pushforwards instead of shipping them. See
   `docs/POLYLOG_CLAIM_VERIFIER.md` §C.8.
-- **M4v3 (committed logup) is opt-in and over the proof budget.** First `2^16`
-  A/B (host in heavy swap, only CPU/proof-size comparable): proof 1,018,154 ->
-  1,523,394 B (+505 KB, `committed_logup_shout` alone 514,689 B) while verify
-  CPU/iter 155.3 -> 97.0 ms (-37 %). The proof is 568 KB over the acceptance
-  line because four independent PCS openings each ship a full rate-1/8 query
-  set; batch them into one `P3BatchOpening` before the next measurement
-  (`docs/POLYLOG_CLAIM_VERIFIER.md` §C.9.2). Default stays off.
+- **M4v3/M4b are measured opt-ins with an explicit trade.** After the batched
+  opening (`e320cf9`) `committed_logup_shout` is 160,897 B at `2^16`. The native
+  opt-in trades +151 KB of proof for -36 % verify CPU (158.2 -> 101.6 ms/iter);
+  the paper opt-in is better on all four metrics (proof -30 KB, verify CPU
+  -9.5 %, footprint -0.62 GiB) and also closes the paper verifier's Shout gap.
+  Neither default flips until the env-on gate and the tamper matrix pass
+  (`docs/POLYLOG_CLAIM_VERIFIER.md` §C.13).
 - **One heavy run at a time.** The host had <1.5 GiB free memory during this
   round. Every example installs `install_memory_watchdog` (`MAGNETAR_MAX_RSS_GIB`,
   default 4 GiB), `protocol_determinism` defaults to 20 pairs (1.99 GiB, the old
@@ -340,3 +412,21 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
   `simd_dual`, `simd_f2` and the row modules assert 8-bit arithmetic
   (`0xff` wrap, `Sra(248,1)`, `u8`/`i8` proptests). Everything that runs a proof
   is width 64; results §9.11 has the inventory.
+
+- **Quote peaks as RSS *and* phys_footprint.** On macOS libmalloc's large zone
+  frees with `MADV_FREE_REUSABLE`: the pages leave the OS footprint immediately
+  but stay in `ps`/`/usr/bin/time -l` RSS. The 1.94-2.01 GiB figure predates the
+  `drop(stored)` free and the dual metric; current native default is 1.41 GiB
+  RSS / 1.82 GiB footprint.
+- **A committed table must be absorbed before the challenges.** The committed
+  Shout binder returns the digest of the batch commitment; a constant/zero
+  binding would let the prover adapt the table to the Fiat-Shamir points. The
+  verifier recomputes the digest from `proof.table_commitment`, and the v3 root
+  binds the same digest (double binding).
+- **Opt-in tests mutate process-wide env.** The `#[ignore]` cases that flip
+  `MAGNETAR_LINEAR_SHOUT` / `MAGNETAR_CLAIM_V4` race each other under the default
+  test-threads; run them with `--ignored --test-threads=1`.
+- **`2^22` memory: >=37 GiB hard floor, 60-90 GiB model.** The earlier ~20 GiB
+  linear fit was allocator reuse. A Merkle tree lives together with its
+  codeword, and the mosaic commit/opening alone forces >=32 GiB live at 2^22.
+  See `docs/MEMORY_PATH.md`.
