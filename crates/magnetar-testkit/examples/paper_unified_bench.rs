@@ -196,6 +196,11 @@ fn main() {
         }
     }
     eprintln!("{sizes:?}");
+    // macOS counts freed-but-reusable pages in `ps`/RSS but not in the OS
+    // footprint, so peak memory is only comparable when both are quoted.
+    if let Some(footprint) = magnetar_testkit::peak_footprint_bytes() {
+        eprintln!("bench peak footprint={:.2} GiB", gib(footprint));
+    }
     if let Some(claim) = &proof.claim_proof {
         eprintln!("claim_fields={:?}", claim.compact_field_sizes());
         eprintln!("claim_rom_probe={:?}", claim.compact_rom_probe());
