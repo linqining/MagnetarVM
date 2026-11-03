@@ -1270,3 +1270,9 @@ is a candidate for flipping the default once (a) a full gate runs with the
 switch on, (b) the file-level tamper matrix passes with it on, and (c) M5b
 lands; the native M4v3 stays a measured opt-in until the proof-size work
 (batched opening is already in, 160,897 B) or M5b changes the trade.
+
+#### C.12.9 Lead 决策 + M5b-2a/2b 拆分（记录在案）
+
+1. **`binary_twist.rs` 边界例外批准**：允许**纯新增**只读 accessor / no-witness 变体（不改现有函数行为/签名/proof 字节；`#[allow(dead_code)]` 可接受）；集成后必须跑 `streaming_lockstep_proof_matches` + `parallel_chunked_streaming_matches_sequential` 闸门。
+2. **final-value 列（Option A）**：独立小表 `T_final`，cells 维（`ram_size/8`，方形 power-of-two），packed-bit 单独 commitment，root 并入 v4 statement root；verifier 在 twist 的 `r_k` 打开并把 `final_eval` 用 claim_rel 绑定。初始列用公开 `statement.initial_ram` 在 `r_k` 处 O(cells) 复算，不提交（v4 里也可用同一 `T_final` 表做 O(cells) 校验，二选一）。
+3. **拆分**：**2a** = binary_twist 只读 accessor + access verifier 的「proof-only twist 校验 + 初始列 O(cells) 绑定」，final-value 保留显式门控；**2b** = `T_final` 提交 + claim_rel 绑定 + v4 gate 真正翻转 + 9 项 tamper。

@@ -22,6 +22,7 @@ pub mod branch_row;
 pub mod claim_native;
 pub mod claim_shout;
 pub mod access_table;
+pub mod access_verify;
 pub mod claim_table;
 pub mod linear_twist;
 pub mod local_shared;
@@ -3970,13 +3971,12 @@ pub fn verify_native_unified(
         ));
     }
     if v4 {
-        // Dependency: deriving the O(1) access digest from the claim root is
-        // only sound once the claim table commits the memory/register data
-        // columns (§C.11 / §9.1). Until then the v4 verifier deliberately
-        // refuses rather than accepting an unbound access layer.
+        // M5b: the access digest is now the O(1) derivation from the v4 claim
+        // table root, and the access layer is verified witness-free. The
+        // final-value binding is still gated on M5b-2b (T_final table).
+        crate::access_verify::verify_access_committed(statement, proof, &proof.commitment)?;
         return Err(RuntimeError::Proof(
-            "M5 v4 verifier pending: access binding requires the T memory/register data columns"
-                .into(),
+            "M5 v4 verifier pending: M5b-2b final-value table not committed".into(),
         ));
     }
     // M4b: the classic Shout proofs and the committed linear Shout are mutually

@@ -3222,3 +3222,72 @@ mod tests {
         assert!(!verify_read_identity(&tampered, &witness).unwrap());
     }
 }
+
+// ---------------------------------------------------------------------------
+// M5b-2a (pure addition; boundary exception approved by Lead): read-only
+// accessor exposing the twist evaluation points/values that the witness-based
+// verifier checks against `witness.initial` / `witness.final_value`.
+//
+// The proof-only verifier (`verify_binary_twist_from_proof`) already replays
+// every sum-check; the two witness comparisons are the only place the witness
+// is consumed. This accessor replays the final section transcript to recover
+// the cell point `r_k` and the initial/final evaluations, so the access layer
+// can bind them to public initial RAM (O(cells)) and to the committed final
+// value table without ever materializing a witness.
+//
+// No existing function is changed by this addition.
+#[allow(dead_code)]
+pub(crate) struct BinaryTwistPublicEvals {
+    /// Base-two logarithm of the cycle count.
+    pub(crate) cycle_bits: usize,
+    /// Base-two logarithm of the RAM cell count.
+    pub(crate) address_bits: usize,
+    /// Cell point `r_k` (length `address_bits`).
+    pub(crate) cell_point: Vec<F2_128>,
+    /// `witness.initial` MLE at `cell_point`.
+    pub(crate) initial_eval: F2_128,
+    /// `witness.final_value` MLE at `cell_point`.
+    pub(crate) final_eval: F2_128,
+}
+
+/// Recover the M5b witness-free access evaluations from an already verified
+/// twist proof.
+///
+/// Returns `None` for malformed proofs (shape mismatches); callers must have
+/// verified `proof` with [`verify_binary_twist_from_proof`] first.
+#[allow(dead_code)]
+pub(crate) fn binary_twist_public_evals(
+    proof: &BinaryTwistRamProof,
+    commitment: &P3MosaicCommitment,
+) -> Option<BinaryTwistPublicEvals> {
+    if proof.opening.is_some() || proof.linear.is_some() {
+        // The linear variant has its own transcript; M5b currently binds the
+        // reference binary-twist variant only.
+        return None;
+    }
+    let cycle_bits = proof.cycle_bits;
+    let address_bits = proof.address_bits;
+    let mut transcript = Sha256Transcript::new("magnetar-binary-twist-final");
+    absorb_mosaic_commitment(&mut transcript, commitment);
+    let _rho_k = sample_point(&mut transcript, address_bits);
+    let (_sum, update_challenges) = replay_terms_derived(
+        &proof.update.rounds,
+        F2_128::from(0u64),
+        &mut transcript,
+    )?;
+    if update_challenges.len() <= cycle_bits {
+        return None;
+    }
+    let cell_point = update_challenges[cycle_bits..].to_vec();
+    let final_values_evals = &proof.final_values_evals;
+    if final_values_evals.len() < address_bits + 3 {
+        return None;
+    }
+    Some(BinaryTwistPublicEvals {
+        cycle_bits,
+        address_bits,
+        cell_point,
+        initial_eval: proof.initial_update_eval,
+        final_eval: final_values_evals[address_bits + 2],
+    })
+}
