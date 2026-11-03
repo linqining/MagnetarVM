@@ -119,6 +119,59 @@ has ~2 cycles and the tables are almost all register-twist + trace). A real
 RV64 workload has `O(cycles)` RAM events and adds ~4 KiB/cycle of context
 (witness + batch tables): **+17 GiB at `2^22`**.
 
+### 3.1 Verifying the projection before building on it
+
+The model is falsifiable at `2^20`, not at `2^22`:
+
+| model | predicted `2^20` peak |
+| --- | --- |
+| component model of §1/§3 (Opening live 17-19 GiB + retained selected-commit ~6 GiB) | **20-24 GiB** |
+| straight-line extrapolation behind `≈20 GiB @2^22` (≈3 GiB per doubling from 8.87 GiB at `2^19`) | **14-15 GiB** |
+
+One clean `2^20` run decides it: `≥17 GiB` validates §3 as written (`2^22` ≈
+60-90 GiB); `≈14 GiB` means allocator reuse does more work than modelled and
+the `2^22` upper range must come down (to roughly 45-60 GiB). `2^21` (~35-40
+GiB of live data) must **not** be run on this 36 GiB host, even with swap; the
+largest safe point is `2^20`, and `2^19` (8.87 GiB, already measured) is the
+lower anchor for the refit.
+
+Protocol for the `2^20` window:
+
+* **Window sizing.** `2^20` prove CPU is ≈4× the `2^19` run (668 s wall at load
+  37-118); reserve a 10-15 min wall window on an otherwise idle host for one
+  cold-process run, ×2 for a median. All other agents stop heavy work for the
+  duration: one heavy task group-wide.
+* **Swap gate.** Before starting, require `free + inactive ≥ predicted peak +
+  4 GiB` (≈28 GiB for `2^20`) and `vm.swapusage` free ≥8 GiB; otherwise take
+  the fallback below instead of risking a thrash.
+* **Bounded abort, not hope.** Set `MAGNETAR_MAX_RSS_GIB` to predicted peak +2,
+  so a wrong model aborts the run instead of driving the host into swap; discard
+  any run whose `maximum resident set size` lands within 1 GiB of the watchdog
+  (truncated). Never run two scales concurrently.
+* **Stage attribution.** Reuse the existing RSS prints (`MAGNETAR_PROFILE_UNIFIED`
+  / `MAGNETAR_PROFILE_SELECTED` print `rss=` after context, Commit, selected
+  commit, Access, Opening and the product stages), add the release hook's print
+  at the same points, and record the stage at which the high-water mark is first
+  reached; `/usr/bin/time -l`'s `maximum resident set size` is the authoritative
+  peak. The goal of the run is not just the number but *which stage* owns it.
+* **Fallback when the window is unavailable.** Calibrate the retention term
+  instead: run the `(e)` A/B below at `2^16`/`2^17` and take
+  `retention = measured peak − modelled live`. If retention is a small absolute
+  term that grows with scale, extrapolate the *share*, not the absolute value.
+* **`(e)` allocator-release A/B design** (no proof-byte change): env switch
+  `MAGNETAR_RELEASE_TRANSIENTS=1`, default off; at each point where a big
+  transient is dropped (selected commit material after Commit, Access working
+  set after Access, mosaic commit/opening material after its stage) call
+  `libc::malloc_zone_pressure_relief(null_mut(), 0)` on macOS (`malloc_trim(0)`
+  on glibc) through one `release_unused_pages()` helper; the switch only changes
+  when pages are returned, never the values. Interleaved A/B with ≥2 rounds each
+  at `2^16` and `2^17` on the same binary: compare peak, per-stage RSS and prove
+  CPU (must be unchanged within noise; the release call costs microseconds).
+  Adopt if the peak drops ≥5 % at `2^16` and the `2^17` drop scales with the
+  transient sizes; then use the hook in the `2^20` run. Failure mode: if the
+  peak does not move, malloc already returns large blocks (`mmap`-backed), and
+  `(e)` is closed in favour of `(d)`.
+
 ## 4. Reduction routes
 
 | route | what changes | `2^16` peak | `2^22` peak | risk / effort | verdict |
@@ -127,7 +180,7 @@ RV64 workload has `O(cycles)` RAM events and adds ~4 KiB/cycle of context
 | (b) 64-bit committed alphabet (`BinaryField64` for codewords, 128-bit challenges) | PCS `F` type; halves leaves + layout, tree unchanged | ~−0.2 GiB | −18 GiB (mosaic −10, selected −8) | log_len = num_vars+log_inv_rate ≤ 64 ✓ (selected 23, mosaic 30); encoder becomes 64-bit tower; proof-format break; measure encode/verify | do after (c); best pure-PCS step |
 | (c) bit-pack the mosaic commitment | commit the boolean mosaic as a packed bit witness (128 bits/field, ring-switch, like the selected witness / claim table) instead of 16 B/cell | **−0.56 GiB (28 %)** | **−32 GiB** transient, −2.3 GiB resident, −4 GiB layout | high: mosaic committed layout + opening path (`protocol.rs`), verifier, new claim layer; proof-format break; p3 boolean/mixed-trace support exists (`vendor/plonky3/binary-pcs/src/boolean.rs`) | the only route that removes the dominant term; headline |
 | (d) context lifetime + dedup | (i) drop Access-only witnesses/batch tables once Access is done; (ii) `Arc`-share the register tables instead of cloning into `mosaic_tables`; (iii) reuse `trace_witness.values` for the trace table | −0.3-0.6 GiB | −10-20 GiB | medium-low: ownership/lifetime refactor of `UnifiedProveContext`; no proof-byte change | best value; do first |
-| (e) release freed pages between stages | `malloc_zone_pressure_relief`/`madvise(MADV_FREE)` after each big transient | −0.1-0.4 GiB | −10-30 GiB (if retention is real) | 1-day experiment; macOS malloc may already `munmap` large blocks, so measure stage RSS first | cheapest; measure before building on it |
+| (e) release freed pages between stages (§3.1) | `malloc_zone_pressure_relief`/`madvise(MADV_FREE)` after each big transient | −0.1-0.4 GiB | −10-30 GiB (if retention is real) | 1-day experiment; macOS malloc may already `munmap` large blocks, so measure stage RSS first | cheapest; measure before building on it |
 | (f) shrink level stores | inner budget 24 → 22 | −0.5 GiB | −0.5 GiB | +7 s prove at `2^16` (+22 %); recompute passes scale with `cycles` | not a memory lever; keep for a hard cap only |
 | (g) Merkle cap height / arity | top layers only | −ε | −ε | trivial | skip |
 | (h) bit-pack the twist witnesses/batch tables | one-hot address matrices and boolean bit columns stored as 16 B/element; repack like `PackedBits` | ~−0.2 GiB | −15-25 GiB (part of §1.1) | medium: witness builders + `batch_tables` + Access consumers; mechanical but pervasive; combine with (d) | second structural item |
@@ -141,7 +194,7 @@ worth removing.
 
 Order by GiB saved per unit of work:
 
-1. **(e) + stage RSS instrumentation** (1 day): per-stage peak prints already
+1. **(e) + stage RSS instrumentation** (1 day, design in §3.1): per-stage peak prints already
    exist (`MAGNETAR_PROFILE_UNIFIED`/`SELECTED`); add an explicit
    release-and-measure hook, decide whether retention is real, and fix the
    `≈20 GiB` sentence in results §6 with the §3 numbers.
