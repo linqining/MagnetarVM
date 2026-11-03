@@ -119,6 +119,19 @@ has ~2 cycles and the tables are almost all register-twist + trace). A real
 RV64 workload has `O(cycles)` RAM events and adds ~4 KiB/cycle of context
 (witness + batch tables): **+17 GiB at `2^22`**.
 
+
+**Reporting metric (added 2026-11-03 after the RSS/footprint finding):** every
+peak must be quoted as **both** RSS (`/usr/bin/time -l`, `ps rss`, the
+`peak_rss_bytes` helper) and `phys_footprint`
+(`proc_pid_rusage(RUSAGE_INFO_V4)`). On macOS libmalloc's large zone frees by
+`MADV_FREE_REUSABLE`, so a freed block stays in `resident_size` but drops out of
+`phys_footprint`; the "freed pages are not returned" effect in results §3 is a
+RSS-accounting fact, not necessarily real memory pressure. The current 2^16
+figure (1.94-2.01 GiB RSS) may therefore overstate the true pressure, and the
+allocator-release experiment only counts as a real win if RSS drops >=5 % while
+`phys_footprint` does not rise. The >=37 GiB floor and the 60-90 GiB model are
+unaffected: live codewords and Merkle trees are not reusable pages.
+
 ### 3.1 Verifying the projection before building on it
 
 The model is falsifiable at `2^20`, not at `2^22`:
