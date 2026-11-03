@@ -1048,3 +1048,32 @@ binary_shout/packed_shout 校验 − aux opening 校验 + committed 校验 ≈ �
 | `crates/magnetar-runtime/src/trace_claims.rs` | 无改动（字段在 `UnifiedTraceProof`） |
 | 单测 | paper 路径 opt-in round-trip（需临时 env 注入）、statement 绑定 tamper、经典字段共存拒绝、opening claims 不双份 |
 | docs | 本节 + HANDOFF §6 transition rules |
+
+#### C.10.1 First M4b A/B (2^14 paper path, 2026-11-03)
+
+Landed in `e320cf9` (batch opening unit + paper-path replacement unit, opt-in
+`MAGNETAR_LINEAR_SHOUT=1`, default off). Paper path, `ADDS=16383`, two
+interleaved rounds; wall was unusable (host load 40-160) so CPU/proof/peak are
+the comparable numbers:
+
+| | default | opt-in | delta |
+| --- | --- | --- | --- |
+| proof | 1,009,871 B | **987,023 B** | **-22.8 KB** |
+| `logup_shout` component | 158,433 B | 0 | removed |
+| `committed_logup_shout` | 0 | **134,849 B** | batch opening (~127 KB) + logup (~8.5 KB) |
+| verify CPU | 44.7/46.5 ms/iter | 50.0/50.1 ms/iter | **+5.4 ms** |
+| peak RSS | 0.88/0.94 GiB | 0.69/0.83 GiB | -0.11 GiB |
+| prove CPU | 79.2/80.1 s | 67.3/68.1 s | **-12 CPU-s** |
+
+Reading: the batch opening landed at the predicted size (135 KB), the classic
+25-column `logup_shout` opening (158 KB) is gone, so the paper proof shrinks by
+~23 KB and the prover saves the classic Shout stage (-12 CPU-s). Verify CPU goes
+*up* 5.4 ms because the committed path now actually verifies the Shout argument
+(the classic paper verifier only folded its claims into the mosaic opening and
+never checked the logup identity) -- this is the soundness gap being closed, not
+a regression. The `<= 12 ms` default-flip gate therefore still needs M5's
+-12.3 ms (row blob/row Merkle/decode/access digest); M4b alone is not enough.
+
+2^16 paper default (host starved the process, wall invalid): proof 1,199,746 B,
+`logup_shout` 187,281 B, opening 240,561 B, verify CPU 77.8 ms/iter, peak
+1.40 GiB. The 2^16 opt-in run is deferred until the host calms down.
