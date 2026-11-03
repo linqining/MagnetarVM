@@ -1223,3 +1223,50 @@ Prover 成本：每个 group 需按列折叠（slots_per_group × cycles 位加�
 Open：执行器每 cycle memory 事件上界 M 的精确值（决定列数；若 >2 需 512→2048 slots，proof 增量与
 prover 成本重估）；twist claim 与 bit 列的系数是否与现有 `claim_rel` 的公开系数推导兼容（M4a 原语的
 multi-point 版已覆盖该形态）。
+
+#### C.13 End-to-end matrix on the merged tree (2026-11-03 evening)
+
+Tree: `d61ea71` (M4b opt-in + M5 scaffold + allocator-release instrumentation),
+full workspace gate 670 passed / 0 failed / 3 ignored. Host load 20-90 for the
+runs, so wall is not comparable across rows; verify CPU per iteration (the
+verifier runs two waves, so CPU > wall), proof bytes, and both memory metrics
+are. `MAGNETAR_VERIFY_CPU=20`, peak measured as RSS (`/usr/bin/time -l`) and
+`phys_footprint`.
+
+| 2^16 run | proof | verify CPU/iter | peak footprint | peak RSS |
+| --- | --- | --- | --- | --- |
+| native default (`TRACE_SHOUT=1`) | 1,018,154 B | 158.2 ms | 1.82 GiB | 1.41 GiB |
+| native `MAGNETAR_LINEAR_SHOUT=1` (M4v3) | 1,169,602 B (+151 KB) | **101.6 ms (-36 %)** | 2.06 GiB | 1.81 GiB |
+| paper default | 1,199,746 B | 96.9 ms | **2.61 GiB** | 2.07 GiB |
+| paper `MAGNETAR_LINEAR_SHOUT=1` (M4b) | **1,169,602 B (-30 KB)** | **87.7 ms (-9.5 %)** | **1.99 GiB (-0.62)** | 1.44 GiB (-0.63) |
+| native + `MAGNETAR_RELEASE_TRANSIENTS=1` | 1,018,154 B | 154.4 ms | 1.98 GiB | 1.58 GiB |
+
+2^14 native check: default proof 859,847 B / verify CPU 63.5 ms vs opt-in
+987,023 B (+127 KB) / 53.2 ms (-10.3 ms).
+
+Reading:
+- **M4b on the paper path is a strict improvement on all four metrics**:
+  -30 KB proof, -9.2 ms verify CPU, -0.62 GiB footprint, because the opt-in
+  drops the classic 25-column `logup_shout` mosaic opening (whose transient was
+  the paper path's memory peak) and the classic Shout stage proofs. The classic
+  paper verifier never checked that opening's logup identity, so this also
+  closes the soundness gap.
+- **M4v3 on the native path trades +151 KB of proof for -36 % verify CPU**
+  (158.2 -> 101.6 ms/iter): the native default carries no logup proof at all
+  (it rebuilt the witness), so the committed proof is pure addition there. It
+  meets the M4v3 intermediate line on verify/peak (<=2.6 GiB) and is 31 KB over
+  the 150 KB `committed_logup_shout` target (160,897 B) and under the 1.2 MB
+  total line.
+- Native default peak RSS is now **1.41 GiB** (footprint 1.82 GiB), down from
+  the 1.94-2.01 GiB measured before the allocator-release patch, whose
+  non-gated `drop(stored)` frees the outer level store once phase 2 has copied
+  it. Confirm with an interleaved A/B before quoting as a win.
+- The single `MAGNETAR_RELEASE_TRANSIENTS=1` run is **inconclusive** (run order
+  differed, load drifted); it needs the interleaved A/B the patch was designed
+  for, judging by RSS -5 % with footprint not rising.
+
+Decision: keep both opt-ins off by default for now. The paper-path M4b result
+is a candidate for flipping the default once (a) a full gate runs with the
+switch on, (b) the file-level tamper matrix passes with it on, and (c) M5b
+lands; the native M4v3 stays a measured opt-in until the proof-size work
+(batched opening is already in, 160,897 B) or M5b changes the trade.
