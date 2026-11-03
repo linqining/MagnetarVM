@@ -21,6 +21,7 @@ pub mod binary_twist_address;
 pub mod branch_row;
 pub mod claim_native;
 pub mod claim_shout;
+pub mod access_table;
 pub mod claim_table;
 pub mod linear_twist;
 pub mod local_shared;
@@ -161,8 +162,7 @@ impl ReferencePipeline {
             rom: trace.rom.clone(),
             trace_commitment: trace_digest(&trace),
             trace_claim_root: crate::claim_table::statement_claim_root(&trace),
-            access_statement_digest: crate::access_statement::AccessStatement::from_trace(&trace)
-                .digest(),
+            access_statement_digest: statement_access_digest(&trace),
             config: trace.config.clone(),
             initial_state: trace.initial_state.clone(),
             initial_ram: trace.initial_ram.clone(),
@@ -200,8 +200,7 @@ impl ReferencePipeline {
             rom: trace.rom.clone(),
             trace_commitment: trace_digest(&trace),
             trace_claim_root: crate::claim_table::statement_claim_root(&trace),
-            access_statement_digest: crate::access_statement::AccessStatement::from_trace(&trace)
-                .digest(),
+            access_statement_digest: statement_access_digest(&trace),
             config: trace.config.clone(),
             initial_state: trace.initial_state.clone(),
             initial_ram: trace.initial_ram.clone(),
@@ -255,6 +254,25 @@ pub fn rom_hash(rom: &[u32]) -> [u8; 32] {
         bytes.extend_from_slice(&word.to_le_bytes());
     }
     sha256(&bytes)
+}
+
+/// Access statement digest for M5b (`H("magnetar-access-v4" || table_root)`)
+/// when the committed access columns are enabled; otherwise the classic O(rows)
+/// digest from the trace claims (default path unchanged).
+fn statement_access_digest(trace: &Trace) -> [u8; 32] {
+    if crate::access_table::access_columns_enabled() && crate::claim_table::claims_v4_enabled() {
+        if let Ok(schema) = crate::claim_table::claim_table_columns(trace) {
+            if let Ok(access) = crate::access_table::access_columns_from_trace(trace) {
+                if let Ok((commitment, _)) =
+                    crate::access_table::combined_table_commitment(&schema, &access)
+                {
+                    let table_root = crate::claim_table::claim_table_root(&commitment);
+                    return crate::access_table::access_statement_digest(&table_root);
+                }
+            }
+        }
+    }
+    crate::access_statement::AccessStatement::from_trace(trace).digest()
 }
 
 /// Canonical digest of every row field used by the CPU and access proofs.
@@ -7899,8 +7917,7 @@ mod tests {
             rom: trace.rom.clone(),
             trace_commitment: trace_digest(&trace),
             trace_claim_root: crate::claim_table::statement_claim_root(&trace),
-            access_statement_digest: crate::access_statement::AccessStatement::from_trace(&trace)
-                .digest(),
+            access_statement_digest: statement_access_digest(&trace),
             config: config(),
             initial_state: trace.initial_state.clone(),
             initial_ram: trace.initial_ram.clone(),
@@ -8946,8 +8963,7 @@ mod tests {
             rom: trace.rom.clone(),
             trace_commitment: trace_digest(&trace),
             trace_claim_root: crate::claim_table::statement_claim_root(&trace),
-            access_statement_digest: crate::access_statement::AccessStatement::from_trace(&trace)
-                .digest(),
+            access_statement_digest: statement_access_digest(&trace),
             config: config(),
             initial_state: trace.initial_state.clone(),
             initial_ram: trace.initial_ram.clone(),
