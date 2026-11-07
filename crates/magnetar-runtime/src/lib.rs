@@ -10750,6 +10750,53 @@ mod m5_v4_tests {
         ProgramImage::new(0x1000, rom)
     }
 
+    /// The Access prover's default path commits, drops the prepared batch and
+    /// re-encodes at the opening (memory route, same commitment); the retained
+    /// batch is only the `MAGNETAR_KEEP_LOCAL_PREPARED=1` A/B mode. Both must
+    /// produce byte-identical unified proofs.
+    #[test]
+    #[ignore = "sets MAGNETAR_LOCAL_RECOMMIT process-wide"]
+    fn local_recommit_is_byte_identical_to_retained_batch() {
+        // Above the linear-twist minimum (8192 cycles) so the Access stage
+        // actually runs `prove_local_shared`.
+        let mut rom = (0..8200)
+            .map(|index| {
+                Instruction {
+                    op: Op::Addi,
+                    rd: 1,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: index + 1,
+                    shamt: 0,
+                }
+                .encode()
+            })
+            .collect::<Vec<_>>();
+        rom.push(Instruction::new(Op::Ecall).encode());
+        let trace = magnetar_executor::execute(
+            &ProgramImage::new(0x1000, rom),
+            MachineConfig {
+                entry: 0x1000,
+                rom_base: 0x1000,
+                ram_base: 0x1000_0000,
+                ram_size: 0x40,
+                stack_top: 0x1000_0040,
+                max_cycles: 100_000,
+            },
+        )
+        .unwrap();
+        std::env::remove_var("MAGNETAR_KEEP_LOCAL_PREPARED");
+        let baseline = prove_unified_trace_dynamic_native(&trace, 64).unwrap();
+        std::env::set_var("MAGNETAR_KEEP_LOCAL_PREPARED", "1");
+        let retained = prove_unified_trace_dynamic_native(&trace, 64).unwrap();
+        std::env::remove_var("MAGNETAR_KEEP_LOCAL_PREPARED");
+        assert_eq!(
+            serialize_unified_proof(&baseline).unwrap(),
+            serialize_unified_proof(&retained).unwrap(),
+            "recommit proof differs from the retained-prepared-batch proof"
+        );
+    }
+
     #[test]
     fn v4_root_binds_table_and_shout_components() {
         let root = crate::claim_table::claim_shout_v4_root(&[1u8; 32], &[2u8; 32], &[0u8; 32]);

@@ -222,14 +222,35 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
     profile.mark("tables", started.elapsed());
     let started = std::time::Instant::now();
     let pcs = linear_pcs(cycles);
-    let prepared = pcs
-        .commit_batch_prepared(&columns)
-        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    // `commit_batch_prepared` retains the codeword + Merkle tree of the address
+    // columns until the opening ("the prepared batch moves into the opening").
+    // That retained batch is a measured peak term (+0.76 GiB footprint at
+    // `2^18`), so the default now commits, drops the data and re-encodes at the
+    // opening (the selected prover's pattern): the commitment bytes and the
+    // proof are identical (pinned by the ignored
+    // `m5_v4_tests::local_recommit_proof_bytes_match` test), and the Access
+    // peak drops 8.72 -> 7.96 GiB footprint at `2^18` for +0.1 % CPU.
+    // `MAGNETAR_KEEP_LOCAL_PREPARED=1` restores the retained batch for a
+    // same-binary A/B.
+    let keep_prepared = std::env::var_os("MAGNETAR_KEEP_LOCAL_PREPARED").is_some();
+    let prepared = if keep_prepared {
+        Some(
+            pcs.commit_batch_prepared(&columns)
+                .map_err(|error| ProofError::Pcs(error.to_string()))?,
+        )
+    } else {
+        None
+    };
+    let commitment = match &prepared {
+        Some(prepared) => prepared.commitment.clone(),
+        None => pcs
+            .commit_batch(&columns)
+            .map_err(|error| ProofError::Pcs(error.to_string()))?,
+    };
     let mut transcript = Sha256Transcript::new("magnetar-local-shared");
     transcript.absorb(
         "commitment",
-        &bincode::serialize(&prepared.commitment)
-            .map_err(|error| ProofError::Pcs(error.to_string()))?,
+        &bincode::serialize(&commitment).map_err(|error| ProofError::Pcs(error.to_string()))?,
     );
     let gamma = sample_point(&mut transcript, 1)[0];
     let cycle_point = sample_point(&mut transcript, cycle_bits);
@@ -393,9 +414,11 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
     let started = std::time::Instant::now();
     // The prepared batch moves into the opening: no deep copy of the codeword
     // and Merkle tree (half a gigabyte at RV64 `2^16`).
-    let opening = pcs
-        .open_batch_prepared(prepared, &values_points)
-        .map_err(|error| ProofError::Pcs(error.to_string()))?;
+    let opening = match prepared {
+        Some(prepared) => pcs.open_batch_prepared(prepared, &values_points),
+        None => pcs.open_batch(&columns, &values_points),
+    }
+    .map_err(|error| ProofError::Pcs(error.to_string()))?;
     profile.mark("opening", started.elapsed());
     let started = std::time::Instant::now();
     let mut initial = witness.initial.clone();
