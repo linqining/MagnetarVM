@@ -257,7 +257,13 @@ Details, measurements and the rejected experiments are in results §11.
     commitment, and `access_statement_digest = H("magnetar-access-v4" ||
     v4_table_root)`. All default off (`MAGNETAR_ACCESS_COLUMNS=1` requires
     `MAGNETAR_CLAIM_V4=1`).
-19. **Memory instrumentation and the footprint metric** (`d61ea71`): default-off
+19. **M5b-2b committed final-RAM table** (2026-11-07): `T_final` is 64 bit
+    columns x padded cells committed with the Shout ring-switch backend, bound
+    into the v4 statement root as a third component and tied to the twist's
+    `final_eval` by a linear relation `sum_b 2^b * fold(bit_b, r_k) = final_eval`.
+    The access layer is now fully witness-free (initial RAM public, final RAM
+    committed); the remaining gate is M5c.
+20. **Memory instrumentation and the footprint metric** (`d61ea71`): default-off
     allocator-release hooks plus `phys_footprint` sampling in the testkit
     watchdog. macOS counts freed-but-reusable pages in RSS but not in the OS
     footprint, so peaks must be quoted as both. The non-gated `drop(stored)` in
@@ -272,14 +278,16 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
 
 ## 5. Open work, in priority order
 
-1. **M5b phase 2: access verifier without the witness** (the remaining path to
-   the paper's 8-12 ms). **2a**: binary_twist read-only accessors (approved
-   additive-only boundary exception) + the access verifier's twist check and
-   O(cells) initial-column binding. **2b**: a separate cells-dimension
-   packed-bit table for the final RAM values bound into the v4 statement root,
-   the multi-group `claim_rel` binding the twist claims to the committed access
-   columns, the v4 gate flip, and the 9-case tamper matrix. Design:
-   `docs/POLYLOG_CLAIM_VERIFIER.md` §C.12.
+1. **M5c: the statement-only v4 verifier** (the remaining path to the paper's
+   8-12 ms). M5b is done: phase 1 committed the access columns + O(1) digest
+   (`9e2e407`), 2a added the witness-free twist/initial-RAM check (`c2abdf4`),
+   2b committed and bound the final-RAM table (`T_final`, 2026-11-07). The v4
+   verifier now stops at a legitimate gate
+   (`"M5 v4 verifier pending: statement-only claim relation and core checks not
+   wired"`). M5c = claim-table relation + folded claim into the selected
+   lockstep verifier, the core proof checks, and the O(1) endpoint/IO checks;
+   only then can the row blob be dropped and the verify win measured. Design:
+   `docs/POLYLOG_CLAIM_VERIFIER.md` §C.11/§C.12.
 2. **Paper-path M4b default flip.** The opt-in is better on proof, verify CPU and
    footprint (§2.1), so it is the natural default once (a) a full gate runs with
    the switch on, (b) the file-level tamper matrix passes with it on, and (c)

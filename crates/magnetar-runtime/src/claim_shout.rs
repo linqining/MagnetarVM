@@ -282,7 +282,7 @@ fn pad(values: &[F2_128], slots: usize) -> Vec<F2_128> {
     padded
 }
 
-fn prove_relation(
+pub(crate) fn prove_relation(
     bits: &PackedBits,
     commitment: &P3Commitment,
     cycles: usize,
@@ -324,7 +324,7 @@ fn prove_relation(
     Ok(ShoutRelationProof { sumcheck, slot_point, opening })
 }
 
-fn verify_relation(
+pub(crate) fn verify_relation(
     proof: &ShoutRelationProof,
     commitment: &P3Commitment,
     slots: usize,

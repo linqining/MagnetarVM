@@ -292,11 +292,37 @@ const CLAIM_SHOUT_V4_DOMAIN: &[u8] = b"claim-shout-v4";
 pub fn claim_shout_v4_root(
     claim_table_root: &[u8; 32],
     shout_tables_root: &[u8; 32],
+    access_final_root: &[u8; 32],
 ) -> [u8; 32] {
     let mut bytes = CLAIM_SHOUT_V4_DOMAIN.to_vec();
     bytes.extend_from_slice(claim_table_root);
     bytes.extend_from_slice(shout_tables_root);
+    // M5b-2b: the committed final-RAM cell table. All-zero when the committed
+    // access columns are off (the default).
+    bytes.extend_from_slice(access_final_root);
     magnetar_transcript::sha256(&bytes)
+}
+
+/// Host-side root of the committed final-RAM cell table (`T_final`).
+///
+/// The final word values are execution-derived; the host derives them from the
+/// trace exactly like the prover does, commits the packed bit table with the
+/// Shout backend and returns its root. All-zero when the access columns are
+/// disabled.
+pub fn access_final_root_from_trace(trace: &magnetar_spec::Trace) -> [u8; 32] {
+    if !crate::access_table::access_columns_enabled() {
+        return [0u8; 32];
+    }
+    match magnetar_memory::BinaryTwistWitness::from_trace(trace) {
+        Ok(witness) => {
+            let bits = crate::access_verify::final_value_bits(&witness.final_value);
+            match crate::claim_shout::shout_backend().commit(&bits) {
+                Ok(commitment) => crate::access_verify::access_final_root(&commitment),
+                Err(_) => [0u8; 32],
+            }
+        }
+        Err(_) => [0u8; 32],
+    }
 }
 
 /// Table-only v4 statement root (host side).
@@ -311,7 +337,12 @@ pub fn statement_claim_root_v4(
     } else {
         [0u8; 32]
     };
-    Ok(claim_shout_v4_root(table_root, &shout_tables_root))
+    let access_final_root = access_final_root_from_trace(trace);
+    Ok(claim_shout_v4_root(
+        table_root,
+        &shout_tables_root,
+        &access_final_root,
+    ))
 }
 
 pub fn statement_claim_root(trace: &magnetar_spec::Trace) -> [u8; 32] {

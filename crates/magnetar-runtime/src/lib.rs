@@ -1231,6 +1231,10 @@ pub struct UnifiedTraceProof {
     /// `docs/POLYLOG_CLAIM_VERIFIER.md` §C.9.1-S).
     #[serde(default)]
     pub committed_logup_shout: Option<crate::logup_shout::CommittedLogupShoutProof>,
+    /// M5b-2b: committed final-RAM cell table binding the witness-free access
+    /// layer (`None` unless `MAGNETAR_ACCESS_COLUMNS=1` + `MAGNETAR_CLAIM_V4=1`).
+    #[serde(default)]
+    pub access_final: Option<crate::access_verify::AccessFinalProof>,
 }
 
 /// Serialize a unified proof with varint bincode encoding.
@@ -3135,6 +3139,26 @@ fn prove_unified_trace_dynamic_native_profile_inner(
                         claims.root = [0u8; 32];
                     }
                     proof.trace_claim_root = crate::claim_table::statement_claim_root(trace);
+                    // M5b-2b: commit the final-RAM cell table and bind its folds
+                    // at the twist cell point to the twist's final evaluation.
+                    if crate::access_table::access_columns_enabled() {
+                        let witness = magnetar_memory::BinaryTwistWitness::from_trace(trace)
+                            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+                        let evals = crate::binary_twist::binary_twist_public_evals(
+                            &proof.access.ram,
+                            &proof.commitment,
+                        )
+                        .ok_or_else(|| {
+                            RuntimeError::Proof(
+                                "M5b: twist public evals unavailable for the final table".into(),
+                            )
+                        })?;
+                        proof.access_final = Some(crate::access_verify::prove_access_final(
+                            &witness.final_value,
+                            &evals.cell_point,
+                            evals.final_eval,
+                        )?);
+                    }
                 }
             } else {
                 proof.trace_claim_root = crate::trace_claims::TraceClaimTree::build(trace).root();
@@ -3971,13 +3995,14 @@ pub fn verify_native_unified(
         ));
     }
     if v4 {
-        // M5b: the access digest is now the O(1) derivation from the v4 claim
-        // table root, and the access layer is verified witness-free. The
-        // final-value binding is still gated on M5b-2b (T_final table).
+        // M5b: the access digest is the O(1) derivation from the v4 claim table
+        // root and the access layer is verified witness-free: the twist proofs
+        // are checked against the shared commitment, the public initial RAM is
+        // bound at the cell point, and (M5b-2b) the committed final-RAM table is
+        // bound to the twist's final evaluation. The rest of the statement-only
+        // checks are M5c and still gated.
         crate::access_verify::verify_access_committed(statement, proof, &proof.commitment)?;
-        return Err(RuntimeError::Proof(
-            "M5 v4 verifier pending: M5b-2b final-value table not committed".into(),
-        ));
+        return Err(RuntimeError::Proof(crate::access_verify::V4_PENDING.into()));
     }
     // M4b: the classic Shout proofs and the committed linear Shout are mutually
     // exclusive; accepting both would either double-count or skip one of them.
@@ -4393,6 +4418,7 @@ pub struct UnifiedProofSizes {
     pub logup_shout: usize,
     pub trace_logup_shout: usize,
     pub committed_logup_shout: usize,
+    pub access_final: usize,
     pub shift_router: usize,
     pub store_router: usize,
     pub trace_claims: usize,
@@ -4454,6 +4480,7 @@ pub fn unified_proof_sizes(proof: &UnifiedTraceProof) -> Result<UnifiedProofSize
         logup_shout: size(bincode::serialize(&proof.logup_shout))?,
         trace_logup_shout: size(bincode::serialize(&proof.trace_logup_shout))?,
         committed_logup_shout: size(bincode::serialize(&proof.committed_logup_shout))?,
+        access_final: size(bincode::serialize(&proof.access_final))?,
         shift_router: size(bincode::serialize(&proof.shift_router))?,
         store_router: size(bincode::serialize(&proof.store_router))?,
         trace_claims: size(bincode::serialize(&proof.trace_claims))?,
@@ -10225,10 +10252,10 @@ mod m5_v4_tests {
 
     #[test]
     fn v4_root_binds_table_and_shout_components() {
-        let root = crate::claim_table::claim_shout_v4_root(&[1u8; 32], &[2u8; 32]);
+        let root = crate::claim_table::claim_shout_v4_root(&[1u8; 32], &[2u8; 32], &[0u8; 32]);
         assert_ne!(root, [0u8; 32]);
-        assert_ne!(root, crate::claim_table::claim_shout_v4_root(&[1u8; 32], &[3u8; 32]));
-        assert_ne!(root, crate::claim_table::claim_shout_v4_root(&[2u8; 32], &[2u8; 32]));
+        assert_ne!(root, crate::claim_table::claim_shout_v4_root(&[1u8; 32], &[3u8; 32], &[0u8; 32]));
+        assert_ne!(root, crate::claim_table::claim_shout_v4_root(&[2u8; 32], &[2u8; 32], &[0u8; 32]));
         // v3 and v4 domains are separated.
         let v3 = crate::claim_table::claim_shout_v3_root(&[1u8; 32], &[2u8; 32]);
         assert_ne!(root, v3);
@@ -10262,6 +10289,83 @@ mod m5_v4_tests {
             format!("{error:?}").contains("M5 v4 verifier pending"),
             "unexpected v4 verifier error: {error:?}"
         );
+        std::env::remove_var("MAGNETAR_CLAIM_V4");
+    }
+
+    /// M5b-2b: the committed final-RAM cell table binds the witness-free access
+    /// layer without the row payload. Ignored: process-wide env switches.
+    #[test]
+    #[ignore = "sets MAGNETAR_CLAIM_V4/MAGNETAR_ACCESS_COLUMNS process-wide"]
+    fn v4_access_final_binds_without_witness() {
+        std::env::set_var("MAGNETAR_CLAIM_V4", "1");
+        std::env::set_var("MAGNETAR_ACCESS_COLUMNS", "1");
+        let outcome = ReferencePipeline::run(&program(), config(), 1).unwrap();
+        let statement = outcome.statement.clone();
+        let proof = prove_unified_trace_paper(&outcome.trace, 64).unwrap();
+        assert!(
+            proof.access_final.is_some(),
+            "v4 prover did not commit the final-RAM table"
+        );
+        assert!(proof.claim_proof.as_ref().unwrap().is_v4_table_only());
+
+        // 1. Witness-free access verification, including the final binding.
+        crate::access_verify::verify_access_committed(&statement, &proof, &proof.commitment)
+            .expect("witness-free access verification");
+        // 2. The rest of the v4 statement-only checks are still gated (M5c).
+        let error = verify_native_unified(&statement, &proof, 64).unwrap_err();
+        assert!(
+            format!("{error:?}").contains("M5 v4 verifier pending"),
+            "unexpected v4 verifier error: {error:?}"
+        );
+
+        // 3. Wire: the committed final table survives the round trip.
+        let bytes = serialize_unified_proof(&proof).unwrap();
+        let decoded = deserialize_unified_proof(&bytes).unwrap();
+        assert!(decoded.access_final.is_some());
+        crate::access_verify::verify_access_committed(&statement, &decoded, &decoded.commitment)
+            .expect("decoded proof access verification");
+
+        // 4. Missing final table is rejected.
+        let mut bad = proof.clone();
+        bad.access_final = None;
+        assert!(crate::access_verify::verify_access_committed(&statement, &bad, &bad.commitment).is_err());
+
+        // 5. Tampered final commitment is rejected (root binding).
+        let cells = (statement.config.ram_size / 8).max(1);
+        let mut other_bits = crate::access_verify::final_value_bits(&vec![
+            F2_128::from(0u64);
+            cells
+        ]);
+        // The all-zero final table is what this tiny program legitimately
+        // produces, so flip one committed bit to make the commitment differ.
+        other_bits.set(0, true);
+        let other_commitment =
+            magnetar_proof::BitPcs::commit(&crate::claim_shout::shout_backend(), &other_bits).unwrap();
+        let mut bad = proof.clone();
+        bad.access_final.as_mut().unwrap().commitment = other_commitment;
+        assert!(crate::access_verify::verify_access_committed(&statement, &bad, &bad.commitment).is_err());
+
+        // 6. Tampered relation value is rejected.
+        let mut bad = proof.clone();
+        let relation = &mut bad.access_final.as_mut().unwrap().relation;
+        relation.sumcheck.claimed_sum = relation.sumcheck.claimed_sum + F2_128::from(1u64);
+        assert!(crate::access_verify::verify_access_committed(&statement, &bad, &bad.commitment).is_err());
+
+        // 7. Tampered statement root and initial RAM are rejected.
+        let mut bad_statement = statement.clone();
+        bad_statement.trace_claim_root[0] ^= 1;
+        assert!(
+            crate::access_verify::verify_access_committed(&bad_statement, &proof, &proof.commitment)
+                .is_err()
+        );
+        let mut bad_statement = statement.clone();
+        bad_statement.initial_ram[0] ^= 1;
+        assert!(
+            crate::access_verify::verify_access_committed(&bad_statement, &proof, &proof.commitment)
+                .is_err()
+        );
+
+        std::env::remove_var("MAGNETAR_ACCESS_COLUMNS");
         std::env::remove_var("MAGNETAR_CLAIM_V4");
     }
 

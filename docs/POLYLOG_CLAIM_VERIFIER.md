@@ -1311,3 +1311,39 @@ Conclusions:
 - The 2^16 native prove is 48.9 s wall / 299 s CPU on this host today (vs
   31.4-34.6 s / 274 s at the Part 1 closure), i.e. the host is ~9 % slower per
   unit of work now; compare CPU/iter, not wall across rounds.
+
+#### C.12.10 M5b-2b: committed final-RAM table (2026-11-07)
+
+The access layer is now fully witness-free. The final-RAM values are
+execution-derived, so they cannot be rebuilt from public data; instead the
+prover commits them as `T_final` and the verifier binds the commitment through
+the twist's own final evaluation:
+
+- **Table**: 64 bit columns (bit `b` of the 64-bit word) x `rows` cells, packed
+  with the same `RingSwitchPackedBitPcs` backend as the Shout tables. The row
+  count is padded to `max(16, next_power_of_two(cells))` because the
+  ring-switch packing needs at least `2^3` field elements; the padding rows are
+  zero, so the fold at `(r_k, 0, ..)` equals the unpadded fold at `r_k`.
+- **Relation**: `sum_b 2^b * fold(T_final_bit_b, r_k) = final_eval` (the twist's
+  final evaluation), proven with the existing linear-relation primitive.
+- **Binding**: the root of the packed-bit commitment is a domain-separated
+  digest (`H("magnetar-access-final-v4" || commitment)`) and enters the v4
+  statement root as a third component:
+  `H(claim-shout-v4 || claim_table_root || shout_tables_root || access_final_root)`.
+  The host derives the final words from the trace with
+  `BinaryTwistWitness::from_trace`, so prover and statement builder form the
+  same commitment. The verifier recomposes the root from the proof-carried
+  commitments (claim table, committed Shout batch, final table) and compares it
+  with `statement.trace_claim_root`.
+- **Verification order** (`access_verify::verify_access_committed`): proof-only
+  twist verification -> public initial-RAM fold at `r_k` -> final-table root
+  binding -> linear relation at `r_k`. A missing table, a swapped commitment, a
+  tampered relation value, a tampered statement root and tampered initial RAM
+  are all rejected (test `v4_access_final_binds_without_witness`, ignored,
+  `--test-threads=1`).
+- **What remains (M5c)**: the gate after the access layer is still
+  `"M5 v4 verifier pending: statement-only claim relation and core checks not
+  wired"`. Removing it needs the statement-only v4 verifier (claim-table
+  relation plus folded claim into the selected lockstep verifier, then the core
+  proof checks and the O(1) endpoint/IO checks) before the row blob can actually
+  be dropped and the ~12 ms verify win realized.
