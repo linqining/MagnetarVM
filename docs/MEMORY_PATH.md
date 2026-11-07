@@ -436,6 +436,44 @@ that is ~134 MiB per array, ~0.8-1.0 GiB live for one twist alone at
 Access stage still materialises the dense form), which is route (h)-adjacent
 and byte-neutral by construction.
 
+**`2^18` stage table (current tree, one run at load 6-62, proof 1,230,360 B,
+peak 6.37 GiB RSS / 7.97 GiB footprint, prove 133.1 s / CPU 1240.3 s):**
+
+| stage / milestone | rss_peak / footprint |
+| --- | --- |
+| unified context | 2.25 / 2.25 GiB |
+| unified Commit | 4.65 / **5.18** GiB |
+| selected witness commit (process-wide, main Access input live) | 5.96 / 7.18 GiB |
+| local factors (5 dense arrays x 8,388,608 fields) | 6.23 / 7.56 GiB |
+| local after rw sumcheck | 6.33 / 7.75 GiB |
+| local final factors ready | 6.37 / **7.97** GiB (the peak) |
+| unified Access (after the stage) | 6.37 / 1.38 GiB |
+| unified Opening (after the stage) | 6.37 / 5.87 GiB |
+| selected product6 / product2 / open | 1.46 / 2.08 / 3.71 GiB |
+
+Reading: at `2^18` the peak is inside the **Access stage** (7.97 GiB), not at
+the mosaic Opening, and it is a three-way overlap: the resident context
+(2.25), the mosaic Commit transient (Commit alone reaches 5.18) / selected
+witness commit transient, and the Access prover's own data -- the five dense
+`cells * cycles` factor arrays (5 x 128 MiB here) plus the **retained prepared
+commit batch** of the local PCS over the address columns (kept for the
+opening: "the prepared batch moves into the opening"). After the Access stage
+releases its inputs the live footprint is only 1.38 GiB, so the Access stage,
+not the products, is the `2^17`/`2^18` peak owner. The Opening stage then
+peaks around 5.87 GiB live (mosaic re-encode transient on 1.38 live), and the
+products stay at ~2.1 GiB.
+
+Consequences for the memory route:
+- route (c) (bit-packed mosaic commitment) attacks the `2^18` Commit/Opening
+  transients (Commit alone is +2.9 GiB over the context);
+- a streaming/virtual-one-hot Access prover attacks the `2^18` peak directly
+  (dense factor arrays + retained local prepared batch);
+- the resident context (2.25 GiB at `2^18`) is the route (h)/(c) resident term.
+
+`2^19` was not run: after the `2^18` run the host had 14.24 GiB
+free+inactive, below the protocol's peak+4 GiB (post-route-(d) `2^19` estimate
+~11.9 GiB peak => ~16 GiB). It needs a dedicated window.
+
 **A rejected micro-optimisation, recorded so it is not retried.** The Access
 prover keeps `write_flat` and `val_flat` (two of the five `cells * cycles`
 factor arrays) alive across the sum-check by cloning them into the factor list.

@@ -164,7 +164,7 @@ at load 4; the load rose during the sequence, see the note).** Native default
 | --- | --- | --- | --- | --- | --- |
 | `2^16` | **30.4 s** | 283.8 s | **22.3 ms** | **2.18 / 2.18 GiB** | 1,018,155 B |
 | `2^17` | **62.6 s** | 595.5 s | 40.7 ms | 4.35 / 4.35 GiB | 1,110,291 B |
-| `2^18` | **131.4 s** | 1242.4 s | 112.1 ms | **5.96 / 7.96 GiB** | 1,230,360 B |
+| `2^18` | **133.1 s** | 1240.3 s | 109.5 ms | **6.37 / 7.97 GiB** | 1,230,360 B |
 
 Proof bytes are identical to the documented baselines at all three sizes (the
 route (d) lifetime change is byte-neutral); the `2^16` verify improved to
@@ -503,8 +503,13 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
    time. `2^16`/`2^17`/`2^18` were re-run on the route-(d) tree on 2026-11-08
    (table in §2: 30.4/62.6/131.4 s, 22.3/40.7/112.1 ms verify, 2.18/4.35/5.96
    GiB RSS with 2^18 at 7.96 GiB footprint) and their proof bytes match the
-   baselines. Remaining: **`2^19`** (post-route-(d) estimate ≈9.5-10 GiB peak;
-   needs a dedicated window with ≥13.5 GiB free+inactive), then re-fit the
+   baselines. `2^18` was re-run on 2026-11-08 (133.1 s / CPU 1240.3 s / verify
+   109.5 ms / 6.37 GiB RSS / 7.97 GiB footprint, proof 1,230,360 B) and its
+   stage attribution puts the peak inside the Access stage
+   (MEMORY_PATH.md §4.2). Remaining: **`2^19`** (post-route-(d) estimate
+   ~11.9 GiB peak from the measured `2^17`->`2^18` footprint slope; needs a
+   dedicated window with >=16 GiB free+inactive — the `2^18` run left 14.2 GiB),
+   then re-fit the
    `2^22` model (MEMORY_PATH.md §3; 2^20 is the decision point, 2^21 is not
    runnable on this 36 GiB host).
 5. **Memory path implementation** (`MEMORY_PATH.md`): route (d) is now
