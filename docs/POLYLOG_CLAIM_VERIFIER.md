@@ -1682,11 +1682,13 @@ M5+M4b statement-only v4 verifier measures:
 quieter host -- the earlier 13.35 ms reference was measured at load ~8 but with
 the duplicated core work still present).
 
-Same window, the paper-path *default* (M4b flipped, non-v4 statement verifier
-with the row payload): proof **1,169,603 B**, single verify **16.9 ms**, peak
-**1.98 GiB RSS / 1.97 GiB footprint**, prove 31.0 s / CPU 285.1 s -- against
-35.1 ms (classic paper) and 26.2 ms (M4b opt-in) in §C.13.1, so the M6 verifier
-work reaches the paper path as well.
+A second window (load 23) reproduced it: serial 24.47 ms / 37.41 ms CPU vs
+parallel **10.63 ms (min 10.45)** / 39.66 ms CPU -- 2.30x wall at a +6 % CPU
+premium. Same window, the paper-path *default* (M4b flipped, non-v4 statement
+verifier with the row payload): proof **1,169,603 B**, single verify **16.9 ms**,
+peak **1.98 GiB RSS / 1.97 GiB footprint**, prove 31.0 s / CPU 285.1 s --
+against 35.1 ms (classic paper) and 26.2 ms (M4b opt-in) in §C.13.1, so the M6
+verifier work reaches the paper path as well.
 
 The remaining levers are no longer needed for the wall target: merging the
 committed-Shout batch opening into the mosaic opening would remove ~11 ms of
