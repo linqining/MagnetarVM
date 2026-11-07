@@ -1544,3 +1544,73 @@ Gates on the flipped tree: `cargo test --workspace --release` **674 passed /
 sizes are unchanged against the opt-in measurement in §C.13.1 (the flip is the
 same code path): `2^16` paper proof 1,169,602 B, verify wall 26.2 ms, peak
 2.21 GiB; the v4 statement-only path keeps its 1,174,285 B / 17.7 ms M6 result.
+
+#### C.17 M6 increment 2: verify wall 17.7 -> 13.4 ms, PCS is the last serial term (2026-11-07)
+
+§C.15 left the statement-only v4 verify wall at 17.7 ms with the selected job
+(~14 ms) as the critical path: the segment row/matrices were built inside that
+job before the lockstep verifier started, and the 1.8 ms claim-input derivation
+sat on the serial prelude before the wave. This increment splits the selected
+verifier into independently schedulable phases and moves every pre-lockstep
+step off the critical path.
+
+**What changed**
+
+1. **Lockstep-bits phase API** (`magnetar-proof/src/spartan.rs`): the phases
+   already split for §C.15 are now public
+   (`LockstepBitsChallenges`, `lockstep_bits_challenges`,
+   `lockstep_bits_evaluations`, `lockstep_bits_finalize`, `lockstep_bits_pcs`),
+   and the challenge phase takes the matrix **shape** (`rows`, `cols`) instead
+   of the matrices. A caller can therefore run the transcript/sum-check phase
+   before the matrices exist and start the PCS opening check on a worker thread
+   while the matrices are built and evaluated. Existing entry points keep their
+   behaviour and error order (they call the same phases in the same sequence).
+2. **Prepared selected segments** (`simd_dual.rs`): `prepare_dynamic_segments`
+   builds only the segment row/layout and the shared-block matrix shape
+   (~1.3 ms) on a worker thread started with the wave; `gated_lazy_matrix_shape`
+   replicates `gated_shared_matrices_lazy`'s shape arithmetic without building
+   the matrices. `verify_prepared_dynamic_segments` then runs the challenge
+   phase, spawns the PCS check, builds the matrices and runs their six MLE
+   evaluations, and finalizes in the straight-line error order (inner checks,
+   then the PCS rejection).
+3. **The claim-derivation job hands the folded claim to the selected job**
+   (`v4_verify.rs`): `claim_relation_inputs` + the fold run once in the
+   claim-table job, which sends the `DynamicClaim` over a channel *before* its
+   own (slow) opening check. The selected job no longer waits for the serial
+   claim-input prelude, and no second derivation is computed.
+
+**Interleaved A/B** (`m6_verify_ab`, `ADDS=65535`, v4 env, n=10 each, one proof,
+same process):
+
+| measurement | serial wall | parallel wall | parallel min | CPU serial -> parallel |
+| --- | --- | --- | --- | --- |
+| §C.15 (increment 1) | 42.82 ms | 17.70 ms | 14.89 ms | 48.96 -> 56.60 ms |
+| this increment | 34.84 ms | **13.35 ms** | **12.84 ms** | 49.50 -> 53.14 ms |
+
+The serial leg moves with host load (shared host), so the load-robust reading is
+the ratio: **2.42x -> 2.61x**, and the CPU premium over serial dropped from
++16 % to +8 % because the claim derivation is no longer duplicated and the
+pre-lockstep work moved off the critical path. `MAGNETAR_PROFILE_VERIFY` stage
+split of the selected job in this increment (profile run, load ~10, n=14):
+row 1.10 ms + shape 0.65 ms (worker thread), claim channel receive, challenges
+0.87 ms, then matrices 3.68 ms and the six MLE evaluations inside the
+PCS-overlapped window 10.25 ms, for a selected job of 13.29 ms (min 11.20).
+
+**Where the remaining time goes.** The single dominant term is now the
+selected PCS opening check (~6.7 ms, `lockstep verify pcs`), then the segment
+matrix construction (~3.3-3.7 ms) and the six MLE evaluations (~2.5-3.5 ms,
+already parallel); the wave's other jobs are off the critical path
+(core ~9.9 ms, access ~5.0 ms, claim table ~5.3 ms, shout ~4.9 ms under load).
+To go below ~12 ms the next lever is inside the PCS verifier itself
+(parallelize the FRI/query-path verification in the vendored binary-pcs or
+merge it with another opening), plus sharing the twist claims the access layer
+already derives with the core verifier (a ~14 ms-CPU duplicate at load, which
+is wall-neutral today but reduces wave contention).
+
+**Gates:** `magnetar-runtime --lib` 363 passed / 0 failed / 5 ignored;
+`magnetar-proof` 48 passed; v4 opt-in set 5 passed / 0 failed;
+`magnetar-testkit --release` all integration suites green (unit 0, e2e 11,
+compiled_guest 1, claim_native_guest 1, field_iso 1, logup_shout_mixed 2,
+logup_shout_runtime 2, logup_star_shout 1, native_trace_mode 1, paper_mode 1;
+0 failed). The proof itself is unchanged (verifier-only).
+

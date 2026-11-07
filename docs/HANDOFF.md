@@ -1,8 +1,9 @@
 # Handoff — MagnetarVM streaming selected prover (RV64)
 
 Status: **incremental optimization phase (Part 1 closed, Part 2 in progress)**,
-branch `virtual-claims-rewrite`. Commits through `02eeffc` (M6 increment 1:
-parallel statement-only v4 verifier; M4b paper-path default flip): `1b26b4e`
+branch `virtual-claims-rewrite`. Commits through `9c6bc3b` (M6 increments 1+2:
+parallel/phase-split statement-only v4 verifier; M4b paper-path default flip):
+`1b26b4e`
 (2^16 optimization + polylog claim table), `9e805f2` (segment claims),
 `a3a6e9c` (packed CSR + fast pair), `e320cf9` (M4v3 batched committed-Shout
 opening + M4b paper-path replacement, opt-in), `9556746` (M5 scaffold:
@@ -25,13 +26,17 @@ the committed Shout tables. Details:
 [M4B_DEFAULT_FLIP.md](M4B_DEFAULT_FLIP.md),
 [POLYLOG_CLAIM_VERIFIER.md](POLYLOG_CLAIM_VERIFIER.md) §C.16.
 
-**M6 increment 1 (2026-11-07)**: the statement-only v4 verifier is now one
-independent five-job wave, and the selected-lockstep PCS opening check overlaps
-its six matrix MLE evaluations. An interleaved same-process A/B at `2^16`
-(`m6_verify_ab`) measures the verify wall **42.8 -> 17.7 ms (2.42x)** for +16 %
-CPU; the proof is unchanged (verifier-only). Details:
-[POLYLOG_CLAIM_VERIFIER.md](POLYLOG_CLAIM_VERIFIER.md) §C.15. Remaining gap and
-next levers: §5 item 1.
+**M6 increments 1+2 (2026-11-07)**: the statement-only v4 verifier is one
+independent five-job wave, and the selected-lockstep verifier is split into
+independently schedulable phases (segment row/shape on a worker, claim
+derivation handed over by channel, challenge phase, then the PCS opening check
+overlapped with the matrix build and MLE evaluations). An interleaved
+same-process A/B at `2^16` (`m6_verify_ab`) measures the verify wall
+**17.7 -> 13.4 ms (min 12.8)** and a **2.61x** speed-up over the serial
+verifier at +8 % CPU; the proof is unchanged (verifier-only). Details:
+[POLYLOG_CLAIM_VERIFIER.md](POLYLOG_CLAIM_VERIFIER.md) §C.15, §C.17. The single
+dominant remaining term is the selected PCS opening check (~6.7 ms); next
+levers: §5 item 1.
 
 **Part 1 (2^16 optimization) is closed**: prove 70.4 -> **31.4-34.6 s** (CPU
 ~800 -> **274 s**, 2.9x less work), verify 29.6 -> **24.7-27.2 ms**, peak
@@ -175,16 +180,20 @@ Logup-Shout 21.9–29.6 (starts as soon as the claim-derived trace exists and
 overlaps both waves), claim row sums 11.5–12.4, core PCS 7.7–8.0, access 6.7,
 claim leaves 3.8–4.1, claims decode 1.0, claims-to-trace 0.77.
 
-**M6 increment 1 (2026-11-07) verify wall at `2^16`.** Under
+**M6 increments 1+2 (2026-11-07) verify wall at `2^16`.** Under
 `MAGNETAR_CLAIM_V4=1 MAGNETAR_ACCESS_COLUMNS=1 MAGNETAR_LINEAR_SHOUT=1` the
-statement-only v4 verifier now runs as a five-job wave
-(access / claim table / selected binding / committed Shout / core) with the
-selected lockstep's PCS opening overlapped with its matrix evaluations.
-Interleaved same-process A/B (`m6_verify_ab`, load 20-30): **serial 42.82 ms
-wall / 48.96 ms CPU vs parallel 17.70 / 56.60 ms** = 2.42x wall for +16 % CPU;
-end-to-end benchmark runs in a heavier window (load 23-32) gave 62.5 vs
-25.4 ms wall (2.46x). Baseline stage split and the remaining critical path are
-in [POLYLOG_CLAIM_VERIFIER.md](POLYLOG_CLAIM_VERIFIER.md) §C.15.
+statement-only v4 verifier runs as a five-job wave
+(access / claim table / selected binding / committed Shout / core), and the
+selected job itself is phase-split: segment row/shape built on a worker thread,
+folded claim handed over by channel, challenge phase, then the PCS opening
+check overlapped with the matrix build and the six MLE evaluations.
+Interleaved same-process A/B (`m6_verify_ab`): increment 1 gave serial
+42.82 ms wall / 48.96 ms CPU vs parallel 17.70 / 56.60 (2.42x, +16 % CPU);
+increment 2 gives serial 34.84 / 49.50 vs parallel **13.35 / 53.14 ms**
+(2.61x, +8 % CPU; parallel min 12.84 ms). Serial drifts with host load -- quote
+the ratio. The remaining critical path is the selected PCS opening check
+(~6.7 ms), then the segment-matrix build (~3.3 ms) and the MLE evaluations
+(~2.5-3.5 ms, parallel); see POLYLOG_CLAIM_VERIFIER.md §C.15/§C.17.
 
 ## 3. Code map
 
@@ -208,7 +217,8 @@ in [POLYLOG_CLAIM_VERIFIER.md](POLYLOG_CLAIM_VERIFIER.md) §C.15.
 | Benchmark harness | [paper_unified_bench.rs:54](file:///Users/mac/projects/MagnetarVM/crates/magnetar-testkit/examples/paper_unified_bench.rs#L54) |
 | Statement-only v4 verifier (five-job wave) | [v4_verify.rs:27](file:///Users/mac/projects/MagnetarVM/crates/magnetar-runtime/src/v4_verify.rs#L27) |
 | Verifier stage instrumentation (M6) | [verify_profile.rs:18](file:///Users/mac/projects/MagnetarVM/crates/magnetar-runtime/src/verify_profile.rs#L18) |
-| Lockstep-bits verifier phases + overlapped PCS | [spartan.rs:2638](file:///Users/mac/projects/MagnetarVM/crates/magnetar-proof/src/spartan.rs#L2638) |
+| Lockstep-bits verifier phases + overlapped PCS | [spartan.rs:2420](file:///Users/mac/projects/MagnetarVM/crates/magnetar-proof/src/spartan.rs#L2420) (phase API), [spartan.rs:2638](file:///Users/mac/projects/MagnetarVM/crates/magnetar-proof/src/spartan.rs#L2638) (parallel entry) |
+| Prepared selected segments (M6 phase split) | [simd_dual.rs:7491](file:///Users/mac/projects/MagnetarVM/crates/magnetar-runtime/src/simd_dual.rs#L7491) |
 | M6 verify wall/CPU A/B harness | [m6_verify_ab.rs:47](file:///Users/mac/projects/MagnetarVM/crates/magnetar-testkit/examples/m6_verify_ab.rs#L47) |
 
 ## 4. What changed in this phase
@@ -334,7 +344,13 @@ Details, measurements and the rejected experiments are in results §11.
     matrix MLE evaluations, without adding `Sync` bounds to the matrix trait
     objects. `MAGNETAR_VERIFY_SERIAL=1` keeps a same-binary wall A/B and
     `m6_verify_ab` measures it interleaved in one process: **verify wall
-    42.8 -> 17.7 ms (2.42x) for +16 % CPU**. Instrumentation:
+    42.8 -> 17.7 ms (2.42x) for +16 % CPU**. Increment 2 then exposed the
+    lockstep phase API (`LockstepBitsChallenges` + challenge/evaluation/
+    finalize/PCS functions, challenge phase takes the matrix shape), moved the
+    selected segment row/shape build to a wave worker, handed the folded claim
+    from the claim job to the selected job by channel, and overlapped the PCS
+    check with the matrix build: **17.7 -> 13.4 ms (2.61x, +8 % CPU, min
+    12.8 ms)**. Instrumentation:
     `verify_profile.rs` + `MAGNETAR_PROFILE_VERIFY` now prints wall and
     cumulative CPU per verifier stage.
 
@@ -360,20 +376,24 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
 
 ## 5. Open work, in priority order
 
-1. **M6: the remaining verify wall bottleneck.** Increment 1 (2026-11-07) is
-   in: the statement-only v4 verifier is one five-job wave and the selected
-   lockstep's PCS check overlaps its MLE evaluations, taking the `2^16` verify
-   wall **42.8 -> 17.7 ms (2.42x)** for +16 % CPU (interleaved A/B; §2,
-   POLYLOG_CLAIM_VERIFIER.md §C.15). The critical path is now the selected job
-   (~14 ms): segment-matrix build ~3 ms, `max(eval_mles 5.2, PCS 6.7)` ~7 ms and
-   the 1.8 ms claim-input derivation. Next levers: (a) share the twist claims
-   the access layer already computes with the core verifier, which re-derives
-   them (4.4 ms of duplicate work), (b) overlap the segment-matrix build with
-   the round/PCS work, (c) **M6 proper**: commit the committed-Shout tables
-   inside the mosaic commitment (or otherwise merge the openings) so one FRI
-   covers the mosaic, the Shout batch and the claim table -- that is what the
-   paper's 8-12 ms needs, not more claim work. See
-   `docs/POLYLOG_CLAIM_VERIFIER.md` §C.14-§C.15.
+1. **M6: the remaining verify wall bottleneck.** Increments 1+2 (2026-11-07)
+   are in: the statement-only v4 verifier is a five-job wave and the selected
+   job is phase-split, taking the `2^16` verify wall **17.7 -> 13.4 ms
+   (2.61x over serial, +8 % CPU, min 12.8 ms)**; interleaved A/B in §2,
+   POLYLOG_CLAIM_VERIFIER.md §C.15/§C.17. The critical path is now the selected
+   **PCS opening check (~6.7 ms)**, then the segment-matrix build (~3.3 ms) and
+   the six MLE evaluations (~2.5-3.5 ms, already parallel). Next levers:
+   (a) parallelize the FRI/query-path verification itself in the vendored
+   binary-pcs (the only way to cut the 6.7 ms PCS term without changing the
+   commitment family), (b) **M6 proper**: merge the committed-Shout batch
+   opening / mosaic opening / claim-table opening so one FRI covers them
+   (removes ~11 ms of CPU but they now run off the critical path, so this is a
+   CPU/contention win, not the wall target), (c) share the twist claims the
+   access layer already derives with the core verifier (~14 ms-CPU duplicate at
+   load, wall-neutral today), (d) build the segment matrices on the prepare
+   worker so their ~3.3 ms overlaps the claim wait. The paper's 8-12 ms needs
+   (a) plus one more critical-path cut. See
+   `docs/POLYLOG_CLAIM_VERIFIER.md` §C.14-§C.17.
 2. **Paper-path M4b default flip -- DONE (2026-11-07).** Landed with the full
    gate on both env legs (674/0/5), the file-level tamper matrix and the
    dual-mode tests (POLYLOG_CLAIM_VERIFIER.md §C.16, M4B_DEFAULT_FLIP.md).
