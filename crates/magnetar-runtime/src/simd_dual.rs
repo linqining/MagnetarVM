@@ -7489,7 +7489,7 @@ where
     B::Commitment: Sync,
     B::Opening: Sync,
 {
-    use magnetar_proof::verify_lockstep_bits_with_replacements_claim_point;
+    use magnetar_proof::verify_lockstep_bits_with_replacements_claim_point_parallel;
 
     if claims.op != SelectedOp::Dynamic {
         return Err(RuntimeError::Proof(
@@ -7501,13 +7501,20 @@ where
     } else {
         claims.matrix_cycles
     };
+    let stage = crate::verify_profile::Stage::new("selected segments row");
     let (row, _mapping, layout) = segmented_dynamic_row(claims.mask, claims.width, matrix_cycles)?;
+    stage.finish();
+    let stage = crate::verify_profile::Stage::new("selected segment matrices");
     let (_, s1, s2) = gated_shared_matrices_lazy(
         &row,
         matrix_cycles,
         Some((claims.initial_pc, claims.final_pc)),
     )?;
-    verify_lockstep_bits_with_replacements_claim_point(
+    stage.finish();
+    // M6: the six matrix MLE evaluations and the PCS opening check run on two
+    // threads inside the verifier (the matrices stay on this thread).
+    let stage = crate::verify_profile::Stage::new("selected lockstep bits");
+    let point = verify_lockstep_bits_with_replacements_claim_point_parallel(
         &s1[0],
         &s1[1],
         &s1[2],
@@ -7520,7 +7527,9 @@ where
         &[],
         claim,
     )
-    .map_err(|error| RuntimeError::Proof(error.to_string()))
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    stage.finish();
+    Ok(point)
 }
 
 fn eq_bits(point: &[F2_128], bits: &[F2_128]) -> F2_128 {

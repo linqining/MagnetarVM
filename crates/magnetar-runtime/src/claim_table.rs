@@ -391,7 +391,11 @@ pub fn claim_binding_root(trace: &magnetar_spec::Trace) -> Result<[u8; 32], Runt
 
 /// Shared challenges for the claim relation: the same row point and column
 /// batching coefficient the selected verifier derives for the folded claim.
-struct ClaimRelationInputs {
+///
+/// M6: exposed to `v4_verify` so the claim-table opening check and the
+/// selected-lockstep binding (which only needs the folded claim derived from
+/// these public inputs) can run on separate threads.
+pub(crate) struct ClaimRelationInputs {
     matrix_cycles: usize,
     row_point: Vec<F2_128>,
     alpha: F2_128,
@@ -404,7 +408,7 @@ struct ClaimRelationInputs {
     coeffs: Vec<F2_128>,
 }
 
-fn claim_relation_inputs(
+pub(crate) fn claim_relation_inputs(
     selected: &SelectedCpuProof,
     width: usize,
 ) -> Result<ClaimRelationInputs, RuntimeError> {
@@ -621,7 +625,9 @@ pub(crate) fn verify_claim_table_and_claim(
     Ok(folding_claim_from_inputs(&inputs))
 }
 
-fn folding_claim_from_inputs(inputs: &ClaimRelationInputs) -> crate::simd_dual::DynamicClaim {
+pub(crate) fn folding_claim_from_inputs(
+    inputs: &ClaimRelationInputs,
+) -> crate::simd_dual::DynamicClaim {
     crate::simd_dual::DynamicClaim {
         claim: crate::simd_dual::dynamic_claim_structure(
             &inputs.schema,
@@ -634,7 +640,7 @@ fn folding_claim_from_inputs(inputs: &ClaimRelationInputs) -> crate::simd_dual::
     }
 }
 
-fn verify_claim_table_with(
+pub(crate) fn verify_claim_table_with(
     table: &ClaimTableProof,
     inputs: &ClaimRelationInputs,
 ) -> Result<(), RuntimeError> {
@@ -689,11 +695,13 @@ fn verify_claim_table_with(
     let commitment_bytes =
         crate::protocol::selected_backend().commitment_bytes(&inputs.selected_commitment);
     let mut transcript = rel_transcript(&table.root, &commitment_bytes, inputs, target);
+    let stage = crate::verify_profile::Stage::new("claim relation rounds");
     let (slot_point, final_value) =
         verify_rounds(&relation.sumcheck, slot_vars, 2, |round, values| {
             rel_challenge(&mut transcript, round, values)
         })
         .map_err(|error| RuntimeError::Proof(format!("claim relation sumcheck: {error}")))?;
+    stage.finish();
     if relation.slot_point != slot_point {
         return Err(RuntimeError::Proof(
             "claim relation slot point mismatch".into(),
@@ -706,10 +714,12 @@ fn verify_claim_table_with(
     let expected_value = final_value * inverse;
     let mut point = inputs.row_point.clone();
     point.extend_from_slice(&slot_point);
+    let stage = crate::verify_profile::Stage::new("claim table opening");
     let backend = claim_table_backend();
     let valid = backend
         .verify(&table.commitment, &point, expected_value, &relation.opening)
         .map_err(|error| RuntimeError::Proof(format!("claim table opening: {error}")))?;
+    stage.finish();
     if !valid {
         return Err(RuntimeError::Proof("claim table opening rejected".into()));
     }

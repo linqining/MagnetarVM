@@ -61,11 +61,21 @@ fn main() {
         max_cycles: 10_000_000,
     };
     let trace = execute(&program, config).unwrap();
+    let use_trace_shout = std::env::var_os("TRACE_SHOUT").is_some();
+    // M4b: paper proofs default to the committed linear Shout and bind the
+    // host-derived Shout tables in the v3 statement root; the native trace path
+    // keeps the legacy/native root. `MAGNETAR_CLASSIC_LOGUP=1` delegates to the
+    // classic paper root, exactly like the prover.
+    let trace_claim_root = if use_trace_shout {
+        magnetar_runtime::claim_table::statement_claim_root(&trace)
+    } else {
+        magnetar_runtime::paper_statement_claim_root(&trace, width())
+    };
     let statement = Statement {
         program_hash: program_hash(&program),
         rom: trace.rom.clone(),
         trace_commitment: trace_digest(&trace),
-        trace_claim_root: magnetar_runtime::claim_table::statement_claim_root(&trace),
+        trace_claim_root,
         access_statement_digest: magnetar_runtime::statement_access_digest(&trace),
         config: trace.config.clone(),
         initial_state: trace.initial_state.clone(),
@@ -77,7 +87,6 @@ fn main() {
         halted: trace.halted,
         exit_code: trace.exit_code,
     };
-    let use_trace_shout = std::env::var_os("TRACE_SHOUT").is_some();
     let no_claim = std::env::var_os("NO_CLAIM").is_some();
     let profile = std::env::var_os("MAGNETAR_PROFILE_UNIFIED").is_some();
     let peak = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -212,11 +221,13 @@ fn main() {
         eprintln!("claim_rom_probe={:?}", claim.compact_rom_probe());
     }
     println!(
-        "adds={adds} rows={} proof={bytes}B varint={varint}B compressed={compressed}B access={}B logup={}B selected={}B claim={}B shape={}B prove={prove:?} verify={verify:?}",
+        "adds={adds} rows={} proof={bytes}B varint={varint}B compressed={compressed}B access={}B logup={}B committed_shout={}B selected={}B claim={}B shape={}B prove={prove:?} verify={verify:?}",
         trace.rows.len(),
         sizes.access,
-        // compressed,
+        // `logup_shout` is the classic paper wire (MAGNETAR_CLASSIC_LOGUP=1);
+        // `committed_logup_shout` is the M4b default.
         sizes.logup_shout,
+        sizes.committed_logup_shout,
         sizes.selected_cpu,
         sizes.claim_proof,
         sizes.shape,

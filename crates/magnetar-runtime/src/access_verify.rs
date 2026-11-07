@@ -187,6 +187,7 @@ pub fn verify_access_committed(
     commitment: &P3MosaicCommitment,
 ) -> Result<(), RuntimeError> {
     // 1. Proof-only twist verification (previously witness-based).
+    let stage = crate::verify_profile::Stage::new("access ram twist");
     let _ram_claims = crate::binary_twist::verify_binary_twist_from_proof(
         &proof.access.ram,
         commitment,
@@ -194,6 +195,8 @@ pub fn verify_access_committed(
     )
     .map_err(|error| RuntimeError::Proof(error.to_string()))?
     .ok_or_else(|| RuntimeError::Proof("M5b: RAM twist claims rejected".into()))?;
+    stage.finish();
+    let stage = crate::verify_profile::Stage::new("access register twist");
     let _register_claims = crate::binary_twist::verify_binary_twist_from_proof(
         &proof.access.registers,
         commitment,
@@ -201,8 +204,10 @@ pub fn verify_access_committed(
     )
     .map_err(|error| RuntimeError::Proof(error.to_string()))?
     .ok_or_else(|| RuntimeError::Proof("M5b: register twist claims rejected".into()))?;
+    stage.finish();
 
     // 2. Initial RAM binding: public column folded at the twist cell point.
+    let stage = crate::verify_profile::Stage::new("access initial ram");
     let evals = crate::binary_twist::binary_twist_public_evals(&proof.access.ram, commitment)
         .ok_or_else(|| RuntimeError::Proof("M5b: twist public evals unavailable".into()))?;
     if evals.address_bits != evals.cell_point.len() {
@@ -218,6 +223,8 @@ pub fn verify_access_committed(
             "M5b: initial RAM binding mismatch".into(),
         ));
     }
+
+    stage.finish();
 
     // 3. Final-value binding: only possible once the access columns (and thus
     // the committed cells table) are enabled.
@@ -255,6 +262,7 @@ pub fn verify_access_committed(
     }
 
     // 3b. `sum_bit 2^bit * fold(T_final_bit, r_k) == final_eval`.
+    let stage = crate::verify_profile::Stage::new("access final relation");
     let row_point = final_row_point(&evals.cell_point);
     crate::claim_shout::verify_relation(
         &final_proof.relation,
@@ -264,5 +272,6 @@ pub fn verify_access_committed(
         &final_value_coeffs(),
         evals.final_eval,
     )?;
+    stage.finish();
     Ok(())
 }

@@ -60,6 +60,7 @@ pub(crate) fn verify_native_unified_v4(
         .ok_or_else(|| RuntimeError::Proof("missing selected CPU proof".into()))?;
 
     // 1. Three-component v4 root binding.
+    let stage = crate::verify_profile::Stage::new("v4 root");
     let claim_root = crate::claim_table::claim_table_root(&table.commitment);
     if claim_root != table.root {
         return Err(RuntimeError::Proof(
@@ -90,7 +91,8 @@ pub(crate) fn verify_native_unified_v4(
             "M5c: trace commitment does not match the public statement".into(),
         ));
     }
-    if statement.program_hash != crate::rom_hash(&statement.rom) {
+    let rom_binding = crate::rom_hash(&statement.rom);
+    if statement.program_hash != rom_binding {
         return Err(RuntimeError::Proof(
             "M5c: program hash does not match the public ROM".into(),
         ));
@@ -104,7 +106,10 @@ pub(crate) fn verify_native_unified_v4(
         ));
     }
 
+    stage.finish();
+
     // 2. O(1) endpoints: the selected lockstep binds the first/last PC.
+    let stage = crate::verify_profile::Stage::new("v4 endpoints");
     let trace_len = usize::try_from(statement.trace_len)
         .map_err(|_| RuntimeError::Proof("M5c: trace_len overflows usize".into()))?;
     let cycles = trace_len.next_power_of_two().max(2);
@@ -126,35 +131,117 @@ pub(crate) fn verify_native_unified_v4(
         ));
     }
 
-    // 3. Witness-free access layer (twist proofs, initial RAM, final table).
-    crate::access_verify::verify_access_committed(statement, proof, &proof.commitment)?;
+    stage.finish();
 
-    // 4. Claim layer: target relation -> folded dynamic claim -> selected lockstep.
-    let dynamic_claim = crate::claim_table::verify_claim_table_and_claim(table, selected, width)?;
+    // 3-6. One independent wave. The witness-free access layer, the claim
+    // table relation, the selected-lockstep binding, the committed Shout and
+    // the core proof each consume only the proof and the statement (the folded
+    // claim below is derived from public/proof-carried data, not from a
+    // verified claim table), so they can run on separate threads. They are
+    // joined in the original serial order, so a failing proof still reports the
+    // same first error. `MAGNETAR_VERIFY_SERIAL=1` restores the straight-line
+    // order for a same-binary wall A/B.
+    let serial = std::env::var_os("MAGNETAR_VERIFY_SERIAL").is_some();
+
+    // M6: the folded claim is derived from `claim_relation_inputs` (challenges
+    // and the selected commitment, all public/proof-carried); the claim table
+    // check is what authenticates the same target, so this derivation and the
+    // table check are a conjunction and may run concurrently.
+    let stage = crate::verify_profile::Stage::new("v4 claim inputs");
+    let claim_inputs = crate::claim_table::claim_relation_inputs(selected, width)?;
+    let dynamic_claim = crate::claim_table::folding_claim_from_inputs(&claim_inputs);
+    stage.finish();
+
     let backend = crate::protocol::selected_backend();
-    crate::simd_dual::verify_dynamic_claim_binding_prepared(selected, &dynamic_claim, &backend)
-        .map_err(|error| RuntimeError::Proof(format!("selected verifier: {error}")))?;
-
-    // 5. Shout/ROM: v4 requires the committed linear Shout (M4b). The classic
-    //    witnessed trace Logup-Shout proof cannot be checked without the
-    //    claim-derived rows, so accepting a classic-mode v4 proof would skip the
-    //    Shout argument entirely; reject it instead.
-    let committed = proof.committed_logup_shout.as_ref().ok_or_else(|| {
-        RuntimeError::Proof(
-            "M5 v4 verifier requires the committed linear Shout (MAGNETAR_LINEAR_SHOUT=1)".into(),
+    let access = || {
+        let stage = crate::verify_profile::Stage::new("v4 access");
+        let result =
+            crate::access_verify::verify_access_committed(statement, proof, &proof.commitment);
+        stage.finish();
+        result
+    };
+    let claim_table_check = || {
+        let stage = crate::verify_profile::Stage::new("v4 claim table");
+        let result = crate::claim_table::verify_claim_table_with(table, &claim_inputs);
+        stage.finish();
+        result
+    };
+    let selected_check = || {
+        let stage = crate::verify_profile::Stage::new("v4 selected binding");
+        let result = crate::simd_dual::verify_dynamic_claim_binding_prepared(
+            selected,
+            &dynamic_claim,
+            &backend,
         )
-    })?;
-    let rom_binding = crate::rom_hash(&statement.rom);
-    crate::logup_shout::verify_committed_logup_shout(
-        committed,
-        &statement.rom,
-        &rom_binding,
-        statement.trace_len,
-    )?;
-
-    // 6. Core layer: CPU/gated/opening/aux (includes the classic packed Shout).
-    crate::verify_core_proof_inner(proof, true)
-        .map_err(|error| RuntimeError::Proof(format!("core verifier: {error}")))?;
-
+        .map_err(|error| RuntimeError::Proof(format!("selected verifier: {error}")));
+        stage.finish();
+        result
+    };
+    let shout_check = || {
+        let stage = crate::verify_profile::Stage::new("v4 committed shout");
+        // v4 requires the committed linear Shout (M4b). The classic witnessed
+        // trace Logup-Shout proof cannot be checked without the claim-derived
+        // rows, so accepting a classic-mode v4 proof would skip the Shout
+        // argument entirely; reject it instead.
+        let committed = proof.committed_logup_shout.as_ref().ok_or_else(|| {
+            RuntimeError::Proof(
+                "M5 v4 verifier requires the committed linear Shout (MAGNETAR_LINEAR_SHOUT=1)"
+                    .into(),
+            )
+        })?;
+        let result = crate::logup_shout::verify_committed_logup_shout(
+            committed,
+            &statement.rom,
+            &rom_binding,
+            statement.trace_len,
+        )
+        .map(|_| ());
+        stage.finish();
+        result
+    };
+    let core_check = || {
+        let stage = crate::verify_profile::Stage::new("v4 core");
+        let result = crate::verify_core_proof_inner(proof, true)
+            .map_err(|error| RuntimeError::Proof(format!("core verifier: {error}")));
+        stage.finish();
+        result
+    };
+    if serial {
+        access()?;
+        claim_table_check()?;
+        selected_check()?;
+        shout_check()?;
+        core_check()?;
+        return Ok(());
+    }
+    let (access_result, claim_result, selected_result, shout_result, core_result) =
+        std::thread::scope(|scope| {
+            let access = scope.spawn(access);
+            let claim_table = scope.spawn(claim_table_check);
+            let selected = scope.spawn(selected_check);
+            let shout = scope.spawn(shout_check);
+            let core = scope.spawn(core_check);
+            (
+                join_stage(access),
+                join_stage(claim_table),
+                join_stage(selected),
+                join_stage(shout),
+                join_stage(core),
+            )
+        });
+    access_result?;
+    claim_result?;
+    selected_result?;
+    shout_result?;
+    core_result?;
     Ok(())
+}
+
+/// Join one spawned verifier stage, turning a panic into a proof error.
+fn join_stage(
+    handle: std::thread::ScopedJoinHandle<'_, Result<(), RuntimeError>>,
+) -> Result<(), RuntimeError> {
+    handle
+        .join()
+        .map_err(|_| RuntimeError::Proof("verifier stage panicked".into()))?
 }

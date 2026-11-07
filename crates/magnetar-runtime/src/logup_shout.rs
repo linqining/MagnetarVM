@@ -1400,6 +1400,7 @@ pub fn verify_committed_logup_shout(
     let reader_claim = to_b(proof.reader_claim);
 
     // 2. Logup* reduction against the committed pushforwards.
+    let stage = crate::verify_profile::Stage::new("shout logup reduction");
     let readers = [Reader {
         point: &point,
         claims: &[reader_claim],
@@ -1430,7 +1431,10 @@ pub fn verify_committed_logup_shout(
         )
         .map_err(|error| RuntimeError::Proof(format!("committed logup reduction: {error:?}")))?;
 
+    stage.finish();
+
     // 3. ONE batched opening covering reader/position/pushforward points.
+    let stage = crate::verify_profile::Stage::new("shout batch opening");
     let table_bits = proof.table_variables;
     if reduction_claims.len() != proof.reduction_evals.len()
         || product_claims.len() != proof.product_evals.len()
@@ -1495,7 +1499,10 @@ pub fn verify_committed_logup_shout(
         ));
     }
 
+    stage.finish();
+
     // 4. Public ROM word column: O(rom) check of the table claim.
+    let stage = crate::verify_profile::Stage::new("shout rom eval");
     let cells = 1usize << proof.address_bits;
     let mut rom_words = vec![B::from_repr(0); cells];
     for (index, word) in rom.iter().enumerate() {
@@ -1510,6 +1517,7 @@ pub fn verify_committed_logup_shout(
 
     // 5. The caller's statement-root check binds the same commitment on top of
     //    the transcript binding recomputed above (double binding).
+    stage.finish();
 
     Ok(CommittedLogupShoutOutput {
         reader_claim: proof.reader_claim,

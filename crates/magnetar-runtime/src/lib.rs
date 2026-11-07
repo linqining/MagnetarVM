@@ -63,6 +63,8 @@ pub mod unified_gated;
 pub mod virtual_claims;
 pub mod word_div_row;
 
+mod verify_profile;
+
 use crate::binary_router::{
     prove_binary_router_claims, verify_binary_router_claims, BinaryRouterWitness, RouterMode,
 };
@@ -2709,6 +2711,22 @@ pub(crate) fn verify_unified_with_plan_impl(
     if let Some(committed) = &proof.committed_logup_shout {
         let started = std::time::Instant::now();
         let witness_time = std::time::Instant::now();
+        // Trace-carrying verifier: the committed Shout tables (reader word
+        // column, position column, pushforward) are host-derived from the
+        // trace, and the statement-only verifier binds them through the v3
+        // statement root. Here the trace itself is the anchor, so recompute the
+        // host tables commitment and require the proof's batch commitment to
+        // match. The logup* argument alone does not bind `T_pos` or the
+        // pushforward table, so without this check this entry point would accept
+        // a forged Shout argument (the classic path is bound by rebuilding the
+        // witness from the trace instead).
+        let expected_tables = crate::logup_shout::committed_statement_data(trace)?.table_root;
+        if crate::logup_shout::committed_tables_root(&committed.table_commitment) != expected_tables
+        {
+            return Err(RuntimeError::Proof(
+                "committed logup Shout tables do not match the trace".into(),
+            ));
+        }
         let rom_binding = crate::rom_hash(&trace.rom);
         let trace_len = trace.rows.len() as u64;
         let verify_started = std::time::Instant::now();
@@ -2897,6 +2915,59 @@ pub fn prove_unified_trace_dynamic_native_trace(
     Ok(proof)
 }
 
+/// M4b paper-path default: committed-pushforward linear Shout.
+///
+/// The paper path no longer needs `MAGNETAR_LINEAR_SHOUT=1` on the non-v4 path:
+/// the committed linear Shout is the default because it is strictly better on
+/// all four metrics at `2^16` (proof -30 KB, verify CPU -9.5 %, peak -0.62 GiB,
+/// and it closes the paper verifier's "Shout carried but not verified" gap;
+/// POLYLOG_CLAIM_VERIFIER.md §C.13.1). `MAGNETAR_CLASSIC_LOGUP=1` restores the
+/// classic paper wire (`logup_shout` + `shout`/`packed_shout`) for a same-binary
+/// A/B.
+///
+/// The native trace path keeps its own `MAGNETAR_LINEAR_SHOUT=1` opt-in (M4v3
+/// trades +151 KB of proof for -36 % verify CPU, §C.13.1). M5 v4 mode keeps its
+/// explicit three-env gate: `claim_table::statement_claim_root_v4` composes the
+/// shout component of the v4 root from `MAGNETAR_LINEAR_SHOUT`, so under v4 the
+/// prover must keep honouring that env (and keep producing classic fields when
+/// it is unset) instead of silently taking the paper default.
+pub fn paper_committed_logup_enabled() -> bool {
+    !crate::logup_shout::classic_logup_enabled()
+        && (crate::logup_shout::linear_shout_enabled()
+            || !crate::claim_table::claims_v4_enabled())
+}
+
+/// Statement `trace_claim_root` for paper-path proofs under the current
+/// switches.
+///
+/// Paper proofs default to the M4b committed linear Shout, whose v3 root is
+/// `H("claim-shout-v3" || claim_binding_v1 || host-derived Shout tables root)`.
+/// [`crate::claim_table::statement_claim_root`] keeps its legacy/native meaning
+/// (v1, or v3 only under `MAGNETAR_LINEAR_SHOUT=1`), so paper statements must be
+/// built with this helper. It mirrors the prover exactly: classic wire, M5 v4
+/// mode (whose root composes its own shout component) and every fallback
+/// delegate to `statement_claim_root`.
+pub fn paper_statement_claim_root(trace: &Trace, width: usize) -> [u8; 32] {
+    if crate::claim_table::claims_v4_enabled() || !paper_committed_logup_enabled() {
+        return crate::claim_table::statement_claim_root(trace);
+    }
+    let Ok(data) = crate::logup_shout::committed_statement_data(trace) else {
+        return crate::claim_table::statement_claim_root(trace);
+    };
+    // At width 64 the dynamic prover always builds the claim table, so the v1
+    // component is the composed claim binding. Other widths fall back to the
+    // legacy row root, exactly like the prover's `_inner` else-branch.
+    if crate::claim_table::claim_table_enabled()
+        && width == crate::claim_table::CLAIM_TABLE_WIDTH
+    {
+        return data.statement_root;
+    }
+    crate::claim_table::claim_shout_v3_root(
+        &crate::claim_table::claim_rows_root(trace),
+        &data.table_root,
+    )
+}
+
 /// Paper-path baseline: committed Shout + committed selected CPU + complete
 /// claim proof. The proof-only verifier rebuilds the trace from claims and
 /// checks the committed Shout claims against that witness.
@@ -2904,11 +2975,11 @@ pub fn prove_unified_trace_paper(
     trace: &Trace,
     width: usize,
 ) -> Result<UnifiedTraceProof, RuntimeError> {
-    // M4b opt-in: the committed-pushforward linear Shout replaces the classic
-    // `logup_shout` (whose 25-column mosaic opening dominated the paper proof)
-    // and the classic Shout stage proof.
-    let linear_shout = crate::logup_shout::linear_shout_enabled()
-        && !crate::logup_shout::classic_logup_enabled();
+    // M4b is the paper-path default: the committed-pushforward linear Shout
+    // replaces the classic `logup_shout` (whose 25-column mosaic opening
+    // dominated the paper proof) and the classic Shout stage proofs.
+    // `MAGNETAR_CLASSIC_LOGUP=1` restores the classic wire for the A/B.
+    let linear_shout = paper_committed_logup_enabled();
     let classic_shout = if linear_shout {
         None
     } else {
@@ -2924,8 +2995,14 @@ pub fn prove_unified_trace_paper(
     let shout_rom = classic_shout
         .as_ref()
         .map(|logup| (&logup.rom_point[..], &logup.rom_claims[..]));
-    let mut proof =
-        prove_unified_trace_dynamic_native_profile_inner(trace, width, shout_rom, false)?.0;
+    let mut proof = prove_unified_trace_dynamic_native_profile_inner(
+        trace,
+        width,
+        shout_rom,
+        false,
+        linear_shout,
+    )?
+    .0;
     proof.logup_shout = classic_shout;
     proof.trace_logup_shout = None;
     let claim_table = proof
@@ -2951,26 +3028,33 @@ pub fn prove_unified_trace_dynamic_native_profile(
     trace: &Trace,
     width: usize,
 ) -> Result<(UnifiedTraceProof, Vec<StageTiming>), RuntimeError> {
-    prove_unified_trace_dynamic_native_profile_inner(trace, width, None, true)
+    // M4v3 stays a measured opt-in on the native path: the committed proof is
+    // pure addition there (+151 KB) in exchange for verify CPU -36 %.
+    let linear_shout = crate::logup_shout::linear_shout_enabled()
+        && !crate::logup_shout::classic_logup_enabled();
+    prove_unified_trace_dynamic_native_profile_inner(
+        trace,
+        width,
+        None,
+        true,
+        linear_shout,
+    )
 }
 
 /// Shared native profile prover. `shout_rom` folds an externally computed
 /// committed-Shout ROM claim into the mosaic opening instead of running the
-/// trace Logup-Shout worker.
+/// trace Logup-Shout worker. `linear_shout` is the caller's path-specific
+/// decision: M4b defaults on for the paper path, M4v3 stays opt-in on the
+/// native path, and `MAGNETAR_CLASSIC_LOGUP=1` forces both back to classic.
 fn prove_unified_trace_dynamic_native_profile_inner(
     trace: &Trace,
     width: usize,
     shout_rom: Option<(&[F2_128], &[F2_128])>,
     with_trace_logup: bool,
+    linear_shout: bool,
 ) -> Result<(UnifiedTraceProof, Vec<StageTiming>), RuntimeError> {
     let selected_started = std::time::Instant::now();
     let backend = crate::protocol::selected_backend();
-    // M4 v3/M4b opt-in: committed-pushforward linear Shout replaces the classic
-    // Shout proof on the paper path and the witnessed trace Logup-Shout proof on
-    // the native trace path (default off; `MAGNETAR_CLASSIC_LOGUP=1` forces the
-    // legacy paths for the A/B).
-    let linear_shout = crate::logup_shout::linear_shout_enabled()
-        && !crate::logup_shout::classic_logup_enabled();
     let packed_witness = if with_trace_logup || linear_shout {
         crate::binary_shout::BinaryShoutWitness::from_trace(trace).ok()
     } else {
@@ -3501,12 +3585,17 @@ pub fn verify_core_statement(
     proof: &UnifiedTraceProof,
     statement: &CoreStatement,
 ) -> Result<(), RuntimeError> {
+    let stage = crate::verify_profile::Stage::new("core cpu claims");
     let cpu = CpuStatement {
         width: statement.width,
         shape: statement.shape.clone(),
     };
     let (ry, cpu_value, gated_ry) = cpu_statement_claims(proof, &cpu)?;
+    stage.finish();
+    let stage = crate::verify_profile::Stage::new("core access claims");
     let (ram_claims, register_claims) = crate::access_statement::access_claims_from_proof(proof)?;
+    stage.finish();
+    let stage = crate::verify_profile::Stage::new("core aux claims");
     let (mut points, mut values) = ram_claims;
     points.extend(register_claims.0);
     values.extend(register_claims.1);
@@ -3672,6 +3761,8 @@ pub fn verify_core_statement(
             }
         }
     }
+    stage.finish();
+    let stage = crate::verify_profile::Stage::new("core claim sort/merge");
     let mut pairs = points.into_iter().zip(values).collect::<Vec<_>>();
     pairs.sort_by_key(|(point, _)| crate::point_sort_key(point));
     let selected = proof
@@ -3703,6 +3794,8 @@ pub fn verify_core_statement(
         filtered.sort_by_key(|(point, _)| crate::point_sort_key(point));
         filtered.into_iter().unzip()
     };
+    stage.finish();
+    let stage = crate::verify_profile::Stage::new("core mosaic opening");
     if let Some(opening) = &proof.opening {
         // The opening must be for the commitment the access claims are bound
         // to, otherwise it commits to unrelated data.
@@ -3723,7 +3816,10 @@ pub fn verify_core_statement(
             return Err(RuntimeError::Proof("core opening rejected".into()));
         }
     }
+    stage.finish();
+    let stage = crate::verify_profile::Stage::new("core table batches");
     crate::verify_table_batch_claims(proof, &original)?;
+    stage.finish();
     Ok(())
 }
 
@@ -4379,14 +4475,27 @@ pub fn verify_unified_trace_statement(
     } else {
         None
     };
-    let expected_statement_root = composed_root.unwrap_or(rows_root);
+    let mut expected_statement_root = composed_root.unwrap_or(rows_root);
     let table = proof.claim_proof.as_ref().and_then(|claims| claims.table.as_ref());
-    let expected_proof_root = match table {
+    let mut expected_proof_root = match table {
         Some(_) => composed_root.ok_or_else(|| {
             RuntimeError::Proof("claim proof carries a claim table the trace cannot build".into())
         })?,
         None => rows_root,
     };
+    // M4b: paper proofs default to the committed linear Shout, whose v3 root
+    // binds the host-derived Shout tables on top of the claim binding. Wrap both
+    // expectations with the proof-carried tables commitment; `verify_unified_trace`
+    // below independently binds that commitment to this trace, so the equality
+    // with the statement root also pins the tables. (`paper_statement_claim_root`
+    // derives the same v3 root from the trace for paper statements.)
+    if let Some(committed) = &proof.committed_logup_shout {
+        let tables = crate::logup_shout::committed_tables_root(&committed.table_commitment);
+        expected_statement_root =
+            crate::claim_table::claim_shout_v3_root(&expected_statement_root, &tables);
+        expected_proof_root =
+            crate::claim_table::claim_shout_v3_root(&expected_proof_root, &tables);
+    }
     if statement.trace_claim_root != expected_statement_root
         || proof.trace_claim_root != expected_proof_root
     {
@@ -7047,29 +7156,33 @@ mod tests {
 
     #[test]
     fn native_verifier_rejects_a_tampered_compressed_claim_blob() {
-        let outcome = ReferencePipeline::run(
-            &ProgramImage::new(
-                0x1000,
-                vec![
-                    magnetar_spec::Instruction {
-                        op: magnetar_spec::Op::Addi,
-                        rd: 1,
-                        rs1: 0,
-                        rs2: 0,
-                        imm: 7,
-                        shamt: 0,
-                    }
-                    .encode(),
-                    magnetar_spec::Instruction::new(magnetar_spec::Op::Ecall).encode(),
-                ],
-            ),
-            config(),
-            2,
-        )
-        .unwrap();
+        // The paper path carries the register-derived compressed claim blob, and
+        // since the M4b default flip it also carries the committed linear Shout,
+        // whose PCS folding factor needs at least 2^3 committed tables: use a
+        // real-size trace like the testkit paper-mode test does.
+        let mut rom = (0..200)
+            .map(|index| {
+                magnetar_spec::Instruction {
+                    op: magnetar_spec::Op::Addi,
+                    rd: 1,
+                    rs1: 1,
+                    rs2: 0,
+                    imm: index + 1,
+                    shamt: 0,
+                }
+                .encode()
+            })
+            .collect::<Vec<_>>();
+        rom.push(magnetar_spec::Instruction::new(magnetar_spec::Op::Ecall).encode());
+        let mut pipeline_config = config();
+        pipeline_config.max_cycles = 10_000;
+        let outcome = ReferencePipeline::run(&ProgramImage::new(0x1000, rom), pipeline_config, 2)
+            .unwrap();
         // The paper path carries the register-derived compressed claim blob.
         let proof = prove_unified_trace_paper(&outcome.trace, 64).unwrap();
-        verify_native_unified(&outcome.statement, &proof, 64).unwrap();
+        let mut statement = outcome.statement.clone();
+        statement.trace_claim_root = paper_statement_claim_root(&outcome.trace, 64);
+        verify_native_unified(&statement, &proof, 64).unwrap();
         let mut tampered = proof.clone();
         let blob = tampered
             .claim_proof
@@ -7077,7 +7190,9 @@ mod tests {
             .and_then(|claim| claim.reg_blob.as_mut())
             .expect("paper proof carries the compressed blob");
         blob[0] ^= 1;
-        assert!(verify_native_unified(&outcome.statement, &tampered, 64).is_err());
+        assert!(verify_native_unified(&statement, &tampered, 64).is_err());
+        // The blob tamper is caught by the claim layer, not the Shout root.
+        assert!(verify_native_claim_layer(&statement, &tampered).is_err());
     }
 
     #[test]
@@ -10095,6 +10210,7 @@ mod cpu_statement_tests {
 mod m4b_paper_tests {
     use super::*;
     use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+    use p3_binary_field::TowerLevel;
 
     fn config() -> MachineConfig {
         MachineConfig {
@@ -10140,83 +10256,384 @@ mod m4b_paper_tests {
         .0
     }
 
+    fn classic_logup_proof(trace: &Trace) -> crate::logup_shout::LogupShoutProof {
+        let witness = crate::binary_shout::BinaryShoutWitness::from_trace(trace).unwrap();
+        crate::logup_shout::prove_logup_shout(&witness).unwrap()
+    }
+
+    /// Statement for a paper-path proof under the current switches.
+    fn paper_statement(outcome: &ReferenceOutcome) -> Statement {
+        let mut statement = outcome.statement.clone();
+        statement.trace_claim_root = paper_statement_claim_root(&outcome.trace, 64);
+        statement
+    }
+
+    /// The wire the paper prover emits under the current switches. The test
+    /// suite is run once with the default env (M4b) and once with
+    /// `MAGNETAR_CLASSIC_LOGUP=1`, so both legs pin their own encoding.
+    ///
+    /// Note: the unified dynamic/paper prover has no classic `shout` mosaic
+    /// table (`protocol.rs` hard-codes `shout_table = None`), so the classic
+    /// paper wire is the `logup_shout` proof alone; M4b replaces that proof and
+    /// its 25-column opening with the committed linear Shout.
+    fn assert_paper_wire(proof: &UnifiedTraceProof) {
+        assert!(
+            proof.shout.is_none(),
+            "paper proof carries the vestigial classic binary Shout proof"
+        );
+        assert!(
+            proof.packed_shout.is_none(),
+            "paper proof carries the vestigial classic packed Shout proof"
+        );
+        if paper_committed_logup_enabled() {
+            assert!(
+                proof.committed_logup_shout.is_some(),
+                "paper default dropped the committed linear Shout"
+            );
+            assert!(
+                proof.logup_shout.is_none(),
+                "paper default still carries the classic logup_shout"
+            );
+        } else {
+            assert!(
+                proof.committed_logup_shout.is_none(),
+                "classic paper wire carries the committed linear Shout"
+            );
+            assert!(
+                proof.logup_shout.is_some(),
+                "classic paper wire lost its logup_shout"
+            );
+        }
+    }
+
+    #[test]
+    fn paper_default_wire_matches_the_switch() {
+        let outcome = ReferencePipeline::run(&program(), config(), 1).unwrap();
+        let proof = prove_unified_trace_paper(&outcome.trace, 64).unwrap();
+        assert_paper_wire(&proof);
+        // The prover commits exactly the host-derived paper statement root: this
+        // is the prover/statement-builder agreement a future change must keep.
+        assert_eq!(
+            proof.trace_claim_root,
+            paper_statement_claim_root(&outcome.trace, 64),
+            "paper prover root differs from the host paper statement root"
+        );
+        let statement = paper_statement(&outcome);
+        verify_native_unified(&statement, &proof, 64).expect("paper round-trip");
+        // Paper proofs carry the register-derived claim blob, which only the
+        // statement verifier can check against the initial state; the
+        // trace-carrying verifier is exercised by the ignored tamper matrix.
+        assert!(
+            proof
+                .claim_proof
+                .as_ref()
+                .and_then(|claims| claims.reg_blob.as_ref())
+                .is_some(),
+            "paper proof lost its register-derived claim blob"
+        );
+    }
+
     #[test]
     fn committed_and_classic_fields_coexist_rejected() {
         let outcome = ReferencePipeline::run(&program(), config(), 1).unwrap();
         let mut proof = prove_unified_trace_paper(&outcome.trace, 64).unwrap();
-        proof.committed_logup_shout = Some(committed_proof(&outcome.trace));
-        // The classic paper proof still carries `logup_shout`; accepting both
-        // would double-count or skip one Shout check.
-        assert!(proof.logup_shout.is_some());
-        assert!(verify_native_unified(&outcome.statement, &proof, 64).is_err());
+        let statement = paper_statement(&outcome);
+        if paper_committed_logup_enabled() {
+            // Default wire: a committed paper proof plus a classic field.
+            assert!(proof.committed_logup_shout.is_some());
+            proof.logup_shout = Some(classic_logup_proof(&outcome.trace));
+        } else {
+            // Classic wire: a classic paper proof plus the committed proof.
+            assert!(proof.logup_shout.is_some());
+            proof.committed_logup_shout = Some(committed_proof(&outcome.trace));
+        }
+        // Accepting both would double-count or skip one Shout check.
+        let error = verify_native_unified(&statement, &proof, 64).unwrap_err();
+        assert!(
+            format!("{error:?}").contains("coexist"),
+            "unexpected mixing error: {error:?}"
+        );
     }
 
     #[test]
     fn core_verifier_rejects_committed_shout_without_statement() {
         let outcome = ReferencePipeline::run(&program(), config(), 1).unwrap();
         let mut proof = prove_unified_trace_paper(&outcome.trace, 64).unwrap();
-        proof.committed_logup_shout = Some(committed_proof(&outcome.trace));
+        if proof.committed_logup_shout.is_none() {
+            proof.committed_logup_shout = Some(committed_proof(&outcome.trace));
+        }
         assert!(verify_core_proof(&proof).is_err());
     }
 
-    /// M4b paper round-trip. Ignored by default because the opt-in is read from
-    /// a process-wide environment variable; run it explicitly in the M4b window:
-    /// `cargo test --release -p magnetar-runtime --lib m4b_paper -- --ignored`.
+    /// M4b paper A/B: the default committed wire, the pre-flip
+    /// `MAGNETAR_LINEAR_SHOUT=1` opt-in, and `MAGNETAR_CLASSIC_LOGUP=1` all
+    /// round-trip, in one process. Ignored because the switches are
+    /// process-wide: run it with `--ignored --test-threads=1`.
     #[test]
-    #[ignore = "sets MAGNETAR_LINEAR_SHOUT process-wide"]
+    #[ignore = "sets MAGNETAR_CLASSIC_LOGUP/MAGNETAR_LINEAR_SHOUT process-wide"]
     fn paper_committed_shout_round_trips() {
-        // Baseline: classic paper path (env off), including its aux claims.
+        std::env::remove_var("MAGNETAR_CLASSIC_LOGUP");
         std::env::remove_var("MAGNETAR_LINEAR_SHOUT");
-        let classic_outcome = ReferencePipeline::run(&program(), config(), 1).unwrap();
-        let classic = prove_unified_trace_paper(&classic_outcome.trace, 64).unwrap();
-        verify_native_unified(&classic_outcome.statement, &classic, 64).unwrap();
 
-        // Opt-in: committed linear Shout replaces the classic Shout proofs.
-        std::env::set_var("MAGNETAR_LINEAR_SHOUT", "1");
+        // --- leg 1: the new paper default (no env at all) ---
         let outcome = ReferencePipeline::run(&program(), config(), 1).unwrap();
         let proof = prove_unified_trace_paper(&outcome.trace, 64).unwrap();
-        assert!(proof.committed_logup_shout.is_some());
-        assert!(proof.logup_shout.is_none());
-        assert!(proof.shout.is_none());
-        assert!(proof.packed_shout.is_none());
-        verify_native_unified(&outcome.statement, &proof, 64).unwrap();
+        assert_paper_wire(&proof);
+        let statement = paper_statement(&outcome);
+        assert_eq!(proof.trace_claim_root, statement.trace_claim_root);
+        verify_native_unified(&statement, &proof, 64).unwrap();
+        // Paper proofs carry the register-derived claim blob (only the statement
+        // verifier can expand it against the initial state), so the trace-carrying
+        // verifier is exercised with the synthetic committed proof below.
+        assert!(
+            proof
+                .claim_proof
+                .as_ref()
+                .and_then(|claims| claims.reg_blob.as_ref())
+                .is_some(),
+            "paper proof lost its register-derived claim blob"
+        );
 
-        // 1. Aux-claim symmetry: skipping the classic Shout stage must not leave
-        //    orphan table batches, and the opening must not grow. The verifier's
-        //    successful replay above is the prover/verifier derivation check; the
-        //    assertions here pin the shape so a future prover change cannot add a
-        //    batch the verifier does not expect.
+        // The flip makes MAGNETAR_LINEAR_SHOUT=1 redundant on the paper path:
+        // the explicit pre-flip opt-in must produce byte-identical proofs.
+        std::env::set_var("MAGNETAR_LINEAR_SHOUT", "1");
+        let optin_outcome = ReferencePipeline::run(&program(), config(), 1).unwrap();
+        let optin = prove_unified_trace_paper(&optin_outcome.trace, 64).unwrap();
+        assert_eq!(
+            bincode::serialize(&proof).unwrap(),
+            bincode::serialize(&optin).unwrap(),
+            "default and MAGNETAR_LINEAR_SHOUT=1 paper proofs differ"
+        );
+        std::env::remove_var("MAGNETAR_LINEAR_SHOUT");
+
+        // --- leg 2: MAGNETAR_CLASSIC_LOGUP=1 restores the pre-flip wire ---
+        std::env::set_var("MAGNETAR_CLASSIC_LOGUP", "1");
+        let classic_outcome = ReferencePipeline::run(&program(), config(), 1).unwrap();
+        let classic = prove_unified_trace_paper(&classic_outcome.trace, 64).unwrap();
+        assert_paper_wire(&classic);
+        // The pre-flip paper wire: the classic 25-column `logup_shout` mosaic
+        // opening is present (the classic binary/packed Shout fields are
+        // vestigial on this dynamic prover, see `assert_paper_wire`).
+        assert!(classic.logup_shout.is_some(), "classic paper wire lost its logup_shout");
+        assert!(classic.opening.is_some());
+        let classic_statement = paper_statement(&classic_outcome);
+        assert_eq!(
+            classic_statement.trace_claim_root,
+            crate::claim_table::statement_claim_root(&classic_outcome.trace),
+            "classic paper statement must stay on the v1 root"
+        );
+        verify_native_unified(&classic_statement, &classic, 64).unwrap();
+        // Same-binary determinism: a re-prove under the same switch is identical.
+        let classic_again = prove_unified_trace_paper(&classic_outcome.trace, 64).unwrap();
+        assert_eq!(
+            bincode::serialize(&classic).unwrap(),
+            bincode::serialize(&classic_again).unwrap(),
+            "classic paper wire is not deterministic"
+        );
+        std::env::remove_var("MAGNETAR_CLASSIC_LOGUP");
+
+        // --- A/B shape: the committed proof replaces the classic opening ---
+        let committed_bytes =
+            bincode::serialize(&proof.committed_logup_shout).unwrap().len();
+        let classic_logup_bytes = bincode::serialize(&classic.logup_shout).unwrap().len();
+        eprintln!(
+            "paper wire: committed_logup_shout={committed_bytes}B \
+             classic logup_shout={classic_logup_bytes}B"
+        );
+        let default_total = bincode::serialize(&proof).unwrap().len();
+        let classic_total = bincode::serialize(&classic).unwrap().len();
+        eprintln!("paper proof: default={default_total}B classic={classic_total}B");
+        assert!(
+            default_total <= classic_total,
+            "committed paper proof grew: {default_total} > {classic_total}"
+        );
+        // Aux-claim symmetry: skipping the classic Shout stage must not leave
+        // orphan table batches and must not grow the mosaic opening.
         assert!(
             proof.table_batches.len() <= classic.table_batches.len(),
-            "opt-in paper proof carries more table batches than classic: {} > {}",
-            proof.table_batches.len(),
-            classic.table_batches.len()
-        );
-        let opt_opening = bincode::serialize(&proof.opening).unwrap();
-        let classic_opening = bincode::serialize(&classic.opening).unwrap();
-        assert!(
-            opt_opening.len() <= classic_opening.len(),
-            "opt-in paper opening grew: {} > {}",
-            opt_opening.len(),
-            classic_opening.len()
+            "default paper proof carries more table batches than classic"
         );
         assert!(
-            proof.opening.is_some(),
-            "opt-in paper proof lost its mosaic opening"
+            bincode::serialize(&proof.opening).unwrap().len()
+                <= bincode::serialize(&classic.opening).unwrap().len(),
+            "default paper opening grew versus classic"
         );
 
-        // 2. ROM binding chain: the committed path no longer folds a ROM claim
-        //    into the mosaic opening; the ROM is bound by the host-derived
-        //    `T_word` table + the O(rom) check + the statement v3 root. A tampered
-        //    statement ROM must be rejected.
-        let mut bad_rom = outcome.statement.clone();
+        // ROM binding chain: the committed path drops the ROM claim folded into
+        // the mosaic opening and binds the ROM through `T_word`, the O(rom) check
+        // and the v3 statement root instead, so a tampered statement ROM and a
+        // stripped committed proof must both be rejected.
+        let mut bad_rom = statement.clone();
         bad_rom.rom[0] ^= 1;
         assert!(
             verify_native_unified(&bad_rom, &proof, 64).is_err(),
             "tampered statement ROM accepted on the committed path"
         );
+        let mut stripped = proof.clone();
+        stripped.committed_logup_shout = None;
+        assert!(
+            verify_native_unified(&statement, &stripped, 64).is_err(),
+            "paper proof stripped of its committed Shout accepted against the v3 statement"
+        );
+    }
 
+    /// File-level tamper matrix for the M4b committed linear Shout, through the
+    /// top-level verifiers. Ignored because it complements the ignored A/B test
+    /// and both are cheaper to run with `--ignored --test-threads=1`.
+    #[test]
+    #[ignore = "full tamper matrix: run with --ignored --test-threads=1"]
+    fn paper_committed_shout_tamper_matrix() {
+        std::env::remove_var("MAGNETAR_CLASSIC_LOGUP");
         std::env::remove_var("MAGNETAR_LINEAR_SHOUT");
+        assert!(
+            paper_committed_logup_enabled(),
+            "tamper matrix expects the M4b paper default"
+        );
+        let outcome = ReferencePipeline::run(&program(), config(), 1).unwrap();
+        let proof = prove_unified_trace_paper(&outcome.trace, 64).unwrap();
+        let statement = paper_statement(&outcome);
+        verify_native_unified(&statement, &proof, 64).expect("tamper baseline (statement path)");
+
+        // A second, self-consistent committed proof built for a different ROM.
+        // Its tables are internally valid, so only the host binding can reject
+        // it: this is the "swap the word/pos/pushforward table commitment" case.
+        let mut other_trace = outcome.trace.clone();
+        other_trace.rom[0] ^= 1;
+        let other = committed_proof(&other_trace);
+        let mut bad = proof.clone();
+        bad.committed_logup_shout = Some(other.clone());
+        assert!(
+            verify_native_unified(&statement, &bad, 64).is_err(),
+            "swapped committed tables accepted by the statement verifier"
+        );
+
+        // Table commitment only (the opening still names the original one).
+        let mut bad = proof.clone();
+        bad.committed_logup_shout.as_mut().unwrap().table_commitment =
+            other.table_commitment.clone();
+        assert!(verify_native_unified(&statement, &bad, 64).is_err());
+
+        // Opening commitment swap.
+        let mut bad = proof.clone();
+        bad.committed_logup_shout.as_mut().unwrap().opening.commitment =
+            other.opening.commitment.clone();
+        assert!(verify_native_unified(&statement, &bad, 64).is_err());
+
+        // Reader claim.
+        let mut bad = proof.clone();
+        {
+            let committed = bad.committed_logup_shout.as_mut().unwrap();
+            committed.reader_claim = committed.reader_claim + F2_128::from(1u64);
+        }
+        assert!(verify_native_unified(&statement, &bad, 64).is_err());
+
+        // Reader point (public FS point).
+        let mut bad = proof.clone();
+        {
+            let committed = bad.committed_logup_shout.as_mut().unwrap();
+            committed.reader_point[0] = committed.reader_point[0] + F2_128::from(1u64);
+        }
+        assert!(verify_native_unified(&statement, &bad, 64).is_err());
+
+        // Pushforward values at the fraction-reduction table-block points.
+        let mut bad = proof.clone();
+        {
+            let committed = bad.committed_logup_shout.as_mut().unwrap();
+            committed.reduction_evals[0] = committed.reduction_evals[0] + F2_128::from(1u64);
+        }
+        assert!(verify_native_unified(&statement, &bad, 64).is_err());
+
+        // Pushforward values at the product sumcheck points.
+        let mut bad = proof.clone();
+        {
+            let committed = bad.committed_logup_shout.as_mut().unwrap();
+            committed.product_evals[0] = committed.product_evals[0] + F2_128::from(1u64);
+        }
+        assert!(verify_native_unified(&statement, &bad, 64).is_err());
+
+        // Logup* product sumcheck claimed sum.
+        let mut bad = proof.clone();
+        {
+            let committed = bad.committed_logup_shout.as_mut().unwrap();
+            committed.logup.product.claimed_sum = committed.logup.product.claimed_sum
+                + p3_binary_field::BinaryField128::from_repr(1u128);
+        }
+        assert!(verify_native_unified(&statement, &bad, 64).is_err());
+
+        // Claim table commitment (the v1 component of the composed root).
+        let mut bad = proof.clone();
+        {
+            let table = bad.claim_proof.as_mut().unwrap().table.as_mut().unwrap();
+            table.root[0] ^= 1;
+        }
+        assert!(verify_native_unified(&statement, &bad, 64).is_err());
+
+        // Statement root and statement ROM.
+        let mut bad_statement = statement.clone();
+        bad_statement.trace_claim_root[0] ^= 1;
+        assert!(verify_native_unified(&bad_statement, &proof, 64).is_err());
+        let mut bad_statement = statement.clone();
+        bad_statement.rom[0] ^= 1;
+        assert!(verify_native_unified(&bad_statement, &proof, 64).is_err());
+
+        // Missing committed node once the paper wire expects it.
+        let mut bad = proof.clone();
+        bad.committed_logup_shout = None;
+        assert!(verify_native_unified(&statement, &bad, 64).is_err());
+
+        // Classic/committed coexistence is rejected (both directions are also
+        // covered by the non-ignored test; here it guards the default wire).
+        let mut bad = proof.clone();
+        bad.logup_shout = Some(classic_logup_proof(&outcome.trace));
+        assert!(verify_native_unified(&statement, &bad, 64).is_err());
+
+        // Trace-carrying verifier binding (Q2 fix). No current prover emits a
+        // committed proof that this verifier can parse: paper proofs carry the
+        // register-derived claim blob (no `claims.verify()` form) and the native
+        // dynamic path drops the classic Shout fields, which trips
+        // `UnifiedVerifyContext`'s Shout-presence check. Exercise the branch
+        // directly: attach a committed proof to the eager unified proof (its
+        // classic Shout fields satisfy the presence check) and swap its tables.
+        let rows_root = crate::claim_table::claim_rows_root(&outcome.trace);
+        // The trace verifier checks `trace_claim_root` before the committed
+        // binding, so each tampered proof must first be re-rooted to its own
+        // table commitment or it would be rejected by the root check instead of
+        // the host binding under test.
+        let root_with = |committed: &crate::logup_shout::CommittedLogupShoutProof| {
+            crate::claim_table::claim_shout_v3_root(
+                &rows_root,
+                &crate::logup_shout::committed_tables_root(&committed.table_commitment),
+            )
+        };
+        let mut eager = prove_unified_trace(&outcome.trace, 64).unwrap();
+        let eager_committed = committed_proof(&outcome.trace);
+        eager.committed_logup_shout = Some(eager_committed);
+        eager.trace_claim_root = root_with(eager.committed_logup_shout.as_ref().unwrap());
+        verify_unified_trace(&outcome.trace, &eager, 64).expect("trace-path committed baseline");
+        let error = {
+            let mut bad = eager.clone();
+            bad.committed_logup_shout.as_mut().unwrap().table_commitment =
+                other.table_commitment.clone();
+            bad.trace_claim_root = root_with(bad.committed_logup_shout.as_ref().unwrap());
+            verify_unified_trace(&outcome.trace, &bad, 64).unwrap_err()
+        };
+        assert!(
+            format!("{error:?}").contains("do not match the trace"),
+            "unexpected trace-path error: {error:?}"
+        );
+        let error = {
+            let mut bad = eager.clone();
+            bad.committed_logup_shout = Some(other.clone());
+            bad.trace_claim_root = root_with(bad.committed_logup_shout.as_ref().unwrap());
+            verify_unified_trace(&outcome.trace, &bad, 64).unwrap_err()
+        };
+        assert!(
+            format!("{error:?}").contains("do not match the trace"),
+            "unexpected trace-path error: {error:?}"
+        );
+
+        // Baseline still verifies after all the clones.
+        verify_native_unified(&statement, &proof, 64).expect("baseline proof must still verify");
     }
 }
 

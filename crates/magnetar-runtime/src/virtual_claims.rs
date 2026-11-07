@@ -210,21 +210,24 @@ mod virtual_cpu_tests {
 
     #[test]
     fn unified_virtual_cpu_layer_round_trips() {
-        let program = ProgramImage::new(
-            0x1000,
-            vec![
+        // The paper path defaults to the committed linear Shout (M4b), whose PCS
+        // folding factor needs at least 2^3 committed tables: a 2-instruction
+        // trace is below that minimum, so use a real-size trace.
+        let mut rom = (0..200)
+            .map(|index| {
                 Instruction {
                     op: Op::Addi,
                     rd: 1,
-                    rs1: 0,
+                    rs1: 1,
                     rs2: 0,
-                    imm: 7,
+                    imm: index + 1,
                     shamt: 0,
                 }
-                .encode(),
-                Instruction::new(Op::Ecall).encode(),
-            ],
-        );
+                .encode()
+            })
+            .collect::<Vec<_>>();
+        rom.push(Instruction::new(Op::Ecall).encode());
+        let program = ProgramImage::new(0x1000, rom);
         let trace = execute(
             &program,
             MachineConfig {
@@ -233,7 +236,7 @@ mod virtual_cpu_tests {
                 ram_base: 0x1000_0000,
                 ram_size: 0x40,
                 stack_top: 0x1000_0040,
-                max_cycles: 100,
+                max_cycles: 10_000,
             },
         )
         .unwrap();

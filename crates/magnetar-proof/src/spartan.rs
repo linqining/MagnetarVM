@@ -2382,21 +2382,19 @@ pub fn verify_lockstep_bits_with_witness_claim<B: BitPcs>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-fn verify_lockstep_bits_with_replacements_point_inner<B: BitPcs>(
+/// Rows/cols consistency shared by every lockstep bits verifier.
+///
+/// Keeps the original comparison set verbatim: the proof's `b1`/`c1` matrices
+/// were never compared (they are built together with `a1`), so this stays a
+/// shape check of the same strictness rather than a new rejection rule.
+fn lockstep_bits_dimensions(
     a0: &dyn SpartanMatrix,
     b0: &dyn SpartanMatrix,
     c0: &dyn SpartanMatrix,
     a1: &dyn SpartanMatrix,
-    b1: &dyn SpartanMatrix,
-    c1: &dyn SpartanMatrix,
-    layout: &WitnessLayout,
-    proof: &LockstepProof<B::Commitment, B::Opening>,
-    backend: &B,
-    replacements: &[Option<F2_128>],
-    witness_bits: Option<&crate::PackedBits>,
-    claim: Option<(&crate::stream::LinearClaim, F2_128)>,
-) -> Result<Vec<F2_128>, SpartanError> {
+    _b1: &dyn SpartanMatrix,
+    _c1: &dyn SpartanMatrix,
+) -> Result<(), SpartanError> {
     if a0.rows() != a1.rows()
         || b0.rows() != a1.rows()
         || c0.rows() != a1.rows()
@@ -2406,6 +2404,32 @@ fn verify_lockstep_bits_with_replacements_point_inner<B: BitPcs>(
     {
         return Err(SpartanError::Dimensions);
     }
+    Ok(())
+}
+
+/// Transcript, sum-check and segment-claim part of the lockstep bits verifier.
+///
+/// Deliberately free of the `Sync` bounds the PCS check needs (M6): the
+/// verifier keeps the matrices on the calling thread and only overlaps the
+/// backend opening check with the matrix evaluations.
+struct LockstepBitsChallenges {
+    rx: Vec<F2_128>,
+    ry: Vec<F2_128>,
+    r0: F2_128,
+    r1: F2_128,
+    alpha: F2_128,
+    vw: F2_128,
+    inner_final: F2_128,
+}
+
+fn lockstep_bits_challenges<B: BitPcs>(
+    a0: &dyn SpartanMatrix,
+    layout: &WitnessLayout,
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    backend: &B,
+    replacements: &[Option<F2_128>],
+    claim: Option<(&crate::stream::LinearClaim, F2_128)>,
+) -> Result<LockstepBitsChallenges, SpartanError> {
     let row_bits = a0.rows().trailing_zeros() as usize;
     let transcript = RefCell::new(Sha256Transcript::new("lockstep-reference-v1"));
     let tau = {
@@ -2482,26 +2506,72 @@ fn verify_lockstep_bits_with_replacements_point_inner<B: BitPcs>(
     if profile {
         eprintln!("lockstep verify claims: {:?}", claim_started.elapsed());
     }
+    Ok(LockstepBitsChallenges {
+        rx,
+        ry,
+        r0,
+        r1,
+        alpha,
+        vw,
+        inner_final,
+    })
+}
+
+/// The six matrix MLE evaluations at `(rx, ry)` (worker-parallel; no `Sync`
+/// bound on the backend, so it stays on the calling thread).
+fn lockstep_bits_evaluations(
+    a0: &dyn SpartanMatrix,
+    b0: &dyn SpartanMatrix,
+    c0: &dyn SpartanMatrix,
+    a1: &dyn SpartanMatrix,
+    b1: &dyn SpartanMatrix,
+    c1: &dyn SpartanMatrix,
+    challenges: &LockstepBitsChallenges,
+) -> Result<[F2_128; 6], SpartanError> {
+    let profile = std::env::var_os("MAGNETAR_PROFILE_VERIFY").is_some();
     let eval_started = std::time::Instant::now();
-    let [a0_at, b0_at, c0_at, a1_at, b1_at, c1_at] =
-        eval_mles_parallel(a0, b0, c0, a1, b1, c1, &rx, &ry)?;
+    let evaluations = eval_mles_parallel(
+        a0,
+        b0,
+        c0,
+        a1,
+        b1,
+        c1,
+        &challenges.rx,
+        &challenges.ry,
+    )?;
     if profile {
         eprintln!("lockstep verify eval_mles: {:?}", eval_started.elapsed());
     }
+    Ok(evaluations)
+}
+
+/// Inner-sum-check / folded-claim / witness checks on top of the evaluations.
+fn lockstep_bits_finalize(
+    challenges: &LockstepBitsChallenges,
+    [a0_at, b0_at, c0_at, a1_at, b1_at, c1_at]: [F2_128; 6],
+    claim: Option<(&crate::stream::LinearClaim, F2_128)>,
+    witness_bits: Option<&crate::PackedBits>,
+) -> Result<(), SpartanError> {
     let claim_at = if let Some((claim, gamma)) = claim {
-        if claim.row_point.len() > ry.len() {
+        if claim.row_point.len() > challenges.ry.len() {
             return Err(SpartanError::Dimensions);
         }
-        let log_block = ry.len() - claim.row_point.len();
-        gamma * claim.eval(&ry[..log_block], &ry[log_block..])
+        let log_block = challenges.ry.len() - claim.row_point.len();
+        gamma * claim.eval(&challenges.ry[..log_block], &challenges.ry[log_block..])
     } else {
         F2_128::from(0u64)
     };
-    let expected_inner =
-        (a0_at + r0 * b0_at + r0 * r0 * c0_at + alpha * (a1_at + r1 * b1_at + r1 * r1 * c1_at)
-            + claim_at)
-            * vw;
-    if inner_final != expected_inner {
+    let expected_inner = (a0_at
+        + challenges.r0 * b0_at
+        + challenges.r0 * challenges.r0 * c0_at
+        + challenges.alpha
+            * (a1_at
+                + challenges.r1 * b1_at
+                + challenges.r1 * challenges.r1 * c1_at)
+        + claim_at)
+        * challenges.vw;
+    if challenges.inner_final != expected_inner {
         return Err(SpartanError::Verification("lockstep inner mismatch"));
     }
     if let Some(bits) = witness_bits {
@@ -2509,19 +2579,108 @@ fn verify_lockstep_bits_with_replacements_point_inner<B: BitPcs>(
             .map(|index| F2_128::from(u64::from(bits.get(index))))
             .collect::<Vec<_>>();
         let mle = Mle::new(values)?;
-        if mle.eval(&ry)? != vw {
+        if mle.eval(&challenges.ry)? != challenges.vw {
             return Err(SpartanError::Verification("lockstep witness eval mismatch"));
         }
     }
+    Ok(())
+}
+
+/// PCS opening check; callers report its rejection after the inner checks so
+/// the error order matches the straight-line verifier.
+fn lockstep_bits_pcs<B: BitPcs>(
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    backend: &B,
+    challenges: &LockstepBitsChallenges,
+) -> Result<bool, SpartanError> {
+    let profile = std::env::var_os("MAGNETAR_PROFILE_VERIFY").is_some();
     let pcs_started = std::time::Instant::now();
-    if !backend.verify(&proof.commitment, &ry, vw, &proof.opening)? {
-        return Err(SpartanError::Verification("lockstep PCS opening rejected"));
-    }
+    let ok = backend.verify(
+        &proof.commitment,
+        &challenges.ry,
+        challenges.vw,
+        &proof.opening,
+    )?;
     if profile {
         eprintln!("lockstep verify pcs: {:?}", pcs_started.elapsed());
     }
-    Ok(ry)
+    Ok(ok)
 }
+
+#[allow(clippy::too_many_arguments)]
+fn verify_lockstep_bits_with_replacements_point_inner<B: BitPcs>(
+    a0: &dyn SpartanMatrix,
+    b0: &dyn SpartanMatrix,
+    c0: &dyn SpartanMatrix,
+    a1: &dyn SpartanMatrix,
+    b1: &dyn SpartanMatrix,
+    c1: &dyn SpartanMatrix,
+    layout: &WitnessLayout,
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    backend: &B,
+    replacements: &[Option<F2_128>],
+    witness_bits: Option<&crate::PackedBits>,
+    claim: Option<(&crate::stream::LinearClaim, F2_128)>,
+) -> Result<Vec<F2_128>, SpartanError> {
+    lockstep_bits_dimensions(a0, b0, c0, a1, b1, c1)?;
+    let challenges = lockstep_bits_challenges(a0, layout, proof, backend, replacements, claim)?;
+    let evaluations = lockstep_bits_evaluations(a0, b0, c0, a1, b1, c1, &challenges)?;
+    lockstep_bits_finalize(&challenges, evaluations, claim, witness_bits)?;
+    if !lockstep_bits_pcs(proof, backend, &challenges)? {
+        return Err(SpartanError::Verification("lockstep PCS opening rejected"));
+    }
+    Ok(challenges.ry)
+}
+
+/// M6: lockstep bits verifier that overlaps the PCS opening check with the six
+/// matrix MLE evaluations on a second thread. The matrices stay on the calling
+/// thread (so no `Sync` bound is added to the matrix trait objects), which is
+/// why only the backend and its wire types need `Sync`. A same-binary
+/// `MAGNETAR_VERIFY_SERIAL=1` forces the serial order for wall A/B.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_lockstep_bits_with_replacements_claim_point_parallel<B: BitPcs>(
+    a0: &dyn SpartanMatrix,
+    b0: &dyn SpartanMatrix,
+    c0: &dyn SpartanMatrix,
+    a1: &dyn SpartanMatrix,
+    b1: &dyn SpartanMatrix,
+    c1: &dyn SpartanMatrix,
+    layout: &WitnessLayout,
+    proof: &LockstepProof<B::Commitment, B::Opening>,
+    backend: &B,
+    replacements: &[Option<F2_128>],
+    claim: Option<(&crate::stream::LinearClaim, F2_128)>,
+) -> Result<Vec<F2_128>, SpartanError>
+where
+    B: Sync,
+    B::Commitment: Sync,
+    B::Opening: Sync,
+{
+    lockstep_bits_dimensions(a0, b0, c0, a1, b1, c1)?;
+    let challenges = lockstep_bits_challenges(a0, layout, proof, backend, replacements, claim)?;
+    let parallel = std::env::var_os("MAGNETAR_VERIFY_SERIAL").is_none();
+    let (evaluations, pcs_ok) = std::thread::scope(|scope| {
+        let pcs = if parallel {
+            Some(scope.spawn(|| lockstep_bits_pcs(proof, backend, &challenges)))
+        } else {
+            None
+        };
+        let evaluations = lockstep_bits_evaluations(a0, b0, c0, a1, b1, c1, &challenges)?;
+        let pcs_ok = match pcs {
+            Some(handle) => handle
+                .join()
+                .map_err(|_| SpartanError::Verification("lockstep PCS worker panicked"))??,
+            None => lockstep_bits_pcs(proof, backend, &challenges)?,
+        };
+        Ok::<_, SpartanError>((evaluations, pcs_ok))
+    })?;
+    lockstep_bits_finalize(&challenges, evaluations, claim, None)?;
+    if !pcs_ok {
+        return Err(SpartanError::Verification("lockstep PCS opening rejected"));
+    }
+    Ok(challenges.ry)
+}
+
 
 #[allow(clippy::too_many_arguments)]
 pub fn verify_lockstep_with_matrices<P: Pcs>(

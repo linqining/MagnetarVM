@@ -622,6 +622,7 @@ pub use spartan::{
     prove_lockstep_with_matrices, prove_shared_simd_spartan, prove_spartan, prove_spartan_bits,
     prove_spartan_with_matrices, verify_lockstep, verify_lockstep_bits,
     verify_lockstep_bits_with_replacements, verify_lockstep_bits_with_replacements_claim_point,
+    verify_lockstep_bits_with_replacements_claim_point_parallel,
     verify_lockstep_bits_with_replacements_point, verify_lockstep_bits_with_witness,
     verify_lockstep_bits_with_witness_claim,
     verify_lockstep_claims, verify_lockstep_segments, verify_lockstep_with_matrices,

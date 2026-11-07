@@ -1,7 +1,7 @@
 use magnetar_executor::execute;
 use magnetar_runtime::{
-    access_statement::AccessStatement, program_hash, prove_unified_trace_paper, trace_digest,
-    verify_native_unified, Statement,
+    access_statement::AccessStatement, paper_committed_logup_enabled, paper_statement_claim_root,
+    program_hash, prove_unified_trace_paper, trace_digest, verify_native_unified, Statement,
 };
 use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
 
@@ -33,7 +33,30 @@ fn paper_mode_committed_shout_round_trips() {
     };
     let trace = execute(&program, config).unwrap();
     let proof = prove_unified_trace_paper(&trace, 64).unwrap();
-    assert!(proof.logup_shout.is_some());
+    // Dual-mode: M4b committed linear Shout is the paper default;
+    // `MAGNETAR_CLASSIC_LOGUP=1` restores the pre-flip classic wire, so the same
+    // suite is run once for each leg of the A/B.
+    if paper_committed_logup_enabled() {
+        assert!(
+            proof.committed_logup_shout.is_some(),
+            "paper default dropped the committed linear Shout"
+        );
+        assert!(
+            proof.logup_shout.is_none(),
+            "paper default still carries the classic logup_shout"
+        );
+        assert!(proof.shout.is_none());
+        assert!(proof.packed_shout.is_none());
+    } else {
+        assert!(
+            proof.committed_logup_shout.is_none(),
+            "classic paper wire carries the committed linear Shout"
+        );
+        assert!(
+            proof.logup_shout.is_some(),
+            "classic paper wire lost its logup_shout"
+        );
+    }
     assert!(proof.trace_logup_shout.is_none());
     assert!(proof.claim_proof.is_some());
     assert!(proof.selected_cpu.is_some());
@@ -42,7 +65,7 @@ fn paper_mode_committed_shout_round_trips() {
         program_hash: program_hash(&program),
         rom: trace.rom.clone(),
         trace_commitment: trace_digest(&trace),
-        trace_claim_root: magnetar_runtime::claim_table::statement_claim_root(&trace),
+        trace_claim_root: paper_statement_claim_root(&trace, 64),
         access_statement_digest: AccessStatement::from_trace(&trace).digest(),
         config: trace.config.clone(),
         initial_state: trace.initial_state.clone(),
