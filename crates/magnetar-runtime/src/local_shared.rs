@@ -239,6 +239,14 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
     let eq_flat = repeated_blocks(&eq, cells, cycles);
     let mut factors = vec![eq_flat, write_flat.clone(), inc_flat, val_flat.clone(), read_flat];
     profile.mark("rw factors", started.elapsed());
+    if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
+        eprintln!(
+            "local factors: {} dense arrays of {} fields, {}",
+            factors.len(),
+            cells * cycles,
+            crate::memory_gib()
+        );
+    }
     let started = std::time::Instant::now();
     let gamma_copy = gamma;
     let (rw_rounds, rw_challenges) = sumcheck_terms_indexed(
@@ -257,6 +265,9 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
     let rk = rw_challenges[cycle_bits..].to_vec();
     let rj = rw_challenges[..cycle_bits].to_vec();
     let val_claim = eval_mle(&val_flat, &rj.iter().chain(&rk).copied().collect::<Vec<_>>());
+    if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
+        eprintln!("local after rw sumcheck: {}", crate::memory_gib());
+    }
     let eq_rj = eq_vector(&rj, cycles);
     let mut suffix = vec![F2_128::from(0u64); cycles];
     let mut running = F2_128::from(0u64);
@@ -423,6 +434,9 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
             eq_cell_flat[index] = *eq_value;
             inc_cell_flat[index] = *inc_value;
         }
+    }
+    if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
+        eprintln!("local final factors ready: {}", crate::memory_gib());
     }
     let final_rounds = {
         let mut final_factors = vec![eq_cell_flat, write_flat, inc_cell_flat];

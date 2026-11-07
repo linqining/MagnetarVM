@@ -436,6 +436,21 @@ that is ~134 MiB per array, ~0.8-1.0 GiB live for one twist alone at
 Access stage still materialises the dense form), which is route (h)-adjacent
 and byte-neutral by construction.
 
+**A rejected micro-optimisation, recorded so it is not retried.** The Access
+prover keeps `write_flat` and `val_flat` (two of the five `cells * cycles`
+factor arrays) alive across the sum-check by cloning them into the factor list.
+Moving them into the factor list and rebuilding them afterwards was implemented
+and A/B-ed (`MAGNETAR_KEEP_LOCAL_FLATS`): the live footprint at the factor
+build drops 3.74 -> 3.65 GiB, but the final-factor point goes 3.95 -> 3.97 GiB,
+the end-to-end peak is unchanged (3.95 vs 3.97 GiB) and the local prover's CPU
+rises ~3 s at `2^17`. **Rejected**: the Access transient is not dominated by
+those two extra arrays but by the overlap with the selected products and the
+main-thread context, so the only real fix is a streaming/virtual-one-hot Access
+prover (compute the cell-dimension sum-check rounds directly from the witness
+instead of materialising `cells * cycles`), not an array-lifetime change.
+`MAGNETAR_PROFILE_LOCAL=1` now prints the milestone memory (`local factors`,
+`local after rw sumcheck`, `local final factors ready`) for that future work.
+
 **Where the remaining memory work must go:** the `2^17` peak is split between
 (a) the main thread's mosaic Opening re-encode/Merkle transient and resident
 mosaic tables (route (c)/(h): bit-packing the mosaic tables shrinks both the
