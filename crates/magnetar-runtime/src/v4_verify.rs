@@ -142,38 +142,11 @@ pub(crate) fn verify_native_unified_v4(
     // same first error. `MAGNETAR_VERIFY_SERIAL=1` restores the straight-line
     // order for a same-binary wall A/B.
     let serial = std::env::var_os("MAGNETAR_VERIFY_SERIAL").is_some();
-
-    // M6: the folded claim is derived from `claim_relation_inputs` (challenges
-    // and the selected commitment, all public/proof-carried); the claim table
-    // check is what authenticates the same target, so this derivation and the
-    // table check are a conjunction and may run concurrently.
-    let stage = crate::verify_profile::Stage::new("v4 claim inputs");
-    let claim_inputs = crate::claim_table::claim_relation_inputs(selected, width)?;
-    let dynamic_claim = crate::claim_table::folding_claim_from_inputs(&claim_inputs);
-    stage.finish();
-
     let backend = crate::protocol::selected_backend();
     let access = || {
         let stage = crate::verify_profile::Stage::new("v4 access");
         let result =
             crate::access_verify::verify_access_committed(statement, proof, &proof.commitment);
-        stage.finish();
-        result
-    };
-    let claim_table_check = || {
-        let stage = crate::verify_profile::Stage::new("v4 claim table");
-        let result = crate::claim_table::verify_claim_table_with(table, &claim_inputs);
-        stage.finish();
-        result
-    };
-    let selected_check = || {
-        let stage = crate::verify_profile::Stage::new("v4 selected binding");
-        let result = crate::simd_dual::verify_dynamic_claim_binding_prepared(
-            selected,
-            &dynamic_claim,
-            &backend,
-        )
-        .map_err(|error| RuntimeError::Proof(format!("selected verifier: {error}")));
         stage.finish();
         result
     };
@@ -206,25 +179,76 @@ pub(crate) fn verify_native_unified_v4(
         stage.finish();
         result
     };
+
     if serial {
+        // Straight-line order, identical to the pre-M6 verifier.
+        let stage = crate::verify_profile::Stage::new("v4 claim inputs");
+        let claim_inputs = crate::claim_table::claim_relation_inputs(selected, width)?;
+        let dynamic_claim = crate::claim_table::folding_claim_from_inputs(&claim_inputs);
+        stage.finish();
         access()?;
-        claim_table_check()?;
-        selected_check()?;
+        let stage = crate::verify_profile::Stage::new("v4 claim table");
+        let claim_result = crate::claim_table::verify_claim_table_with(table, &claim_inputs);
+        stage.finish();
+        claim_result?;
+        let stage = crate::verify_profile::Stage::new("v4 selected binding");
+        let selected_result = crate::simd_dual::verify_dynamic_claim_binding_prepared(
+            selected,
+            &dynamic_claim,
+            &backend,
+        )
+        .map_err(|error| RuntimeError::Proof(format!("selected verifier: {error}")));
+        stage.finish();
+        selected_result?;
         shout_check()?;
         core_check()?;
         return Ok(());
     }
+
     let (access_result, claim_result, selected_result, shout_result, core_result) =
         std::thread::scope(|scope| {
+            // M6: the selected segment row/matrices are independent of the claim
+            // table and the transcript, so build them on a worker thread while
+            // the other checks run.
+            let prepare = scope.spawn(|| crate::simd_dual::prepare_dynamic_segments(selected));
             let access = scope.spawn(access);
-            let claim_table = scope.spawn(claim_table_check);
-            let selected = scope.spawn(selected_check);
+            // The claim-derivation challenges are public/proof-carried; the
+            // claim-table check and the selected binding are a conjunction, so
+            // this job derives the folded claim once and hands it to the
+            // selected job *before* its own (slow) opening check starts.
+            let (claim_tx, claim_rx) =
+                std::sync::mpsc::channel::<crate::simd_dual::DynamicClaim>();
+            let claim_table = scope.spawn(move || {
+                let stage = crate::verify_profile::Stage::new("v4 claim table");
+                let inputs = crate::claim_table::claim_relation_inputs(selected, width)?;
+                let dynamic_claim = crate::claim_table::folding_claim_from_inputs(&inputs);
+                let _ = claim_tx.send(dynamic_claim);
+                let result = crate::claim_table::verify_claim_table_with(table, &inputs);
+                stage.finish();
+                result
+            });
+            let selected_check = scope.spawn(move || {
+                let stage = crate::verify_profile::Stage::new("v4 selected binding");
+                let prepared = join_stage(prepare)?;
+                let dynamic_claim = claim_rx.recv().map_err(|_| {
+                    RuntimeError::Proof("claim derivation worker exited".into())
+                })?;
+                let result = crate::simd_dual::verify_prepared_dynamic_claim_binding(
+                    selected,
+                    &dynamic_claim,
+                    &backend,
+                    &prepared,
+                )
+                .map_err(|error| RuntimeError::Proof(format!("selected verifier: {error}")));
+                stage.finish();
+                result
+            });
             let shout = scope.spawn(shout_check);
             let core = scope.spawn(core_check);
             (
                 join_stage(access),
                 join_stage(claim_table),
-                join_stage(selected),
+                join_stage(selected_check),
                 join_stage(shout),
                 join_stage(core),
             )
@@ -238,9 +262,9 @@ pub(crate) fn verify_native_unified_v4(
 }
 
 /// Join one spawned verifier stage, turning a panic into a proof error.
-fn join_stage(
-    handle: std::thread::ScopedJoinHandle<'_, Result<(), RuntimeError>>,
-) -> Result<(), RuntimeError> {
+fn join_stage<T>(
+    handle: std::thread::ScopedJoinHandle<'_, Result<T, RuntimeError>>,
+) -> Result<T, RuntimeError> {
     handle
         .join()
         .map_err(|_| RuntimeError::Proof("verifier stage panicked".into()))?

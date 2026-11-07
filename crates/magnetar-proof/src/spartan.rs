@@ -2412,7 +2412,12 @@ fn lockstep_bits_dimensions(
 /// Deliberately free of the `Sync` bounds the PCS check needs (M6): the
 /// verifier keeps the matrices on the calling thread and only overlaps the
 /// backend opening check with the matrix evaluations.
-struct LockstepBitsChallenges {
+///
+/// M6 phase API: public so a caller (the runtime's v4 verifier) can run the
+/// challenge phase, the PCS check and the matrix evaluations as separate
+/// concurrent steps. Fields stay private; an external caller only passes the
+/// value back to the other phase functions.
+pub struct LockstepBitsChallenges {
     rx: Vec<F2_128>,
     ry: Vec<F2_128>,
     r0: F2_128,
@@ -2422,21 +2427,34 @@ struct LockstepBitsChallenges {
     inner_final: F2_128,
 }
 
-fn lockstep_bits_challenges<B: BitPcs>(
-    a0: &dyn SpartanMatrix,
+impl LockstepBitsChallenges {
+    /// The inner sum-check point (the point the PCS opening is checked at).
+    pub fn row_point(&self) -> &[F2_128] {
+        &self.ry
+    }
+}
+
+/// M6 phase API: transcript, sum-check and segment-claim phase.
+///
+/// Takes the matrix shape (`rows`, `cols`) rather than the matrices, so a
+/// caller that still has to build them can run this phase first and hand its
+/// result to [`lockstep_bits_pcs`] on a worker thread.
+pub fn lockstep_bits_challenges<B: BitPcs>(
+    rows: usize,
+    cols: usize,
     layout: &WitnessLayout,
     proof: &LockstepProof<B::Commitment, B::Opening>,
     backend: &B,
     replacements: &[Option<F2_128>],
     claim: Option<(&crate::stream::LinearClaim, F2_128)>,
 ) -> Result<LockstepBitsChallenges, SpartanError> {
-    let row_bits = a0.rows().trailing_zeros() as usize;
+    let row_bits = rows.trailing_zeros() as usize;
     let transcript = RefCell::new(Sha256Transcript::new("lockstep-reference-v1"));
     let tau = {
         let mut transcript = transcript.borrow_mut();
         transcript.absorb("commitment", &backend.commitment_bytes(&proof.commitment));
-        transcript.absorb("rows", &(a0.rows() as u64).to_le_bytes());
-        transcript.absorb("cols", &(a0.cols() as u64).to_le_bytes());
+        transcript.absorb("rows", &(rows as u64).to_le_bytes());
+        transcript.absorb("cols", &(cols as u64).to_le_bytes());
         (0..row_bits)
             .map(|_| challenge_field(&mut transcript, "tau"))
             .collect::<Vec<_>>()
@@ -2480,7 +2498,7 @@ fn lockstep_bits_challenges<B: BitPcs>(
     let sparse_started = std::time::Instant::now();
     let (ry, inner_final) = verify_rounds(
         &proof.inner,
-        a0.cols().trailing_zeros() as usize,
+        cols.trailing_zeros() as usize,
         2,
         |round, values| round_challenge(&transcript, "inner-round", round, values),
     )?;
@@ -2517,9 +2535,9 @@ fn lockstep_bits_challenges<B: BitPcs>(
     })
 }
 
-/// The six matrix MLE evaluations at `(rx, ry)` (worker-parallel; no `Sync`
-/// bound on the backend, so it stays on the calling thread).
-fn lockstep_bits_evaluations(
+/// M6 phase API: the six matrix MLE evaluations at `(rx, ry)` (worker-parallel;
+/// no `Sync` bound on the backend, so it stays on the calling thread).
+pub fn lockstep_bits_evaluations(
     a0: &dyn SpartanMatrix,
     b0: &dyn SpartanMatrix,
     c0: &dyn SpartanMatrix,
@@ -2546,8 +2564,10 @@ fn lockstep_bits_evaluations(
     Ok(evaluations)
 }
 
-/// Inner-sum-check / folded-claim / witness checks on top of the evaluations.
-fn lockstep_bits_finalize(
+/// M6 phase API: inner-sum-check / folded-claim / witness checks on top of the
+/// evaluations. A PCS rejection is reported by the caller after this returns,
+/// preserving the straight-line verifier's error order.
+pub fn lockstep_bits_finalize(
     challenges: &LockstepBitsChallenges,
     [a0_at, b0_at, c0_at, a1_at, b1_at, c1_at]: [F2_128; 6],
     claim: Option<(&crate::stream::LinearClaim, F2_128)>,
@@ -2586,9 +2606,9 @@ fn lockstep_bits_finalize(
     Ok(())
 }
 
-/// PCS opening check; callers report its rejection after the inner checks so
-/// the error order matches the straight-line verifier.
-fn lockstep_bits_pcs<B: BitPcs>(
+/// M6 phase API: PCS opening check; callers report its rejection after the
+/// inner checks so the error order matches the straight-line verifier.
+pub fn lockstep_bits_pcs<B: BitPcs>(
     proof: &LockstepProof<B::Commitment, B::Opening>,
     backend: &B,
     challenges: &LockstepBitsChallenges,
@@ -2623,7 +2643,8 @@ fn verify_lockstep_bits_with_replacements_point_inner<B: BitPcs>(
     claim: Option<(&crate::stream::LinearClaim, F2_128)>,
 ) -> Result<Vec<F2_128>, SpartanError> {
     lockstep_bits_dimensions(a0, b0, c0, a1, b1, c1)?;
-    let challenges = lockstep_bits_challenges(a0, layout, proof, backend, replacements, claim)?;
+    let challenges =
+        lockstep_bits_challenges(a0.rows(), a0.cols(), layout, proof, backend, replacements, claim)?;
     let evaluations = lockstep_bits_evaluations(a0, b0, c0, a1, b1, c1, &challenges)?;
     lockstep_bits_finalize(&challenges, evaluations, claim, witness_bits)?;
     if !lockstep_bits_pcs(proof, backend, &challenges)? {
@@ -2657,7 +2678,8 @@ where
     B::Opening: Sync,
 {
     lockstep_bits_dimensions(a0, b0, c0, a1, b1, c1)?;
-    let challenges = lockstep_bits_challenges(a0, layout, proof, backend, replacements, claim)?;
+    let challenges =
+        lockstep_bits_challenges(a0.rows(), a0.cols(), layout, proof, backend, replacements, claim)?;
     let parallel = std::env::var_os("MAGNETAR_VERIFY_SERIAL").is_none();
     let (evaluations, pcs_ok) = std::thread::scope(|scope| {
         let pcs = if parallel {

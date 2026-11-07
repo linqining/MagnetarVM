@@ -625,10 +625,12 @@ pub use spartan::{
     verify_lockstep_bits_with_replacements_claim_point_parallel,
     verify_lockstep_bits_with_replacements_point, verify_lockstep_bits_with_witness,
     verify_lockstep_bits_with_witness_claim,
+    lockstep_bits_challenges, lockstep_bits_evaluations, lockstep_bits_finalize,
+    lockstep_bits_pcs,
     verify_lockstep_claims, verify_lockstep_segments, verify_lockstep_with_matrices,
     verify_shared_simd_spartan, verify_shared_simd_spartan_with_witnesses, verify_spartan,
-    verify_spartan_bits, verify_spartan_with_matrices, witness_vector, LockstepClaims,
-    LockstepProof, SparseMatrix, SpartanError, SpartanMatrix, SpartanProof,
+    verify_spartan_bits, verify_spartan_with_matrices, witness_vector, LockstepBitsChallenges,
+    LockstepClaims, LockstepProof, SparseMatrix, SpartanError, SpartanMatrix, SpartanProof,
 };
 
 /// Sum-check for `eq(x) * (a0*b0 - c0 + alpha * (a1*b1 - c1))`, degree three.

@@ -7480,17 +7480,39 @@ where
 
 /// Claim-aware form of [`verify_dynamic_segments_public_point`]: the caller
 /// supplies the folded claim and its batching coefficient.
-pub fn verify_dynamic_segments_public_claim_point<B: magnetar_proof::BitPcs + Sync>(
-    claims: &SelectedCpuClaims<B::Commitment, B::Opening>,
-    claim: Option<(&magnetar_proof::stream::LinearClaim, F2_128)>,
-    backend: &B,
-) -> Result<Vec<F2_128>, RuntimeError>
-where
-    B::Commitment: Sync,
-    B::Opening: Sync,
-{
-    use magnetar_proof::verify_lockstep_bits_with_replacements_claim_point_parallel;
+/// M6: the selected verifier's segment row/layout, built ahead of the lockstep
+/// check.
+///
+/// The construction is independent of the claim table and of the transcript, so
+/// the v4 verifier builds it on a worker thread while the access / claim-table /
+/// Shout / core checks run. The matrix construction is deferred to
+/// [`verify_prepared_dynamic_segments`], where it overlaps the PCS opening
+/// check. Plain data, so it moves between the worker and the verifier thread.
+pub(crate) struct PreparedDynamicSegments {
+    row: SegmentedDynamicRow,
+    matrix_cycles: usize,
+    rows: usize,
+    cols: usize,
+    layout: magnetar_constraint::WitnessLayout,
+}
 
+/// Shape of the shared block matrices `gated_shared_matrices_lazy` builds, without
+/// materializing them: `SPARSE_ROWS` are the padded constraint rows per
+/// instance and `extra` matches its extra-row count for a statement-bounded
+/// matrix. Used by the M6 prepared path to run the challenge phase before the
+/// matrices exist.
+fn gated_lazy_matrix_shape<R: GatedRowLike>(row: &R, cycles: usize) -> (usize, usize) {
+    let system = row.relation().to_system();
+    let base_rows = system.constraints.len().next_power_of_two().max(1);
+    let base_cols = (system.num_vars + 1).next_power_of_two().max(1);
+    let extra = cycles.saturating_sub(1) * row.width() + 2 * row.width();
+    ((base_rows * cycles + extra).next_power_of_two(), base_cols * cycles)
+}
+
+/// Build the selected segment row/layout (M6 prepare phase).
+pub(crate) fn prepare_dynamic_segments<C: Clone + std::fmt::Debug, O: Clone + std::fmt::Debug>(
+    claims: &SelectedCpuClaims<C, O>,
+) -> Result<PreparedDynamicSegments, RuntimeError> {
     if claims.op != SelectedOp::Dynamic {
         return Err(RuntimeError::Proof(
             "public dynamic verifier requires a dynamic claim bundle".into(),
@@ -7504,24 +7526,39 @@ where
     let stage = crate::verify_profile::Stage::new("selected segments row");
     let (row, _mapping, layout) = segmented_dynamic_row(claims.mask, claims.width, matrix_cycles)?;
     stage.finish();
-    let stage = crate::verify_profile::Stage::new("selected segment matrices");
-    let (_, s1, s2) = gated_shared_matrices_lazy(
-        &row,
-        matrix_cycles,
-        Some((claims.initial_pc, claims.final_pc)),
-    )?;
+    let stage = crate::verify_profile::Stage::new("selected segments shape");
+    let (rows, cols) = gated_lazy_matrix_shape(&row, matrix_cycles);
     stage.finish();
-    // M6: the six matrix MLE evaluations and the PCS opening check run on two
-    // threads inside the verifier (the matrices stay on this thread).
-    let stage = crate::verify_profile::Stage::new("selected lockstep bits");
-    let point = verify_lockstep_bits_with_replacements_claim_point_parallel(
-        &s1[0],
-        &s1[1],
-        &s1[2],
-        &s2[0],
-        &s2[1],
-        &s2[2],
-        &layout,
+    Ok(PreparedDynamicSegments {
+        row,
+        matrix_cycles,
+        rows,
+        cols,
+        layout,
+    })
+}
+
+/// Run the lockstep verifier on prebuilt segment data (M6 verify phase).
+///
+/// The challenge phase runs first (it only needs the matrix shape); then the
+/// PCS opening check runs on a worker thread while the segment matrices are
+/// built and their six MLE evaluations run here. Results are checked in the
+/// straight-line order (inner checks, then the PCS rejection).
+pub(crate) fn verify_prepared_dynamic_segments<B: magnetar_proof::BitPcs + Sync>(
+    claims: &SelectedCpuClaims<B::Commitment, B::Opening>,
+    prepared: &PreparedDynamicSegments,
+    claim: Option<(&magnetar_proof::stream::LinearClaim, F2_128)>,
+    backend: &B,
+) -> Result<Vec<F2_128>, RuntimeError>
+where
+    B::Commitment: Sync,
+    B::Opening: Sync,
+{
+    let stage = crate::verify_profile::Stage::new("selected lockstep challenges");
+    let challenges = magnetar_proof::lockstep_bits_challenges(
+        prepared.rows,
+        prepared.cols,
+        &prepared.layout,
         &claims.proof,
         backend,
         &[],
@@ -7529,7 +7566,88 @@ where
     )
     .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     stage.finish();
-    Ok(point)
+    let stage = crate::verify_profile::Stage::new("selected lockstep bits");
+    let (evaluations, pcs_ok) = std::thread::scope(|scope| -> Result<_, RuntimeError> {
+        let pcs = scope.spawn(|| {
+            magnetar_proof::lockstep_bits_pcs(&claims.proof, backend, &challenges)
+        });
+        let stage = crate::verify_profile::Stage::new("selected segment matrices");
+        let (_, s1, s2) = gated_shared_matrices_lazy(
+            &prepared.row,
+            prepared.matrix_cycles,
+            Some((claims.initial_pc, claims.final_pc)),
+        )?;
+        stage.finish();
+        let evaluations = magnetar_proof::lockstep_bits_evaluations(
+            &s1[0],
+            &s1[1],
+            &s1[2],
+            &s2[0],
+            &s2[1],
+            &s2[2],
+            &challenges,
+        )
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        let pcs_ok = pcs
+            .join()
+            .map_err(|_| RuntimeError::Proof("selected PCS worker panicked".into()))?
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        Ok((evaluations, pcs_ok))
+    })?;
+    magnetar_proof::lockstep_bits_finalize(&challenges, evaluations, claim, None)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    if !pcs_ok {
+        return Err(RuntimeError::Proof(
+            "lockstep PCS opening rejected".into(),
+        ));
+    }
+    stage.finish();
+    Ok(challenges.row_point().to_vec())
+}
+
+/// Claim-binding checks plus the lockstep verifier, on prebuilt matrices.
+pub(crate) fn verify_prepared_dynamic_claim_binding<B: magnetar_proof::BitPcs + Sync>(
+    selected: &SelectedCpuClaims<B::Commitment, B::Opening>,
+    claim: &DynamicClaim,
+    backend: &B,
+    prepared: &PreparedDynamicSegments,
+) -> Result<(), RuntimeError>
+where
+    B::Commitment: Sync,
+    B::Opening: Sync,
+{
+    let binding = selected
+        .claim_binding
+        .as_ref()
+        .ok_or_else(|| RuntimeError::Proof("dynamic proof carries no claim binding".into()))?;
+    if claim.columns_root != binding.columns_root {
+        return Err(RuntimeError::Proof(
+            "dynamic claim column set mismatch".into(),
+        ));
+    }
+    if claim.claim.target != binding.target {
+        return Err(RuntimeError::Proof("dynamic claim target mismatch".into()));
+    }
+    verify_prepared_dynamic_segments(
+        selected,
+        prepared,
+        Some((&claim.claim, claim.gamma)),
+        backend,
+    )
+    .map(|_| ())
+}
+
+pub fn verify_dynamic_segments_public_claim_point<B: magnetar_proof::BitPcs + Sync>(
+    claims: &SelectedCpuClaims<B::Commitment, B::Opening>,
+    claim: Option<(&magnetar_proof::stream::LinearClaim, F2_128)>,
+    backend: &B,
+) -> Result<Vec<F2_128>, RuntimeError>
+where
+    B::Commitment: Sync,
+    B::Opening: Sync,
+{
+    let prepared = prepare_dynamic_segments(claims)?;
+    verify_prepared_dynamic_segments(claims, &prepared, claim, backend)
 }
 
 fn eq_bits(point: &[F2_128], bits: &[F2_128]) -> F2_128 {
