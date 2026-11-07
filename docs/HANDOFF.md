@@ -1,9 +1,9 @@
 # Handoff — MagnetarVM streaming selected prover (RV64)
 
 Status: **incremental optimization phase (Part 1 closed, Part 2 in progress)**,
-branch `virtual-claims-rewrite`. Commits through `0f3eda2` (M6 increments 1-3:
+branch `virtual-claims-rewrite`. Commits through `1d036f9` (M6 increments 1-3:
 parallel/phase-split statement-only v4 verifier + shared access claims; M4b
-paper-path default flip): `1b26b4e`
+paper-path default flip; memory route (d) increment 1): `1b26b4e`
 (2^16 optimization + polylog claim table), `9e805f2` (segment claims),
 `a3a6e9c` (packed CSR + fast pair), `e320cf9` (M4v3 batched committed-Shout
 opening + M4b paper-path replacement, opt-in), `9556746` (M5 scaffold:
@@ -40,6 +40,17 @@ path unchanged. Proof unchanged (verifier-only). Details:
 [POLYLOG_CLAIM_VERIFIER.md](POLYLOG_CLAIM_VERIFIER.md) §C.15, §C.17, §C.18. The
 single dominant remaining term is the selected PCS opening check (~6.7 ms);
 next levers: §5 item 1.
+
+**Memory route (d) increment 1 (2026-11-08)**: the unified context now drops
+its Access-only twist witnesses/batch tables right after the Access stage, the
+dead `aux_tables` clones are gone, and the linear twist path builds
+committed-only batch tables (the never-read per-cell bit tables are skipped) and
+moves the five committed tables into the mosaic instead of cloning them. Live
+set at `2^16` is ~0.16 GiB smaller with byte-identical proofs; same-window peak
+A/B measures 0.03-0.12 GiB footprint depending on host memory pressure (which
+shifts the absolute peak by ~0.2 GiB). Details:
+[MEMORY_PATH.md](MEMORY_PATH.md) §4.1; `MAGNETAR_KEEP_PROVER_INPUTS=1` is the
+A/B switch.
 
 **Part 1 (2^16 optimization) is closed**: prove 70.4 -> **31.4-34.6 s** (CPU
 ~800 -> **274 s**, 2.9x less work), verify 29.6 -> **24.7-27.2 ms**, peak
@@ -386,6 +397,20 @@ Details, measurements and the rejected experiments are in results §11.
     proof/wire size is unchanged from the §C.13.1 opt-in measurement
     (1,169,602 B at `2^16`).
 
+23. **Memory route (d) increment 1** (2026-11-08): Access-input lifetime +
+    compact twist tables. Removed the dead `aux_tables` clones; dropped the
+    RAM/register twist witnesses and batch tables after the Access stage
+    (`MAGNETAR_KEEP_PROVER_INPUTS=1` A/B switch); on the linear path
+    (`cycles >= 8192`) the context builds committed-only batch tables
+    (`batch_tables_committed_only`, skipping the never-read per-cell bit
+    tables = 64 MiB register at `2^16`), moves the five committed tables into
+    the mosaic instead of cloning, and keeps only the bit widths for the Access
+    stage (`TwistAccessInputs::Linear`,
+    `prove_binary_twist_claims_linear_shape`,
+    `prove_trace_access_shared_linear`). Live set ~0.16 GiB smaller at `2^16`,
+    byte-identical proofs, prove CPU unchanged within noise; measured peak A/B
+    and the host-pressure caveat are in [MEMORY_PATH.md](MEMORY_PATH.md) §4.1.
+
 Peripheral stages (parallel track): the vendored p3 `Keccak256Hash16` did not
 forward `hash_many`, so Merkle trees hashed serially; forwarding it cut p3 CPU
 2.1–2.7x and `Commit`/`Opening` roughly in half. Plus a removed prepared-data
@@ -434,9 +459,14 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
    the M4/M5 rounds. The corrected `2^22` model (§2 note, MEMORY_PATH.md)
    changes what the staircase is for: 2^20 is the decision point, 2^21 is not
    runnable on this 36 GiB host.
-5. **Memory path implementation** (`MEMORY_PATH.md`): context lifetime/dedup
-   first (behaviour-neutral, -0.3-0.6 GiB at 2^16 and -12-19 GiB at 2^22), then
-   bit-pack mosaic commitments/twist witnesses, then the 128 -> 64-bit committed
+5. **Memory path implementation** (`MEMORY_PATH.md`): route (d) increment 1
+   landed on 2026-11-08 (Access-input lifetime + compact twist tables; ~0.16 GiB
+   live at `2^16`, byte-identical proofs; §4.1). Remaining order: (d) finish the
+   context dedup (trace-witness duplicate 8 MiB at `2^16` / 2 GiB at `2^22`),
+   re-measure the peak A/B at `2^17` in a quiet window (the `2^16` same-window
+   delta is 0.03-0.12 GiB because host swap pressure shifts the absolute peak by
+   ~0.2 GiB), then (h) bit-pack the twist witnesses/batch tables, then (c)
+   bit-pack the mosaic commitment, then (b) the 128 -> 64-bit committed
    alphabet. After all four the floor is still 26-30 GiB, so the paper envelope
    needs a different commitment family or streaming codewords.
 6. Rejected on purpose: raising the *outer* stream budget above 22 (trades
@@ -571,6 +601,14 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
   linear fit was allocator reuse. A Merkle tree lives together with its
   codeword, and the mosaic commit/opening alone forces >=32 GiB live at 2^22.
   See `docs/MEMORY_PATH.md`.
+
+- **Memory A/B on this host needs a same-window switch.** The prover's peak
+  drifts by ~0.2 GiB with host memory pressure (during the 2026-11-08 round swap
+  was 8.5/10 GiB used and the same binary reported 2.00-2.22 GiB footprint
+  against 1.82 GiB on the 2026-11-03 quiet host). `MAGNETAR_KEEP_PROVER_INPUTS=1`
+  keeps the pre-route-(d) Access-input lifetime and the full twist batch tables
+  in the same binary, so A/B it with alternating runs inside one window and
+  quote the window (and the load/swap state), never two separate builds.
 
 - **The verifier is thread-parallel by default since M6 increment 1.** The v4
   statement-only verifier runs five independent checks (access, claim table,

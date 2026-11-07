@@ -240,3 +240,70 @@ changes need a version bump and updated golden sizes rather than the byte gate;
 (iii) **verify budget** — keep `2^16` verify at ≤27 ms (24.7-27.2 ms now); a
 PCS change that moves it needs an explicit trade note; (iv) **prover time** —
 same-binary env-switched CPU-second A/B, never wall clock under load.
+
+### 4.1 Route (d) implemented: Access-input lifetime + compact twist tables (2026-11-08)
+
+All of this is memory-lifetime only; the proof bytes are unchanged.
+
+**What changed**
+
+1. **Dead `aux_tables` removed** from `UnifiedProveContext`: it pushed clones of
+   the RAM address/increment tables, the router tables, the register
+   address/increment tables and the trace table on every stage, and nothing ever
+   read it (the field had no readers in the crate).
+2. **Access-only inputs dropped after the Access stage**: the RAM/register
+   `BinaryTwistWitness`es and their `BatchTables` are no longer kept for the rest
+   of the run. `MAGNETAR_KEEP_PROVER_INPUTS=1` restores the old lifetime for a
+   same-binary peak A/B.
+3. **Compact twist tables on the linear path** (the shipped RV64 path,
+   `cycles >= LINEAR_TWIST_MIN_CYCLES = 8192`):
+   - new `binary_twist::batch_tables_committed_only` skips the per-cell bit
+     tables (`read_value_bits`/`read_address_bits`, `cell_bits * cycles` field
+     elements = **64 MiB** for the register twist at `2^16`) that the linear
+     reduction never reads;
+   - the five committed tables are **moved** into the mosaic instead of cloned
+     (`TwistAccessInputs::Linear` keeps only `address_bits`/`cycle_bits`);
+   - the Access stage uses the new
+     `prove_binary_twist_claims_linear_shape` / `prove_trace_access_shared_linear`;
+   - the quadratic reference path (small traces) is unchanged and still keeps
+     its full tables.
+
+**Deterministic live-set effect at `2^16`** (paper bench; scales with `cycles`,
+so the register items are ~5 GiB at `2^22`):
+
+| item | bytes |
+| --- | --- |
+| register twist witness dropped after Access | ~78 MiB |
+| register committed tables moved, no duplicate | ~14 MiB |
+| register `read_value_bits` never built | ~64 MiB |
+| trace-table clone (was in the dead `aux_tables`) | 8 MiB |
+| **total** | **~0.16 GiB** |
+
+**Measured peak A/B, `2^16` native default** (`TRACE_SHOUT=1`,
+`MAGNETAR_PROFILE_UNIFIED=1`, same binary, alternating keep/drop runs, footprint
+from the watchdog, RSS from the sampler):
+
+| window | keep (old lifetime) footprint / RSS | drop / compact footprint / RSS |
+| --- | --- | --- |
+| host swap 8.5/10 GiB, load 22-40 (n=4 each) | 2.21-2.22 / 1.99-2.22 GiB | 2.00-2.19 (median 2.19) / 1.64-2.19 GiB |
+| load ~39, after the compact-table change (n=2 each) | 2.03-2.03 / 1.80-2.03 GiB | 2.00-2.00 / 2.00-2.01 GiB |
+
+The absolute peak drifts by **~0.2 GiB with host memory pressure** (swap was
+8.5/10 GiB used; the 2026-11-03 quiet-host figure was 1.82 GiB footprint), so
+only a same-window A/B is meaningful; it measures **-0.12 GiB** footprint in the
+first window and **-0.03 GiB** in the second. Prove CPU is unchanged within
+noise (~-1 %), as expected for a lifetime change. Proof bytes are byte-identical
+in both modes (`proof=1,018,155 B`).
+
+**Gates** (focused gate under host load 60-120; the full workspace gate was
+aborted because the host hit load 177 mid-run and is scheduled for the next
+quiet window): `magnetar-runtime --lib` 363 passed / 0 failed / 5 ignored;
+`magnetar-proof` 48 passed; `magnetar-testkit` integration suites all green
+(21 tests, 0 failed); smoke runs at `2^10` (quadratic path) and `2^14` (linear
+path) round-trip; proof bytes identical between the old and new lifetimes.
+
+**Next for route (d)/(h):** re-measure at `2^17` in a quiet window (the effect
+should be ~0.3 GiB, above the host noise), then the remaining context terms are
+the real-RV64 RAM witnesses/batch tables (~4 KiB/cycle) and the trace-witness
+duplicate (`trace_witness.values` vs the trace table) — the latter is 8 MiB at
+`2^16` but 2 GiB at `2^22`.
