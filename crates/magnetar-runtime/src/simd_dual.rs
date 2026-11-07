@@ -5607,7 +5607,7 @@ fn prove_dynamic_cpu_claims_gated<B: magnetar_proof::BitPcs>(
 ) -> Result<SelectedCpuClaims<B::Commitment, B::Opening>, RuntimeError> {
     let setup = dynamic_segment_setup(trace, width)?;
     if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
-        eprintln!("selected rss after setup: {:.2} GiB", crate::resident_gib());
+        eprintln!("selected after setup: {}", crate::memory_gib());
     }
     let (_, s1, s2) = gated_shared_matrices_lazy(
         &setup.row,
@@ -5615,7 +5615,7 @@ fn prove_dynamic_cpu_claims_gated<B: magnetar_proof::BitPcs>(
         Some((setup.initial_pc, setup.final_pc)),
     )?;
     if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
-        eprintln!("selected rss after matrices: {:.2} GiB", crate::resident_gib());
+        eprintln!("selected after matrices: {}", crate::memory_gib());
     }
     if let Some(gate) = gate {
         let _ = gate.recv();
@@ -5626,9 +5626,9 @@ fn prove_dynamic_cpu_claims_gated<B: magnetar_proof::BitPcs>(
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
         eprintln!(
-            "selected witness commit: {:?} rss={:.2} GiB",
+            "selected witness commit: {:?} {}",
             commit_started.elapsed(),
-            crate::resident_gib()
+            crate::memory_gib()
         );
     }
     // The padded field copy the commit needed has been dropped; the committed
@@ -5641,7 +5641,7 @@ fn prove_dynamic_cpu_claims_gated<B: magnetar_proof::BitPcs>(
         eprintln!("selected claim target: {:?}", claim_started.elapsed());
     }
     if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
-        eprintln!("selected rss before proof: {:.2} GiB", crate::resident_gib());
+        eprintln!("selected before proof: {}", crate::memory_gib());
     }
     let proof = prove_dynamic_segment_proof(
         &setup,
@@ -5652,7 +5652,7 @@ fn prove_dynamic_cpu_claims_gated<B: magnetar_proof::BitPcs>(
         Some((&claim, &commitment)),
     )?;
     if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
-        eprintln!("selected rss after proof: {:.2} GiB", crate::resident_gib());
+        eprintln!("selected after proof: {}", crate::memory_gib());
     }
     // The selected opening is done: its prepared data and the product level
     // arrays have been dropped.
@@ -6893,7 +6893,7 @@ fn dynamic_segment_setup(
 ) -> Result<DynamicSegmentSetup, RuntimeError> {
     let setup_started = std::time::Instant::now();
     let rows = mixed_alu_branch_rows_from_trace_dynamic(trace, width)?;
-    if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() { eprintln!("setup rows decode: {:?} rss={:.2} GiB", setup_started.elapsed(), crate::resident_gib()); }
+    if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() { eprintln!("setup rows decode: {:?} {}", setup_started.elapsed(), crate::memory_gib()); }
     let final_pc = trace.final_state.pc;
     let mut mask = mixed_rows_component_mask(&rows);
     if rows.len() < rows.len().next_power_of_two().max(2) {
@@ -6906,7 +6906,7 @@ fn dynamic_segment_setup(
     let initial_pc = rows[0].0;
     let original = DynamicMixedRow::build(mask, width)?;
     let (row, mapping, layout) = segmented_dynamic_row(mask, width, cycles)?;
-    if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() { eprintln!("setup layout build: {:?} rss={:.2} GiB", setup_started.elapsed(), crate::resident_gib()); }
+    if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() { eprintln!("setup layout build: {:?} {}", setup_started.elapsed(), crate::memory_gib()); }
     if std::env::var_os("MAGNETAR_PROBE_GEOM").is_some() {
         eprintln!(
             "geom: vars={} constraints={} padded_rows={} base_cols={}",
@@ -6924,7 +6924,7 @@ fn dynamic_segment_setup(
         )));
     }
     let mut bits = magnetar_proof::PackedBits::zeroed(cycles * base_cols);
-    if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() { eprintln!("setup rss before witness fill: {:.2} GiB", crate::resident_gib()); }
+    if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() { eprintln!("setup before witness fill: {}", crate::memory_gib()); }
     // Reuse one witness scratch and one block buffer: allocating ~16 KB per
     // cycle retained 0.7 GiB of allocator pages at RV64 `2^16` (the setup RSS
     // jumped 0.43 -> 1.16 GiB in this loop). Fill the word-aligned instance
@@ -7033,9 +7033,9 @@ fn dynamic_segment_setup(
     }
     if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
         eprintln!(
-            "setup fill: {:?} rss={:.2} GiB",
+            "setup fill: {:?} {}",
             setup_started.elapsed(),
-            crate::resident_gib()
+            crate::memory_gib()
         );
     }
     for instance in 0..cycles.saturating_sub(1) {
@@ -7066,9 +7066,9 @@ fn dynamic_segment_setup(
     }
     if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
         eprintln!(
-            "setup fill+check: {:?} rss={:.2} GiB",
+            "setup fill+check: {:?} {}",
             setup_started.elapsed(),
-            crate::resident_gib()
+            crate::memory_gib()
         );
     }
     Ok(DynamicSegmentSetup {
@@ -7089,7 +7089,7 @@ pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
 ) -> Result<DynamicSegmentProof<B::Commitment, B::Opening>, RuntimeError> {
     let setup = dynamic_segment_setup(trace, width)?;
     if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
-        eprintln!("selected rss after setup: {:.2} GiB", crate::resident_gib());
+        eprintln!("selected after setup: {}", crate::memory_gib());
     }
     let (_, s1, s2) = gated_shared_matrices_lazy(
         &setup.row,
@@ -7097,7 +7097,7 @@ pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
         Some((setup.initial_pc, setup.final_pc)),
     )?;
     if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
-        eprintln!("selected rss after matrices: {:.2} GiB", crate::resident_gib());
+        eprintln!("selected after matrices: {}", crate::memory_gib());
     }
     let commit_started = std::time::Instant::now();
     let commitment = backend
@@ -7105,9 +7105,9 @@ pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
         eprintln!(
-            "selected witness commit: {:?} rss={:.2} GiB",
+            "selected witness commit: {:?} {}",
             commit_started.elapsed(),
-            crate::resident_gib()
+            crate::memory_gib()
         );
     }
     // The padded field copy the commit needed has been dropped; the committed
@@ -7120,7 +7120,7 @@ pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
         eprintln!("selected claim target: {:?}", claim_started.elapsed());
     }
     if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
-        eprintln!("selected rss before proof: {:.2} GiB", crate::resident_gib());
+        eprintln!("selected before proof: {}", crate::memory_gib());
     }
     let proof = prove_dynamic_segment_proof(
         &setup,
@@ -7131,7 +7131,7 @@ pub fn prove_dynamic_segmented_trace<B: magnetar_proof::BitPcs>(
         Some((&claim, &commitment)),
     )?;
     if std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some() {
-        eprintln!("selected rss after proof: {:.2} GiB", crate::resident_gib());
+        eprintln!("selected after proof: {}", crate::memory_gib());
     }
     // The selected opening is done: its prepared data and the product level
     // arrays have been dropped.

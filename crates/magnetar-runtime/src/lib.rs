@@ -1046,15 +1046,15 @@ pub(crate) fn prove_trace_access_shared(
     let profile = std::env::var_os("MAGNETAR_PROFILE_ACCESS").is_some();
     let started = std::time::Instant::now();
     if profile {
-        eprintln!("access start rss: {:.2} GiB", crate::resident_gib());
+        eprintln!("access start: {}", crate::memory_gib());
     }
     let (ram, ram_claims) = prove_binary_twist_claims(tables, witness, commitment, ram_index)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     if profile {
         eprintln!(
-            "access ram claims: {:?} rss={:.2} GiB",
+            "access ram claims: {:?} {}",
             started.elapsed(),
-            crate::resident_gib()
+            crate::memory_gib()
         );
     }
     let started = std::time::Instant::now();
@@ -1067,9 +1067,9 @@ pub(crate) fn prove_trace_access_shared(
     .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     if profile {
         eprintln!(
-            "access register claims: {:?} rss={:.2} GiB",
+            "access register claims: {:?} {}",
             started.elapsed(),
-            crate::resident_gib()
+            crate::memory_gib()
         );
     }
     Ok((
@@ -2914,22 +2914,40 @@ pub fn prove_unified_trace_auto(
     }
 }
 
+/// Peak resident set size of this process, in GiB (process high-water mark).
+///
+/// In-process `getrusage`; the earlier implementation shelled out to `ps`,
+/// which the sandbox blocks, so every stage print reported 0.00 and the memory
+/// attribution in MEMORY_PATH.md §3.1 was blind.
 pub(crate) fn resident_gib() -> f64 {
-    let pid = std::process::id().to_string();
-    let output = std::process::Command::new("ps")
-        .args(["-o", "rss=", "-p", &pid])
-        .output();
-    let bytes = output
-        .ok()
-        .and_then(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .parse::<f64>()
-                .ok()
-        })
+    peak_rss_gib()
+}
+
+/// Peak RSS in GiB.
+pub(crate) fn peak_rss_gib() -> f64 {
+    magnetar_proof::peak_rss_bytes()
+        .map(|bytes| bytes as f64 / (1u64 << 30) as f64)
         .unwrap_or(0.0)
-        * 1024.0;
-    bytes / (1024.0 * 1024.0 * 1024.0)
+}
+
+/// Current physical footprint in GiB (macOS `phys_footprint`; 0 elsewhere).
+pub(crate) fn footprint_gib() -> f64 {
+    magnetar_proof::alloc_release::phys_footprint_bytes()
+        .map(|bytes| bytes as f64 / (1u64 << 30) as f64)
+        .unwrap_or(0.0)
+}
+
+/// Both memory metrics formatted for a stage print.
+///
+/// RSS counts pages the allocator has freed but not returned (libmalloc's
+/// `MADV_FREE_REUSABLE`), the footprint does not; MEMORY_PATH.md §3 requires
+/// quoting both.
+pub(crate) fn memory_gib() -> String {
+    format!(
+        "rss_peak={:.2} GiB footprint={:.2} GiB",
+        peak_rss_gib(),
+        footprint_gib()
+    )
 }
 
 pub fn prove_unified_trace_dynamic_native(
@@ -3145,9 +3163,9 @@ fn prove_unified_trace_dynamic_native_profile_inner(
         let mut timings = Vec::new();
         if std::env::var_os("MAGNETAR_PROFILE_UNIFIED").is_some() {
             eprintln!(
-                "unified context: {:?} rss={:.2} GiB",
+                "unified context: {:?} {}",
                 context_started.elapsed(),
-                resident_gib()
+                memory_gib()
             );
         }
         for stage in plan.execution() {
@@ -3213,9 +3231,9 @@ fn prove_unified_trace_dynamic_native_profile_inner(
             }
             if std::env::var_os("MAGNETAR_PROFILE_UNIFIED").is_some() {
                 eprintln!(
-                    "unified {stage:?}: {:?} rss={:.2} GiB",
+                    "unified {stage:?}: {:?} {}",
                     started.elapsed(),
-                    resident_gib()
+                    memory_gib()
                 );
             }
         }

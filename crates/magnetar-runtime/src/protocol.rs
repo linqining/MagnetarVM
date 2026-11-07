@@ -1853,7 +1853,7 @@ impl<'a> UnifiedProveContext<'a> {
         let profile_context = std::env::var_os("MAGNETAR_PROFILE_CONTEXT").is_some();
         let context_started = std::time::Instant::now();
         if debug_tables {
-            eprintln!("context start rss={:.2} GiB", crate::resident_gib());
+            eprintln!("context start: {}", crate::memory_gib());
         }
         let twist_started = std::time::Instant::now();
         let witness = BinaryTwistWitness::from_trace(trace)
@@ -1866,8 +1866,8 @@ impl<'a> UnifiedProveContext<'a> {
         }
         if debug_tables {
             eprintln!(
-                "after twist witness rss={:.2} GiB (cycles {}, addrs {})",
-                crate::resident_gib(),
+                "after twist witness: {} (cycles {}, addrs {})",
+                crate::memory_gib(),
                 witness.cycles,
                 witness.read_address.len()
             );
@@ -1890,7 +1890,7 @@ impl<'a> UnifiedProveContext<'a> {
             eprintln!("context batch tables: {:?}", batch_started.elapsed());
         }
         if debug_tables {
-            eprintln!("after batch tables rss={:.2} GiB", crate::resident_gib());
+            eprintln!("after batch tables: {}", crate::memory_gib());
         }
         let (system, cpu_witness, z) = if cpu_columns {
             let (system, cpu_witness) = merged_cpu_system(trace, width)?;
