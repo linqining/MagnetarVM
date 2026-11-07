@@ -88,7 +88,7 @@ core count is low.
 | `2^16` (2026-11-03, before chunked inner scan) | 53.8–59.3 s | 27.3–27.4 ms | 2.04–2.38 GiB | 1,018,152 B† |
 | `2^16` (2026-10-31) | 70.4 s | 29.6 ms | 2.26 GiB | 861,407 B |
 | `2^17` (2026-11-07, refreshed) | **96.4 s** | 68.9 ms (CPU 249.2 ms) | 4.02 GiB | 1,110,291 B† |
-| `2^18` | 321.5 s (pre-fusion) | 161.5 ms | 7.73 GiB | 1,050,900 B |
+| `2^18` (2026-11-07, refreshed) | **211.2 s** | 161.5 ms → 220.0 ms (CPU 503.0 ms) | **5.75 GiB RSS / 7.20 GiB footprint** | 1,230,360 B† |
 | `2^19` | 667.8 s (pre-fusion) | 318.3 ms | 10.54 GiB | 1,177,984 B |
 
 † proof size is the claim-table format; the streaming proof itself is still

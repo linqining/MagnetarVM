@@ -1395,3 +1395,11 @@ The fused scan + packed CSR cut prove wall from the old 147.6 s to 96.4 s, and
 the M5 win scales with the trace: verify CPU -75 % at 2^17 (vs -68 % at 2^16)
 because the removed claim/access work grows with rows while the core opening
 does not. Peak stays under the paper-bench watchdog (4.32 GiB) at this size.
+
+#### C.14.2 2^18 staircase refresh (2026-11-07)
+
+`ADDS=262143`, native default, watchdog 8 GiB, load ~29: prove **211.2 s**
+(old pre-fusion row 321.5 s), verify single 220.0 ms / CPU 503.0 ms/iter,
+proof 1,230,360 B, peak **5.75 GiB RSS / 7.20 GiB phys_footprint**. The
+footprint is 1.45 GiB above RSS at this size, so both must be quoted; the 2^22
+extrapolations should use the footprint series.
