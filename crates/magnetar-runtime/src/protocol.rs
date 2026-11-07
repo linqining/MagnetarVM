@@ -35,10 +35,13 @@ use crate::binary_router::{
 use crate::binary_shout::{
     prove_binary_shout_claims, verify_binary_shout_claims, BinaryShoutWitness,
 };
-use crate::binary_twist::{batch_tables, BatchTables};
+use crate::binary_twist::{
+    batch_tables, batch_tables_committed_only, BatchTables, LINEAR_TWIST_MIN_CYCLES,
+};
 use crate::{
     check_trace_linkage, cpu_segment_layout, merged_cpu_system, prove_trace_access_shared,
-    split_cpu_relations, trace_digest, verify_trace_access_shared, RuntimeError, TraceAccessProof,
+    prove_trace_access_shared_linear, split_cpu_relations, trace_digest,
+    verify_trace_access_shared, RuntimeError, TraceAccessProof,
 };
 
 /// Stable identifier for a witness segment within one protocol layout.
@@ -1312,19 +1315,39 @@ mod plan_tests {
         assert!(error.to_string().contains("access stage before commit"));
     }
 }
+/// One twist's Access inputs. On the linear reduction (the shipped RV64 path)
+/// only the two bit widths are needed and the five committed tables are owned
+/// by `mosaic_tables`; the quadratic reference path keeps its full tables.
+enum TwistAccessInputs {
+    Linear {
+        address_bits: usize,
+        cycle_bits: usize,
+    },
+    Quadratic(BatchTables),
+}
+
+/// The Access-only prover inputs (memory route (d)).
+struct AccessInputs {
+    witness: BinaryTwistWitness,
+    ram: TwistAccessInputs,
+    register_witness: BinaryTwistWitness,
+    register: TwistAccessInputs,
+}
+
 pub(crate) struct UnifiedProveContext<'a> {
     trace: &'a Trace,
     width: usize,
-    witness: BinaryTwistWitness,
-    tables: BatchTables,
+    /// The large Access-only inputs (twist witnesses and, on the quadratic
+    /// path, their batch tables). Dropped once the Access stage has run
+    /// (memory route (d)); `MAGNETAR_KEEP_PROVER_INPUTS=1` keeps them for a
+    /// same-binary peak A/B.
+    access_inputs: Option<AccessInputs>,
     system: ConstraintSystem,
     cpu_witness: magnetar_constraint::Witness,
     z: Vec<F2_128>,
     shout_witness: Option<BinaryShoutWitness>,
     shift_router_witness: Option<BinaryRouterWitness>,
     store_router_witness: Option<BinaryRouterWitness>,
-    register_witness: BinaryTwistWitness,
-    register_tables: BatchTables,
     pcs: P3BinaryPcs,
     mosaic_tables: Vec<P3MosaicTable>,
     shout_table: Option<(usize, P3MosaicTable)>,
@@ -1347,7 +1370,6 @@ pub(crate) struct UnifiedProveContext<'a> {
     register_claims: Option<crate::binary_twist::MosaicClaims>,
     points: Vec<P3MosaicPoint>,
     values: Vec<Vec<F2_128>>,
-    aux_tables: Vec<P3MosaicTable>,
     shout: Option<crate::binary_shout::BinaryShoutProof>,
     shift_router: Option<crate::binary_router::BinaryRouterProof>,
     store_router: Option<crate::binary_router::BinaryRouterProof>,
@@ -1848,9 +1870,20 @@ impl<'a> UnifiedProveContext<'a> {
                 witness.read_address.len()
             );
         }
+        // Memory route (d): at RV64 scale the twist reduction is the linear one,
+        // which never reads the per-cell bit tables. Build only the five
+        // committed tables there and move them into the mosaic below;
+        // `MAGNETAR_KEEP_PROVER_INPUTS=1` restores the old build for an A/B.
+        let linear_twist = std::env::var_os("MAGNETAR_KEEP_PROVER_INPUTS").is_none()
+            && witness.cycles >= LINEAR_TWIST_MIN_CYCLES
+            && trace.rows.len() >= LINEAR_TWIST_MIN_CYCLES;
         let batch_started = std::time::Instant::now();
-        let tables =
-            batch_tables(&witness).map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        let tables = if linear_twist {
+            batch_tables_committed_only(&witness)
+        } else {
+            batch_tables(&witness)
+        }
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         if profile_context {
             eprintln!("context batch tables: {:?}", batch_started.elapsed());
         }
@@ -1878,8 +1911,12 @@ impl<'a> UnifiedProveContext<'a> {
             BinaryRouterWitness::from_trace_mode(trace, RouterMode::Stores).ok();
         let register_witness = crate::register_twist::register_twist_witness(trace)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        let register_tables = batch_tables(&register_witness)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        let register_tables = if linear_twist {
+            batch_tables_committed_only(&register_witness)
+        } else {
+            batch_tables(&register_witness)
+        }
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         if profile_context {
             eprintln!("context side witnesses: {:?}", side_started.elapsed());
         }
@@ -1906,13 +1943,35 @@ impl<'a> UnifiedProveContext<'a> {
             });
             1usize
         };
-        mosaic_tables.extend([
-            tables.addr.clone(),
-            tables.inc.clone(),
-            tables.initial.clone(),
-            tables.read_value.clone(),
-            tables.write_value.clone(),
-        ]);
+        let (ram_access, ram_mosaic_tables) = if linear_twist {
+            let BatchTables {
+                addr,
+                inc,
+                initial,
+                read_value,
+                write_value,
+                address_bits,
+                cycle_bits,
+                ..
+            } = tables;
+            (
+                TwistAccessInputs::Linear {
+                    address_bits,
+                    cycle_bits,
+                },
+                vec![addr, inc, initial, read_value, write_value],
+            )
+        } else {
+            let copies = vec![
+                tables.addr.clone(),
+                tables.inc.clone(),
+                tables.initial.clone(),
+                tables.read_value.clone(),
+                tables.write_value.clone(),
+            ];
+            (TwistAccessInputs::Quadratic(tables), copies)
+        };
+        mosaic_tables.extend(ram_mosaic_tables);
         let rom_table = shout_witness.as_ref().map(|witness| P3MosaicTable {
             columns: (0..witness.rom.first().map_or(0, |row| row.len()))
                 .map(|column| witness.rom.iter().map(|row| row[column]).collect())
@@ -1936,11 +1995,35 @@ impl<'a> UnifiedProveContext<'a> {
             (index, table)
         });
         let register_index = mosaic_tables.len();
-        mosaic_tables.push(register_tables.addr.clone());
-        mosaic_tables.push(register_tables.inc.clone());
-        mosaic_tables.push(register_tables.initial.clone());
-        mosaic_tables.push(register_tables.read_value.clone());
-        mosaic_tables.push(register_tables.write_value.clone());
+        let (register_access, register_mosaic_tables) = if linear_twist {
+            let BatchTables {
+                addr,
+                inc,
+                initial,
+                read_value,
+                write_value,
+                address_bits,
+                cycle_bits,
+                ..
+            } = register_tables;
+            (
+                TwistAccessInputs::Linear {
+                    address_bits,
+                    cycle_bits,
+                },
+                vec![addr, inc, initial, read_value, write_value],
+            )
+        } else {
+            let copies = vec![
+                register_tables.addr.clone(),
+                register_tables.inc.clone(),
+                register_tables.initial.clone(),
+                register_tables.read_value.clone(),
+                register_tables.write_value.clone(),
+            ];
+            (TwistAccessInputs::Quadratic(register_tables), copies)
+        };
+        mosaic_tables.extend(register_mosaic_tables);
         let trace_started = std::time::Instant::now();
         let trace_witness = crate::trace_commitment::trace_witness(trace)?;
         if profile_context {
@@ -2036,16 +2119,18 @@ impl<'a> UnifiedProveContext<'a> {
         Ok(Self {
             trace,
             width,
-            witness,
-            tables,
+            access_inputs: Some(AccessInputs {
+                witness,
+                ram: ram_access,
+                register_witness,
+                register: register_access,
+            }),
             system,
             cpu_witness,
             z,
             shout_witness,
             shift_router_witness,
             store_router_witness,
-            register_witness,
-            register_tables,
             pcs,
             mosaic_tables,
             shout_table,
@@ -2063,7 +2148,6 @@ impl<'a> UnifiedProveContext<'a> {
             register_claims: None,
             points: Vec::new(),
             values: Vec::new(),
-            aux_tables: Vec::new(),
             shout: None,
             shift_router: None,
             store_router: None,
@@ -2146,24 +2230,60 @@ impl<'a> UnifiedProveContext<'a> {
             .commitment
             .as_ref()
             .ok_or_else(|| RuntimeError::Proof("access stage before commit".into()))?;
-        let (access, (points, values), register_claims) = prove_trace_access_shared(
-            self.trace,
-            &self.witness,
-            &self.tables,
-            commitment,
-            &self.register_witness,
-            &self.register_tables,
-            self.ram_index,
-            self.register_index,
-        )?;
+        let inputs = self.access_inputs.as_ref().ok_or_else(|| {
+            RuntimeError::Proof("access stage requires the RAM/register twist witnesses".into())
+        })?;
+        let (access, (points, values), register_claims) = match (&inputs.ram, &inputs.register) {
+            (
+                TwistAccessInputs::Linear {
+                    address_bits,
+                    cycle_bits,
+                },
+                TwistAccessInputs::Linear {
+                    address_bits: register_address_bits,
+                    cycle_bits: register_cycle_bits,
+                },
+            ) => prove_trace_access_shared_linear(
+                self.trace,
+                &inputs.witness,
+                (*address_bits, *cycle_bits),
+                &inputs.register_witness,
+                (*register_address_bits, *register_cycle_bits),
+                self.ram_index,
+                self.register_index,
+            )?,
+            (
+                TwistAccessInputs::Quadratic(ram_tables),
+                TwistAccessInputs::Quadratic(register_tables),
+            ) => prove_trace_access_shared(
+                self.trace,
+                &inputs.witness,
+                ram_tables,
+                commitment,
+                &inputs.register_witness,
+                register_tables,
+                self.ram_index,
+                self.register_index,
+            )?,
+            _ => {
+                return Err(RuntimeError::Proof(
+                    "mixed twist reduction paths in the unified context".into(),
+                ))
+            }
+        };
         self.access = Some(access);
         self.points = points;
         self.values = values;
         self.register_claims = Some(register_claims);
-        self.aux_tables = vec![
-            self.mosaic_tables[self.ram_index].clone(),
-            self.mosaic_tables[self.ram_index + 1].clone(),
-        ];
+        // Memory route (d): Access is the only consumer of the twist witnesses
+        // (and, on the quadratic path, their batch tables); the mosaic tables
+        // own the committed copies the Opening needs. Dropping them before the
+        // mosaic Opening transient takes the process peak down by their live
+        // size. `MAGNETAR_KEEP_PROVER_INPUTS=1` restores the pre-change
+        // lifetime for a same-binary peak A/B.
+        if std::env::var_os("MAGNETAR_KEEP_PROVER_INPUTS").is_none() {
+            self.access_inputs = None;
+        }
         Ok(())
     }
 
@@ -2181,7 +2301,6 @@ impl<'a> UnifiedProveContext<'a> {
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         self.points.extend(claim_points);
         self.values.extend(claim_values);
-        self.aux_tables.push(witness.table());
         self.shout = Some(claim);
         Ok(())
     }
@@ -2199,7 +2318,6 @@ impl<'a> UnifiedProveContext<'a> {
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         self.points.extend(claim_points);
         self.values.extend(claim_values);
-        self.aux_tables.push(witness.table());
         self.shift_router = Some(claim);
         Ok(())
     }
@@ -2217,7 +2335,6 @@ impl<'a> UnifiedProveContext<'a> {
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         self.points.extend(claim_points);
         self.values.extend(claim_values);
-        self.aux_tables.push(witness.table());
         self.store_router = Some(claim);
         Ok(())
     }
@@ -2229,9 +2346,6 @@ impl<'a> UnifiedProveContext<'a> {
             .ok_or_else(|| RuntimeError::Proof("register claims before access".into()))?;
         self.points.extend(register_points);
         self.values.extend(register_values);
-        self.aux_tables.push(self.register_tables.addr.clone());
-        self.aux_tables.push(self.register_tables.inc.clone());
-        self.aux_tables.push(self.trace_table.clone());
 
         let trace_claims = magnetar_proof::virtual_spartan::split_segment_claims(
             &self.trace_witness.layout,

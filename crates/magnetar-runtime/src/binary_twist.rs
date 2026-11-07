@@ -828,8 +828,32 @@ fn one_hot_address(bits: &[F2_128]) -> Option<usize> {
     found
 }
 
+/// Batch tables for the quadratic twist path and for every consumer that needs
+/// the per-cell bit tables.
 #[allow(clippy::needless_range_loop)]
 pub(crate) fn batch_tables(witness: &BinaryTwistWitness) -> Result<BatchTables, ProofError> {
+    batch_tables_inner(witness, true)
+}
+
+/// Batch tables without the per-cell bit tables.
+///
+/// Only the quadratic reference reduction reads `read_value_bits` /
+/// `read_address_bits`; the linear twist prover (`cycles >= 8192`) needs just
+/// the five committed tables and the two bit widths. For the register twist the
+/// skipped bit tables are `cell_bits * cycles` field elements (~64 MiB at
+/// RV64 `2^16`), so the unified context builds this compact form on the linear
+/// path (memory route (d)).
+pub(crate) fn batch_tables_committed_only(
+    witness: &BinaryTwistWitness,
+) -> Result<BatchTables, ProofError> {
+    batch_tables_inner(witness, false)
+}
+
+#[allow(clippy::needless_range_loop)]
+fn batch_tables_inner(
+    witness: &BinaryTwistWitness,
+    with_bit_tables: bool,
+) -> Result<BatchTables, ProofError> {
     let cells = witness.initial.len();
     if cells == 0 || !cells.is_power_of_two() {
         return Err(ProofError::Pcs(
@@ -863,21 +887,27 @@ pub(crate) fn batch_tables(witness: &BinaryTwistWitness) -> Result<BatchTables, 
     read_value.resize(cycles_padded, F2_128::from(0u64));
     let mut write_value = witness.write_value.clone();
     write_value.resize(cycles_padded, F2_128::from(0u64));
-    let mut read_value_bits = vec![vec![F2_128::from(0u64); cycles_padded]; witness.cell_bits];
-    let mut read_address_bits = vec![vec![F2_128::from(0u64); cycles_padded]; address_bits];
-    for cycle in 0..witness.cycles {
-        let value = witness.read_value[cycle].value();
-        for bit in 0..witness.cell_bits {
-            read_value_bits[bit][cycle] = F2_128::from((value >> bit) & 1);
-        }
-        if let Some(cell) = one_hot_address(&witness.read_address[cycle]) {
-            if witness.idle_word != Some(cell) {
-                for bit in 0..address_bits {
-                    read_address_bits[bit][cycle] = F2_128::from(((cell >> bit) & 1) as u64);
+    let (read_value_bits, read_address_bits) = if with_bit_tables {
+        let mut read_value_bits =
+            vec![vec![F2_128::from(0u64); cycles_padded]; witness.cell_bits];
+        let mut read_address_bits = vec![vec![F2_128::from(0u64); cycles_padded]; address_bits];
+        for cycle in 0..witness.cycles {
+            let value = witness.read_value[cycle].value();
+            for bit in 0..witness.cell_bits {
+                read_value_bits[bit][cycle] = F2_128::from((value >> bit) & 1);
+            }
+            if let Some(cell) = one_hot_address(&witness.read_address[cycle]) {
+                if witness.idle_word != Some(cell) {
+                    for bit in 0..address_bits {
+                        read_address_bits[bit][cycle] = F2_128::from(((cell >> bit) & 1) as u64);
+                    }
                 }
             }
         }
-    }
+        (read_value_bits, read_address_bits)
+    } else {
+        (Vec::new(), Vec::new())
+    };
     let cells_padded = witness.initial.len().next_power_of_two().max(2);
     let mut initial = vec![witness.initial.clone(), witness.final_value.clone()];
     for column in &mut initial {
@@ -1613,6 +1643,25 @@ fn prove_binary_twist_claims_linear(
     _commitment: &P3MosaicCommitment,
     table_index: usize,
 ) -> Result<ClaimedRam, ProofError> {
+    prove_binary_twist_claims_linear_shape(
+        witness,
+        tables.address_bits,
+        tables.cycle_bits,
+        table_index,
+    )
+}
+
+/// Linear twist claims from just the witness and the two bit widths.
+///
+/// The linear reduction reads no committed table content, so the unified
+/// context can move the five committed tables into the mosaic and keep only
+/// these widths instead of a full [`BatchTables`] (memory route (d)).
+pub(crate) fn prove_binary_twist_claims_linear_shape(
+    witness: &BinaryTwistWitness,
+    address_bits: usize,
+    cycle_bits: usize,
+    table_index: usize,
+) -> Result<ClaimedRam, ProofError> {
     let linear = BinaryTwistLinearProof {
         local: crate::local_shared::prove_local_shared(witness)?,
     };
@@ -1641,8 +1690,8 @@ fn prove_binary_twist_claims_linear(
         write_base_values: Vec::new(),
         write_history_values: Vec::new(),
         final_values_evals: Vec::new(),
-        cycle_bits: tables.cycle_bits,
-        address_bits: tables.address_bits,
+        cycle_bits,
+        address_bits,
         linear: Some(linear),
     };
     Ok((proof, claims))

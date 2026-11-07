@@ -1079,6 +1079,43 @@ pub(crate) fn prove_trace_access_shared(
     ))
 }
 
+/// Linear-twist variant of [`prove_trace_access_shared`].
+///
+/// The linear twist reduction reads only the witness and the two bit widths, so
+/// the unified context moves the five committed tables into the mosaic and
+/// keeps just the widths instead of a full `BatchTables` (memory route (d)).
+pub(crate) fn prove_trace_access_shared_linear(
+    trace: &Trace,
+    witness: &BinaryTwistWitness,
+    ram_shape: (usize, usize),
+    register_witness: &BinaryTwistWitness,
+    register_shape: (usize, usize),
+    ram_index: usize,
+    register_index: usize,
+) -> Result<(TraceAccessProof, MosaicClaims, MosaicClaims), RuntimeError> {
+    check_trace_access_bindings(trace, witness)?;
+    let (ram, ram_claims) = crate::binary_twist::prove_binary_twist_claims_linear_shape(
+        witness,
+        ram_shape.0,
+        ram_shape.1,
+        ram_index,
+    )
+    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let (registers, register_claims) =
+        crate::binary_twist::prove_binary_twist_claims_linear_shape(
+            register_witness,
+            register_shape.0,
+            register_shape.1,
+            register_index,
+        )
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    Ok((
+        TraceAccessProof { registers, ram },
+        ram_claims,
+        register_claims,
+    ))
+}
+
 pub fn verify_trace_access(trace: &Trace, proof: &TraceAccessProof) -> Result<(), RuntimeError> {
     let witness = BinaryTwistWitness::from_trace(trace)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
