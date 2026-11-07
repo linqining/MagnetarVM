@@ -1,9 +1,10 @@
 # Handoff — MagnetarVM streaming selected prover (RV64)
 
 Status: **incremental optimization phase (Part 1 closed, Part 2 in progress)**,
-branch `virtual-claims-rewrite`. Commits through `3320bb0` (M6 increments 1-3:
+branch `virtual-claims-rewrite`. Commits through `30c7036` (M6 increments 1-3:
 parallel/phase-split statement-only v4 verifier + shared access claims; M4b
-paper-path default flip; memory route (d) increments 1+2): `1b26b4e`
+paper-path default flip; memory route (d) increments 1+2; stage memory
+instrumentation): `1b26b4e`
 (2^16 optimization + polylog claim table), `9e805f2` (segment claims),
 `a3a6e9c` (packed CSR + fast pair), `e320cf9` (M4v3 batched committed-Shout
 opening + M4b paper-path replacement, opt-in), `9556746` (M5 scaffold:
@@ -55,6 +56,13 @@ prove CPU -0.7 % (noise) and **byte-identical proofs** (1,110,291 B, the
 documented baseline); the `2^16` delta (0.03-0.12 GiB) sits below this host's
 ~0.2 GiB absolute-peak drift. Details: [MEMORY_PATH.md](MEMORY_PATH.md) §4.1;
 `MAGNETAR_KEEP_PROVER_INPUTS=1` is the A/B switch.
+
+**Memory attribution fixed (2026-11-08)**: the stage RSS prints now use
+in-process `getrusage` + `phys_footprint` (the old `ps`-based helper returned
+0.00 under the sandbox) and print `rss_peak=` next to `footprint=`;
+[MEMORY_PATH.md](MEMORY_PATH.md) §4.2 has the first real stage table at `2^16`
+(peak first reached during the unified Access stage; live footprint after
+Access 0.39 GiB with route (d) vs 2.17 GiB with the old lifetime).
 
 **Part 1 (2^16 optimization) is closed**: prove 70.4 -> **31.4-34.6 s** (CPU
 ~800 -> **274 s**, 2.9x less work), verify 29.6 -> **24.7-27.2 ms**, peak
@@ -635,6 +643,16 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
   linear fit was allocator reuse. A Merkle tree lives together with its
   codeword, and the mosaic commit/opening alone forces >=32 GiB live at 2^22.
   See `docs/MEMORY_PATH.md`.
+
+- **Stage memory prints are in-process now (`rss_peak=` + `footprint=`).** The
+  former `resident_gib()` shelled out to `ps`, which the sandbox blocks, so all
+  `MAGNETAR_PROFILE_*` stage prints silently reported 0.00. It now reads
+  `getrusage`'s peak RSS plus the current `phys_footprint` and prints both;
+  MEMORY_PATH.md §4.2 has the resulting `2^16` stage table (the peak is first
+  reached during the unified Access stage at `2^16`, and the route-(d) freed
+  inputs show up as a 2.17 -> 0.39 GiB footprint drop after Access, which is
+  why the `2^17`/Opening A/B shows the full -0.56 GiB but the `2^16` peak
+  barely moves).
 
 - **Memory A/B on this host needs a same-window switch.** The prover's peak
   drifts by ~0.2 GiB with host memory pressure (during the 2026-11-08 round swap

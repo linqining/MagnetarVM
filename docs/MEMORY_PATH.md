@@ -340,3 +340,41 @@ witnesses/batch tables (~4 KiB/cycle, dropped after Access by increment 1) and
 the uncommitted witness copies feeding the bit-packed tables; the next big step
 is (h) bit-packing the twist witnesses/batch tables, then (c) the mosaic
 commitment.
+
+### 4.2 Stage-level attribution (2026-11-08): the instrumentation was blind, now it is not
+
+`crate::resident_gib()` shelled out to `ps -o rss=`, which the sandbox blocks,
+so every `MAGNETAR_PROFILE_*` stage print reported `rss=0.00 GiB` and the
+attribution this document asks for was impossible. It now reads the in-process
+`getrusage(RUSAGE_SELF).ru_maxrss` (peak RSS) and, next to it, the current
+`phys_footprint` through `magnetar_proof::alloc_release`, so each stage print
+carries both metrics (`rss_peak=... footprint=...`).
+
+Same-binary A/B at `2^16` native default (`TRACE_SHOUT=1`,
+`MAGNETAR_PROFILE_UNIFIED=1 MAGNETAR_PROFILE_SELECTED=1`), route (d) on vs
+`MAGNETAR_KEEP_PROVER_INPUTS=1`:
+
+| stage | new rss_peak / footprint | keep rss_peak / footprint |
+| --- | --- | --- |
+| unified context | 0.54 / 0.53 GiB | 0.54 / 0.53 GiB |
+| unified Commit | 1.28 / 1.28 | 1.28 / 1.28 |
+| selected witness commit | 1.78 / 1.78 | 1.77 / 1.77 |
+| selected before proof | 1.83 / 1.83 | 1.82 / 1.82 |
+| unified Access | 2.17 / **0.39** | 2.17 / **2.17** |
+| unified Opening | 2.17 / 1.46 | **2.20 / 2.20** |
+| peak (bench) | 2.17 / 2.17 | 2.20 / 2.20 |
+
+Reading:
+
+- The high-water mark is first reached **during the unified Access stage** at
+  `2^16` (register-twist `local_shared` prover transient: after Access the new
+  lifetime's live footprint is only 0.39 GiB). That is why the `2^16` peak
+  barely moves with retention, while the `2^17` A/B (§4.1) -- where the Opening
+  is the peak -- shows the full -0.56 GiB: **the retained Access inputs only
+  become the peak term after Access**, i.e. during the mosaic Opening.
+- The Opening live set is 1.46 GiB in the new tree vs 2.20 GiB with the old
+  lifetime (route (d) frees 1.78 GiB of live data after Access).
+- The remaining `2^16` peak is a *sum of transients*: context 0.54 -> Commit
+  +0.74 -> selected witness commit +0.50 -> Access +0.34, each freed before the
+  next but still counted in RSS; footprint follows the same staircase. The
+  route (c)/(h) work attacks those transients/columns, not the resident tables.
