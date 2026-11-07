@@ -73,6 +73,17 @@ documented baseline); the `2^16` delta (0.03-0.12 GiB) sits below this host's
 ~0.2 GiB absolute-peak drift. Details: [MEMORY_PATH.md](MEMORY_PATH.md) §4.1;
 `MAGNETAR_KEEP_PROVER_INPUTS=1` is the A/B switch.
 
+**Final verification on the current tree (2026-11-08, load 10-41):**
+`protocol_determinism` 20/20 byte-identical, 0 failures, peak 1.88 GiB;
+`m6_verify_ab` quiet A/B: serial 24.87 ms (CPU 38.06) vs parallel **10.83 ms
+(min 10.64, CPU 40.35)** = 2.30x wall at +6 % CPU. `2^16` native default:
+prove **30.34 s** / CPU 288.1 s, verify **22.18 ms**, proof 1,018,155 B, peak
+**1.98 GiB footprint**; with `MAGNETAR_SERIALIZE_ACCESS=1`: prove 31.18 s,
+peak **1.78 GiB footprint** (memory-bound mode). Paper-path default (M4b):
+prove 30.44 s, verify **16.42 ms**, proof 1,169,603 B, peak 1.97 GiB.
+Full workspace gate on this tree: **674 passed / 0 failed / 7 ignored**
+(39 binaries).
+
 **Memory attribution fixed (2026-11-08)**: the stage RSS prints now use
 in-process `getrusage` + `phys_footprint` (the old `ps`-based helper returned
 0.00 under the sandbox) and print `rss_peak=` next to `footprint=`;
@@ -178,9 +189,14 @@ at load 4; the load rose during the sequence, see the note).** Native default
 
 | cycles | prove | prove CPU | verify (single) | peak RSS / footprint | proof |
 | --- | --- | --- | --- | --- | --- |
-| `2^16` | **30.4 s** | 283.8 s | **22.3 ms** | **2.18 / 2.18 GiB** | 1,018,155 B |
-| `2^17` | **62.6 s** | 595.5 s | 40.7 ms | 4.35 / 4.35 GiB | 1,110,291 B |
-| `2^18` | **133.1 s** | 1240.3 s | 109.5 ms | **6.37 / 7.97 GiB** | 1,230,360 B |
+| `2^16` | **30.3 s** | 288.1 s | **22.2 ms** | **1.98 GiB footprint** (1.78 with the memory switch) | 1,018,155 B |
+| `2^17` | **62.6 s** | 595.5 s | 40.7 ms | 4.35 / 4.35 GiB* | 1,110,291 B |
+| `2^18` | **133.1 s** | 1240.3 s | 109.5 ms | **6.37 / 7.97 GiB*** | 1,230,360 B |
+
+\* `2^17`/`2^18` were measured before the Access-PCS lifetime change (which
+removed a further 0.76 GiB of `2^18` footprint in a same-window A/B) and before
+`MAGNETAR_SERIALIZE_ACCESS` (a further -1.0 GiB at `2^18`); the `2^16` row is the
+current binary.
 
 Proof bytes are identical to the documented baselines at all three sizes (the
 route (d) lifetime change is byte-neutral); the `2^16` verify improved to
@@ -527,8 +543,12 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
    109.5 ms / 6.37 GiB RSS / 7.97 GiB footprint, proof 1,230,360 B) and its
    stage attribution puts the peak inside the Access stage
    (MEMORY_PATH.md §4.2). Remaining: **`2^19`** (post-route-(d) estimate
-   ~11.9 GiB peak from the measured `2^17`->`2^18` footprint slope; needs a
-   dedicated window with >=16 GiB free+inactive — the `2^18` run left 14.2 GiB),
+   ~11.9 GiB peak from the measured `2^17`->`2^18` footprint slope, ~10.8 GiB
+   with `MAGNETAR_SERIALIZE_ACCESS`; needs a dedicated window with >=15 GiB
+   free+inactive. **Blocked across the 2026-11-08 rounds**: the host stayed at
+   10.8-14.2 GiB free+inactive with swap 8.9-9.4 GiB used, so every attempt was
+   deferred per the MEMORY_PATH.md §3 protocol rather than risking a thrash of
+   the shared machine),
    then re-fit the
    `2^22` model (MEMORY_PATH.md §3; 2^20 is the decision point, 2^21 is not
    runnable on this 36 GiB host).

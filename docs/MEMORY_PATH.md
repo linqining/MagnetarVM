@@ -203,6 +203,41 @@ selected prepared set (up to 24 GiB) and/or the mosaic prepared set (36 GiB) to
 the steady peak at `2^22`; the commit gate already removes the only overlap
 worth removing.
 
+## 4.3 Where the memory work stands at the end of the 2026-11-08 session
+
+Peak footprint at `2^16` native default, chronological:
+
+| change | peak footprint | prove |
+| --- | --- | --- |
+| pre-route-(d) | 2.20 GiB | 30.2 s |
+| route (d) increments 1+2 | 2.17 GiB | 30.4 s |
+| Access-PCS lifetime (default re-encode) | 1.98 GiB | 30.3 s |
+| + `MAGNETAR_SERIALIZE_ACCESS=1` (memory mode) | **1.78 GiB** | 31.2 s |
+
+At `2^18` the same sequence is 8.72 -> 7.96 -> 6.96 GiB footprint. The remaining
+peak terms are quantified in §4.2: ~36 % dense Access factor arrays (needs the
+streaming/virtual-one-hot rewrite), ~31 % resident context (route (h)/(c)) and
+the rest twist-witness inputs plus transients.
+
+**Remaining routes, not attempted (multi-week design work, recorded so the next
+session starts here):**
+- (c) bit-pack the mosaic commitment: would shrink the resident mosaic tables
+  *and* the Commit/Opening codeword+Merkle transients (the `2^18` Opening peak
+  is ~5.5 GiB of transient); changes the committed format, so prover+verifier
+  change together.
+- (h) bit-pack the twist witnesses/batch tables: the Access inputs and the
+  retained tables.
+- (b) 128 -> 64-bit committed alphabet.
+- streaming/virtual-one-hot Access prover: the single largest remaining peak
+  term at every scale measured here.
+- `2^19` staircase: environment-blocked (needs >=15 GiB free+inactive; the host
+  stayed at 10.8-14.2 GiB with swap ~9 GiB used all session).
+
+**Verification tail (current tree):** `protocol_determinism` 20/20
+byte-identical; `m6_verify_ab` parallel verify 10.83 ms (min 10.64) vs serial
+24.87 ms; `2^16` proof 1,018,155 B and paper-path proof 1,169,603 B unchanged
+by every memory change; full workspace gate 674 passed / 0 failed / 7 ignored.
+
 ## 5. Recommended order and tests
 
 Order by GiB saved per unit of work:
