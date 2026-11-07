@@ -1403,3 +1403,144 @@ does not. Peak stays under the paper-bench watchdog (4.32 GiB) at this size.
 proof 1,230,360 B, peak **5.75 GiB RSS / 7.20 GiB phys_footprint**. The
 footprint is 1.45 GiB above RSS at this size, so both must be quoted; the 2^22
 extrapolations should use the footprint series.
+
+#### C.15 M6 increment 1: statement-only v4 verify wall 42.8 -> 17.7 ms (2026-11-07)
+
+§C.14 left the statement-only v4 verifier at a ~40 ms wall even though its CPU
+had fallen 68 %, because `v4_verify::verify_native_unified_v4` was a straight
+line of six stages and the selected-lockstep check alone spent ~17 ms. This
+increment does **not** merge the FRI verifications yet (that is M6 proper, see
+the end of this section); it removes the serial structure and overlaps the two
+independent halves of the selected lockstep.
+
+**What changed**
+
+1. **Verifier stage instrumentation** (`crates/magnetar-runtime/src/verify_profile.rs`):
+   `MAGNETAR_PROFILE_VERIFY=1` now prints, for every stage of the v4 path, the
+   wall time and the process-wide cumulative-CPU delta. The CPU delta is the
+   load-robust attribution metric (HANDOFF §6). Wired into the v4 root /
+   endpoints / access / claim-table / selected-binding / committed-Shout / core
+   stages, the per-check sub-stages (`access_*`, `claim relation rounds`,
+   `claim table opening`, `shout *`, `core *`), and the selected segment stages.
+2. **One independent wave** in `verify_native_unified_v4`: the witness-free
+   access layer, the claim-table opening, the selected-lockstep binding, the
+   committed Shout and the core proof only consume the proof and the statement,
+   so they now run on five threads and are joined in the original serial order
+   (the first reported error on a bad proof is unchanged). Key dependency break:
+   the folded claim is derived from `claim_relation_inputs` (challenges and the
+   selected commitment, all public/proof-carried) rather than from a *verified*
+   claim table, so the claim-table opening check and the selected binding are a
+   conjunction and may run concurrently. `MAGNETAR_VERIFY_SERIAL=1` restores the
+   straight-line verifier for a same-binary wall A/B.
+3. **Selected lockstep: PCS check overlapped with the MLE evaluations.**
+   `magnetar-proof`'s lockstep-bits verifier was split into composable phases
+   (dimensions, transcript/rounds/segment claims, six matrix MLE evaluations,
+   inner/witness checks, PCS opening) with identical behaviour and error order
+   for every existing entry point. The new
+   `verify_lockstep_bits_with_replacements_claim_point_parallel` spawns the PCS
+   opening check (needs only `(ry, vw)`) while the six matrix evaluations run on
+   the calling thread, so no `Sync` bound is added to the matrix trait objects
+   (only the backend and its wire types need `Sync`). The shared segment
+   matrices stay on the calling thread.
+4. **`rom_hash` dedupe**: the ROM digest computed for the program-hash check is
+   reused by the committed-Shout job instead of hashing the ROM twice.
+5. **A/B harness** (`crates/magnetar-testkit/examples/m6_verify_ab.rs`): one
+   2^16 proof, then serial/parallel verification alternated **inside one
+   process** (alternating which mode goes first), reporting median wall and CPU
+   per mode. This is the load-robust way to compare a latency change on this
+   shared host.
+
+**Baseline stage split** (2^16, M5+M4b v4 env, quiet window load 14–18, n=11,
+wall average; `v4 claim table` includes the pre-wave claim-input derivation):
+
+| stage | wall |
+| --- | --- |
+| v4 root / endpoints | 0.73 ms |
+| v4 access | 4.44 ms (register twist 3.78, final relation 0.30, RAM twist 0.09) |
+| v4 claim table | 5.2 ms (inputs 1.8 + relation 0.02 + opening 3.25) |
+| v4 selected binding | **17.41 ms** (segments row 1.03, segment matrices 2.98, lockstep 12.84 = eval_mles 5.23 + pcs 6.73 + rounds/claims 0.43) |
+| v4 committed shout | 4.17 ms (opening 2.64, rom eval 0.67, logup reduction 0.68) |
+| v4 core | 9.09 ms (access claims 4.36, mosaic opening 3.99, table batches 0.19) |
+| **total** | **41.04 ms** (measured verify wall 41.1 ms) |
+
+**Interleaved A/B** (`m6_verify_ab`, `ADDS=65535`, v4 env, load 20–30, n=10
+each, same proof, same process):
+
+| mode | verify wall median | wall min | verify CPU median |
+| --- | --- | --- | --- |
+| `MAGNETAR_VERIFY_SERIAL=1` (pre-M6 order) | 42.82 ms | 41.15 ms | 48.96 ms |
+| parallel (default) | **17.70 ms** | **16.08 ms** | 56.60 ms |
+
+**2.42x wall speed-up for +16 % CPU.** End-to-end benchmark runs in a heavier
+window (load 23–32) agree: serial 62.5 ms wall / 59.7 ms CPU vs parallel
+25.4 / 63.4 (2.46x). The wave alone (without the PCS/eval overlap) measured
+24.5 ms vs 41.1 ms serial (1.68x) in a quiet window, so the two levers are
+roughly additive. The CPU increase is the wave's five stages plus six MLE
+worker threads briefly oversubscribing the 12 cores; wall is the paper metric,
+but the trade must be quoted honestly.
+
+**Where the remaining ~18 ms goes / next levers** (quiet projection):
+
+- critical path is the selected job: row layout ~1 ms, segment matrices ~3 ms,
+  lockstep ~7.3 ms (= `max(eval_mles 5.2, pcs 6.7)` + rounds/claims 0.4 ms),
+  plus 1.8 ms serial claim-input derivation → ~14–16 ms;
+- core job ~9 ms, of which `access_claims_from_proof` (4.4 ms) re-derives the
+  same twist claims the access layer already verified and discarded — sharing
+  them would remove duplicate work (CPU win, and shortens the second-longest
+  job);
+- the two big FRI openings (core mosaic 4.0 ms, committed Shout 2.6–3.6 ms) and
+  the claim-table opening (3.3 ms) are still separate verifications; **M6
+  proper** is to commit the committed-Shout tables inside the mosaic commitment
+  (or otherwise merge the openings) so one FRI covers them;
+- the segment matrices (~3 ms) could overlap the rounds/claims or the PCS check
+  with a lazy-matrix variant.
+
+**Gates:** `magnetar-runtime --lib` 363 passed / 0 failed / 5 ignored;
+`magnetar-proof` 48 passed. The proof itself is unchanged (verifier-only change).
+
+
+#### C.16 M4b paper-path default flip (2026-11-07)
+
+Full details, switch matrix, tamper matrix and gate records:
+[M4B_DEFAULT_FLIP.md](M4B_DEFAULT_FLIP.md). Summary for this design log:
+
+- The paper path (`prove_unified_trace_paper`, i.e. no `TRACE_SHOUT`) now
+  **defaults to the committed-pushforward linear Shout**; `MAGNETAR_CLASSIC_LOGUP=1`
+  restores the classic wire (pre-flip bytes). `MAGNETAR_LINEAR_SHOUT=1` is now
+  redundant on the non-v4 paper path (byte-identical), still selects M4v3 on the
+  native trace path, and is still **required** inside M5 v4 mode: v4 keeps its
+  explicit three-env gate because `claim_table::statement_claim_root_v4` derives
+  the v4 shout component from that env switch, so the paper default must not
+  leak into v4. `paper_committed_logup_enabled()` encodes this:
+  `!MAGNETAR_CLASSIC_LOGUP && (MAGNETAR_LINEAR_SHOUT || !claims_v4_enabled())`.
+- Paper statements must be built with the new
+  `paper_statement_claim_root(trace, width)` (v3 root bound to the host-derived
+  Shout tables). `claim_table::statement_claim_root` keeps its native/legacy
+  meaning -- it has 73 native call sites -- so it is **not** changed. The prover
+  and this statement builder derive the same root under the same switches; a
+  paper proof whose statement was built with the old helper is now rejected.
+- The **trace-carrying verifier** (`verify_unified_with_plan_impl` /
+  `verify_unified_trace`) now compares the proof's committed Shout tables
+  commitment with the host-derived tables root of the trace it was given
+  ("committed logup Shout tables do not match the trace"). Before, that binding
+  existed only via the v3 statement root in the statement-only verifier, so a
+  committed-Shout proof verified *with a trace* could in principle carry a
+  forged `T_pos`/pushforward table while the logup* argument stayed internally
+  valid (pre-existing gap for the M4v3 opt-in too; fixed for both). No O(trace)
+  work was added to `verify_native_unified` or any statement-only path.
+- Recorded wire fact: on this tree the unified dynamic prover hard-codes
+  `shout_table = None`, so the *classic* paper wire is the `logup_shout` proof
+  alone (`shout`/`packed_shout` are absent on both wires). M4b's win is dropping
+  the classic 25-column `logup_shout` opening and adding the committed linear
+  Shout instead; the classic verifier never checked that opening's logup
+  identity, which the committed path does.
+
+Gates on the flipped tree: `cargo test --workspace --release` **674 passed /
+0 failed / 5 ignored** on the default env and again under
+`MAGNETAR_CLASSIC_LOGUP=1` (39 binaries each); `cargo build --workspace
+--examples --release` green; ignored opt-in/tamper set
+`-p magnetar-runtime --lib --ignored --test-threads=1` 5 passed / 0 failed;
+`protocol_determinism` runs=20 identical=20 failures=0 peak 1.95 GiB. Proof
+sizes are unchanged against the opt-in measurement in §C.13.1 (the flip is the
+same code path): `2^16` paper proof 1,169,602 B, verify wall 26.2 ms, peak
+2.21 GiB; the v4 statement-only path keeps its 1,174,285 B / 17.7 ms M6 result.
