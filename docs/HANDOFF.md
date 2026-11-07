@@ -1,7 +1,7 @@
 # Handoff — MagnetarVM streaming selected prover (RV64)
 
 Status: **incremental optimization phase (Part 1 closed, Part 2 in progress)**,
-branch `virtual-claims-rewrite`. Commits through `3478c36` (M6 increments 1-3:
+branch `virtual-claims-rewrite`. Commits through `caa3692` (M6 increments 1-3:
 parallel/phase-split statement-only v4 verifier + shared access claims; M4b
 paper-path default flip; memory route (d) increments 1+2; stage memory
 instrumentation; Access-PCS lifetime). Gate: 674 passed / 0 failed / 6 ignored
@@ -44,6 +44,14 @@ The wall history is 42.8 -> 17.7 -> 13.4 -> **10.8 ms**; the paper-path default
 (verifier-only). Details:
 [POLYLOG_CLAIM_VERIFIER.md](POLYLOG_CLAIM_VERIFIER.md) §C.15, §C.17, §C.18,
 §C.20. Remaining levers are optional CPU/contention work only (§5 item 1).
+
+**Opt-in Access scheduling switch (2026-11-08)**: `MAGNETAR_SERIALIZE_ACCESS=1`
+starts the selected commit/products after the Access stage instead of after the
+mosaic Commit, so the two working sets do not overlap. Byte-identical proofs
+(pinned by an ignored test). `2^16`: peak footprint **2.17 -> 1.78 GiB
+(-18 %)** for +1.7 % prove wall; `2^18`: **7.96 -> 6.96 GiB (-12.6 %)** with the
+wall unchanged and the peak moving from Access to the mosaic Opening
+(MEMORY_PATH.md §4.2). Opt-in for memory-bound runs.
 
 **Access PCS lifetime (2026-11-08)**: `prove_local_shared` no longer retains
 the prepared codeword/Merkle batch until the opening; it re-encodes at the
@@ -540,7 +548,9 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
    twist) -- a streaming/virtual-one-hot Access prover is the first memory
    target at `2^17`+ (route (h)-adjacent, byte-neutral); the cheapest part of
    it landed already -- dropping the retained Access PCS prepared batch cut the
-   `2^18` peak footprint 8.72 -> 7.96 GiB with byte-identical proofs. The
+   `2^18` peak footprint 8.72 -> 7.96 GiB with byte-identical proofs, and the
+   opt-in `MAGNETAR_SERIALIZE_ACCESS=1` scheduling switch cuts it further to
+   `2^18` 6.96 GiB / `2^16` 1.78 GiB (byte-identical; §4.2). The
    allocator-release route is confirmed a no-op at both scales. Remaining order: (h) bit-pack the twist witnesses/batch tables, then
    (c) bit-pack the mosaic commitment, then (b) the 128 -> 64-bit committed
    alphabet, and re-run the staircase (2^18/2^19) to re-fit the `2^22` model;

@@ -10787,7 +10787,7 @@ mod m5_v4_tests {
     /// batch is only the `MAGNETAR_KEEP_LOCAL_PREPARED=1` A/B mode. Both must
     /// produce byte-identical unified proofs.
     #[test]
-    #[ignore = "sets MAGNETAR_LOCAL_RECOMMIT process-wide"]
+    #[ignore = "sets prover env switches process-wide"]
     fn local_recommit_is_byte_identical_to_retained_batch() {
         // Above the linear-twist minimum (8192 cycles) so the Access stage
         // actually runs `prove_local_shared`.

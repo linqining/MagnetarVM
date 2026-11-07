@@ -476,6 +476,27 @@ Consequences for the memory route:
 free+inactive, below the protocol's peak+4 GiB (post-route-(d) `2^19` estimate
 ~11.9 GiB peak => ~16 GiB). It needs a dedicated window.
 
+**Opt-in scheduling switch: `MAGNETAR_SERIALIZE_ACCESS=1`.** At `2^16`+ the
+Access stage's dense factor arrays overlap the selected thread's commit and
+product phases, and the peak is a sum of the two. The switch moves the
+selected-commit gate from the mosaic Commit to the end of the Access stage, so
+the two working sets no longer overlap. The proof is unchanged (ignored test
+`m5_v4_tests::serialize_access_proof_bytes_match` proves the same trace both
+ways and compares the serialized unified proofs).
+
+| scale | default | `MAGNETAR_SERIALIZE_ACCESS=1` |
+| --- | --- | --- |
+| `2^16` | 2.17 GiB RSS / **2.17 GiB footprint** / prove 30.54 s (CPU 287.7) | 1.91 / **1.78 GiB** / prove 31.07 s (CPU 286.9) |
+| `2^18` | 6.17 GiB RSS / **7.96 GiB footprint** / prove 132.90 s (CPU 1249.3) | 6.09-6.71 / **6.96-6.97 GiB** / prove 132.65-132.84 s (CPU 1247-1250) |
+
+=> `2^16`: **-0.39 GiB footprint (-18 %)** for +1.7 % prove wall; `2^18`:
+**-1.0 GiB footprint (-12.6 %)** with the wall unchanged (the later product
+start is absorbed because the products then run with less contention) and at
+`2^18` the peak moves from the Access stage (5.35-5.76) to the mosaic Opening
+(6.39-6.86). Opt-in rather than default: at large `2^22` scale the Access
+stage is much longer, so serializing it costs wall there (and the 2^19 window
+will decide the default).
+
 **Kept (default flipped): the Access PCS prepared batch is not retained.** The
 local PCS used `commit_batch_prepared` and kept the prepared batch (codeword +
 Merkle tree of the address columns) live from the commit until the opening
