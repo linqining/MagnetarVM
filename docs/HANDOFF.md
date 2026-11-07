@@ -87,12 +87,15 @@ core count is low.
 | `2^16` (2026-11-03, chunked inner scan only) | 38.3–38.6 s | 24.7–25.1 ms | 2.03 GiB | 1,018,153 B† |
 | `2^16` (2026-11-03, before chunked inner scan) | 53.8–59.3 s | 27.3–27.4 ms | 2.04–2.38 GiB | 1,018,152 B† |
 | `2^16` (2026-10-31) | 70.4 s | 29.6 ms | 2.26 GiB | 861,407 B |
-| `2^17` | **147.6 s** | 55.8 ms | 4.60 GiB | 942,535 B |
+| `2^17` (2026-11-07, refreshed) | **96.4 s** | 68.9 ms (CPU 249.2 ms) | 4.02 GiB | 1,110,291 B† |
 | `2^18` | 321.5 s (pre-fusion) | 161.5 ms | 7.73 GiB | 1,050,900 B |
 | `2^19` | 667.8 s (pre-fusion) | 318.3 ms | 10.54 GiB | 1,177,984 B |
 
 † proof size is the claim-table format; the streaming proof itself is still
-byte-identical to the eager path. See results §11.6.
+byte-identical to the eager path. See results §11.6. The same 2^17 row with
+`MAGNETAR_CLAIM_V4=1 MAGNETAR_ACCESS_COLUMNS=1 MAGNETAR_LINEAR_SHOUT=1`
+(M5+M4b) gives verify CPU 61.9 ms/iter (-75 %), peak 3.57 GiB and 1,275,305 B
+(docs/POLYLOG_CLAIM_VERIFIER.md §C.14.1).
 `2^18`/`2^19` predate the fused scan and the ring-switch fix; two loaded re-runs
 gave 335 s and 437 s with 5.7–7.8 GiB peak and were discarded. **The ≈20 GiB
 `2^22` projection below is retracted**: the constant staircase deltas were

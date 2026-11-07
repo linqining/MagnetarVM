@@ -1380,3 +1380,18 @@ Reading:
 - The v4 prover still produces the classic fields unless the linear env is set;
   the verifier rejects that combination, which is intentional until the paper
   default flips to M4b.
+
+#### C.14.1 2^17 staircase refresh (2026-11-07, quiet host)
+
+Same binary, load 15-20. The 2^17 row had been marked pre-fusion; both the
+default and the M5+M4b path are now measured:
+
+| 2^17 | proof | prove wall | verify wall | verify CPU/iter | peak RSS / footprint |
+| --- | --- | --- | --- | --- | --- |
+| native default | 1,110,291 B | 96.4 s | 68.9 ms | 249.2 ms | 4.02 / 4.32 GiB |
+| native M5+M4b | 1,275,305 B | 96.6 s | 51.2 ms | **61.9 ms (-75 %)** | **3.57** / 4.28 GiB |
+
+The fused scan + packed CSR cut prove wall from the old 147.6 s to 96.4 s, and
+the M5 win scales with the trace: verify CPU -75 % at 2^17 (vs -68 % at 2^16)
+because the removed claim/access work grows with rows while the core opening
+does not. Peak stays under the paper-bench watchdog (4.32 GiB) at this size.
