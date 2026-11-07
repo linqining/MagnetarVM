@@ -485,7 +485,13 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
    Remaining follow-up: external paper-statement builders must switch to
    `paper_statement_claim_root`; the classic paper wire itself keeps its
    unverified `logup_shout` opening and is now only the A/B leg.
-3. **Allocator-release hooks: measured no-go at `2^16`.** The interleaved
+3. **Allocator-release hooks: no-op at `2^16` and `2^17` (direct evidence).**
+   With the fixed stage probes the `MAGNETAR_RELEASE_TRANSIENTS=1` release
+   points now print what the allocator actually returns: at `2^17` every point
+   reports `allocator returned 0.0 MiB` (selected commit, Access, Opening,
+   finish, products) and the peak is unchanged (3.95 vs 3.96 GiB footprint;
+   MEMORY_PATH.md §4.2). macOS libmalloc already returns the large blocks. The
+   interleaved
    base/release/base/release A/B (POLYLOG_CLAIM_VERIFIER.md §C.13.1) gave
    RSS 2.24/2.12/2.03/2.24 GiB and footprint 2.23/2.22/2.03/2.24 -- no
    consistent improvement; the env-gated hook stays default-off and is not a
@@ -506,11 +512,17 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
    2026-11-08 (Access-input lifetime + compact twist tables + trace-witness
    dedup) and the `2^17` same-window A/B measures **4.51 -> 3.95 GiB footprint
    (-12.4 %)**, RSS -0.2 to -0.7 GiB, prove CPU -0.7 % (noise), byte-identical
-   proofs (§4.1). Remaining order: (h) bit-pack the twist witnesses/batch
-   tables, then (c) bit-pack the mosaic commitment, then (b) the 128 -> 64-bit
-   committed alphabet, and re-run the staircase (2^18/2^19) to re-fit the
-   `2^22` model. After all four the floor is still 26-30 GiB, so the paper
-   envelope needs a different commitment family or streaming codewords.
+   proofs (§4.1). The new stage probes (§4.2) locate the remaining `2^17` peak
+   (3.96 GiB footprint, reached during the mosaic Opening) between the main-side
+   mosaic re-encode/Merkle transient + resident mosaic tables and the selected
+   prover's product-phase live set (~2.3 GiB: packed CSR + lazy matrices +
+   level stores); the allocator-release route is now confirmed a no-op at both
+   scales. Remaining order: (h) bit-pack the twist witnesses/batch tables, then
+   (c) bit-pack the mosaic commitment, then (b) the 128 -> 64-bit committed
+   alphabet, and re-run the staircase (2^18/2^19) to re-fit the `2^22` model;
+   the selected product-phase live set needs a streaming CSR or a level-budget
+   trade. After all four the floor is still 26-30 GiB, so the paper envelope
+   needs a different commitment family or streaming codewords.
 6. Rejected on purpose: raising the *outer* stream budget above 22 (trades
    ~11 % of `product6` for +0.4 GiB at `2^16` and ~+25 GiB at `2^22`), caching
    scale-linear PCS data across stages (the deep clone removal was kept, the

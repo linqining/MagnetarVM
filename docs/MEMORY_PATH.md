@@ -378,3 +378,41 @@ Reading:
   +0.74 -> selected witness commit +0.50 -> Access +0.34, each freed before the
   next but still counted in RSS; footprint follows the same staircase. The
   route (c)/(h) work attacks those transients/columns, not the resident tables.
+
+`2^17` stage table (same instrumentation, one run, load 12-63; proof
+1,110,291 B, peak 3.97 GiB RSS / 3.96 GiB footprint):
+
+| stage | rss_peak / footprint |
+| --- | --- |
+| unified context | 1.10 / 1.10 GiB |
+| unified Commit | 2.57 / 2.57 GiB |
+| selected witness commit | 3.57 / 3.57 GiB |
+| selected before proof | 3.58 / 3.57 GiB |
+| unified Access | 3.97 / 0.75 GiB |
+| unified Opening | 3.97 / 3.03 GiB |
+| after selected proof | 3.97 / 1.62 GiB |
+
+At `2^17` the peak footprint (3.96 GiB) is reached during the **mosaic
+Opening** (main-thread live 0.75 GiB + the re-encode/Merkle transient + the
+selected prover's product-phase live set), not at Commit: after Access the
+process footprint is only 0.75 GiB, and the selected prover's product phases
+hold ~2.3 GiB live (release prints: product6 end 3.04, product2 end 1.75
+GiB) -- that is the packed CSR scan structure, the six lazy matrices and the
+level stores, which are all needed by both products. The main-side Opening
+transient (~0.9 GiB on top of 3.03) is the last increment to the peak.
+
+**Allocator-release re-test with the new probes (`MAGNETAR_RELEASE_TRANSIENTS=1`,
+`2^17`):** every release point reports `allocator returned 0.0 MiB` (selected
+commit, Access, Opening, finish, product6, product2, lockstep products), and
+the peak is unchanged (3.95 vs 3.96 GiB footprint; RSS 3.65 vs 3.97 is
+sampling noise). macOS libmalloc already returns the large blocks, so the
+allocator-release route is a confirmed no-op at `2^17` as it was at `2^16`
+(HANDOFF §5 item 3), now with direct evidence instead of a peak A/B.
+
+**Where the remaining memory work must go:** the `2^17` peak is split between
+(a) the main thread's mosaic Opening re-encode/Merkle transient and resident
+mosaic tables (route (c)/(h): bit-packing the mosaic tables shrinks both the
+transient and the resident set), and (b) the selected prover's product-phase
+live set (~2.3 GiB: packed CSR + matrices + level stores, scales with cycles).
+(b) needs either a streaming CSR or the level-budget trade (HANDOFF §5 item 6),
+and is the next thing to measure at `2^18` before touching it.
