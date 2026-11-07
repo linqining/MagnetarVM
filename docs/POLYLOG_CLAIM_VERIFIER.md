@@ -1347,3 +1347,36 @@ the twist's own final evaluation:
   relation plus folded claim into the selected lockstep verifier, then the core
   proof checks and the O(1) endpoint/IO checks) before the row blob can actually
   be dropped and the ~12 ms verify win realized.
+
+#### C.14 M5 complete: row payload gone, verify CPU -68 % (2026-11-07)
+
+`MAGNETAR_CLAIM_V4=1` + `MAGNETAR_ACCESS_COLUMNS=1` + `MAGNETAR_LINEAR_SHOUT=1`
+now runs the proof end to end with **no row blob and no witnessed rebuild**: the
+claim-table relation folds the target into the selected lockstep claim, the
+access layer is verified witness-free (2b), the ROM is discharged by the
+committed linear Shout, and the core verifier checks the shared mosaic opening.
+
+| 2^16, quiet host (load 10-25) | proof | verify CPU/iter | verify wall | peak RSS |
+| --- | --- | --- | --- | --- |
+| native default | 1,018,155 B | 154.2 ms | 39.0 ms | 1.88 GiB |
+| **native M5+M4b** | 1,174,285 B | **49.8 ms (-68 %)** | 43.8 ms | 2.02 GiB |
+| paper default | 1,199,747 B | 82.2 ms | 41.7 ms | 2.42 GiB |
+| **paper M5+M4b** | 1,174,285 B | **46.6 ms (-43 %)** | 39.7 ms | **2.03 GiB (-0.39)** |
+
+Reading:
+- The claim layer, the witnessed access rebuild and the witnessed trace
+  Logup-Shout are gone: ~2/3 of the verifier CPU work disappears (native
+  154.2 -> 49.8 ms/iter).
+- **Verify wall is now bound by the remaining serial core opening check**, not
+  by the claim layer: wall stays at ~40 ms while CPU drops. That is the next
+  lever (M6: merge the committed batch opening into the mosaic opening / one
+  FRI verification). The 8-12 ms target needs that, not more claim work.
+- The v4 proof is +156 KB versus the native default because it adds the
+  committed Shout proof (M4b); against the paper default it is -25 KB, and the
+  paper path loses 0.39 GiB of peak RSS.
+- Soundness rule enforced in code: v4 **requires** the committed linear Shout.
+  A classic-mode v4 proof is rejected rather than accepted with an unverified
+  Shout argument (`M5 v4 verifier requires the committed linear Shout`).
+- The v4 prover still produces the classic fields unless the linear env is set;
+  the verifier rejects that combination, which is intentional until the paper
+  default flips to M4b.

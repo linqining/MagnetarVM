@@ -23,6 +23,7 @@ pub mod claim_native;
 pub mod claim_shout;
 pub mod access_table;
 pub mod access_verify;
+pub mod v4_verify;
 pub mod claim_table;
 pub mod linear_twist;
 pub mod local_shared;
@@ -260,16 +261,21 @@ pub fn rom_hash(rom: &[u32]) -> [u8; 32] {
 /// Access statement digest for M5b (`H("magnetar-access-v4" || table_root)`)
 /// when the committed access columns are enabled; otherwise the classic O(rows)
 /// digest from the trace claims (default path unchanged).
-fn statement_access_digest(trace: &Trace) -> [u8; 32] {
+///
+/// Public so the testkit statement constructors derive the same digest as the
+/// runtime instead of hard-coding the classic one.
+pub fn statement_access_digest(trace: &Trace) -> [u8; 32] {
     if crate::access_table::access_columns_enabled() && crate::claim_table::claims_v4_enabled() {
+        // M5c: the digest must derive from the SAME claim-table commitment the
+        // v4 statement root binds (the schema-only M2/M3 table that the claim
+        // relation proves against). The host-side `T_access` columns worked out
+        // in M5b phase 1 are not part of that commitment yet, so deriving from
+        // the combined table would leave the digest unbound.
         if let Ok(schema) = crate::claim_table::claim_table_columns(trace) {
-            if let Ok(access) = crate::access_table::access_columns_from_trace(trace) {
-                if let Ok((commitment, _)) =
-                    crate::access_table::combined_table_commitment(&schema, &access)
-                {
-                    let table_root = crate::claim_table::claim_table_root(&commitment);
-                    return crate::access_table::access_statement_digest(&table_root);
-                }
+            let bits = crate::claim_table::claim_table_bits(&schema);
+            if let Ok(commitment) = crate::claim_table::commit_claim_table(&bits) {
+                let table_root = crate::claim_table::claim_table_root(&commitment);
+                return crate::access_table::access_statement_digest(&table_root);
             }
         }
     }
@@ -3183,11 +3189,16 @@ fn prove_unified_trace_dynamic_native_profile_inner(
             }
             // M4 v3: the statement root binds the committed Shout tables and the
             // committed pushforward table on top of the M2/M3 claim binding.
-            if let Some(committed) = proof.committed_logup_shout.as_ref() {
-                proof.trace_claim_root = crate::logup_shout::statement_root_from_commitments(
-                    &proof.trace_claim_root,
-                    committed,
-                );
+            // M5c: in v4 the statement root already carries the committed Shout
+            // tables as its second component (the host's `statement_claim_root`
+            // does the same), so wrapping the root again would disagree.
+            if !crate::claim_table::claims_v4_enabled() {
+                if let Some(committed) = proof.committed_logup_shout.as_ref() {
+                    proof.trace_claim_root = crate::logup_shout::statement_root_from_commitments(
+                        &proof.trace_claim_root,
+                        committed,
+                    );
+                }
             }
         }
         timings.push(StageTiming {
@@ -3995,14 +4006,10 @@ pub fn verify_native_unified(
         ));
     }
     if v4 {
-        // M5b: the access digest is the O(1) derivation from the v4 claim table
-        // root and the access layer is verified witness-free: the twist proofs
-        // are checked against the shared commitment, the public initial RAM is
-        // bound at the cell point, and (M5b-2b) the committed final-RAM table is
-        // bound to the twist's final evaluation. The rest of the statement-only
-        // checks are M5c and still gated.
-        crate::access_verify::verify_access_committed(statement, proof, &proof.commitment)?;
-        return Err(RuntimeError::Proof(crate::access_verify::V4_PENDING.into()));
+        // M5c: complete statement-only v4 verification (claim table relation,
+        // selected lockstep, committed Shout, witness-free access, core checks,
+        // O(1) endpoints). All row-derived work is gone.
+        return crate::v4_verify::verify_native_unified_v4(statement, proof, width);
     }
     // M4b: the classic Shout proofs and the committed linear Shout are mutually
     // exclusive; accepting both would either double-count or skip one of them.
@@ -10228,26 +10235,29 @@ mod m5_v4_tests {
             ram_base: 0x1000_0000,
             ram_size: 0x40,
             stack_top: 0x1000_0040,
-            max_cycles: 100,
+            max_cycles: 10_000,
         }
     }
 
     fn program() -> ProgramImage {
-        ProgramImage::new(
-            0x1000,
-            vec![
+        // A 2-row trace is below the native prover's stage minimums (the core
+        // opening then disagrees), so the end-to-end round trips use a
+        // real-size trace.
+        let mut rom = (0..200)
+            .map(|index| {
                 Instruction {
                     op: Op::Addi,
                     rd: 1,
-                    rs1: 0,
+                    rs1: 1,
                     rs2: 0,
-                    imm: 7,
+                    imm: index + 1,
                     shamt: 0,
                 }
-                .encode(),
-                Instruction::new(Op::Ecall).encode(),
-            ],
-        )
+                .encode()
+            })
+            .collect::<Vec<_>>();
+        rom.push(Instruction::new(Op::Ecall).encode());
+        ProgramImage::new(0x1000, rom)
     }
 
     #[test]
@@ -10268,11 +10278,13 @@ mod m5_v4_tests {
     }
 
     #[test]
-    #[ignore = "sets MAGNETAR_CLAIM_V4 process-wide"]
-    fn v4_table_only_roundtrip_pending_verifier() {
+    #[ignore = "sets MAGNETAR_CLAIM_V4/MAGNETAR_ACCESS_COLUMNS process-wide"]
+    fn v4_table_only_statement_only_round_trip() {
         std::env::set_var("MAGNETAR_CLAIM_V4", "1");
+        std::env::set_var("MAGNETAR_ACCESS_COLUMNS", "1");
+        std::env::set_var("MAGNETAR_LINEAR_SHOUT", "1");
         let outcome = ReferencePipeline::run(&program(), config(), 1).unwrap();
-        let proof = prove_unified_trace_paper(&outcome.trace, 64).unwrap();
+        let proof = prove_unified_trace_dynamic_native(&outcome.trace, 64).unwrap();
         let claims = proof.claim_proof.as_ref().unwrap();
         assert!(claims.is_v4_table_only(), "v4 proof still carries row claims");
         assert!(claims.table.is_some());
@@ -10282,14 +10294,12 @@ mod m5_v4_tests {
         let bytes = serialize_unified_proof(&proof).unwrap();
         let decoded = deserialize_unified_proof(&bytes).unwrap();
         assert!(decoded.claim_proof.as_ref().unwrap().is_v4_table_only());
-        // Verifier side is dependency-gated until the T memory/register columns
-        // are committed (§C.11): it must refuse rather than accept unbound access.
-        let error = verify_native_unified(&outcome.statement, &proof, 64).unwrap_err();
-        assert!(
-            format!("{error:?}").contains("M5 v4 verifier pending"),
-            "unexpected v4 verifier error: {error:?}"
-        );
+        // M5c: the statement-only verifier accepts the proof with no row data.
+        verify_native_unified(&outcome.statement, &proof, 64)
+            .expect("M5c v4 statement-only round-trip");
+        std::env::remove_var("MAGNETAR_LINEAR_SHOUT");
         std::env::remove_var("MAGNETAR_CLAIM_V4");
+        std::env::remove_var("MAGNETAR_ACCESS_COLUMNS");
     }
 
     /// M5b-2b: the committed final-RAM cell table binds the witness-free access
@@ -10299,6 +10309,7 @@ mod m5_v4_tests {
     fn v4_access_final_binds_without_witness() {
         std::env::set_var("MAGNETAR_CLAIM_V4", "1");
         std::env::set_var("MAGNETAR_ACCESS_COLUMNS", "1");
+        std::env::set_var("MAGNETAR_LINEAR_SHOUT", "1");
         let outcome = ReferencePipeline::run(&program(), config(), 1).unwrap();
         let statement = outcome.statement.clone();
         let proof = prove_unified_trace_paper(&outcome.trace, 64).unwrap();
@@ -10311,12 +10322,9 @@ mod m5_v4_tests {
         // 1. Witness-free access verification, including the final binding.
         crate::access_verify::verify_access_committed(&statement, &proof, &proof.commitment)
             .expect("witness-free access verification");
-        // 2. The rest of the v4 statement-only checks are still gated (M5c).
-        let error = verify_native_unified(&statement, &proof, 64).unwrap_err();
-        assert!(
-            format!("{error:?}").contains("M5 v4 verifier pending"),
-            "unexpected v4 verifier error: {error:?}"
-        );
+        // 2. M5c: the full statement-only v4 verification accepts the proof.
+        verify_native_unified(&statement, &proof, 64)
+            .expect("M5c v4 statement-only verification");
 
         // 3. Wire: the committed final table survives the round trip.
         let bytes = serialize_unified_proof(&proof).unwrap();
@@ -10365,6 +10373,7 @@ mod m5_v4_tests {
                 .is_err()
         );
 
+        std::env::remove_var("MAGNETAR_LINEAR_SHOUT");
         std::env::remove_var("MAGNETAR_ACCESS_COLUMNS");
         std::env::remove_var("MAGNETAR_CLAIM_V4");
     }

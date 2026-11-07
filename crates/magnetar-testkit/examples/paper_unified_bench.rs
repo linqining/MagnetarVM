@@ -66,7 +66,7 @@ fn main() {
         rom: trace.rom.clone(),
         trace_commitment: trace_digest(&trace),
         trace_claim_root: magnetar_runtime::claim_table::statement_claim_root(&trace),
-        access_statement_digest: AccessStatement::from_trace(&trace).digest(),
+        access_statement_digest: magnetar_runtime::statement_access_digest(&trace),
         config: trace.config.clone(),
         initial_state: trace.initial_state.clone(),
         initial_ram: trace.initial_ram.clone(),
@@ -104,8 +104,14 @@ fn main() {
             .claim_proof
             .as_ref()
             .and_then(|claims| claims.table.clone());
+        // M5 v4: the proof must keep its table-only claim encoding (the verifier
+        // rejects row payloads in v4 mode); only the legacy formats get the
+        // compact register-derived blob.
+        let v4 = magnetar_runtime::claim_table::claims_v4_enabled();
         proof.claim_proof = if no_claim {
             None
+        } else if v4 {
+            proof.claim_proof
         } else {
             let mut claims = magnetar_runtime::trace_claims::ClaimProof::from_trace_reg(&trace);
             claims.table = claim_table;
