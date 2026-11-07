@@ -1614,3 +1614,50 @@ compiled_guest 1, claim_native_guest 1, field_iso 1, logup_shout_mixed 2,
 logup_shout_runtime 2, logup_star_shout 1, native_trace_mode 1, paper_mode 1;
 0 failed). The proof itself is unchanged (verifier-only).
 
+
+#### C.18 M6 increment 3: share the access mosaic claims with the core verifier (2026-11-08)
+
+The witness-free access verifier (`access_verify::verify_access_committed`)
+derives the RAM and register twist mosaic claims and then discarded them
+(`let _ram_claims`, `let _register_claims`), while the core verifier re-derived
+exactly the same claims from the proof via `access_claims_from_proof`. At
+`2^16` the duplicate was measured at **4.84 ms wall / 14.42 ms CPU** in the
+core job (§C.17 profiling), the second-largest single item of processor work in
+the whole verifier.
+
+**Change**
+
+- `access_verify::verify_access_committed_with_claims` is the new body; the
+  old `verify_access_committed` wraps it with `map(|_| ())` so every existing
+  caller is untouched.
+- `verify_core_proof_inner_with_access_claims` /
+  `verify_core_statement_with_access_claims` accept
+  `Option<(MosaicClaims, MosaicClaims)>`; `None` falls back to deriving them
+  (so every non-v4 path is unchanged).
+- The v4 verifier passes the claims from the access job to the core job over an
+  `mpsc` channel: the core job now depends on the access job, but that
+  dependency is off the critical path (access ~5 ms, core ~4.5 ms after the
+  claims are supplied, both below the ~13 ms selected job) and the join order
+  still reports the access error first when the access layer fails. The serial
+  path hands the claims over directly.
+
+**Evidence** (profiled runs; the two runs are different load windows, so use
+stage CPU deltas and ratios, not absolute wall):
+
+| stage | §C.17 | this increment |
+| --- | --- | --- |
+| `core access claims` | 4.84 ms wall / 14.42 ms CPU | ~0 |
+| `v4 core` | 9.91 ms wall / 26.97 ms CPU | 6.54 ms wall / 15.00 ms CPU |
+| whole verify, parallel | 58.25 ms CPU /iter (serial 51.10) | 53.14 ms CPU /iter (serial 49.89) |
+| parallel-vs-serial CPU premium | +14 % | +6.5 % |
+
+The critical path is the selected job, so the wall effect of this increment is
+expected to be small; the win is ~12 ms CPU per iteration removed from the core
+job (~9 % of the total) and less rayon contention in the wave. **A quiet-window
+wall A/B is still pending** -- the host was at load 40-260 during the attempt,
+which makes wall comparison meaningless; the last quiet-window reference for the
+full chain is §C.17 (parallel 13.35 ms, min 12.84).
+
+**Gates:** `magnetar-runtime --lib` 363 passed / 0 failed / 5 ignored;
+`magnetar-proof` 48 passed; v4 opt-in set 5 passed / 0 failed. Proof unchanged
+(verifier-only).
