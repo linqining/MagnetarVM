@@ -1661,3 +1661,36 @@ full chain is §C.17 (parallel 13.35 ms, min 12.84).
 **Gates:** `magnetar-runtime --lib` 363 passed / 0 failed / 5 ignored;
 `magnetar-proof` 48 passed; v4 opt-in set 5 passed / 0 failed. Proof unchanged
 (verifier-only).
+
+#### C.20 M6 closure: quiet-window verify wall 10.84 ms, inside the 8-12 ms target (2026-11-08)
+
+On a quiet window (load 12 at the start, one-minute peak 26; `m6_verify_ab`,
+one proof, serial/parallel alternated inside the process, n=12 each), the
+M5+M4b statement-only v4 verifier measures:
+
+| mode | verify wall median | wall min | verify CPU median |
+| --- | --- | --- | --- |
+| `MAGNETAR_VERIFY_SERIAL=1` | 24.80 ms | 24.29 ms | 38.09 ms |
+| parallel (default) | **10.84 ms** | **10.50 ms** | 41.57 ms |
+
+**10.84 ms is inside the paper's 8-12 ms verify target**, at 2.29x wall for a
++9 % CPU premium (the CPU premium shrank from +16 % in §C.15 to +9 % because
+§C.18 removed the duplicate access-claim derivation: the serial CPU itself fell
+48.96 -> 38.09 ms). The wall history at fixed `2^16` and v4 env is
+42.8 (pre-M6) -> 17.7 (§C.15 wave) -> 13.4 (§C.17 phase split) -> **10.8 ms**
+(this window; the last step is mostly the §C.18 CPU/contention win plus a
+quieter host -- the earlier 13.35 ms reference was measured at load ~8 but with
+the duplicated core work still present).
+
+Same window, the paper-path *default* (M4b flipped, non-v4 statement verifier
+with the row payload): proof **1,169,603 B**, single verify **16.9 ms**, peak
+**1.98 GiB RSS / 1.97 GiB footprint**, prove 31.0 s / CPU 285.1 s -- against
+35.1 ms (classic paper) and 26.2 ms (M4b opt-in) in §C.13.1, so the M6 verifier
+work reaches the paper path as well.
+
+The remaining levers are no longer needed for the wall target: merging the
+committed-Shout batch opening into the mosaic opening would remove ~11 ms of
+CPU (off the critical path, so a contention/CPU win only), and the selected
+PCS opening check (~6.7 ms single-thread) would need FRI-side (vendored
+binary-pcs) parallelization to shrink further. Both are optional; the priority
+moves to the memory routes and the staircase.

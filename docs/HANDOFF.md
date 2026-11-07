@@ -33,14 +33,15 @@ independently schedulable phases (segment row/shape on a worker, claim
 derivation handed over by channel, challenge phase, then the PCS opening check
 overlapped with the matrix build and MLE evaluations), and the access verifier
 now hands its mosaic claims to the core verifier instead of letting it re-derive
-them. Interleaved same-process A/B at `2^16` (`m6_verify_ab`) measured the
-verify wall **17.7 -> 13.4 ms (min 12.8)**, a **2.61x** speed-up over the
-serial verifier; increment 3 removes ~12 ms CPU per iteration from the core job
-(parallel CPU 58.3 -> 53.1 in profiled windows) but leaves the wall critical
-path unchanged. Proof unchanged (verifier-only). Details:
-[POLYLOG_CLAIM_VERIFIER.md](POLYLOG_CLAIM_VERIFIER.md) §C.15, §C.17, §C.18. The
-single dominant remaining term is the selected PCS opening check (~6.7 ms);
-next levers: §5 item 1.
+them. A quiet-window interleaved A/B at `2^16` (`m6_verify_ab`, load 12) now
+measures the statement-only v4 verify wall at **10.84 ms (min 10.50)**, inside
+the paper's **8-12 ms target**, at 2.29x wall against the serial verifier and
++9 % CPU (serial CPU itself fell 49.0 -> 38.1 ms after the increment-3 dedupe).
+The wall history is 42.8 -> 17.7 -> 13.4 -> **10.8 ms**; the paper-path default
+(M4b flipped) verifies in 16.9 ms with a 1,169,603 B proof. Proof unchanged
+(verifier-only). Details:
+[POLYLOG_CLAIM_VERIFIER.md](POLYLOG_CLAIM_VERIFIER.md) §C.15, §C.17, §C.18,
+§C.20. Remaining levers are optional CPU/contention work only (§5 item 1).
 
 **Memory route (d) increments 1+2 (2026-11-08)**: the unified context drops
 its Access-only twist witnesses/batch tables right after the Access stage, the
@@ -233,6 +234,13 @@ increment 2 gives serial 34.84 / 49.50 vs parallel **13.35 / 53.14 ms**
 the ratio. The remaining critical path is the selected PCS opening check
 (~6.7 ms), then the segment-matrix build (~3.3 ms) and the MLE evaluations
 (~2.5-3.5 ms, parallel); see POLYLOG_CLAIM_VERIFIER.md §C.15/§C.17.
+Final quiet-window A/B (2026-11-08, load 12, n=12 per mode): serial 24.80 ms
+wall / 38.09 ms CPU vs parallel **10.84 ms / 10.50 min / 41.57 ms CPU** = 2.29x
+wall at +9 % CPU -- inside the paper's 8-12 ms target. The paper-path default
+(M4b) in the same window verifies a 1,169,603 B proof in 16.9 ms with a
+1.98 GiB RSS / 1.97 GiB footprint peak. History in POLYLOG_CLAIM_VERIFIER.md
+§C.20.
+
 Increment 3 (2026-11-08) then made the access verifier return the mosaic claims
 it already derives and the core verifier consume them instead of re-deriving
 them (`verify_access_committed_with_claims`,
@@ -449,27 +457,20 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
 
 ## 5. Open work, in priority order
 
-1. **M6: the remaining verify wall bottleneck.** Increments 1+2 (2026-11-07)
-   are in: the statement-only v4 verifier is a five-job wave and the selected
-   job is phase-split, taking the `2^16` verify wall **17.7 -> 13.4 ms
-   (2.61x over serial, +8 % CPU, min 12.8 ms)**; interleaved A/B in §2,
-   POLYLOG_CLAIM_VERIFIER.md §C.15/§C.17. The critical path is now the selected
-   **PCS opening check (~6.7 ms)**, then the segment-matrix build (~3.3 ms) and
-   the six MLE evaluations (~2.5-3.5 ms, already parallel). Next levers:
-   (a) parallelize the FRI/query-path verification itself in the vendored
-   binary-pcs (the only way to cut the 6.7 ms PCS term without changing the
-   commitment family), (b) **M6 proper**: merge the committed-Shout batch
-   opening / mosaic opening / claim-table opening so one FRI covers them
-   (removes ~11 ms of CPU but they now run off the critical path, so this is a
-   CPU/contention win, not the wall target), (c) [DONE 2026-11-08] share the
-   twist claims the access layer already derives with the core verifier: the
-   duplicate derivation is removed (core job 9.91 -> 6.54 ms, parallel CPU
-   58.25 -> 53.14 ms/iter; POLYLOG_CLAIM_VERIFIER.md §C.18), (d) build the
-   segment matrices on the prepare worker so their ~3.3 ms overlaps the claim
-   wait, and (e) re-measure the wall in a quiet window (the last attempt hit
-   host load 40-260; last quiet reference 13.35 ms / min 12.84). The paper's
-   8-12 ms needs (a) plus one more critical-path cut. See
-   `docs/POLYLOG_CLAIM_VERIFIER.md` §C.14-§C.18.
+1. **M6 verify wall -- TARGET MET (2026-11-08).** The statement-only v4
+   verifier measures **10.84 ms (min 10.50)** wall at `2^16` in a quiet-window
+   interleaved A/B, inside the paper's **8-12 ms** target (2.29x over the
+   serial verifier at +9 % CPU; serial CPU fell to 38.1 ms after the §C.18
+   dedupe). History: 42.8 -> 17.7 -> 13.4 -> 10.8 ms
+   (POLYLOG_CLAIM_VERIFIER.md §C.15/§C.17/§C.18/§C.20); the paper-path default
+   verifies in 16.9 ms. What remains is optional CPU/contention polish:
+   (a) parallelize the FRI/query-path verification in the vendored binary-pcs
+   (the only way to cut the ~6.7 ms selected-PCS term), (b) merge the
+   committed-Shout batch opening / mosaic opening / claim-table opening so one
+   FRI covers them (removes ~11 ms of CPU; they are off the critical path, so
+   this is a contention win only), (c) the segment-matrix build (~3.3 ms) could
+   move fully onto the prepare worker. Nothing here is needed for the wall
+   target anymore.
 2. **Paper-path M4b default flip -- DONE (2026-11-07).** Landed with the full
    gate on both env legs (674/0/5), the file-level tamper matrix and the
    dual-mode tests (POLYLOG_CLAIM_VERIFIER.md §C.16, M4B_DEFAULT_FLIP.md).
