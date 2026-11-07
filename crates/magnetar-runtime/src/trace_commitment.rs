@@ -113,42 +113,48 @@ pub fn trace_claim_points(
     witness: &TraceWitness,
     table: usize,
 ) -> Result<(Vec<magnetar_pcs::P3MosaicPoint>, Vec<Vec<F2_128>>), RuntimeError> {
-    let claims = magnetar_proof::virtual_spartan::split_segment_claims(
-        &witness.layout,
-        &witness.values,
-        &witness.point,
-    )
-    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    let value = Mle::new(witness.values.clone())
+    trace_claim_points_from_parts(&witness.layout, &witness.values, &witness.point, table)
+}
+
+/// [`trace_claim_points`] over borrowed parts.
+///
+/// The unified context stores the trace values exactly once (inside the mosaic
+/// trace table), so it reads them out of the mosaic instead of keeping a second
+/// `TraceWitness` copy (memory route (d): 8 MiB at `2^16`, ~0.5 GiB at `2^22`).
+pub fn trace_claim_points_from_parts(
+    layout: &magnetar_constraint::WitnessLayout,
+    values: &[F2_128],
+    point: &[F2_128],
+    table: usize,
+) -> Result<(Vec<magnetar_pcs::P3MosaicPoint>, Vec<Vec<F2_128>>), RuntimeError> {
+    let claims =
+        magnetar_proof::virtual_spartan::split_segment_claims(layout, values, point)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let value = Mle::new(values.to_vec())
         .map_err(|error| RuntimeError::Proof(error.to_string()))?
-        .eval(&witness.point)
+        .eval(point)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    magnetar_proof::virtual_spartan::verify_segment_claims(
-        &witness.layout,
-        &claims,
-        &witness.point,
-        value,
-    )
-    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-    let total_bits = witness.layout.total_bits.trailing_zeros() as usize;
+    magnetar_proof::virtual_spartan::verify_segment_claims(layout, &claims, point, value)
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let total_bits = layout.total_bits.trailing_zeros() as usize;
     let mut points = Vec::new();
-    let mut values = Vec::new();
-    for (segment, claim) in witness.layout.segments.iter().zip(&claims) {
+    let mut claim_values = Vec::new();
+    for (segment, claim) in layout.segments.iter().zip(&claims) {
         let size_bits = segment.len.trailing_zeros() as usize;
         let suffix = segment.offset >> size_bits;
-        let mut point = witness.point[..size_bits].to_vec();
+        let mut claim_point = point[..size_bits].to_vec();
         for bit in 0..total_bits - size_bits {
-            point.push(F2_128::from(((suffix >> bit) & 1) as u64));
+            claim_point.push(F2_128::from(((suffix >> bit) & 1) as u64));
         }
         points.push(magnetar_pcs::P3MosaicPoint {
             table,
-            point,
+            point: claim_point,
             columns: vec![0],
             next_columns: Vec::new(),
         });
-        values.push(vec![claim.value]);
+        claim_values.push(vec![claim.value]);
     }
-    Ok((points, values))
+    Ok((points, claim_values))
 }
 
 #[cfg(test)]

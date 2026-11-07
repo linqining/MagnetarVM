@@ -1362,9 +1362,11 @@ pub(crate) struct UnifiedProveContext<'a> {
     /// (the selected lockstep proof replaces them) and materializing them costs
     /// `O(cycles * base_cols)` memory.
     cpu_columns: bool,
-    trace_witness: crate::trace_commitment::TraceWitness,
+    /// Trace-witness layout and point. The values themselves live exactly once,
+    /// in the mosaic trace table at `trace_index` (memory route (d)).
+    trace_layout: magnetar_constraint::WitnessLayout,
+    trace_point: Vec<F2_128>,
     trace_index: usize,
-    trace_table: P3MosaicTable,
     commitment: Option<P3MosaicCommitment>,
     access: Option<TraceAccessProof>,
     register_claims: Option<crate::binary_twist::MosaicClaims>,
@@ -2030,10 +2032,16 @@ impl<'a> UnifiedProveContext<'a> {
             eprintln!("context trace witness: {:?}", trace_started.elapsed());
         }
         let trace_index = mosaic_tables.len();
-        let trace_table = P3MosaicTable {
-            columns: vec![trace_witness.values.clone()],
-        };
-        mosaic_tables.push(trace_table.clone());
+        let crate::trace_commitment::TraceWitness {
+            values: trace_values,
+            layout: trace_layout,
+            point: trace_point,
+        } = trace_witness;
+        // The values are owned by the mosaic trace table from here on; the
+        // context keeps only the layout/point (memory route (d)).
+        mosaic_tables.push(P3MosaicTable {
+            columns: vec![trace_values],
+        });
 
         let gated_input = if !cpu_columns {
             None
@@ -2140,9 +2148,9 @@ impl<'a> UnifiedProveContext<'a> {
             ram_index,
             rom_index,
             cpu_columns,
-            trace_witness,
+            trace_layout,
+            trace_point,
             trace_index,
-            trace_table,
             commitment: None,
             access: None,
             register_claims: None,
@@ -2347,17 +2355,20 @@ impl<'a> UnifiedProveContext<'a> {
         self.points.extend(register_points);
         self.values.extend(register_values);
 
-        let trace_claims = magnetar_proof::virtual_spartan::split_segment_claims(
-            &self.trace_witness.layout,
-            &self.trace_witness.values,
-            &self.trace_witness.point,
-        )
-        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
-        let total_bits = self.trace_witness.layout.total_bits.trailing_zeros() as usize;
-        for (segment, claim) in self.trace_witness.layout.segments.iter().zip(&trace_claims) {
+        let trace_claims = {
+            let values = &self.mosaic_tables[self.trace_index].columns[0];
+            magnetar_proof::virtual_spartan::split_segment_claims(
+                &self.trace_layout,
+                values,
+                &self.trace_point,
+            )
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?
+        };
+        let total_bits = self.trace_layout.total_bits.trailing_zeros() as usize;
+        for (segment, claim) in self.trace_layout.segments.iter().zip(&trace_claims) {
             let size_bits = segment.len.trailing_zeros() as usize;
             let suffix = segment.offset >> size_bits;
-            let mut point = self.trace_witness.point[..size_bits].to_vec();
+            let mut point = self.trace_point[..size_bits].to_vec();
             for bit in 0..total_bits - size_bits {
                 point.push(F2_128::from(((suffix >> bit) & 1) as u64));
             }
@@ -2793,7 +2804,12 @@ impl<'a> UnifiedProveContext<'a> {
             None
         };
         let (trace_points, trace_values) =
-            crate::trace_commitment::trace_claim_points(&self.trace_witness, self.trace_index)?;
+            crate::trace_commitment::trace_claim_points_from_parts(
+                &self.trace_layout,
+                &self.mosaic_tables[self.trace_index].columns[0],
+                &self.trace_point,
+                self.trace_index,
+            )?;
         let trace_claims = trace_points.into_iter().zip(trace_values).collect();
         let packed_shout = self.packed_shout;
         let claim_tree = crate::trace_claims::TraceClaimTree::build(self.trace);
