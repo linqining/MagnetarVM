@@ -477,6 +477,18 @@ Consequences for the memory route:
 free+inactive, below the protocol's peak+4 GiB (post-route-(d) `2^19` estimate
 ~11.9 GiB peak => ~16 GiB). It needs a dedicated window.
 
+**`2^16` peak decomposition with the current switches** (default run with
+`MAGNETAR_DEBUG_TABLES`/`PROFILE_UNIFIED`; peak RSS 1.99 GiB at the Access
+stage): context after build 0.55 GiB, Commit peak 1.29, Access peak 1.99 with
+live 0.39 after the stage. The Access peak is the sum of the resident context
+(0.55), the five dense `cells * cycles` factor arrays (~0.64: 5 x 4.2M fields
+x 16 B for the register twist), the twist-witness inputs (~0.2) and the
+selected products' early live set (~0.5-0.8); the `MAGNETAR_SERIALIZE_ACCESS`
+run removes the last term and lands at 1.78 GiB. So after the routing/lifetime
+work the remaining `2^16` peak is ~36 % dense Access factors (the only large
+term that needs the streaming/virtual-one-hot rewrite), ~31 % resident context
+(route (h)/(c) target) and ~33 % twist-witness inputs and misc.
+
 **Opt-in scheduling switch: `MAGNETAR_SERIALIZE_ACCESS=1`.** At `2^16`+ the
 Access stage's dense factor arrays overlap the selected thread's commit and
 product phases, and the peak is a sum of the two. The switch moves the
