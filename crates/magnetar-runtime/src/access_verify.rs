@@ -186,9 +186,29 @@ pub fn verify_access_committed(
     proof: &crate::UnifiedTraceProof,
     commitment: &P3MosaicCommitment,
 ) -> Result<(), RuntimeError> {
+    verify_access_committed_with_claims(statement, proof, commitment).map(|_| ())
+}
+
+/// Witness-free access verification that also returns the mosaic claims it
+/// derives.
+///
+/// The claims are exactly what the core verifier needs for the shared mosaic
+/// opening (via `access_claims_from_proof`); returning them removes a duplicate
+/// twist-claim derivation (M6: ~14 ms CPU per verify at `2^16` under load).
+pub fn verify_access_committed_with_claims(
+    statement: &crate::Statement,
+    proof: &crate::UnifiedTraceProof,
+    commitment: &P3MosaicCommitment,
+) -> Result<
+    (
+        crate::binary_twist::MosaicClaims,
+        crate::binary_twist::MosaicClaims,
+    ),
+    RuntimeError,
+> {
     // 1. Proof-only twist verification (previously witness-based).
     let stage = crate::verify_profile::Stage::new("access ram twist");
-    let _ram_claims = crate::binary_twist::verify_binary_twist_from_proof(
+    let ram_claims = crate::binary_twist::verify_binary_twist_from_proof(
         &proof.access.ram,
         commitment,
         proof.ram_index,
@@ -197,7 +217,7 @@ pub fn verify_access_committed(
     .ok_or_else(|| RuntimeError::Proof("M5b: RAM twist claims rejected".into()))?;
     stage.finish();
     let stage = crate::verify_profile::Stage::new("access register twist");
-    let _register_claims = crate::binary_twist::verify_binary_twist_from_proof(
+    let register_claims = crate::binary_twist::verify_binary_twist_from_proof(
         &proof.access.registers,
         commitment,
         proof.register_index,
@@ -273,5 +293,5 @@ pub fn verify_access_committed(
         evals.final_eval,
     )?;
     stage.finish();
-    Ok(())
+    Ok((ram_claims, register_claims))
 }

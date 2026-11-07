@@ -145,8 +145,11 @@ pub(crate) fn verify_native_unified_v4(
     let backend = crate::protocol::selected_backend();
     let access = || {
         let stage = crate::verify_profile::Stage::new("v4 access");
-        let result =
-            crate::access_verify::verify_access_committed(statement, proof, &proof.commitment);
+        let result = crate::access_verify::verify_access_committed_with_claims(
+            statement,
+            proof,
+            &proof.commitment,
+        );
         stage.finish();
         result
     };
@@ -172,10 +175,14 @@ pub(crate) fn verify_native_unified_v4(
         stage.finish();
         result
     };
-    let core_check = || {
+    let core_check = |access_claims| {
         let stage = crate::verify_profile::Stage::new("v4 core");
-        let result = crate::verify_core_proof_inner(proof, true)
-            .map_err(|error| RuntimeError::Proof(format!("core verifier: {error}")));
+        let result = crate::verify_core_proof_inner_with_access_claims(
+            proof,
+            true,
+            Some(access_claims),
+        )
+        .map_err(|error| RuntimeError::Proof(format!("core verifier: {error}")));
         stage.finish();
         result
     };
@@ -186,7 +193,7 @@ pub(crate) fn verify_native_unified_v4(
         let claim_inputs = crate::claim_table::claim_relation_inputs(selected, width)?;
         let dynamic_claim = crate::claim_table::folding_claim_from_inputs(&claim_inputs);
         stage.finish();
-        access()?;
+        let access_claims = access()?;
         let stage = crate::verify_profile::Stage::new("v4 claim table");
         let claim_result = crate::claim_table::verify_claim_table_with(table, &claim_inputs);
         stage.finish();
@@ -201,7 +208,7 @@ pub(crate) fn verify_native_unified_v4(
         stage.finish();
         selected_result?;
         shout_check()?;
-        core_check()?;
+        core_check(access_claims)?;
         return Ok(());
     }
 
@@ -211,7 +218,27 @@ pub(crate) fn verify_native_unified_v4(
             // table and the transcript, so build them on a worker thread while
             // the other checks run.
             let prepare = scope.spawn(|| crate::simd_dual::prepare_dynamic_segments(selected));
-            let access = scope.spawn(access);
+            // The access job hands the mosaic claims it derives to the core job:
+            // the core verifier needs exactly them for the shared mosaic
+            // opening, and re-deriving them would duplicate ~14 ms of CPU work.
+            let (access_tx, access_rx) =
+                std::sync::mpsc::channel::<(
+                    crate::binary_twist::MosaicClaims,
+                    crate::binary_twist::MosaicClaims,
+                )>();
+            let access = scope.spawn(move || {
+                let stage = crate::verify_profile::Stage::new("v4 access");
+                let result = crate::access_verify::verify_access_committed_with_claims(
+                    statement,
+                    proof,
+                    &proof.commitment,
+                )
+                .map(|claims| {
+                    let _ = access_tx.send(claims);
+                });
+                stage.finish();
+                result
+            });
             // The claim-derivation challenges are public/proof-carried; the
             // claim-table check and the selected binding are a conjunction, so
             // this job derives the folded claim once and hands it to the
@@ -244,7 +271,12 @@ pub(crate) fn verify_native_unified_v4(
                 result
             });
             let shout = scope.spawn(shout_check);
-            let core = scope.spawn(core_check);
+            let core = scope.spawn(move || {
+                let claims = access_rx.recv().map_err(|_| {
+                    RuntimeError::Proof("access verification did not provide claims".into())
+                })?;
+                core_check(claims)
+            });
             (
                 join_stage(access),
                 join_stage(claim_table),

@@ -3568,6 +3568,16 @@ pub(crate) fn verify_core_proof_inner(
     proof: &UnifiedTraceProof,
     allow_committed_shout: bool,
 ) -> Result<(), RuntimeError> {
+    verify_core_proof_inner_with_access_claims(proof, allow_committed_shout, None)
+}
+
+/// Core checks with the access mosaic claims already derived by the access
+/// verifier (M6: removes a duplicate twist-claim derivation).
+pub(crate) fn verify_core_proof_inner_with_access_claims(
+    proof: &UnifiedTraceProof,
+    allow_committed_shout: bool,
+    access_claims: Option<(MosaicClaims, MosaicClaims)>,
+) -> Result<(), RuntimeError> {
     if !allow_committed_shout && proof.committed_logup_shout.is_some() {
         return Err(RuntimeError::Proof(
             "committed Shout proof requires the statement verifier".into(),
@@ -3577,13 +3587,24 @@ pub(crate) fn verify_core_proof_inner(
         width: proof.width,
         shape: proof.shape.clone(),
     };
-    verify_core_statement(proof, &statement)
+    verify_core_statement_with_access_claims(proof, &statement, access_claims)
 }
 
 /// Verify CPU, gated, and access claims without a trace.
 pub fn verify_core_statement(
     proof: &UnifiedTraceProof,
     statement: &CoreStatement,
+) -> Result<(), RuntimeError> {
+    verify_core_statement_with_access_claims(proof, statement, None)
+}
+
+/// Core checks with the access mosaic claims already derived by the access
+/// verifier (M6: removes a duplicate twist-claim derivation; `None` falls back
+/// to deriving them from the proof).
+pub(crate) fn verify_core_statement_with_access_claims(
+    proof: &UnifiedTraceProof,
+    statement: &CoreStatement,
+    access_claims: Option<(MosaicClaims, MosaicClaims)>,
 ) -> Result<(), RuntimeError> {
     let stage = crate::verify_profile::Stage::new("core cpu claims");
     let cpu = CpuStatement {
@@ -3593,7 +3614,10 @@ pub fn verify_core_statement(
     let (ry, cpu_value, gated_ry) = cpu_statement_claims(proof, &cpu)?;
     stage.finish();
     let stage = crate::verify_profile::Stage::new("core access claims");
-    let (ram_claims, register_claims) = crate::access_statement::access_claims_from_proof(proof)?;
+    let (ram_claims, register_claims) = match access_claims {
+        Some(claims) => claims,
+        None => crate::access_statement::access_claims_from_proof(proof)?,
+    };
     stage.finish();
     let stage = crate::verify_profile::Stage::new("core aux claims");
     let (mut points, mut values) = ram_claims;
