@@ -4,8 +4,8 @@ Status: **incremental optimization phase (Part 1 closed, Part 2 in progress)**,
 branch `virtual-claims-rewrite`. Commits through `caa3692` (M6 increments 1-3:
 parallel/phase-split statement-only v4 verifier + shared access claims; M4b
 paper-path default flip; memory route (d) increments 1+2; stage memory
-instrumentation; Access-PCS lifetime). Gate: 674 passed / 0 failed / 6 ignored
-(39 binaries): `1b26b4e`
+instrumentation; Access-PCS lifetime; opt-in Access scheduling switch). Gate on
+the current tree: **674 passed / 0 failed / 7 ignored** (39 binaries): `1b26b4e`
 (2^16 optimization + polylog claim table), `9e805f2` (segment claims),
 `a3a6e9c` (packed CSR + fast pair), `e320cf9` (M4v3 batched committed-Shout
 opening + M4b paper-path replacement, opt-in), `9556746` (M5 scaffold:

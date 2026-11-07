@@ -297,8 +297,9 @@ in both modes (`proof=1,018,155 B`).
 
 **Gates:** `cargo test --workspace --release` **674 passed / 0 failed /
 5 ignored** (39 binaries) after both increments (commit `3320bb0`), and
-**674 passed / 0 failed / 6 ignored** after the Access-PCS lifetime change
-(commit `3478c36`; the extra ignored test is the new byte-equality pin); the focused
+**674 passed / 0 failed / 7 ignored** after the Access-PCS lifetime and the
+Access-scheduling switch (commits `3478c36`, `caa3692`; the extra ignored tests
+are the byte-equality pins); the focused
 legs are `magnetar-runtime --lib` 363 passed / 0 failed / 5 ignored,
 `magnetar-proof` 48 passed and `magnetar-testkit` integration 21 passed /
 0 failed. Smoke runs
