@@ -296,7 +296,9 @@ noise (~-1 %), as expected for a lifetime change. Proof bytes are byte-identical
 in both modes (`proof=1,018,155 B`).
 
 **Gates:** `cargo test --workspace --release` **674 passed / 0 failed /
-5 ignored** (39 binaries) after both increments (commit `3320bb0`); the focused
+5 ignored** (39 binaries) after both increments (commit `3320bb0`), and
+**674 passed / 0 failed / 6 ignored** after the Access-PCS lifetime change
+(commit `3478c36`; the extra ignored test is the new byte-equality pin); the focused
 legs are `magnetar-runtime --lib` 363 passed / 0 failed / 5 ignored,
 `magnetar-proof` 48 passed and `magnetar-testkit` integration 21 passed /
 0 failed. Smoke runs
@@ -473,6 +475,29 @@ Consequences for the memory route:
 `2^19` was not run: after the `2^18` run the host had 14.24 GiB
 free+inactive, below the protocol's peak+4 GiB (post-route-(d) `2^19` estimate
 ~11.9 GiB peak => ~16 GiB). It needs a dedicated window.
+
+**Kept (default flipped): the Access PCS prepared batch is not retained.** The
+local PCS used `commit_batch_prepared` and kept the prepared batch (codeword +
+Merkle tree of the address columns) live from the commit until the opening
+("the prepared batch moves into the opening"). That retained batch scales with
+the address columns and is one of the Access-stage peak terms. The prover now
+commits, drops the data and re-encodes at the opening -- the selected prover's
+pattern -- with byte-identical commitment/proof (ignored test
+`m5_v4_tests::local_recommit_is_byte_identical_to_retained_batch` proves the
+same 8200-row trace both ways and compares the serialized unified proofs).
+
+Same-window A/Bs (proof bytes identical in both legs):
+
+| scale | retained (`MAGNETAR_KEEP_LOCAL_PREPARED=1`) | re-encode (default) |
+| --- | --- | --- |
+| `2^17` (3+2 runs) | 4.33 GiB footprint / 598.7, 595.0 s CPU | 4.33, 3.95 GiB / 601.6, 598.4 s CPU (inside drift) |
+| `2^18` (back-to-back) | 6.51 GiB RSS / **8.72 GiB footprint** / 1248.1 s CPU | 6.17 GiB RSS / **7.96 GiB footprint** / 1249.3 s CPU |
+
+At `2^18` that is **-0.76 GiB footprint (-8.7 %), -0.34 GiB RSS for +0.1 % CPU
+(noise)**; the Access-stage peak point ("local final factors ready") drops
+8.72 -> 7.96 GiB. At `2^17` the retained batch is small enough that the change
+sits inside this host's ~0.4 GiB drift, which is why the 2^18 window is the one
+that decides it. `MAGNETAR_KEEP_LOCAL_PREPARED=1` remains for A/B work.
 
 **A rejected micro-optimisation, recorded so it is not retried.** The Access
 prover keeps `write_flat` and `val_flat` (two of the five `cells * cycles`

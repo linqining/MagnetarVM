@@ -1,10 +1,11 @@
 # Handoff — MagnetarVM streaming selected prover (RV64)
 
 Status: **incremental optimization phase (Part 1 closed, Part 2 in progress)**,
-branch `virtual-claims-rewrite`. Commits through `30c7036` (M6 increments 1-3:
+branch `virtual-claims-rewrite`. Commits through `3478c36` (M6 increments 1-3:
 parallel/phase-split statement-only v4 verifier + shared access claims; M4b
 paper-path default flip; memory route (d) increments 1+2; stage memory
-instrumentation): `1b26b4e`
+instrumentation; Access-PCS lifetime). Gate: 674 passed / 0 failed / 6 ignored
+(39 binaries): `1b26b4e`
 (2^16 optimization + polylog claim table), `9e805f2` (segment claims),
 `a3a6e9c` (packed CSR + fast pair), `e320cf9` (M4v3 batched committed-Shout
 opening + M4b paper-path replacement, opt-in), `9556746` (M5 scaffold:
@@ -43,6 +44,13 @@ The wall history is 42.8 -> 17.7 -> 13.4 -> **10.8 ms**; the paper-path default
 (verifier-only). Details:
 [POLYLOG_CLAIM_VERIFIER.md](POLYLOG_CLAIM_VERIFIER.md) §C.15, §C.17, §C.18,
 §C.20. Remaining levers are optional CPU/contention work only (§5 item 1).
+
+**Access PCS lifetime (2026-11-08)**: `prove_local_shared` no longer retains
+the prepared codeword/Merkle batch until the opening; it re-encodes at the
+opening (the selected prover's pattern), byte-identically. `2^18` same-window
+A/B: peak footprint **8.72 -> 7.96 GiB (-8.7 %)**, RSS 6.51 -> 6.17 GiB,
+CPU +0.1 % (noise); `MAGNETAR_KEEP_LOCAL_PREPARED=1` restores the old lifetime
+for A/B (MEMORY_PATH.md §4.2).
 
 **Memory route (d) increments 1+2 (2026-11-08)**: the unified context drops
 its Access-only twist witnesses/batch tables right after the Access stage, the
@@ -456,6 +464,10 @@ Details, measurements and the rejected experiments are in results §11.
     (-0.56 GiB, -12.4 %)**, RSS -0.2 to -0.7 GiB, prove CPU -0.7 % (noise),
     byte-identical proofs (1,110,291 B). Full measurements and the
     host-pressure caveat are in [MEMORY_PATH.md](MEMORY_PATH.md) §4.1.
+    Increment 3 drops the Access PCS prepared batch instead of retaining it
+    until the opening (re-encode at the opening, byte-identical): `2^18`
+    same-window peak footprint **8.72 -> 7.96 GiB (-8.7 %)**, CPU +0.1 %;
+    `MAGNETAR_KEEP_LOCAL_PREPARED=1` is the A/B switch (§4.2).
 
 Peripheral stages (parallel track): the vendored p3 `Keccak256Hash16` did not
 forward `hash_many`, so Merkle trees hashed serially; forwarding it cut p3 CPU
@@ -526,8 +538,10 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
    Access stage**: `prove_local_shared` materialises dense `cells * cycles`
    one-hot/eq/val factor arrays (~134 MiB each at `2^17`, ~0.8-1.0 GiB live per
    twist) -- a streaming/virtual-one-hot Access prover is the first memory
-   target at `2^17`+ (route (h)-adjacent, byte-neutral). The allocator-release
-   route is confirmed a no-op at both scales. Remaining order: (h) bit-pack the twist witnesses/batch tables, then
+   target at `2^17`+ (route (h)-adjacent, byte-neutral); the cheapest part of
+   it landed already -- dropping the retained Access PCS prepared batch cut the
+   `2^18` peak footprint 8.72 -> 7.96 GiB with byte-identical proofs. The
+   allocator-release route is confirmed a no-op at both scales. Remaining order: (h) bit-pack the twist witnesses/batch tables, then
    (c) bit-pack the mosaic commitment, then (b) the 128 -> 64-bit committed
    alphabet, and re-run the staircase (2^18/2^19) to re-fit the `2^22` model;
    the selected product-phase live set needs a streaming CSR or a level-budget
