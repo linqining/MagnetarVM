@@ -12,10 +12,11 @@ table-only claim proof + v4 statement root), `d61ea71` (allocator-release hooks
 columns + O(1) access digest). Full workspace gate on the M4v3+M5 tree:
 **670 passed / 0 failed / 3 ignored**; `cargo build --workspace --examples
 --release` green. The M5b phase 1 tree adds a 362-test runtime suite pass
-(claim 53, access_table 4, byte equality green). **Current tree (M6 increment 1
-+ M4b flip) gate: 674 passed / 0 failed / 5 ignored on the default env and on
-`MAGNETAR_CLASSIC_LOGUP=1`; examples build green; `protocol_determinism`
-runs=20 identical=20 failures=0, peak 1.95 GiB.**
+(claim 53, access_table 4, byte equality green). **Current tree (M6 increments 1-3
++ M4b flip + memory route (d) increment 1) gate: 674 passed / 0 failed /
+5 ignored**; the M4b-flip tree additionally passed the `MAGNETAR_CLASSIC_LOGUP=1`
+leg (674/0/5), examples build green, and `protocol_determinism`
+runs=20 identical=20 failures=0, peak 1.95 GiB.
 
 **M4b paper default flip (2026-11-07)**: the paper path now defaults to the
 committed-pushforward linear Shout; `MAGNETAR_CLASSIC_LOGUP=1` restores the

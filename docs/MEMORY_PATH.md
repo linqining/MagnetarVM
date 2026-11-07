@@ -295,12 +295,12 @@ first window and **-0.03 GiB** in the second. Prove CPU is unchanged within
 noise (~-1 %), as expected for a lifetime change. Proof bytes are byte-identical
 in both modes (`proof=1,018,155 B`).
 
-**Gates** (focused gate under host load 60-120; the full workspace gate was
-aborted because the host hit load 177 mid-run and is scheduled for the next
-quiet window): `magnetar-runtime --lib` 363 passed / 0 failed / 5 ignored;
-`magnetar-proof` 48 passed; `magnetar-testkit` integration suites all green
-(21 tests, 0 failed); smoke runs at `2^10` (quadratic path) and `2^14` (linear
-path) round-trip; proof bytes identical between the old and new lifetimes.
+**Gates:** `cargo test --workspace --release` **674 passed / 0 failed /
+5 ignored** (39 binaries) on the committed tree; the focused legs are
+`magnetar-runtime --lib` 363 passed / 0 failed / 5 ignored, `magnetar-proof`
+48 passed and `magnetar-testkit` integration 21 passed / 0 failed. Smoke runs
+at `2^10` (quadratic path) and `2^14` (linear path) round-trip, and the proof
+bytes are identical between the old and the new lifetimes.
 
 **Next for route (d)/(h):** re-measure at `2^17` in a quiet window (the effect
 should be ~0.3 GiB, above the host noise), then the remaining context terms are
