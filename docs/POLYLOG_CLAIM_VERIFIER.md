@@ -1276,3 +1276,38 @@ lands; the native M4v3 stays a measured opt-in until the proof-size work
 1. **`binary_twist.rs` 边界例外批准**：允许**纯新增**只读 accessor / no-witness 变体（不改现有函数行为/签名/proof 字节；`#[allow(dead_code)]` 可接受）；集成后必须跑 `streaming_lockstep_proof_matches` + `parallel_chunked_streaming_matches_sequential` 闸门。
 2. **final-value 列（Option A）**：独立小表 `T_final`，cells 维（`ram_size/8`，方形 power-of-two），packed-bit 单独 commitment，root 并入 v4 statement root；verifier 在 twist 的 `r_k` 打开并把 `final_eval` 用 claim_rel 绑定。初始列用公开 `statement.initial_ram` 在 `r_k` 处 O(cells) 复算，不提交（v4 里也可用同一 `T_final` 表做 O(cells) 校验，二选一）。
 3. **拆分**：**2a** = binary_twist 只读 accessor + access verifier 的「proof-only twist 校验 + 初始列 O(cells) 绑定」，final-value 保留显式门控；**2b** = `T_final` 提交 + claim_rel 绑定 + v4 gate 真正翻转 + 9 项 tamper。
+
+#### C.13.1 Quiet-host re-measurement (2026-11-07, load 12-36)
+
+The 2026-11-03 matrix was run while the host was storming; this one was run on a
+quiet host after the storm passed, so **wall is finally meaningful** (still
+quote CPU for attribution; verify runs two waves, so its CPU/iter is larger
+than its wall). Tree `c2abdf4`, `MAGNETAR_VERIFY_CPU=30`, peak RSS 3 GiB.
+
+| 2^16 | prove wall | verify wall | verify CPU/iter | peak RSS/footprint | proof |
+| --- | --- | --- | --- | --- | --- |
+| native default | 48.9 s | **36.7 ms** | 146.1 ms | 2.24 / 2.23 GiB | 1,018,154 B |
+| paper default | 56.3 s | 35.1 ms | 75.3 ms | **2.96 / 2.96 GiB** | 1,199,746 B |
+| paper `MAGNETAR_LINEAR_SHOUT=1` | 55.1 s | **26.2 ms** | 78.7 ms | **2.21 / 2.21 GiB** | 1,169,602 B |
+| native `MAGNETAR_LINEAR_SHOUT=1` | 51.5 s | **30.7 ms** | **77.5 ms** | 2.02 / 2.02 GiB | 1,169,602 B |
+
+2^14 paper A/B (same host): default verify wall 21.0 ms / CPU 37.5 ms,
+opt-in 40.1 ms / 47.6 ms -- at 2^14 the committed proof is *slower* to verify
+(the fixed batch-opening cost dominates); the crossover is at the larger trace.
+
+Conclusions:
+- **M4b paper opt-in: verify wall -25 % (35.1 -> 26.2 ms), peak -0.75 GiB,
+  proof -30 KB.** It is a clear win at 2^16 and the prime candidate for the
+  paper-path default.
+- **M4v3 native opt-in: verify CPU -47 % (146.1 -> 77.5 ms), wall -16 %,
+  peak -0.22 GiB for +151 KB of proof.** The 2^16 native path now sits at
+  ~30.7 ms verify wall with the committed Shout; a 2^16 default flip is still
+  blocked on proof size, not on verify.
+- **Allocator-release experiment (e) is a no-go**: interleaved
+  base/release/base/release runs gave RSS 2.24/2.12/2.03/2.24 GiB and footprint
+  2.23/2.22/2.03/2.24 GiB -- no consistent improvement, and now that the host is
+  quiet RSS and footprint agree within noise. The hook stays default-off; do not
+  quote it as a memory win.
+- The 2^16 native prove is 48.9 s wall / 299 s CPU on this host today (vs
+  31.4-34.6 s / 274 s at the Part 1 closure), i.e. the host is ~9 % slower per
+  unit of work now; compare CPU/iter, not wall across rounds.
