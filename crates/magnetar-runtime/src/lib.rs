@@ -3112,6 +3112,12 @@ fn prove_unified_trace_dynamic_native_profile_inner(
     // M4b: on the paper path (`with_trace_logup == false`) the classic Shout
     // stage proof is replaced by the committed linear Shout.
     let skip_classic_shout = linear_shout && !with_trace_logup;
+    // Memory switch: move the selected-commit gate from the mosaic Commit to
+    // the end of the Access stage. The selected commit/products no longer
+    // overlap the Access stage's dense `cells * cycles` factor arrays (the
+    // `2^17`/`2^18` peak owner), at the cost of starting the selected products
+    // one Access stage later in prove wall. Opt-in; the proof is unchanged.
+    let serialize_access = std::env::var_os("MAGNETAR_SERIALIZE_ACCESS").is_some();
     std::thread::scope(|scope| {
         // Hold the selected witness commit until the mosaic commit is done:
         // two codeword+Merkle transients would otherwise overlap and double
@@ -3167,9 +3173,16 @@ fn prove_unified_trace_dynamic_native_profile_inner(
             match stage {
                 crate::protocol::ExecutionStage::Commit => {
                     context.commit()?;
-                    let _ = commit_done.send(());
+                    if !serialize_access {
+                        let _ = commit_done.send(());
+                    }
                 }
-                crate::protocol::ExecutionStage::Access => context.prove_access()?,
+                crate::protocol::ExecutionStage::Access => {
+                    context.prove_access()?;
+                    if serialize_access {
+                        let _ = commit_done.send(());
+                    }
+                }
                 crate::protocol::ExecutionStage::Shout => context.prove_shout()?,
                 crate::protocol::ExecutionStage::ShiftRouter => context.prove_shift_router()?,
                 crate::protocol::ExecutionStage::StoreRouter => context.prove_store_router()?,
@@ -10748,6 +10761,25 @@ mod m5_v4_tests {
             .collect::<Vec<_>>();
         rom.push(Instruction::new(Op::Ecall).encode());
         ProgramImage::new(0x1000, rom)
+    }
+
+    /// `MAGNETAR_SERIALIZE_ACCESS=1` only moves the selected-commit gate to the
+    /// end of the Access stage (a memory switch), so the unified proof must be
+    /// byte-identical to the default schedule.
+    #[test]
+    #[ignore = "sets MAGNETAR_SERIALIZE_ACCESS process-wide"]
+    fn serialize_access_proof_bytes_match() {
+        let trace = magnetar_executor::execute(&program(), config()).unwrap();
+        std::env::remove_var("MAGNETAR_SERIALIZE_ACCESS");
+        let baseline = prove_unified_trace_dynamic_native(&trace, 64).unwrap();
+        std::env::set_var("MAGNETAR_SERIALIZE_ACCESS", "1");
+        let serialized = prove_unified_trace_dynamic_native(&trace, 64).unwrap();
+        std::env::remove_var("MAGNETAR_SERIALIZE_ACCESS");
+        assert_eq!(
+            serialize_unified_proof(&baseline).unwrap(),
+            serialize_unified_proof(&serialized).unwrap(),
+            "serialize-access proof differs from the default schedule"
+        );
     }
 
     /// The Access prover's default path commits, drops the prepared batch and
