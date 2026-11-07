@@ -1,7 +1,7 @@
 # Handoff — MagnetarVM streaming selected prover (RV64)
 
 Status: **incremental optimization phase (Part 1 closed, Part 2 in progress)**,
-branch `virtual-claims-rewrite`. Commits through `9e2e407`: `1b26b4e`
+branch `virtual-claims-rewrite`. Commits through `d4bd998` (M5 complete: row payload gone): `1b26b4e`
 (2^16 optimization + polylog claim table), `9e805f2` (segment claims),
 `a3a6e9c` (packed CSR + fast pair), `e320cf9` (M4v3 batched committed-Shout
 opening + M4b paper-path replacement, opt-in), `9556746` (M5 scaffold:
@@ -278,16 +278,15 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
 
 ## 5. Open work, in priority order
 
-1. **M5c: the statement-only v4 verifier** (the remaining path to the paper's
-   8-12 ms). M5b is done: phase 1 committed the access columns + O(1) digest
-   (`9e2e407`), 2a added the witness-free twist/initial-RAM check (`c2abdf4`),
-   2b committed and bound the final-RAM table (`T_final`, 2026-11-07). The v4
-   verifier now stops at a legitimate gate
-   (`"M5 v4 verifier pending: statement-only claim relation and core checks not
-   wired"`). M5c = claim-table relation + folded claim into the selected
-   lockstep verifier, the core proof checks, and the O(1) endpoint/IO checks;
-   only then can the row blob be dropped and the verify win measured. Design:
-   `docs/POLYLOG_CLAIM_VERIFIER.md` §C.11/§C.12.
+1. **M6: the remaining verify wall bottleneck.** M5 is complete (`d4bd998`):
+   with `MAGNETAR_CLAIM_V4=1 MAGNETAR_ACCESS_COLUMNS=1 MAGNETAR_LINEAR_SHOUT=1`
+   the proof verifies statement-only with no rows and no witness rebuild -- at
+   2^16 verify CPU/iter 154.2 -> **49.8 ms** (-68 %), paper path 82.2 -> 46.6 ms
+   and peak 2.42 -> 2.03 GiB. **However the verify wall stays ~40 ms**: the
+   remaining serial cost is the single core mosaic opening verification and the
+   separate committed batch opening, so the paper's 8-12 ms needs to merge/trim
+   the FRI verifications (M6), not more claim work. See
+   `docs/POLYLOG_CLAIM_VERIFIER.md` §C.14.
 2. **Paper-path M4b default flip.** The opt-in is better on proof, verify CPU and
    footprint (§2.1), so it is the natural default once (a) a full gate runs with
    the switch on, (b) the file-level tamper matrix passes with it on, and (c)
