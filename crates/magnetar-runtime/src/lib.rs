@@ -2914,16 +2914,10 @@ pub fn prove_unified_trace_auto(
     }
 }
 
-/// Peak resident set size of this process, in GiB (process high-water mark).
-///
-/// In-process `getrusage`; the earlier implementation shelled out to `ps`,
-/// which the sandbox blocks, so every stage print reported 0.00 and the memory
-/// attribution in MEMORY_PATH.md §3.1 was blind.
-pub(crate) fn resident_gib() -> f64 {
-    peak_rss_gib()
-}
-
-/// Peak RSS in GiB.
+/// Peak RSS in GiB (in-process `getrusage` high-water mark; the earlier
+/// `resident_gib()` helper shelled out to `ps`, which the sandbox blocks, so
+/// every stage print reported 0.00 and MEMORY_PATH.md §3.1's attribution was
+/// blind -- the stage prints now use `memory_gib()` below).
 pub(crate) fn peak_rss_gib() -> f64 {
     magnetar_proof::peak_rss_bytes()
         .map(|bytes| bytes as f64 / (1u64 << 30) as f64)
