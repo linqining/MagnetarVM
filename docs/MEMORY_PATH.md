@@ -296,14 +296,39 @@ noise (~-1 %), as expected for a lifetime change. Proof bytes are byte-identical
 in both modes (`proof=1,018,155 B`).
 
 **Gates:** `cargo test --workspace --release` **674 passed / 0 failed /
-5 ignored** (39 binaries) on the committed tree; the focused legs are
-`magnetar-runtime --lib` 363 passed / 0 failed / 5 ignored, `magnetar-proof`
-48 passed and `magnetar-testkit` integration 21 passed / 0 failed. Smoke runs
+5 ignored** (39 binaries) after both increments (commit `3320bb0`); the focused
+legs are `magnetar-runtime --lib` 363 passed / 0 failed / 5 ignored,
+`magnetar-proof` 48 passed and `magnetar-testkit` integration 21 passed /
+0 failed. Smoke runs
 at `2^10` (quadratic path) and `2^14` (linear path) round-trip, and the proof
 bytes are identical between the old and the new lifetimes.
 
-**Next for route (d)/(h):** re-measure at `2^17` in a quiet window (the effect
-should be ~0.3 GiB, above the host noise), then the remaining context terms are
-the real-RV64 RAM witnesses/batch tables (~4 KiB/cycle) and the trace-witness
-duplicate (`trace_witness.values` vs the trace table) — the latter is 8 MiB at
-`2^16` but 2 GiB at `2^22`.
+**Increment 2 (same day): the trace-witness duplicate.** The context kept the
+whole `TraceWitness` (values + layout + point) *and* a trace table that cloned
+those values, *and* pushed a second clone of the table into the mosaic — three
+copies of the same `rows x 8` field-element vector. Now the values live exactly
+once, inside `mosaic_tables[trace_index]`; the context keeps only the layout and
+the point, and `trace_claim_points_from_parts` reads the values out of the
+mosaic (the stage/finish paths do the same). That removes two retained copies:
+**16 MiB at `2^16`, ~1 GiB at `2^22`** (the `Mle::new(values.to_vec())` inside
+the claim-point computation is still one transient copy; it is not retained).
+
+**`2^17` same-window A/B** (`ADDS=131071`, `TRACE_SHOUT=1`, watchdog 6 GiB, two
+alternating runs per leg, host load 28-37, swap 9.4/10 GiB used):
+
+| mode | peak footprint | peak RSS | prove CPU | proof |
+| --- | --- | --- | --- | --- |
+| `MAGNETAR_KEEP_PROVER_INPUTS=1` (old lifetime) | **4.51 / 4.51 GiB** | 3.97 / 4.11 GiB | 632.3 / 628.2 s | 1,110,291 B |
+| new (route (d) increments 1+2) | **3.95 / 3.95 GiB** | 3.24 / 3.92 GiB | 626.0 / 625.8 s | 1,110,291 B |
+
+**-0.56 GiB footprint (-12.4 %)**, RSS -0.2 to -0.7 GiB, prove CPU -0.7 %
+(noise-level, memory-only change and the extra read-from-mosaic is trivial).
+The proof bytes match the documented `2^17` baseline exactly, so the lifetime
+change is byte-neutral. The `2^16` delta (0.03-0.12 GiB) sits below this host's
+~0.2 GiB absolute-peak drift; `2^17` is where the route (d) win is unambiguous.
+
+**Next for route (d)/(h):** the remaining context terms are the real-RV64 RAM
+witnesses/batch tables (~4 KiB/cycle, dropped after Access by increment 1) and
+the uncommitted witness copies feeding the bit-packed tables; the next big step
+is (h) bit-packing the twist witnesses/batch tables, then (c) the mosaic
+commitment.
