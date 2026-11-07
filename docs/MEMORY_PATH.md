@@ -409,6 +409,33 @@ sampling noise). macOS libmalloc already returns the large blocks, so the
 allocator-release route is a confirmed no-op at `2^17` as it was at `2^16`
 (HANDOFF §5 item 3), now with direct evidence instead of a peak A/B.
 
+**Selected-prover product phase measured directly** (new prints in
+`prove_lockstep_bits_streaming_inner` + `magnetar_proof::memory_gib_text()`,
+`MAGNETAR_PROFILE_SELECTED=1`; footprint is process-wide):
+
+| 2^17 | rss_peak / footprint |
+| --- | --- |
+| after `LockstepRows` | 3.55 / 3.55 GiB (main Access is live at this point) |
+| after product6 | 3.95 / **1.02** GiB |
+| after ColumnRows | 3.95 / 1.02 GiB |
+| after product2 | 3.95 / 1.39 GiB |
+| after the selected open | 3.95 / 1.79 GiB |
+
+So the selected products themselves live in only **~1.0-1.8 GiB** (the
+`LockstepRows` packed CSR is small: base-matrix entries only, and the level
+stores are 192 MiB outer / 512 MiB inner by construction). The transient that
+makes the `2^17` peak is on the **main thread's Access stage**: `selected
+witness commit` prints 3.54 GiB footprint because the process is inside
+`prove_access`, and `prove_local_shared` materialises dense `cells * cycles`
+one-hot/eq/val arrays for the register and RAM twists (`flat_onehot`,
+`repeated_blocks`, five factors of `32 * cycles` field elements: at `2^17`
+that is ~134 MiB per array, ~0.8-1.0 GiB live for one twist alone at
+`cycles = 2^18`). The Access stage is therefore the first place to attack at
+`2^17`+; the fix is a streaming/virtual-one-hot Access prover (the
+`local_twist` module has a reference virtual-one-hot path, but the shipped
+Access stage still materialises the dense form), which is route (h)-adjacent
+and byte-neutral by construction.
+
 **Where the remaining memory work must go:** the `2^17` peak is split between
 (a) the main thread's mosaic Opening re-encode/Merkle transient and resident
 mosaic tables (route (c)/(h): bit-packing the mosaic tables shrinks both the

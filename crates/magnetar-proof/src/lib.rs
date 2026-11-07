@@ -26,6 +26,20 @@ pub fn peak_rss_bytes() -> Option<u64> {
     }
 }
 
+/// Peak RSS and current physical footprint, formatted for stage prints.
+///
+/// Used by the selected-prover stream profile (`MAGNETAR_PROFILE_SELECTED`) so
+/// the product-phase live set can be attributed to its steps.
+pub fn memory_gib_text() -> String {
+    let rss = peak_rss_bytes()
+        .map(|bytes| bytes as f64 / (1u64 << 30) as f64)
+        .unwrap_or(0.0);
+    let footprint = alloc_release::phys_footprint_bytes()
+        .map(|bytes| bytes as f64 / (1u64 << 30) as f64)
+        .unwrap_or(0.0);
+    format!("rss_peak={rss:.2} GiB footprint={footprint:.2} GiB")
+}
+
 /// CPU time (user + system) consumed by this process, in seconds.
 ///
 /// Stage comparisons on a loaded host cannot use wall-clock time: another

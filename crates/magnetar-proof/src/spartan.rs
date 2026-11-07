@@ -1727,6 +1727,9 @@ fn prove_lockstep_bits_streaming_inner<B: BitPcs>(
 ) -> Result<(LockstepProof<B::Commitment, B::Opening>, Vec<F2_128>), SpartanError> {
     let profiles = std::env::var_os("MAGNETAR_PROFILE_SELECTED").is_some();
     let rows = crate::stream::LockstepRows::new(bits, matrices)?;
+    if profiles {
+        eprintln!("selected after rows: {}", crate::memory_gib_text());
+    }
     let started = std::time::Instant::now();
     let commitment = match claim {
         Some((_, _, commitment)) => commitment.clone(),
@@ -1772,7 +1775,11 @@ fn prove_lockstep_bits_streaming_inner<B: BitPcs>(
     }
     let rx = outer.challenges;
     if profiles {
-        eprintln!("selected product6: {:?}", started.elapsed());
+        eprintln!(
+            "selected product6: {:?} {}",
+            started.elapsed(),
+            crate::memory_gib_text()
+        );
     }
     let [va0, vb0, vc0, va1, vb1, vc1] = outer.terminal;
     let (r0, r1) = {
@@ -1811,7 +1818,11 @@ fn prove_lockstep_bits_streaming_inner<B: BitPcs>(
         columns = columns.with_claim(claim, gamma)?;
     }
     if profiles {
-        eprintln!("selected row-combinations: {:?}", started.elapsed());
+        eprintln!(
+            "selected row-combinations: {:?} {}",
+            started.elapsed(),
+            crate::memory_gib_text()
+        );
     }
     let started = std::time::Instant::now();
     let inner_level = levels.map_or_else(
@@ -1830,7 +1841,11 @@ fn prove_lockstep_bits_streaming_inner<B: BitPcs>(
         });
     }
     if profiles {
-        eprintln!("selected product2: {:?}", started.elapsed());
+        eprintln!(
+            "selected product2: {:?} {}",
+            started.elapsed(),
+            crate::memory_gib_text()
+        );
     }
     let ry = inner.challenges;
     let vw = inner.right;

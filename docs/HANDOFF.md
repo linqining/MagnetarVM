@@ -515,9 +515,14 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
    proofs (§4.1). The new stage probes (§4.2) locate the remaining `2^17` peak
    (3.96 GiB footprint, reached during the mosaic Opening) between the main-side
    mosaic re-encode/Merkle transient + resident mosaic tables and the selected
-   prover's product-phase live set (~2.3 GiB: packed CSR + lazy matrices +
-   level stores); the allocator-release route is now confirmed a no-op at both
-   scales. Remaining order: (h) bit-pack the twist witnesses/batch tables, then
+   prover's product-phase live set; direct measurement shows the products live
+   in only ~1.0-1.8 GiB at `2^17` (packed CSR is small, level stores fixed
+   192/512 MiB), and the actual `2^17` peak transient is the **main-thread
+   Access stage**: `prove_local_shared` materialises dense `cells * cycles`
+   one-hot/eq/val factor arrays (~134 MiB each at `2^17`, ~0.8-1.0 GiB live per
+   twist) -- a streaming/virtual-one-hot Access prover is the first memory
+   target at `2^17`+ (route (h)-adjacent, byte-neutral). The allocator-release
+   route is confirmed a no-op at both scales. Remaining order: (h) bit-pack the twist witnesses/batch tables, then
    (c) bit-pack the mosaic commitment, then (b) the 128 -> 64-bit committed
    alphabet, and re-run the staircase (2^18/2^19) to re-fit the `2^22` model;
    the selected product-phase live set needs a streaming CSR or a level-budget
