@@ -147,6 +147,28 @@ core count is low.
 | `2^18` (2026-11-07, refreshed) | **211.2 s** | 161.5 ms → 220.0 ms (CPU 503.0 ms) | **5.75 GiB RSS / 7.20 GiB footprint** | 1,230,360 B† |
 | `2^19` | 667.8 s (pre-fusion) | 318.3 ms | 10.54 GiB | 1,177,984 B |
 
+**2026-11-08 staircase refresh (route (d) tree, quiet-window sequence starting
+at load 4; the load rose during the sequence, see the note).** Native default
+(`TRACE_SHOUT=1`), one run per size, `MAGNETAR_MAX_RSS_GIB=8`:
+
+| cycles | prove | prove CPU | verify (single) | peak RSS / footprint | proof |
+| --- | --- | --- | --- | --- | --- |
+| `2^16` | **30.4 s** | 283.8 s | **22.3 ms** | **2.18 / 2.18 GiB** | 1,018,155 B |
+| `2^17` | **62.6 s** | 595.5 s | 40.7 ms | 4.35 / 4.35 GiB | 1,110,291 B |
+| `2^18` | **131.4 s** | 1242.4 s | 112.1 ms | **5.96 / 7.96 GiB** | 1,230,360 B |
+
+Proof bytes are identical to the documented baselines at all three sizes (the
+route (d) lifetime change is byte-neutral); the `2^16` verify improved to
+22.3 ms because the M6 verifier changes also cover the non-v4 dynamic path.
+The runs started in a quiet window (load 4) and the load rose to 28-57 by the
+`2^17`/`2^18` runs, so the wall columns are optimistic relative to the
+2026-11-07 rows (which were measured at load ~29 but with the pre-route-(d)
+tree); the CPU columns are the load-robust comparison. At `2^18` the footprint
+exceeds RSS by 2.0 GiB, so both must be quoted. `2^19` was **not** run: the
+host had 12.3 GiB free+inactive in the window and the MEMORY_PATH §3.1
+protocol wants peak+4 GiB (≈13.5 GiB for the post-route-(d) estimate) -- it
+needs a dedicated window.
+
 † proof size is the claim-table format; the streaming proof itself is still
 byte-identical to the eager path. See results §11.6. The same 2^17 row with
 `MAGNETAR_CLAIM_V4=1 MAGNETAR_ACCESS_COLUMNS=1 MAGNETAR_LINEAR_SHOUT=1`
@@ -463,10 +485,13 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
    if a future round changes the M5 peak profile materially. Design:
    `docs/MEMORY_PATH.md` §3.1.
 4. **Refresh the `2^17`-`2^19` rows** with the memory watchdog and one run at a
-   time; they are marked pre-fusion and the host was routinely swapping during
-   the M4/M5 rounds. The corrected `2^22` model (§2 note, MEMORY_PATH.md)
-   changes what the staircase is for: 2^20 is the decision point, 2^21 is not
-   runnable on this 36 GiB host.
+   time. `2^16`/`2^17`/`2^18` were re-run on the route-(d) tree on 2026-11-08
+   (table in §2: 30.4/62.6/131.4 s, 22.3/40.7/112.1 ms verify, 2.18/4.35/5.96
+   GiB RSS with 2^18 at 7.96 GiB footprint) and their proof bytes match the
+   baselines. Remaining: **`2^19`** (post-route-(d) estimate ≈9.5-10 GiB peak;
+   needs a dedicated window with ≥13.5 GiB free+inactive), then re-fit the
+   `2^22` model (MEMORY_PATH.md §3; 2^20 is the decision point, 2^21 is not
+   runnable on this 36 GiB host).
 5. **Memory path implementation** (`MEMORY_PATH.md`): route (d) is now
    effectively complete for the benchmark path -- increments 1+2 landed on
    2026-11-08 (Access-input lifetime + compact twist tables + trace-witness

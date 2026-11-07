@@ -327,6 +327,14 @@ The proof bytes match the documented `2^17` baseline exactly, so the lifetime
 change is byte-neutral. The `2^16` delta (0.03-0.12 GiB) sits below this host's
 ~0.2 GiB absolute-peak drift; `2^17` is where the route (d) win is unambiguous.
 
+**Staircase on the route-(d) tree (2026-11-08, quiet-window sequence starting at
+load 4, rising to 28-57):** native-default peaks are `2^16` **2.18 GiB RSS /
+footprint**, `2^17` **4.35 / 4.35 GiB**, `2^18` **5.96 GiB RSS / 7.96 GiB
+footprint** (proof 1,018,155 / 1,110,291 / 1,230,360 B, all identical to the
+documented baselines). The `2^18` footprint is 2.0 GiB above RSS, so the `2^22`
+extrapolation must use the footprint series. `2^19` was not run (12.3 GiB
+free+inactive vs the protocol's peak+4 ≈13.5 GiB); see HANDOFF §2/§5 item 4.
+
 **Next for route (d)/(h):** the remaining context terms are the real-RV64 RAM
 witnesses/batch tables (~4 KiB/cycle, dropped after Access by increment 1) and
 the uncommitted witness copies feeding the bit-packed tables; the next big step
