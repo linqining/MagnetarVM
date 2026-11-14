@@ -975,3 +975,11 @@ is to bit-pack only the **address** table (the one-hot bit columns,
 commitment A/B, then extend to the value/initial columns once the sum-check
 factors are re-derived. Not started; recorded here so the next session picks up
 the layout and consumer list rather than rediscovering them.
+
+**Verification tail for §4.7.** Full workspace gate on the streamed-opening
+tree: **683 passed / 0 failed / 8 ignored** (39 binaries) — the 679/0/8 of
+§4.6 plus `streamed_opening_matches_the_retained_path`, the two
+`streaming_multiproof_*` tests and `chunked_encoder_reproduces_the_borrowed_codeword`.
+The default (opt-in off) path is byte-identical to the pre-change tree, and the
+`MAGNETAR_STREAM_PCS_OPEN=1` path produces identical proof bytes at `2^16`,
+`2^17` and `2^18`.
