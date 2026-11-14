@@ -33,11 +33,11 @@
 use std::time::Instant;
 
 use magnetar_constraint::F2_128;
-use magnetar_pcs::{P3BinaryPcs, P3MosaicPoint, P3MosaicTable};
+use magnetar_pcs::{P3BatchPoint, P3BinaryPcs, P3MosaicPoint, P3MosaicTable, P3SharedPcs};
 use magnetar_proof::{
-    BitPcs, Mle, PackedBits, RingSwitchPackedBitPcs, eval_bits_mle,
+    BitPcs, Mle, PackedBits, Pcs, RingSwitchPackedBitPcs, eval_bits_mle,
 };
-use magnetar_pcs::P3SharedPcs;
+
 
 fn peak_rss_bytes() -> u64 {
     let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
@@ -218,7 +218,7 @@ fn run_part_a(log_cycles: usize, packed: bool) {
 /// The Access verifier relation on packed address bits: commit `bits.len()`
 /// bits as `bits.len()/128` field elements with ring-switch, open at a point,
 /// verify, and compare with the MLE of the unpacked bit column.
-fn run_part_b(log_bits: usize) {
+fn run_part_b(log_bits: usize, columns: usize) {
     let len = 1usize << log_bits;
     let backend = RingSwitchPackedBitPcs::new(P3SharedPcs::new(
         100,
@@ -235,8 +235,9 @@ fn run_part_b(log_bits: usize) {
     let mut opening_bytes = 0usize;
     let mut worst_ratio = 0.0f64;
     let mut verified_all = true;
+    let mut sizes = Vec::new();
     let started = Instant::now();
-    for column in 0..12 {
+    for column in 0..columns {
         let bits: Vec<bool> = (0..len)
             .map(|index| (index.wrapping_mul(17) + column * 13 + index / 128) % 3 == 0)
             .collect();
@@ -253,28 +254,179 @@ fn run_part_b(log_bits: usize) {
         packed_cells += len / 128;
         unpacked_cells += len;
         commit_bytes += backend.commitment_bytes(&commitment).len();
-        opening_bytes += bincode::serialize(&opening)
+        let size = bincode::serialize(&opening)
             .map(|bytes| bytes.len())
             .unwrap_or(0);
-        worst_ratio = worst_ratio.max(
-            bincode::serialize(&opening)
-                .map(|bytes| bytes.len() as f64)
-                .unwrap_or(0.0),
-        );
+        opening_bytes += size;
+        sizes.push(size);
+        worst_ratio = worst_ratio.max(size as f64);
     }
     let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
     println!(
-        "partB bits_log={log_bits:<2} columns=12 packed_cells={packed_cells:>8} \
+        "partB bits_log={log_bits:<2} columns={columns:<2} packed_cells={packed_cells:>8} \
          unpacked_cells={unpacked_cells:>9} ({ratio:.0}x fewer) commit={commit_bytes:>7} B \
-         openings={opening_bytes:>8} B largest_opening={largest:>7} B \
+         openings={opening_bytes:>8} B avg_opening={avg:>7} B largest={largest:>7} B \
          wall={wall_ms:>8.1} ms verified={verified_all}",
         ratio = unpacked_cells as f64 / packed_cells as f64,
+        avg = if sizes.is_empty() { 0 } else { opening_bytes / sizes.len() },
         largest = worst_ratio as usize,
         verified_all = verified_all,
     );
     // The point of part B: the ring-switch opening is a real proof of the
     // packed bit vector, not a re-encoding of it.
     assert!(verified_all, "ring-switch bit opening must verify");
+}
+
+
+/// Part C: one packed commitment, many bit-column evaluations.
+///
+/// The Access verifier needs individual evaluations of the 12 address-bit
+/// columns. Committing each column separately (part B) means 12 commitments and
+/// 12 independent proofs. This part packs all columns into **one** bit vector
+/// (16 columns padded, column-major: bit index = column * 2^L + cycle), commits
+/// it once, and runs one ring-switch opening per column at the point whose
+/// column-index suffix bits are the basis vector `e_b`. By construction that
+/// evaluation is exactly column `b`'s MLE at the cycle point, so the same single
+/// commitment answers all of them.
+fn run_part_c(log_bits: usize, columns: usize) {
+    let len = 1usize << log_bits;
+    let padded_columns = 16usize;
+    let total_bits = padded_columns * len;
+    let backend = RingSwitchPackedBitPcs::new(P3SharedPcs::new(
+        100,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    ));
+
+    // One bit vector: column-major, 16 columns (12 used), zero padded.
+    let mut bits = vec![false; total_bits];
+    let mut column_bits: Vec<Vec<bool>> = Vec::with_capacity(columns);
+    for column in 0..padded_columns {
+        let data: Vec<bool> = (0..len)
+            .map(|cycle| (cycle.wrapping_mul(17) + column * 13 + cycle / 128) % 3 == 0)
+            .collect();
+        for (cycle, &bit) in data.iter().enumerate() {
+            if bit {
+                bits[column * len + cycle] = true;
+            }
+        }
+        column_bits.push(data);
+    }
+    let packed = PackedBits::from_bools(&bits);
+    let commit_started = Instant::now();
+    let commitment = backend.commit(&packed).expect("packed commit");
+    let commit_ms = commit_started.elapsed().as_secs_f64() * 1000.0;
+    let commit_bytes = backend.commitment_bytes(&commitment).len();
+
+    // The cycle point; the ring-switch prefix is the first 7 coordinates and the
+    // column index occupies the top 4 coordinates of the point.
+    let cycle_point: Vec<F2_128> = (0..log_bits)
+        .map(|bit| F2_128::from(((bit * 11 + 5) % 2) as u64))
+        .collect();
+    let mut opening_bytes = 0usize;
+    let mut verified_all = true;
+    let mut opened = Vec::new();
+    let prove_started = Instant::now();
+    for column in 0..columns {
+        let mut point = cycle_point.clone();
+        for index in 0..padded_columns.trailing_zeros() as usize {
+            point.push(F2_128::from(((column >> index) & 1) as u64));
+        }
+        let (value, opening) = backend
+            .open_with_commitment(&packed, &point, &commitment)
+            .expect("packed open");
+        let expected = eval_bits_mle(&column_bits[column], &cycle_point).expect("bit mle");
+        assert_eq!(value, expected, "column {column} evaluation must match its bits");
+        opened.push((point, expected, opening));
+    }
+    let prove_ms = prove_started.elapsed().as_secs_f64() * 1000.0;
+    let verify_started = Instant::now();
+    for (point, expected, opening) in &opened {
+        verified_all &= backend
+            .verify(&commitment, point, *expected, opening)
+            .expect("packed verify");
+        opening_bytes += bincode::serialize(opening)
+            .map(|bytes| bytes.len())
+            .unwrap_or(0);
+    }
+    let verify_ms = verify_started.elapsed().as_secs_f64() * 1000.0;
+    let unpacked_cells = columns * len;
+    let packed_cells = padded_columns * len / 128;
+    println!(
+        "partC bits_log={log_bits:<2} columns={columns:<2} one_commitment={commit_bytes:>5} B \
+         packed_cells={packed_cells:>8} unpacked_cells={unpacked_cells:>9} ({ratio:.0}x fewer) \
+         openings={opening_bytes:>8} B avg={avg:>7} B commit={commit_ms:>7.1} ms \
+         prove={prove_ms:>7.1} ms verify={verify_ms:>7.1} ms verified={verified_all}",
+        ratio = unpacked_cells as f64 / packed_cells as f64,
+        avg = if columns == 0 { 0 } else { opening_bytes / columns },
+        verified_all = verified_all,
+    );
+    assert!(verified_all, "every packed column must verify against one commitment");
+}
+
+
+/// Part D: what a *batched* verifier would cost.
+///
+/// The naive scheme verifies one ring-switch proof per bit column (~2 ms each,
+/// measured in part C). If the final PCS openings of all claims are merged into
+/// one batch opening (one point, many tables), the verifier pays one PCS verify
+/// instead of one per claim. This part simulates that shape: `columns` packed
+/// word columns plus `columns` `a_values` columns of the ring-switch reduction
+/// size (`2^(bits-7)` rows), committed and opened in one batch, with the
+/// verifier timed.
+fn run_part_d(log_bits: usize, columns: usize) {
+    let height = 1usize << (log_bits - 7);
+    let scalar = 2usize;
+    let point: Vec<F2_128> = (0..log_bits - 7)
+        .map(|bit| F2_128::from(((bit * 7 + 3) % 2) as u64))
+        .collect();
+    let columns_values: Vec<Vec<F2_128>> = (0..2 * columns)
+        .map(|column| {
+            (0..height)
+                .map(|index| {
+                    F2_128::from(
+                        (index as u128)
+                            .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                            .wrapping_add(column as u128 * 7919),
+                    )
+                })
+                .collect()
+        })
+        .collect();
+    let pcs = P3BinaryPcs::with_params(100, 2, 21, 2);
+    let commit_started = Instant::now();
+    let commitment = pcs.commit_batch(&columns_values).expect("batch commit");
+    let commit_ms = commit_started.elapsed().as_secs_f64() * 1000.0;
+    let points = [magnetar_pcs::P3BatchPoint {
+        point: point.clone(),
+        columns: (0..2 * columns).collect(),
+    }];
+    let open_started = Instant::now();
+    let opening = pcs
+        .open_batch_with_cap(&columns_values, &points, &commitment.cap)
+        .expect("batch open");
+    let open_ms = open_started.elapsed().as_secs_f64() * 1000.0;
+    let expected = vec![columns_values
+        .iter()
+        .map(|column| Mle::new(column.clone()).expect("mle").eval(&point).expect("eval"))
+        .collect::<Vec<F2_128>>()];
+    let verify_started = Instant::now();
+    let verified = pcs
+        .verify_batch(&opening, &points, &expected)
+        .expect("batch verify");
+    let verify_ms = verify_started.elapsed().as_secs_f64() * 1000.0;
+    let proof_bytes = bincode::serialize(&opening)
+        .map(|bytes| bytes.len())
+        .unwrap_or(0);
+    println!(
+        "partD bits_log={log_bits:<2} columns={columns:<2} ({} opened) height=2^{} \
+         proof={proof_bytes:>8} B commit={commit_ms:>7.1} ms open={open_ms:>7.1} ms \
+         verify={verify_ms:>7.2} ms verified={verified}",
+        scalar * columns,
+        (log_bits - 7) as u32,
+    );
+    assert!(verified, "the batched opening must verify");
 }
 
 fn main() {
@@ -290,7 +442,25 @@ fn main() {
         // One variant per process in normal use; `both` is only a smoke run.
         run_part_a(log_cycles, packed);
     }
+    if run == "partD" {
+        let columns: usize = std::env::var("COLUMNS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(12);
+        run_part_d(log_cycles, columns);
+    }
+    if run == "partC" {
+        let columns: usize = std::env::var("COLUMNS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(12);
+        run_part_c(log_cycles, columns);
+    }
     if run == "partB" || run == "both" {
-        run_part_b(log_cycles);
+        let columns: usize = std::env::var("COLUMNS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(12);
+        run_part_b(log_cycles, columns);
     }
 }

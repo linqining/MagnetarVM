@@ -448,3 +448,90 @@ Profile prints added for this step: `MAGNETAR_PROFILE_PCS=1` now prints one
 `pcs mosaic table <i>: rows=... cols=... cells=... bit_cols=...` line per table
 plus a packing projection, and `MAGNETAR_PROFILE_LOCAL=1` prints the Access
 batch shape (`local access tables: ... bit_cols=...`).
+
+## 9. M4a step 2 prototype: the ring-switch proof/verify budget
+
+The Access verifier needs individual evaluations of the 12 address-bit columns
+(and the ROM's 7 bit columns if packed), so the pack-over-128 hits them one
+column at a time. This step measures the three candidate batching schemes before
+touching the protocol. All numbers come from
+`crates/magnetar-pcs/examples/m4a_packed_mosaic_probe.rs`:
+
+```sh
+RUN=partB LOG=18 COLUMNS=12 target/release/examples/m4a_packed_mosaic_probe  # per-column, separate commitments
+RUN=partC LOG=18 COLUMNS=12 target/release/examples/m4a_packed_mosaic_probe  # per-column, one shared commitment
+RUN=partD LOG=18 COLUMNS=12 target/release/examples/m4a_packed_mosaic_probe  # one batched opening
+```
+
+### 9.1 Per-column ring-switch, separate commitments (part B)
+
+One opening per bit column, 12 columns:
+
+| bits log | packed cells (12 cols) | unpacked cells | one opening | 12 openings |
+| --- | ---: | ---: | ---: | ---: |
+| 2^16 | 6,144 | 786,432 | 54,168 B | **648,160 B** |
+| 2^18 | 24,576 | 3,145,728 | 76,560 B | **918,720 B** |
+| 2^20 | 98,304 | 12,582,912 | 97,597 B | **1,171,168 B** |
+| 2^22 | 393,216 | 50,331,648 | ~120 KB (measured on one column) | **~1.44 MB** |
+
+Verification (measured on the shared-commitment variant, per claim): ~20 ms for
+12 claims at `2^16` and ~25 ms at `2^18`. That is on top of the current
+10.8 ms statement-only verify, so the naive scheme **fails the 8-12 ms target**
+by itself; it would also grow the `2^22` proof from ~1.8 MB to ~3.2 MB.
+
+### 9.2 Per-column ring-switch, one shared commitment (part C)
+
+Packing all 12 columns (padded to 16) into **one** bit vector and opening each
+column at the basis point of its column index saves 11 commitment roots (1056 B
+-> 88 B) but makes every opening pay for the whole 16-column packed vector:
+
+| bits log | packed cells | one commitment | total openings (12) | verify (12) |
+| --- | ---: | ---: | ---: | ---: |
+| 2^16 | 8,192 | 88 B | **1,172,544 B** | 20.3 ms |
+| 2^18 | 32,768 | 88 B | **1,445,680 B** | 24.9 ms |
+
+Each evaluation is still correct (`verified=true`, value equals the bit column's
+MLE), but the proof is *larger* than the separate-commitment scheme and the
+verify cost is the same. **Rejected.**
+
+### 9.3 Batched sumcheck + one PCS opening (part D)
+
+The 12-19 claims share one product2 sumcheck when combined with random
+coefficients (the standard batching of `sum_b lambda_b P_b(alpha) A_b(alpha)`),
+so they collapse to **one evaluation point** and **one PCS batch opening** of
+the 12 packed-word columns plus their 12 `a_values` columns (the latter are
+derived from the sent `s_hat_v` and can also be recomputed by the verifier, so
+this is the conservative shape):
+
+| bits log | height of opened columns | proof | commit | open | verify |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2^16 | 2^9 | 106,776 B | 12.9 ms | 94.9 ms | **1.74 ms** |
+| 2^18 | 2^11 | 131,392 B | 23.1 ms | 136.6 ms | **2.15 ms** |
+| 2^20 | 2^13 | 164,504 B | 47.5 ms | 177.9 ms | **3.34 ms** |
+| 2^22 | 2^15 | **199,072 B** | 178.6 ms | 286.8 ms | **3.51 ms** |
+
+The batched opening is both **~7x smaller and ~6x cheaper to verify** than the
+naive per-column scheme, and its size grows only logarithmically.
+
+### 9.4 Decision
+
+* **Adopt: batched product2 sumcheck + one PCS batch opening** for all 12-19 bit
+  claims. Budget at `2^22`: +~199 KB of PCS opening, +12 * 128 field elements of
+  `s_hat_v` (24.6 KB; 38.9 KB for 19 claims) and the sumcheck rounds, i.e.
+  **~+0.24 MB (~+13 %)** on the current ~1.8 MB proof, and **+~3.5 ms** verify
+  if kept as a separate batch.
+* **Fold the batch into the mosaic commitment** where possible: the packed-word
+  columns have arity `L-7` (2^15 at `2^22`), which is just another table arity
+  for the mosaic, so the same opening proof can cover them. Then the PCS verify
+  cost is already paid and M4a's verify overhead is only the batched sumcheck
+  (~0.5-1 ms), keeping the 8-12 ms target.
+* Rejected: naive per-column proofs (proof +0.65-1.44 MB, verify +20-25 ms) and
+  the shared-single-commitment/per-column-opening variant (larger proof, same
+  verify cost).
+* Remaining implementation steps are unchanged: wire the packed tables into
+  `batch_tables` (split by bit-ness, dedup the Access batch), implement the
+  batched sumcheck in `bit_pcs`, version-bump the proof format, then re-measure
+  at `2^18` with a real proof (peak and proof size) before evaluating `2^22`.
+
+Caveat: part D's timings are single-threaded and use the PCS directly; the
+production verifier's absolute numbers must be re-measured after integration.
