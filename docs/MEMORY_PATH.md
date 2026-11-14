@@ -221,6 +221,8 @@ Peak footprint at `2^16` native default, chronological:
 | + streamed opening (`MAGNETAR_STREAM_PCS_OPEN=1`), `2^16` | 1.47-1.54 GiB (floor: selected products) | 299 s CPU |
 | + streamed opening, `2^17` products-gated | **2.10 GiB** (from 3.02) | 622 s CPU |
 | + streamed opening, `2^18` products-gated | **3.60 GiB** (from 5.96) | 1285 s CPU |
+| + packed twist address rows (h slice 1), `2^18` | 3.58 GiB (context 2.60 -> 1.77, Access footprint 2.72 -> 1.24) | 1294 s CPU |
+| + packed twist address rows, `2^19` | **7.11 GiB** (from 7.66) | 2685 s CPU |
 
 At `2^18` the 2026-11-08 sequence is 8.72 -> 7.96 -> 6.96 GiB footprint. The
 remaining peak terms are quantified in §4.2: the mosaic Commit/Opening
@@ -996,6 +998,17 @@ tree: **683 passed / 0 failed / 8 ignored** (39 binaries) — the 679/0/8 of
 The default (opt-in off) path is byte-identical to the pre-change tree, and the
 `MAGNETAR_STREAM_PCS_OPEN=1` path produces identical proof bytes at `2^16`,
 `2^17` and `2^18`.
+
+**§4.8 first slice DONE (2026-11-14): packed address rows.** `AddressRows` now
+stores each cycle's one-hot read/write address row as one bit per slot in `u64`
+words (`magnetar-memory::AddressRows`); the witness fields switch to it and
+every consumer reads through `one_hot`/`bit`/`row_into_field`. Committed tables
+and proof bytes are unchanged. Measured (`paper_unified_bench`, serialize
+products + streamed opening): `2^18` unified context 2.60 -> **1.77 GiB** and
+Access-stage footprint 2.72 -> **1.24 GiB** (peak 3.58 GiB, now the Opening;
+was 3.60), `2^19` peak 7.66 -> **7.11 GiB**; proofs identical
+(1,230,360 / 1,373,708 B); prove CPU unchanged within drift. The next slice is
+the witness `value` matrix below.
 
 **§4.8 addendum (2026-11-14): the concrete (h) first slice.** Reading the
 witness definition fixes the target. `magnetar-memory::BinaryTwistWitness`

@@ -73,11 +73,15 @@ format, against a 36 GiB host.
    next increment and should remove it. The `2^19` row now runs too:
    **11.93 -> 7.66 GiB peak (-36 %)**, proof 1,373,708 B identical, which
    unblocks the staircase previously recorded as environment-blocked (item 5).
-2. **(h) bit-pack the twist witnesses / batch tables** — the twist tables are
-   committed as 16-byte field elements although they hold bits (the single
-   `2^22`-value commit above is the biggest instance). Bit-packing cuts that
-   table and its codeword by ~16x. Effort: days (prover + verifier relation).
-   Expected: ~-0.5 GiB at `2^16` if it lands on the same table.
+2. **(h) bit-pack the twist witnesses / batch tables** — HALF DONE
+   (2026-11-14): the witness's one-hot read/write address rows are now one bit
+   per slot (`AddressRows`), which is prover-internal and byte-identical:
+   `2^18` context 2.60 -> 1.77 GiB, Access footprint 2.72 -> 1.24 GiB,
+   `2^19` peak 7.66 -> **7.11 GiB**. The next slice packs the witness `value`
+   matrix (full 64-bit words stored as 16-byte elements; the linear path never
+   reads it) for a further ~0.5 GiB at `2^19`, then the *committed* `addr`
+   table itself, which changes the format and shrinks its codeword and Merkle
+   tree (prover + verifier relation move together). Effort so far: one day.
 3. **(c) bit-pack the mosaic commitment / (b) 128 -> 64-bit alphabet** — scale
    every committed column and codeword; changes the wire format and the
    documented proof sizes. Effort: multi-day each; needs a decision on

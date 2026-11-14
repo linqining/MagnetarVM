@@ -108,6 +108,17 @@ previous sessions recorded as needing >=13 GiB now fits a 7.7 GiB envelope.
 `2^20` projects to ~11-15 GiB.
 [MEMORY_PATH.md](MEMORY_PATH.md) §4.7.
 
+**Twist witness address rows bit-packed (2026-11-14, h slice 1)**: the
+`BinaryTwistWitness` one-hot read/write address rows are stored one bit per
+slot in `u64` words (`magnetar_memory::AddressRows`) instead of
+`Vec<Vec<F2_128>>` (16 bytes per bit plus one allocation per cycle). Prover
+internal only: committed tables and proof bytes unchanged. Measured:
+`2^18` unified context 2.60 -> 1.77 GiB, Access-stage footprint 2.72 ->
+1.24 GiB, peak 3.58 GiB (Opening-bound); `2^19` peak 7.66 -> 7.11 GiB; proofs
+identical (1,230,360 / 1,373,708 B). Runtime 364/0/8 green. Next slice: pack
+the witness `value` matrix (and skip it on the linear path, which never reads
+it). [MEMORY_PATH.md](MEMORY_PATH.md) §4.8.
+
 **Opt-in Access scheduling switch (2026-11-08)**: `MAGNETAR_SERIALIZE_ACCESS=1`
 starts the selected commit/products after the Access stage instead of after the
 mosaic Commit, so the two working sets do not overlap. Byte-identical proofs
