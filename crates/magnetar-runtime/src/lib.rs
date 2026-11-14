@@ -3112,12 +3112,22 @@ fn prove_unified_trace_dynamic_native_profile_inner(
     // M4b: on the paper path (`with_trace_logup == false`) the classic Shout
     // stage proof is replaced by the committed linear Shout.
     let skip_classic_shout = linear_shout && !with_trace_logup;
-    // Memory switch: move the selected-commit gate from the mosaic Commit to
-    // the end of the Access stage. The selected commit/products no longer
-    // overlap the Access stage's dense `cells * cycles` factor arrays (the
-    // `2^17`/`2^18` peak owner), at the cost of starting the selected products
-    // one Access stage later in prove wall. Opt-in; the proof is unchanged.
-    let serialize_access = std::env::var_os("MAGNETAR_SERIALIZE_ACCESS").is_some();
+    // Memory switches. The selected thread's commit/products overlap the main
+    // thread's stages and the process peak is the sum of the two working sets,
+    // so delay the selected commit by one or two stages:
+    //
+    // * `MAGNETAR_SERIALIZE_ACCESS=1`: release after the Access stage, so the
+    //   selected commit/products no longer overlap the Access prover's dense
+    //   factor arrays.
+    // * `MAGNETAR_SERIALIZE_PRODUCTS=1`: release after the mosaic Opening, so
+    //   the products no longer overlap it either (implies the Access gate).
+    //
+    // Both only move the gate: the transcript, the proof and the verifier are
+    // unchanged. The cost is prove wall, because the selected products (the
+    // long pole) start that much later.
+    let serialize_products = std::env::var_os("MAGNETAR_SERIALIZE_PRODUCTS").is_some();
+    let serialize_access =
+        serialize_products || std::env::var_os("MAGNETAR_SERIALIZE_ACCESS").is_some();
     std::thread::scope(|scope| {
         // Hold the selected witness commit until the mosaic commit is done:
         // two codeword+Merkle transients would otherwise overlap and double
@@ -3179,7 +3189,7 @@ fn prove_unified_trace_dynamic_native_profile_inner(
                 }
                 crate::protocol::ExecutionStage::Access => {
                     context.prove_access()?;
-                    if serialize_access {
+                    if serialize_access && !serialize_products {
                         let _ = commit_done.send(());
                     }
                 }
@@ -3217,7 +3227,10 @@ fn prove_unified_trace_dynamic_native_profile_inner(
                     if let Some((point, values)) = shout_rom {
                         context.add_logup_shout_rom(point, values)?;
                     }
-                    context.prove_opening()?
+                    context.prove_opening()?;
+                    if serialize_products {
+                        let _ = commit_done.send(());
+                    }
                 }
                 crate::protocol::ExecutionStage::Cpu => {}
             }
@@ -10779,6 +10792,26 @@ mod m5_v4_tests {
             serialize_unified_proof(&baseline).unwrap(),
             serialize_unified_proof(&serialized).unwrap(),
             "serialize-access proof differs from the default schedule"
+        );
+    }
+
+    /// `MAGNETAR_SERIALIZE_PRODUCTS=1` only moves the selected-commit gate from
+    /// the Access stage to the end of the mosaic Opening (a memory switch), so
+    /// the unified proof must be byte-identical to the Access-gated schedule.
+    #[test]
+    #[ignore = "sets MAGNETAR_SERIALIZE_PRODUCTS process-wide"]
+    fn serialize_products_proof_bytes_match() {
+        let trace = magnetar_executor::execute(&program(), config()).unwrap();
+        std::env::set_var("MAGNETAR_SERIALIZE_ACCESS", "1");
+        let access_gated = prove_unified_trace_dynamic_native(&trace, 64).unwrap();
+        std::env::set_var("MAGNETAR_SERIALIZE_PRODUCTS", "1");
+        let products_gated = prove_unified_trace_dynamic_native(&trace, 64).unwrap();
+        std::env::remove_var("MAGNETAR_SERIALIZE_PRODUCTS");
+        std::env::remove_var("MAGNETAR_SERIALIZE_ACCESS");
+        assert_eq!(
+            serialize_unified_proof(&access_gated).unwrap(),
+            serialize_unified_proof(&products_gated).unwrap(),
+            "products-gated proof differs from the access-gated schedule"
         );
     }
 
