@@ -696,3 +696,89 @@ fn m4a_access_opening_size_budget() {
         percent = 100.0 * (new_total as f64 - old_total as f64) / old_total as f64,
     );
 }
+
+
+/// M4a Access proof (version 5) round trip, semantic checks and size comparison.
+#[test]
+#[ignore = "runs both Access provers; --ignored --nocapture"]
+fn m4a_access_proof_round_trips() {
+    let trace = bench_trace((1 << BUILT_LOG_CYCLES) - 1);
+    let witness = register_twist_witness(&trace).expect("register witness");
+    let old = crate::local_shared::prove_local_shared(&witness).expect("old access proof");
+    let m4a = crate::local_shared::prove_access_m4a(&witness).expect("m4a access proof");
+    assert_eq!(m4a.version, crate::local_shared::M4A_ACCESS_VERSION);
+    assert!(
+        crate::local_shared::verify_access_m4a(&m4a).expect("verify"),
+        "the M4a Access proof must verify"
+    );
+
+    // The ring-switch claims must be the real address-bit MLEs at the proof's
+    // virtual point (recompute from the witness).
+    let address_bits = crate::linear_twist::witness_shape(&witness).address_bits;
+    let cycles = witness.cycles.next_power_of_two();
+    let (read_bits, read_valid, _) = crate::virtual_onehot::bit_columns_pub(&witness, false);
+    let (write_bits, write_valid, _) = crate::virtual_onehot::bit_columns_pub(&witness, true);
+    let mut columns = read_bits.clone();
+    columns.push(read_valid.clone());
+    columns.extend(write_bits.clone());
+    columns.push(write_valid.clone());
+    assert_eq!(columns.len(), address_bits * 2 + 2);
+    assert_eq!(m4a.bits_claims.len(), columns.len());
+    for (column, claim) in columns.iter().zip(&m4a.bits_claims) {
+        let expected = crate::linear_twist::eval_mle(column, &m4a.virtual_challenges);
+        assert_eq!(*claim, expected, "claim must be the address-bit MLE");
+    }
+    let _ = cycles;
+
+    // Tampered claims and values are refused.
+    let mut tampered = m4a.clone();
+    tampered.bits_claims[0] = tampered.bits_claims[0] + magnetar_constraint::F2_128::from(1u64);
+    assert!(!crate::local_shared::verify_access_m4a(&tampered).expect("verify"));
+    let mut tampered = m4a.clone();
+    tampered.values[0][0] = tampered.values[0][0] + magnetar_constraint::F2_128::from(1u64);
+    assert!(!crate::local_shared::verify_access_m4a(&tampered).expect("verify"));
+
+    // Size comparison: the packed variant is bigger by the ring-switch, but the
+    // scalar batch is smaller. Report both.
+    let old_bytes = bincode::serialize(&old).map(|bytes| bytes.len()).unwrap_or(0);
+    let m4a_bytes = bincode::serialize(&m4a).map(|bytes| bytes.len()).unwrap_or(0);
+    let old_opening = bincode::serialize(&old.opening).map(|bytes| bytes.len()).unwrap_or(0);
+    let scalars = bincode::serialize(&m4a.opening).map(|bytes| bytes.len()).unwrap_or(0);
+    let bits = bincode::serialize(&m4a.bits_opening).map(|bytes| bytes.len()).unwrap_or(0);
+    println!(
+        "m4a access proof: old={old_bytes} B opening={old_opening} B | m4a={m4a_bytes} B \
+         scalars={scalars} B bits_ring_switch={bits} B bits_commitment={} B delta={:+} B",
+        bincode::serialize(&m4a.bits_commitment).map(|bytes| bytes.len()).unwrap_or(0),
+        m4a_bytes as i64 - old_bytes as i64,
+    );
+}
+
+
+/// Peak of the Access prover only: old 15-column batch vs the M4a packed
+/// variant. One variant per process, because the peak is monotonic.
+#[test]
+#[ignore = "measures the Access prover peak; LOG and M4A=0/1, --ignored --nocapture"]
+fn m4a_access_peak() {
+    let log_cycles: usize = std::env::var("LOG")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(16);
+    let use_m4a = std::env::var("M4A").map(|value| value != "0").unwrap_or(false);
+    let trace = bench_trace((1 << log_cycles) - 1);
+    let witness = register_twist_witness(&trace).expect("register witness");
+    let started = std::time::Instant::now();
+    if use_m4a {
+        let proof = crate::local_shared::prove_access_m4a(&witness).expect("m4a access");
+        assert!(crate::local_shared::verify_access_m4a(&proof).expect("verify"));
+    } else {
+        let proof = crate::local_shared::prove_local_shared(&witness).expect("old access");
+        assert!(crate::local_shared::verify_local_shared(&proof).expect("verify"));
+    }
+    let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
+    println!(
+        "m4a access peak: log=2^{log_cycles} m4a={use_m4a} wall={wall_ms:.1} ms \
+         peak_rss={:.1} MiB footprint={:.1} MiB",
+        peak_rss_bytes() as f64 / 1048576.0,
+        footprint_bytes() as f64 / 1048576.0,
+    );
+}

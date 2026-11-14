@@ -748,3 +748,49 @@ Remaining M4a work: implement the gated `MAGNETAR_M4A_ACCESS` wiring in
 `local_shared` (new proof variant with the packed bit commitment + batched
 opening, verifier reading `terminal` from the ring-switch claims), version-bump
 the proof format, and re-measure a real proof at `2^18` (peak + size).
+
+## 15. M4a Access proof v5: packed bit table wired into a real proof
+
+The Access prover now has a second, versioned proof type that actually drops the
+duplicated bit columns and proves them with the batched ring-switch:
+
+* `M4aAccessProof` (in `local_shared.rs`, `M4A_ACCESS_VERSION = 5`) carries the
+  3-column scalar batch (`increment`, `read_value`, `write_value`), the packed
+  bit commitment, the `BatchedRingSwitchOpening` and its 12 claims, plus the
+  unchanged sum-check/endpoint fields.
+* `prove_access_m4a` builds the Access batch from
+  `m4a_tables::pack_access_batch` (15 columns -> 3 scalar columns + one packed
+  bit table), absorbs both commitments into the
+  `magnetar-local-shared-m4a-v5` transcript, runs the same sum-checks, opens the
+  scalars at three points and the packed bits with one batched ring-switch at
+  the virtual point.
+* `verify_access_m4a` verifies the scalar batch and the ring-switch, then feeds
+  the verifier's existing product formula from the ring-switch claims instead of
+  `values[3]`; the rest of the checks are unchanged.
+
+Verified at `2^16` cycles:
+
+* round trip: proof verifies, the version tag is 5;
+* the 12 claims equal the real address-bit MLEs at the proof's virtual point
+  (recomputed from the witness);
+* a tampered claim or a tampered scalar value is refused;
+* serialized size 316,796 B vs the old Access proof's 219,208 B
+  (+97,588 B = +9.6 % of the full `2^16` proof), matching the §14 budget.
+
+**Peak and wall** (Access prover only, one process per variant):
+
+| cycles | variant | peak RSS | footprint | wall |
+| --- | --- | ---: | ---: | ---: |
+| 2^16 | old 15-column batch | 732.3 MiB | 729.9 MiB | 2,272 ms |
+| 2^16 | **M4a packed** | **368.8 MiB (-50 %)** | **366.1 MiB (-50 %)** | **1,704 ms (-25 %)** |
+| 2^18 | old | 2,625.5 MiB | 1,094.9 MiB | 10,484 ms |
+| 2^18 | **M4a packed** | **1,442.2 MiB (-45 %)** | 1,429.1 MiB | **5,805 ms (-45 %)** |
+
+(The `2^18` footprint columns disagree with RSS — the host was swapping and the
+sampler saw different moments; RSS is the stable number there.)
+
+So the Access component trades **+9.6 % of the full proof** for **-45…-50 % of
+its peak and a large wall win**, which is exactly the M4a trade at work. The
+remaining M4a step is to call `prove_access_m4a` from the unified prover behind
+`MAGNETAR_M4A_ACCESS`, wire the bit commitment into the statement root, and
+re-measure `paper_unified_bench` at `2^18` (full-proof peak and size).

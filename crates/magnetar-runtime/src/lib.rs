@@ -10998,5 +10998,4 @@ mod m5_v4_tests {
 #[cfg(test)]
 mod m4a_probe;
 
-#[cfg(test)]
-mod m4a_tables;
+pub(crate) mod m4a_tables;

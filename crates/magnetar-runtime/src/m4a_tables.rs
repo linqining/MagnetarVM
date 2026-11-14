@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! M4a table packing: production-side helpers for the bit-packed mosaic.
 //!
 //! The unified mosaic commits each twist address table as `2*address_bits + 2`
