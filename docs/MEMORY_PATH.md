@@ -203,21 +203,23 @@ selected prepared set (up to 24 GiB) and/or the mosaic prepared set (36 GiB) to
 the steady peak at `2^22`; the commit gate already removes the only overlap
 worth removing.
 
-## 4.3 Where the memory work stands at the end of the 2026-11-08 session
+## 4.3 Where the memory work stands (2026-11-08 session, extended 2026-11-14)
 
 Peak footprint at `2^16` native default, chronological:
 
-| change | peak footprint | prove |
+| change | peak footprint | Access-prover CPU / prove CPU |
 | --- | --- | --- |
-| pre-route-(d) | 2.20 GiB | 30.2 s |
-| route (d) increments 1+2 | 2.17 GiB | 30.4 s |
-| Access-PCS lifetime (default re-encode) | 1.98 GiB | 30.3 s |
-| + `MAGNETAR_SERIALIZE_ACCESS=1` (memory mode) | **1.78 GiB** | 31.2 s |
+| pre-route-(d) | 2.20 GiB | 30.2 s prove |
+| route (d) increments 1+2 | 2.17 GiB | 30.4 s prove |
+| Access-PCS lifetime (default re-encode) | 1.98 GiB | 30.3 s prove |
+| compact sum-check factors (2026-11-14) | **1.89 GiB** | 22.4 -> 18.1 s / 288.1 -> 280.0 s |
+| + `MAGNETAR_SERIALIZE_ACCESS=1` (memory mode) | **1.78 GiB** | 31.2 s prove |
 
-At `2^18` the same sequence is 8.72 -> 7.96 -> 6.96 GiB footprint. The remaining
-peak terms are quantified in §4.2: ~36 % dense Access factor arrays (needs the
-streaming/virtual-one-hot rewrite), ~31 % resident context (route (h)/(c)) and
-the rest twist-witness inputs plus transients.
+At `2^18` the 2026-11-08 sequence is 8.72 -> 7.96 -> 6.96 GiB footprint. The
+remaining peak terms are quantified in §4.2: the mosaic Commit/Opening
+codeword+Merkle transients first, then the Access PCS commit transient, then the
+resident context; the dense Access factor arrays were ~12 % and the compact
+sum-check factors (§4.4) removed most of that.
 
 **Remaining routes, not attempted (multi-week design work, recorded so the next
 session starts here):**
@@ -228,15 +230,24 @@ session starts here):**
 - (h) bit-pack the twist witnesses/batch tables: the Access inputs and the
   retained tables.
 - (b) 128 -> 64-bit committed alphabet.
-- streaming/virtual-one-hot Access prover: the single largest remaining peak
-  term at every scale measured here.
+- streaming/virtual-one-hot Access prover: the cell-independent factors are
+  now stored compactly (§4.4, -19 % Access CPU, -5 % peak at `2^16`); what is
+  left of that route is virtualising the two one-hot address matrices and the
+  value matrix, which needs a restructured (Jolt-style) sum-check over the
+  address bits rather than a factor representation change.
+- streaming PCS commit (mosaic and Access): the measured largest remaining
+  peak term. Both commits materialise a rate-1/8 codeword plus Merkle tree
+  before dropping it; encoding in chunks and hashing leaves incrementally
+  would remove the transient without changing the commitment root.
 - `2^19` staircase: environment-blocked (needs >=15 GiB free+inactive; the host
   stayed at 10.8-14.2 GiB with swap ~9 GiB used all session).
 
 **Verification tail (current tree):** `protocol_determinism` 20/20
 byte-identical; `m6_verify_ab` parallel verify 10.83 ms (min 10.64) vs serial
 24.87 ms; `2^16` proof 1,018,155 B and paper-path proof 1,169,603 B unchanged
-by every memory change; full workspace gate 674 passed / 0 failed / 7 ignored.
+by every memory change; full workspace gate **675 passed / 0 failed /
+7 ignored** (39 binaries) after the compact-factor change (`27ebcf5`; the extra
+passing test is `compact_factors_match_the_expanded_sumcheck`).
 
 ## 5. Recommended order and tests
 
@@ -512,17 +523,27 @@ Consequences for the memory route:
 free+inactive, below the protocol's peak+4 GiB (post-route-(d) `2^19` estimate
 ~11.9 GiB peak => ~16 GiB). It needs a dedicated window.
 
-**`2^16` peak decomposition with the current switches** (default run with
-`MAGNETAR_DEBUG_TABLES`/`PROFILE_UNIFIED`; peak RSS 1.99 GiB at the Access
-stage): context after build 0.55 GiB, Commit peak 1.29, Access peak 1.99 with
-live 0.39 after the stage. The Access peak is the sum of the resident context
-(0.55), the five dense `cells * cycles` factor arrays (~0.64: 5 x 4.2M fields
-x 16 B for the register twist), the twist-witness inputs (~0.2) and the
-selected products' early live set (~0.5-0.8); the `MAGNETAR_SERIALIZE_ACCESS`
-run removes the last term and lands at 1.78 GiB. So after the routing/lifetime
-work the remaining `2^16` peak is ~36 % dense Access factors (the only large
-term that needs the streaming/virtual-one-hot rewrite), ~31 % resident context
-(route (h)/(c) target) and ~33 % twist-witness inputs and misc.
+**`2^16` peak decomposition -- corrected by direct measurement (2026-11-14).**
+An earlier estimate in this section put ~36 % of the `2^16` peak on the Access
+prover's dense factor arrays. The instrumented local profile shows that was
+wrong. At `2^16` the register twist stores `cells * cycles = 2^23`... `2^21`
+fields (`cells = 32`, `cycles = 2^16`): five arrays during the rw sum-check
+(the `eq`/increment repeats plus the two one-hot matrices plus the value
+matrix) and three during the final sum-check. That is **7 arrays x 33.5 MB =
+0.23 GiB, ~12 %** of the 1.99 GiB peak, not 36 %.
+
+The peak itself is reached at the Access prover's *final-factors* point, but
+the footprint there (1.74-1.99 GiB) is far above the live data (~0.7 GiB:
+context 0.55 + the arrays still held). The gap is the **commit transients**
+that set the allocator high-water: the mosaic Commit reaches 1.28 GiB and the
+Access PCS commit adds its codeword+Merkle tree before the arrays are built.
+So the remaining peak terms, in order, are: (i) the mosaic Commit/Opening
+codeword+Merkle transients (~0.74 GiB at `2^16`, route (c)), (ii) the Access
+PCS commit transient, (iii) the resident context (0.55 GiB, routes (h)/(c)),
+and only then (iv) the dense Access factor arrays, which the compact-factor
+change below removed most of.
+
+**Opt-in scheduling switch: `MAGNETAR_SERIALIZE_ACCESS=1`.** At `2^16`+ the
 
 **Opt-in scheduling switch: `MAGNETAR_SERIALIZE_ACCESS=1`.** At `2^16`+ the
 Access stage's dense factor arrays overlap the selected thread's commit and
@@ -590,3 +611,44 @@ transient and the resident set), and (b) the selected prover's product-phase
 live set (~2.3 GiB: packed CSR + matrices + level stores, scales with cycles).
 (b) needs either a streaming CSR or the level-budget trade (HANDOFF §5 item 6),
 and is the next thing to measure at `2^18` before touching it.
+
+### 4.4 Access sum-check factors stored compactly (2026-11-14)
+
+The Access prover (`local_shared::prove_local_shared`, used for both the RAM
+and the register twist) ran two sum-checks over the index space
+`cell * cycles + cycle`. Four of its seven factor arrays did not depend on the
+full index:
+
+* `eq(cycle_point)[cycle]` and `increment[cycle]` repeat under every cell
+  (`at(i) = values[i & (cycles-1)]`),
+* `eq(cell_point)[cell]` is constant along the low `cycle_bits`
+  (`at(i) = values[i >> cycle_bits]`).
+
+Each was expanded to `cells * cycles` field elements (33.5 MB at `2^16`,
+134 MB at `2^18`). `SumcheckFactor` now stores the distinct block and reads it
+through `at()`; the summand receives exactly the same values in the same
+pair order, so the round polynomials, the challenges, the proof bytes and the
+verifier are unchanged. The dense reference is kept in `evaluate_points_at` /
+`sumcheck_terms_indexed` (still used by the value sum-check and the tests), and
+`binary_twist::tests::compact_factors_match_the_expanded_sumcheck` pins the two
+routes against each other.
+
+Measured at `2^16` (same host, same day, `TRACE_SHOUT=1`):
+
+| metric | before | after |
+| --- | --- | --- |
+| proof bytes (native / paper path) | 1,018,155 / 1,169,603 B (access 221,876 B) | identical |
+| Access prover CPU (`local total`) | 22.4 s | **18.1 s (-19 %)** |
+| final-round sum-check CPU | 0.78 s | 0.57 s (-27 %) |
+| whole-prove CPU | 288.1 s | **280.0 s (-2.8 %)** |
+| peak footprint (default) | 1.99 GiB | **1.89 GiB (-5 %)** |
+| peak footprint (`MAGNETAR_SERIALIZE_ACCESS=1`) | 1.74 GiB | 1.79 GiB (inside drift) |
+
+Live factor memory drops by two arrays at each sum-check (67 MB live at
+`2^16`, 268 MB at `2^18`; four arrays' worth of allocations avoided in total,
+i.e. 134 MB / 536 MB). The `2^16` peak only moves 0.10 GiB because at that point
+the high-water mark is set by the commit transients (§4.2), which is why the
+next target is the streaming PCS commit rather than more factor compaction.
+
+`MAGNETAR_PROFILE_LOCAL=1` now prints which factors are compact:
+`local factors: 3 dense arrays of 2097152 fields (2 stored compactly), ...`.

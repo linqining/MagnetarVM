@@ -1,11 +1,12 @@
 # Handoff — MagnetarVM streaming selected prover (RV64)
 
 Status: **incremental optimization phase (Part 1 closed, Part 2 in progress)**,
-branch `virtual-claims-rewrite`. Commits through `caa3692` (M6 increments 1-3:
+branch `virtual-claims-rewrite`. Commits through `27ebcf5` (M6 increments 1-3:
 parallel/phase-split statement-only v4 verifier + shared access claims; M4b
 paper-path default flip; memory route (d) increments 1+2; stage memory
-instrumentation; Access-PCS lifetime; opt-in Access scheduling switch). Gate on
-the current tree: **674 passed / 0 failed / 7 ignored** (39 binaries): `1b26b4e`
+instrumentation; Access-PCS lifetime; opt-in Access scheduling switch; compact
+Access sum-check factors). Gate on the current tree: **675 passed / 0 failed /
+7 ignored** (39 binaries): `1b26b4e`
 (2^16 optimization + polylog claim table), `9e805f2` (segment claims),
 `a3a6e9c` (packed CSR + fast pair), `e320cf9` (M4v3 batched committed-Shout
 opening + M4b paper-path replacement, opt-in), `9556746` (M5 scaffold:
@@ -72,6 +73,21 @@ prove CPU -0.7 % (noise) and **byte-identical proofs** (1,110,291 B, the
 documented baseline); the `2^16` delta (0.03-0.12 GiB) sits below this host's
 ~0.2 GiB absolute-peak drift. Details: [MEMORY_PATH.md](MEMORY_PATH.md) §4.1;
 `MAGNETAR_KEEP_PROVER_INPUTS=1` is the A/B switch.
+
+**Compact Access sum-check factors (2026-11-14)**: the Access prover
+(`local_shared`, both the RAM and the register twist) stored `eq(cycle_point)`,
+`increment`, and `eq(cell_point)` expanded to `cells * cycles` field elements.
+`SumcheckFactor` now keeps the distinct block (`repeat_low` / `repeat_high`) and
+the mixed sum-check reads it through `at()`; values and pair order are
+identical, so **proof bytes are unchanged** (native 1,018,155 B, paper path
+1,169,603 B, access 221,876 B) and a new test pins the compact route against the
+dense reference (`binary_twist::tests::compact_factors_match_the_expanded_sumcheck`).
+At `2^16`: Access-prover CPU 22.4 -> **18.1 s (-19 %)**, whole-prove CPU
+288.1 -> **280.0 s (-2.8 %)**, peak footprint 1.99 -> **1.89 GiB (-5 %)**; live
+factor memory -4 arrays (134 MB at `2^16`, 536 MB at `2^18`).
+[MEMORY_PATH.md](MEMORY_PATH.md) §4.4. Direct measurement also **corrected** the
+earlier claim that the dense Access factors were ~36 % of the `2^16` peak: they
+were ~12 %, and the peak is set by the commit transients (§4.2).
 
 **Final verification on the current tree (2026-11-08, load 10-41):**
 `protocol_determinism` 20/20 byte-identical, 0 failures, peak 1.88 GiB;
@@ -557,26 +573,29 @@ deep clone (-0.5 GiB memcpy at `2^16`) and deduplicated Access table builds
    2026-11-08 (Access-input lifetime + compact twist tables + trace-witness
    dedup) and the `2^17` same-window A/B measures **4.51 -> 3.95 GiB footprint
    (-12.4 %)**, RSS -0.2 to -0.7 GiB, prove CPU -0.7 % (noise), byte-identical
-   proofs (§4.1). The new stage probes (§4.2) locate the remaining `2^17` peak
-   (3.96 GiB footprint, reached during the mosaic Opening) between the main-side
-   mosaic re-encode/Merkle transient + resident mosaic tables and the selected
-   prover's product-phase live set; direct measurement shows the products live
-   in only ~1.0-1.8 GiB at `2^17` (packed CSR is small, level stores fixed
-   192/512 MiB), and the actual `2^17` peak transient is the **main-thread
-   Access stage**: `prove_local_shared` materialises dense `cells * cycles`
-   one-hot/eq/val factor arrays (~134 MiB each at `2^17`, ~0.8-1.0 GiB live per
-   twist) -- a streaming/virtual-one-hot Access prover is the first memory
-   target at `2^17`+ (route (h)-adjacent, byte-neutral); the cheapest part of
-   it landed already -- dropping the retained Access PCS prepared batch cut the
-   `2^18` peak footprint 8.72 -> 7.96 GiB with byte-identical proofs, and the
-   opt-in `MAGNETAR_SERIALIZE_ACCESS=1` scheduling switch cuts it further to
-   `2^18` 6.96 GiB / `2^16` 1.78 GiB (byte-identical; §4.2). The
-   allocator-release route is confirmed a no-op at both scales. Remaining order: (h) bit-pack the twist witnesses/batch tables, then
-   (c) bit-pack the mosaic commitment, then (b) the 128 -> 64-bit committed
-   alphabet, and re-run the staircase (2^18/2^19) to re-fit the `2^22` model;
-   the selected product-phase live set needs a streaming CSR or a level-budget
-   trade. After all four the floor is still 26-30 GiB, so the paper envelope
-   needs a different commitment family or streaming codewords.
+   proofs (§4.1). Attributed with the fixed stage probes (§4.2), the peak is
+   **not** dominated by the Access prover's dense factor arrays: direct
+   measurement puts them at ~12 % of the `2^16` peak (7 arrays x 33.5 MB =
+   0.23 GiB of 1.99 GiB), and the high-water mark is set by the **PCS commit
+   transients** -- the mosaic Commit reaches 1.28 GiB at `2^16`, plus the Access
+   PCS commit's codeword+Merkle -- followed by the resident context (0.55 GiB).
+   Landed so far, all byte-identical:
+   - route (d) 1+2: `2^17` **4.51 -> 3.95 GiB** footprint (-12.4 %, §4.1);
+   - Access-PCS lifetime (re-encode at the opening): `2^18` **8.72 -> 7.96 GiB**;
+   - compact Access sum-check factors (§4.4): Access CPU **-19 %**, peak
+     `2^16` **1.99 -> 1.89 GiB**, live factor memory -4 arrays;
+   - opt-in `MAGNETAR_SERIALIZE_ACCESS=1`: `2^18` **6.96 GiB**, `2^16` 1.78 GiB.
+   The allocator-release route is confirmed a no-op at both scales. Remaining
+   order, by measured leverage: **streaming PCS commit** (mosaic + Access: encode
+   in chunks and hash leaves incrementally, removing the codeword transient
+   without changing the root) -> (h) bit-pack the twist witnesses/batch tables ->
+   (c) bit-pack the mosaic commitment -> (b) the 128 -> 64-bit committed
+   alphabet -> virtualise the two one-hot matrices and the value matrix (needs a
+   restructured Jolt-style sum-check over the address bits, not a factor
+   representation change) -> re-run the staircase (2^18/2^19, still
+   environment-blocked) to re-fit the `2^22` model. After all of the packing
+   routes the floor is still 26-30 GiB, so the paper envelope needs a different
+   commitment family or streaming codewords.
 6. Rejected on purpose: raising the *outer* stream budget above 22 (trades
    ~11 % of `product6` for +0.4 GiB at `2^16` and ~+25 GiB at `2^22`), caching
    scale-linear PCS data across stages (the deep clone removal was kept, the
