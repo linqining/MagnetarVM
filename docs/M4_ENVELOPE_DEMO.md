@@ -577,3 +577,55 @@ batch. The remaining M4a work, in order:
    read by the trace verifier, not just measured);
 4. re-measure a real proof at `2^18` (peak + proof size) and then evaluate
    `2^22`.
+
+## 11. M4a step 2 implemented: the batched ring-switch
+
+The budget of §9 is now a working primitive rather than a simulation.
+
+**`magnetar-proof`:**
+
+* `prove_product2_batched(left, right, weights, challenge)` — proves
+  `sum_b weight_b * sum_x left_b(x) * right_b(x)`. Each round polynomial is the
+  weighted sum of the per-pair degree-two polynomials, so the batched check is
+  still degree two and verifies with the existing `verify_rounds`.
+* `BatchColumnPcs` trait — commits several equally tall columns and opens them
+  all at one point with a **single** proof.
+* `BatchedRingSwitch` / `BatchedRingSwitchOpening` — one proof proves the MLE
+  evaluation of every packed bit column at the same cycle point. The transcript
+  binds the batch commitment, the point, all `s_hat_v` vectors, then samples one
+  weight per column and the row-batch challenges; the packed columns are opened
+  once, at the folded point.
+
+**`magnetar-pcs`:** `P3BatchColumnPcs` implements the trait over `P3BinaryPcs`
+(`commit_batch` / `open_batch_with_cap` / `verify_batch`), so the 12 packed
+address columns share one cap and one opening.
+
+**End to end** (`RUN=partE` in the M4a probe, 12 columns, claims checked against
+each column's bit MLE, proof verified):
+
+| bits log | one proof | commit | prove | verify |
+| --- | ---: | ---: | ---: | ---: |
+| 2^16 | 119,736 B | 11.1 ms | 60.6 ms | **1.93 ms** |
+| 2^18 | 144,480 B | 20.0 ms | 200.5 ms | **2.39 ms** |
+| 2^20 | 174,872 B | 29.9 ms | 87.3 ms | **2.86 ms** |
+| 2^22 | 204,336 B | 81.1 ms | 156.8 ms | **3.32 ms** |
+
+Against the §9 candidates: the implemented scheme is **~10x smaller and ~10x
+cheaper to verify** than the per-column-shared-commitment variant (2^18:
+144,480 B / 2.39 ms vs 1,445,680 B / 24.9 ms), and within the §9.3 simulation
+budget (the ~25 KB difference is the twelve 2 KB `s_hat_v` vectors plus the
+sum-check rounds). At `2^22` the addition is **~200 KB of proof and ~3.3 ms of
+verify**, or about 1 ms if the packed-column batch is folded into the same
+mosaic opening as planned.
+
+Tests in the gate (not ignored): the batch proves every column's MLE, and it
+refuses a tampered claim, a tampered packed value and a foreign commitment.
+
+Status: the Access verifier can now be switched to this primitive. Remaining:
+
+1. wire `m4a_tables` + this batched proof into `protocol.rs`/`local_shared`
+   (packed tables, one bit commitment, Access claims against it) and version-bump
+   the proof format;
+2. trace-table consumption demo (the word-pair byte layout read by the trace
+   verifier, not just measured);
+3. re-measure a real proof at `2^18` (peak + proof size), then evaluate `2^22`.

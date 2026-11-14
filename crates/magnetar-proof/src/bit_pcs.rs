@@ -824,6 +824,405 @@ impl<P: Pcs> RingSwitchPackedBitPcs<P> {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// Batched ring-switch: one proof for many packed bit columns.
+//
+// The Access verifier needs the evaluations of 12-19 packed bit columns. Doing
+// one ring-switch proof per column makes the proof grow linearly (~54-120 KB
+// per column) and costs ~2 ms of verification each. This batched variant runs
+// one weighted sum-check over all columns and opens all packed columns with one
+// batch opening: one proof, one verification.
+// ---------------------------------------------------------------------------
+
+fn rs_pack_bits(bits: &PackedBits) -> Result<Vec<F2_128>, ProofError> {
+    if bits.len() < 256 || !bits.len().is_power_of_two() {
+        return Err(ProofError::Pcs(
+            "ring-switch packing requires at least 256 bits".into(),
+        ));
+    }
+    Ok((0..bits.fields_128())
+        .map(|field| F2_128::from(bits.field_128(field)))
+        .collect())
+}
+
+fn rs_transpose128(values: &[F2_128]) -> Vec<F2_128> {
+    if values.len() != 128 {
+        return rs_transpose128_naive(values);
+    }
+    let mut output = [0u128; 128];
+    for (row, value) in values.iter().enumerate() {
+        let mut bits = value.value();
+        let row_bit = 1u128 << row;
+        while bits != 0 {
+            let column = bits.trailing_zeros() as usize;
+            output[column] |= row_bit;
+            bits &= bits - 1;
+        }
+    }
+    output.into_iter().map(F2_128::from).collect()
+}
+
+fn rs_transpose128_naive(values: &[F2_128]) -> Vec<F2_128> {
+    let mut output = vec![F2_128::from(0u64); 128];
+    for (row, value) in values.iter().enumerate() {
+        let bits = value.value();
+        for (column, out) in output.iter_mut().enumerate() {
+            if (bits >> column) & 1 == 1 {
+                *out = *out + F2_128::from(1u128 << row);
+            }
+        }
+    }
+    output
+}
+
+fn rs_scale_vertical(values: &[F2_128], scalar: F2_128) -> Vec<F2_128> {
+    values.iter().map(|value| *value * scalar).collect()
+}
+
+fn rs_scale_horizontal(values: &[F2_128], scalar: F2_128) -> Vec<F2_128> {
+    let transposed = rs_transpose128(values);
+    let scaled = rs_scale_vertical(&transposed, scalar);
+    rs_transpose128(&scaled)
+}
+
+fn rs_eval_rs_eq(z_vals: &[F2_128], query: &[F2_128], row_batch: &[F2_128]) -> F2_128 {
+    let mut eval = vec![F2_128::from(0u64); 128];
+    eval[0] = F2_128::from(1u64);
+    for (vertical, horizontal) in z_vals.iter().zip(query) {
+        let vertical_scaled = rs_scale_vertical(&eval, *vertical);
+        let horizontal_scaled = rs_scale_horizontal(&eval, *horizontal);
+        F2_128::add_assign_slice(&mut eval, &vertical_scaled);
+        F2_128::add_assign_slice(&mut eval, &horizontal_scaled);
+    }
+    let transposed = rs_transpose128(&eval);
+    transposed
+        .iter()
+        .zip(row_batch)
+        .fold(F2_128::from(0u64), |sum, (value, coeff)| {
+            sum + *value * *coeff
+        })
+}
+
+fn rs_eval_rs_eq_table(z_vals: &[F2_128], row_batch: &[F2_128]) -> Vec<F2_128> {
+    let mut scalars = vec![F2_128::from(1u64); 1usize << z_vals.len()];
+    for (bit, vertical) in z_vals.iter().enumerate() {
+        let len = 1usize << bit;
+        for index in 0..len {
+            let value = scalars[index];
+            scalars[index] = value * (F2_128::from(1u64) + *vertical);
+            scalars[len + index] = value * *vertical;
+        }
+    }
+    let mut byte_table = [[F2_128::from(0u64); 256]; 16];
+    for (byte, table) in byte_table.iter_mut().enumerate() {
+        for (mask, value) in table.iter_mut().enumerate() {
+            let mut sum = F2_128::from(0u64);
+            for bit in 0..8 {
+                if (mask >> bit) & 1 == 1 {
+                    sum = sum + row_batch[byte * 8 + bit];
+                }
+            }
+            *value = sum;
+        }
+    }
+    scalars
+        .into_iter()
+        .map(|scalar| {
+            let bytes = scalar.value().to_le_bytes();
+            bytes
+                .iter()
+                .enumerate()
+                .fold(F2_128::from(0u64), |sum, (byte, value)| {
+                    sum + byte_table[byte][usize::from(*value)]
+                })
+        })
+        .collect()
+}
+
+fn rs_eq_vector(point: &[F2_128]) -> Vec<F2_128> {
+    let mut values = vec![F2_128::from(1u64); 1usize << point.len()];
+    for (bit, vertical) in point.iter().enumerate() {
+        let len = 1usize << bit;
+        for index in 0..len {
+            let value = values[index];
+            values[index] = value * (F2_128::from(1u64) + *vertical);
+            values[len + index] = value * *vertical;
+        }
+    }
+    values
+}
+
+fn rs_evaluate(values: &[F2_128], point: &[F2_128]) -> F2_128 {
+    assert_eq!(values.len(), 1 << point.len());
+    let mut current = values.to_vec();
+    for challenge in point.iter().rev() {
+        let half = current.len() / 2;
+        for index in 0..half {
+            current[index] = current[index] * (F2_128::from(1u64) + *challenge)
+                + current[index + half] * *challenge;
+        }
+        current.truncate(half);
+    }
+    current[0]
+}
+
+fn rs_challenge_field(
+    transcript: &mut magnetar_transcript::Sha256Transcript,
+    label: &str,
+) -> F2_128 {
+    let bytes = transcript.challenge_bytes(label, 16);
+    F2_128::from_bits(u128::from_le_bytes(bytes.try_into().expect("16 bytes")))
+}
+
+fn rs_sumcheck_challenge(
+    transcript: &mut magnetar_transcript::Sha256Transcript,
+    round: usize,
+    values: &[F2_128],
+) -> F2_128 {
+    transcript.absorb("round", &(round as u64).to_le_bytes());
+    for value in values {
+        transcript.absorb("round-poly", &value.value().to_le_bytes());
+    }
+    rs_challenge_field(transcript, "sumcheck")
+}
+
+/// A commitment backend that commits several equally tall columns and opens
+/// them all at one point with a *single* proof.
+pub trait BatchColumnPcs {
+    type Commitment: Clone + core::fmt::Debug;
+    type Opening: Clone + core::fmt::Debug;
+
+    fn commit_columns(&self, columns: &[Vec<F2_128>]) -> Result<Self::Commitment, ProofError>;
+    fn open_columns_at(
+        &self,
+        columns: &[Vec<F2_128>],
+        point: &[F2_128],
+        known: Option<&Self::Commitment>,
+    ) -> Result<Self::Opening, ProofError>;
+    fn verify_columns_at(
+        &self,
+        commitment: &Self::Commitment,
+        point: &[F2_128],
+        values: &[F2_128],
+        opening: &Self::Opening,
+    ) -> Result<bool, ProofError>;
+    fn commitment_bytes(&self, commitment: &Self::Commitment) -> Vec<u8>;
+}
+
+/// Opening of a [`BatchedRingSwitch`]: one `s_hat_v` per packed column, one
+/// weighted sum-check, the packed-column values at the folded point and a single
+/// batch opening of the packed columns.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct BatchedRingSwitchOpening<O> {
+    pub s_hat_v: Vec<Vec<F2_128>>,
+    pub sumcheck: crate::SumcheckProof<F2_128>,
+    pub packed_values: Vec<F2_128>,
+    pub pcs_opening: O,
+}
+
+/// Ring-switch for many packed bit columns at one cycle point, in one proof.
+pub struct BatchedRingSwitch<P: BatchColumnPcs> {
+    pub pcs: P,
+}
+
+impl<P: BatchColumnPcs> BatchedRingSwitch<P> {
+    pub fn new(pcs: P) -> Self {
+        Self { pcs }
+    }
+
+    /// Prove the MLE evaluation of every column at the same point.
+    ///
+    /// Returns the per-column claimed values and the batched opening. `known`
+    /// lets the caller supply the commitment of the packed columns it already
+    /// holds.
+    pub fn open(
+        &self,
+        bit_columns: &[PackedBits],
+        point: &[F2_128],
+        known: Option<&P::Commitment>,
+    ) -> Result<(Vec<F2_128>, BatchedRingSwitchOpening<P::Opening>), ProofError> {
+        if bit_columns.is_empty() {
+            return Err(ProofError::DimensionMismatch);
+        }
+        let high_bits = point.len().checked_sub(7).unwrap_or(0);
+        if high_bits == 0 {
+            return Err(ProofError::Pcs("ring-switch point size mismatch".into()));
+        }
+        let packed_columns: Vec<Vec<F2_128>> = bit_columns
+            .iter()
+            .map(rs_pack_bits)
+            .collect::<Result<Vec<_>, _>>()?;
+        if packed_columns
+            .iter()
+            .any(|packed| packed.len() != 1usize << high_bits)
+        {
+            return Err(ProofError::Pcs("ring-switch point size mismatch".into()));
+        }
+        let prefix = &point[..7];
+        let suffix = &point[7..];
+        let eq_suffix = rs_eq_vector(suffix);
+        let mut s_hat_vectors = Vec::with_capacity(packed_columns.len());
+        let mut claims = Vec::with_capacity(packed_columns.len());
+        for packed in &packed_columns {
+            let mut s_hat_v = vec![F2_128::from(0u64); 128];
+            for (high, &weight) in eq_suffix.iter().enumerate() {
+                let mut set = packed[high].value();
+                while set != 0 {
+                    let bit = set.trailing_zeros() as usize;
+                    s_hat_v[bit] = s_hat_v[bit] + weight;
+                    set &= set - 1;
+                }
+            }
+            claims.push(rs_evaluate(&s_hat_v, prefix));
+            s_hat_vectors.push(s_hat_v);
+        }
+
+        let commitment = match known {
+            Some(commitment) => commitment.clone(),
+            None => self.pcs.commit_columns(&packed_columns)?,
+        };
+        let mut transcript = magnetar_transcript::Sha256Transcript::new(
+            "magnetar-ring-switch-batch-v1",
+        );
+        transcript.absorb("commitment", &self.pcs.commitment_bytes(&commitment));
+        for value in point {
+            transcript.absorb("point", &value.value().to_le_bytes());
+        }
+        for s_hat_v in &s_hat_vectors {
+            for value in s_hat_v {
+                transcript.absorb("s-hat-v", &value.value().to_le_bytes());
+            }
+        }
+        let weights = (0..packed_columns.len())
+            .map(|_| rs_challenge_field(&mut transcript, "column-weight"))
+            .collect::<Vec<_>>();
+        let r_double = (0..7)
+            .map(|_| rs_challenge_field(&mut transcript, "row-batch"))
+            .collect::<Vec<_>>();
+        let eq_double = rs_eq_vector(&r_double);
+        let mut sumcheck_claim = F2_128::from(0u64);
+        for (s_hat_v, weight) in s_hat_vectors.iter().zip(&weights) {
+            let s_hat_u = rs_transpose128(s_hat_v);
+            let inner = s_hat_u
+                .iter()
+                .zip(&eq_double)
+                .fold(F2_128::from(0u64), |sum, (a, b)| sum + *a * *b);
+            sumcheck_claim = sumcheck_claim + *weight * inner;
+        }
+        let a_values = rs_eval_rs_eq_table(suffix, &eq_double);
+        let left_refs: Vec<&[F2_128]> = packed_columns.iter().map(Vec::as_slice).collect();
+        let right_refs: Vec<&[F2_128]> = (0..packed_columns.len())
+            .map(|_| a_values.as_slice())
+            .collect();
+        let (sumcheck, ry, _) = crate::prove_product2_batched(
+            &left_refs,
+            &right_refs,
+            &weights,
+            |round, values| rs_sumcheck_challenge(&mut transcript, round, values),
+        )?;
+        if sumcheck.claimed_sum != sumcheck_claim {
+            return Err(ProofError::Pcs(
+                "ring-switch sumcheck claim mismatch".into(),
+            ));
+        }
+        let packed_values = packed_columns
+            .iter()
+            .map(|packed| rs_evaluate(packed, &ry))
+            .collect::<Vec<_>>();
+        let pcs_opening = self
+            .pcs
+            .open_columns_at(&packed_columns, &ry, Some(&commitment))?;
+        Ok((
+            claims,
+            BatchedRingSwitchOpening {
+                s_hat_v: s_hat_vectors,
+                sumcheck,
+                packed_values,
+                pcs_opening,
+            },
+        ))
+    }
+
+    /// Check the per-column claims and the batched opening.
+    pub fn verify(
+        &self,
+        commitment: &P::Commitment,
+        point: &[F2_128],
+        values: &[F2_128],
+        opening: &BatchedRingSwitchOpening<P::Opening>,
+    ) -> Result<bool, ProofError> {
+        let high_bits = point.len().checked_sub(7).unwrap_or(0);
+        if high_bits == 0
+            || opening.s_hat_v.len() != values.len()
+            || opening.packed_values.len() != values.len()
+            || opening.s_hat_v.len() != opening.packed_values.len()
+        {
+            return Ok(false);
+        }
+        let prefix = &point[..7];
+        let suffix = &point[7..];
+        for (s_hat_v, value) in opening.s_hat_v.iter().zip(values) {
+            if s_hat_v.len() != 128 || rs_evaluate(s_hat_v, prefix) != *value {
+                return Ok(false);
+            }
+        }
+        let mut transcript =
+            magnetar_transcript::Sha256Transcript::new("magnetar-ring-switch-batch-v1");
+        transcript.absorb("commitment", &self.pcs.commitment_bytes(commitment));
+        for value in point {
+            transcript.absorb("point", &value.value().to_le_bytes());
+        }
+        for s_hat_v in &opening.s_hat_v {
+            for value in s_hat_v {
+                transcript.absorb("s-hat-v", &value.value().to_le_bytes());
+            }
+        }
+        let weights = (0..opening.s_hat_v.len())
+            .map(|_| rs_challenge_field(&mut transcript, "column-weight"))
+            .collect::<Vec<_>>();
+        let r_double = (0..7)
+            .map(|_| rs_challenge_field(&mut transcript, "row-batch"))
+            .collect::<Vec<_>>();
+        let eq_double = rs_eq_vector(&r_double);
+        let mut sumcheck_claim = F2_128::from(0u64);
+        for (s_hat_v, weight) in opening.s_hat_v.iter().zip(&weights) {
+            let s_hat_u = rs_transpose128(s_hat_v);
+            let inner = s_hat_u
+                .iter()
+                .zip(&eq_double)
+                .fold(F2_128::from(0u64), |sum, (a, b)| sum + *a * *b);
+            sumcheck_claim = sumcheck_claim + *weight * inner;
+        }
+        if opening.sumcheck.claimed_sum != sumcheck_claim {
+            return Ok(false);
+        }
+        let (ry, product) =
+            crate::verify_rounds(&opening.sumcheck, high_bits, 2, |round, values| {
+                rs_sumcheck_challenge(&mut transcript, round, values)
+            })?;
+        if !self
+            .pcs
+            .verify_columns_at(commitment, &ry, &opening.packed_values, &opening.pcs_opening)?
+        {
+            return Ok(false);
+        }
+        let a_at = rs_eval_rs_eq(suffix, &ry, &eq_double);
+        let weighted = opening
+            .packed_values
+            .iter()
+            .zip(&weights)
+            .fold(F2_128::from(0u64), |sum, (value, weight)| {
+                sum + *value * *weight
+            });
+        Ok(product == weighted * a_at)
+    }
+
+    pub fn commitment_bytes(&self, commitment: &P::Commitment) -> Vec<u8> {
+        self.pcs.commitment_bytes(commitment)
+    }
+}
+
 impl<P: Pcs> BitPcs for RingSwitchPackedBitPcs<P> {
     type Commitment = P::Commitment;
     type Opening = RingSwitchOpening<P::Opening>;

@@ -165,6 +165,71 @@ pub struct P3BatchPoint {
     pub columns: Vec<usize>,
 }
 
+/// Batch-column backend for `magnetar_proof::BatchedRingSwitch`.
+///
+/// It commits several equally tall columns as one batch (one cap) and opens all
+/// of them at one point with a single proof, which is what the batched
+/// ring-switch needs for its packed address-bit columns.
+#[derive(Clone, Debug)]
+pub struct P3BatchColumnPcs {
+    pub pcs: P3BinaryPcs,
+}
+
+impl P3BatchColumnPcs {
+    pub fn new(pcs: P3BinaryPcs) -> Self {
+        Self { pcs }
+    }
+}
+
+impl magnetar_proof::BatchColumnPcs for P3BatchColumnPcs {
+    type Commitment = P3BatchCommitment;
+    type Opening = P3BatchOpening;
+
+    fn commit_columns(
+        &self,
+        columns: &[Vec<F2_128>],
+    ) -> Result<Self::Commitment, ProofError> {
+        self.pcs.commit_batch(columns)
+    }
+
+    fn open_columns_at(
+        &self,
+        columns: &[Vec<F2_128>],
+        point: &[F2_128],
+        known: Option<&Self::Commitment>,
+    ) -> Result<Self::Opening, ProofError> {
+        let points = [P3BatchPoint {
+            point: point.to_vec(),
+            columns: (0..columns.len()).collect(),
+        }];
+        match known {
+            Some(commitment) => self
+                .pcs
+                .open_batch_with_cap(columns, &points, &commitment.cap),
+            None => self.pcs.open_batch(columns, &points),
+        }
+    }
+
+    fn verify_columns_at(
+        &self,
+        _commitment: &Self::Commitment,
+        point: &[F2_128],
+        values: &[F2_128],
+        opening: &Self::Opening,
+    ) -> Result<bool, ProofError> {
+        let points = [P3BatchPoint {
+            point: point.to_vec(),
+            columns: (0..values.len()).collect(),
+        }];
+        self.pcs
+            .verify_batch(opening, &points, std::slice::from_ref(&values.to_vec()))
+    }
+
+    fn commitment_bytes(&self, commitment: &Self::Commitment) -> Vec<u8> {
+        bincode::serialize(commitment).unwrap_or_default()
+    }
+}
+
 /// Shape of one source table inside a mosaic commitment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct P3MosaicTableShape {
@@ -2020,5 +2085,123 @@ mod tests {
                 assert!(!evals.is_empty());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod batched_ring_switch_tests {
+    use super::{P3BatchColumnPcs, P3BinaryPcs};
+    use magnetar_proof::{
+        BatchColumnPcs, BatchedRingSwitch, PackedBits, eval_bits_mle,
+    };
+
+    const LOG_BITS: usize = 12;
+    const COLUMNS: usize = 5;
+
+    fn fixture() -> (
+        BatchedRingSwitch<P3BatchColumnPcs>,
+        P3BatchColumnPcs,
+        Vec<PackedBits>,
+        Vec<Vec<bool>>,
+        Vec<magnetar_constraint::F2_128>,
+    ) {
+        let len = 1usize << LOG_BITS;
+        let point: Vec<magnetar_constraint::F2_128> = (0..LOG_BITS)
+            .map(|bit| magnetar_constraint::F2_128::from(((bit * 11 + 5) % 2) as u64))
+            .collect();
+        let bit_columns: Vec<Vec<bool>> = (0..COLUMNS)
+            .map(|column| {
+                (0..len)
+                    .map(|cycle| (cycle.wrapping_mul(17) + column * 13 + cycle / 128) % 3 == 0)
+                    .collect()
+            })
+            .collect();
+        let packed: Vec<PackedBits> = bit_columns
+            .iter()
+            .map(|bits| PackedBits::from_bools(bits))
+            .collect();
+        let pcs = P3BatchColumnPcs::new(P3BinaryPcs::with_params(100, 2, 21, 2));
+        (
+            BatchedRingSwitch::new(pcs.clone()),
+            pcs,
+            packed,
+            bit_columns,
+            point,
+        )
+    }
+
+    fn commit(
+        backend: &P3BatchColumnPcs,
+        bit_columns: &[Vec<bool>],
+    ) -> P3BatchColumnPcsCommitment {
+        let packed_columns: Vec<Vec<magnetar_constraint::F2_128>> = bit_columns
+            .iter()
+            .map(|bits| {
+                bits.chunks(128)
+                    .map(|chunk| {
+                        let mut word = 0u128;
+                        for (index, bit) in chunk.iter().enumerate() {
+                            if *bit {
+                                word |= 1u128 << index;
+                            }
+                        }
+                        magnetar_constraint::F2_128::from(word)
+                    })
+                    .collect()
+            })
+            .collect();
+        backend.commit_columns(&packed_columns).expect("commit")
+    }
+
+    type P3BatchColumnPcsCommitment = <P3BatchColumnPcs as BatchColumnPcs>::Commitment;
+
+    #[test]
+    fn batched_ring_switch_proves_every_column() {
+        let (batched, backend, packed, bit_columns, point) = fixture();
+        let commitment = commit(&backend, &bit_columns);
+        let (claims, opening) = batched
+            .open(&packed, &point, Some(&commitment))
+            .expect("open");
+        assert_eq!(claims.len(), COLUMNS);
+        for (column, claim) in claims.iter().enumerate() {
+            assert_eq!(
+                *claim,
+                eval_bits_mle(&bit_columns[column], &point).expect("mle"),
+                "column {column} claim must be its bit MLE"
+            );
+        }
+        assert!(batched
+            .verify(&commitment, &point, &claims, &opening)
+            .expect("verify"));
+
+        // A wrong claim is refused.
+        let mut tampered = claims.clone();
+        tampered[2] = tampered[2] + magnetar_constraint::F2_128::from(1u64);
+        assert!(!batched
+            .verify(&commitment, &point, &tampered, &opening)
+            .expect("verify"));
+
+        // A wrong packed value is refused.
+        let mut tampered_opening = opening.clone();
+        tampered_opening.packed_values[1] =
+            tampered_opening.packed_values[1] + magnetar_constraint::F2_128::from(1u64);
+        assert!(!batched
+            .verify(&commitment, &point, &claims, &tampered_opening)
+            .expect("verify"));
+    }
+
+    #[test]
+    fn batched_ring_switch_rejects_a_foreign_commitment() {
+        let (batched, backend, packed, bit_columns, point) = fixture();
+        let commitment = commit(&backend, &bit_columns);
+        let (claims, opening) = batched
+            .open(&packed, &point, Some(&commitment))
+            .expect("open");
+        let mut other_bits = bit_columns.clone();
+        other_bits[0][0] = !other_bits[0][0];
+        let other = commit(&backend, &other_bits);
+        assert!(!batched
+            .verify(&other, &point, &claims, &opening)
+            .expect("verify"));
     }
 }

@@ -432,6 +432,87 @@ where
     ))
 }
 
+/// Batched [`prove_product2`]: prove `sum_b weight_b * sum_x left_b(x) * right_b(x)`.
+///
+/// Each round polynomial is the weighted sum of the per-pair degree-two round
+/// polynomials, so the batched check stays degree two per variable and is
+/// verified by [`verify_rounds`]. All vectors must share one length, and the
+/// weight count must match the number of pairs.
+pub fn prove_product2_batched<F, C>(
+    left: &[&[F]],
+    right: &[&[F]],
+    weights: &[F],
+    mut challenge: C,
+) -> Result<(SumcheckProof<F>, Vec<F>, F), ProofError>
+where
+    F: Field + Send + Sync,
+    C: FnMut(usize, &[F]) -> F,
+{
+    if left.is_empty() || left.len() != right.len() || left.len() != weights.len() {
+        return Err(ProofError::DimensionMismatch);
+    }
+    let len = left[0].len();
+    if len < 2
+        || !len.is_power_of_two()
+        || left.iter().any(|values| values.len() != len)
+        || right.iter().any(|values| values.len() != len)
+    {
+        return Err(ProofError::DimensionMismatch);
+    }
+    let mut left: Vec<Vec<F>> = left.iter().map(|values| values.to_vec()).collect();
+    let mut right: Vec<Vec<F>> = right.iter().map(|values| values.to_vec()).collect();
+    let claimed_sum = (0..left.len()).fold(F::zero(), |sum, pair| {
+        let pair_sum = (0..len).fold(F::zero(), |inner, index| {
+            inner + left[pair][index] * right[pair][index]
+        });
+        sum + weights[pair] * pair_sum
+    });
+    let rounds = len.trailing_zeros() as usize;
+    let mut challenges = Vec::with_capacity(rounds);
+    let mut round_polys = Vec::with_capacity(rounds);
+    for round in 0..rounds {
+        // Degree-two coefficients of the weighted sum of products.
+        let mut coefficients = [F::zero(); 3];
+        let pairs = left[0].len() / 2;
+        for pair in 0..left.len() {
+            let weight = weights[pair];
+            for index in 0..pairs {
+                let l0 = left[pair][2 * index];
+                let ld = left[pair][2 * index + 1] - l0;
+                let r0 = right[pair][2 * index];
+                let rd = right[pair][2 * index + 1] - r0;
+                coefficients[0] = coefficients[0] + weight * l0 * r0;
+                coefficients[1] = coefficients[1] + weight * (l0 * rd + ld * r0);
+                coefficients[2] = coefficients[2] + weight * ld * rd;
+            }
+        }
+        let polynomial = (0..3u64)
+            .map(|point| {
+                let t = F::from_u64(point);
+                coefficients[0] + coefficients[1] * t + coefficients[2] * t * t
+            })
+            .collect::<Vec<F>>();
+        let r = challenge(round, &polynomial);
+        challenges.push(r);
+        for pair in 0..left.len() {
+            left[pair] = fold_vector(&left[pair], r);
+            right[pair] = fold_vector(&right[pair], r);
+        }
+        round_polys.push(polynomial);
+    }
+    let final_eval = (0..left.len()).fold(F::zero(), |sum, pair| {
+        sum + weights[pair] * left[pair][0] * right[pair][0]
+    });
+    Ok((
+        SumcheckProof {
+            claimed_sum,
+            round_polys,
+        },
+        challenges,
+        final_eval,
+    ))
+}
+
 /// Sum-check for `eq(x) * (a(x)b(x) - c(x))`, degree three per variable.
 ///
 /// All four inputs are evaluation vectors over the same Boolean hypercube.
@@ -636,8 +717,9 @@ pub mod spartan;
 pub mod stream;
 pub mod virtual_spartan;
 pub use bit_pcs::{
-    BitPcs, DirectBitPcs, PackedBitPcs, PackedOpening, PackedTableOpening, RevealingPackedBitPcs,
-    RingSwitchOpening, RingSwitchPackedBitPcs,
+    BatchColumnPcs, BatchedRingSwitch, BatchedRingSwitchOpening, BitPcs, DirectBitPcs,
+    PackedBitPcs, PackedOpening, PackedTableOpening, RevealingPackedBitPcs, RingSwitchOpening,
+    RingSwitchPackedBitPcs,
 };
 pub use bits::PackedBits;
 pub use simd::{LazyExtraRows, SharedBlockMatrix};

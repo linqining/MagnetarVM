@@ -33,7 +33,7 @@
 use std::time::Instant;
 
 use magnetar_constraint::F2_128;
-use magnetar_pcs::{P3BatchPoint, P3BinaryPcs, P3MosaicPoint, P3MosaicTable, P3SharedPcs};
+use magnetar_pcs::{P3BatchColumnPcs, P3BatchPoint, P3BinaryPcs, P3MosaicPoint, P3MosaicTable, P3SharedPcs};
 use magnetar_proof::{
     BitPcs, Mle, PackedBits, Pcs, RingSwitchPackedBitPcs, eval_bits_mle,
 };
@@ -429,6 +429,84 @@ fn run_part_d(log_bits: usize, columns: usize) {
     assert!(verified, "the batched opening must verify");
 }
 
+
+/// Part E: the adopted scheme end-to-end — one batched ring-switch proof for all
+/// packed address-bit columns.
+///
+/// Twelve packed columns are committed as one batch; one weighted product2
+/// sum-check over all columns plus one batch opening at the folded point proves
+/// every column's MLE at the same cycle point, and the verifier checks all of
+/// them with one proof.
+fn run_part_e(log_bits: usize, columns: usize) {
+    use magnetar_proof::BatchedRingSwitch;
+
+    let len = 1usize << log_bits;
+    let cycle_point: Vec<F2_128> = (0..log_bits)
+        .map(|bit| F2_128::from(((bit * 11 + 5) % 2) as u64))
+        .collect();
+    let bit_columns: Vec<Vec<bool>> = (0..columns)
+        .map(|column| {
+            (0..len)
+                .map(|cycle| (cycle.wrapping_mul(17) + column * 13 + cycle / 128) % 3 == 0)
+                .collect()
+        })
+        .collect();
+    let packed: Vec<PackedBits> = bit_columns
+        .iter()
+        .map(|bits| PackedBits::from_bools(bits))
+        .collect();
+    let backend = P3BatchColumnPcs::new(P3BinaryPcs::with_params(100, 2, 21, 2));
+    let batched = BatchedRingSwitch::new(backend);
+
+    let commit_started = Instant::now();
+    let commitment = {
+        use magnetar_proof::BatchColumnPcs;
+        let packed_columns: Vec<Vec<F2_128>> = bit_columns
+            .iter()
+            .map(|bits| {
+                bits.chunks(128)
+                    .map(|chunk| {
+                        let mut word = 0u128;
+                        for (index, bit) in chunk.iter().enumerate() {
+                            if *bit {
+                                word |= 1u128 << index;
+                            }
+                        }
+                        F2_128::from(word)
+                    })
+                    .collect()
+            })
+            .collect();
+        batched.pcs.commit_columns(&packed_columns).expect("batch commit")
+    };
+    let commit_ms = commit_started.elapsed().as_secs_f64() * 1000.0;
+    let prove_started = Instant::now();
+    let (claims, opening) = batched
+        .open(&packed, &cycle_point, Some(&commitment))
+        .expect("batched ring switch open");
+    let prove_ms = prove_started.elapsed().as_secs_f64() * 1000.0;
+    for (column, claim) in claims.iter().enumerate() {
+        let expected = eval_bits_mle(&bit_columns[column], &cycle_point).expect("bit mle");
+        assert_eq!(*claim, expected, "column {column} claim must be its MLE");
+    }
+    let proof_bytes = bincode::serialize(&opening)
+        .map(|bytes| bytes.len())
+        .unwrap_or(0);
+    let verify_started = Instant::now();
+    let verified = batched
+        .verify(&commitment, &cycle_point, &claims, &opening)
+        .expect("batched ring switch verify");
+    let verify_ms = verify_started.elapsed().as_secs_f64() * 1000.0;
+    println!(
+        "partE bits_log={log_bits:<2} columns={columns:<2} one_proof={proof_bytes:>8} B \
+         commit={commit_ms:>7.1} ms prove={prove_ms:>7.1} ms verify={verify_ms:>7.2} ms \
+         verified={verified}"
+    );
+    assert!(verified, "the batched ring-switch proof must verify");
+    assert_eq!(opening.s_hat_v.len(), columns);
+    assert_eq!(opening.packed_values.len(), columns);
+}
+
 fn main() {
     let run = std::env::var("RUN").unwrap_or_else(|_| "both".into());
     let log_cycles: usize = std::env::var("LOG")
@@ -441,6 +519,13 @@ fn main() {
     if run == "partA" || run == "both" {
         // One variant per process in normal use; `both` is only a smoke run.
         run_part_a(log_cycles, packed);
+    }
+    if run == "partE" {
+        let columns: usize = std::env::var("COLUMNS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(12);
+        run_part_e(log_cycles, columns);
     }
     if run == "partD" {
         let columns: usize = std::env::var("COLUMNS")
