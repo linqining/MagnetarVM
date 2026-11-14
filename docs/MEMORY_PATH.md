@@ -944,6 +944,7 @@ streamed proof verifies.
 | `2^17` | 3.02 -> **1.65 GiB** | 3.02 -> **2.10 GiB (-0.92, -30 %)** | 597 -> 622 s (+4.3 %) | identical |
 | `2^18` | 5.86 -> **2.89 GiB** | 5.96 -> **3.60 GiB (-2.36, -40 %)** | 1246 -> 1285 s (+3.1 %) | identical |
 | `2^19` | 11.67 -> **6.23 GiB** | 11.93 -> **7.66 GiB (-4.27, -36 %)** | 2584 -> 2661 s (+3.0 %) | identical |
+| `2^20` | - (retained path not run, peak would be ~2x) | **12.74 GiB** footprint / 7.66 GiB RSS (ran through swap) | 5278 s | 1,592,334 B |
 
 Proof bytes at those sizes: 1,018,155 / 1,110,291 / 1,230,360 B (varint and
 compressed identical too). So the opening half of the PCS lever is now a
@@ -1076,3 +1077,4 @@ together with the streamed connection paths:
 | after streamed commit + streamed opening | 3.60 GiB | 7.66 GiB |
 | + packed twist address rows | 3.58 GiB | 7.11 GiB |
 | + packed twist value history | **3.20 GiB** | **5.79 GiB** |
+| + cap plumbing (no repeated cap pass) | **3.33 GiB** (was 3.20; host window) | **5.74 GiB** |

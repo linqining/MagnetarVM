@@ -132,6 +132,14 @@ less CPU than the retained path (2584 s) at 11.93 GiB peak; proofs
 byte-identical (1,230,360 / 1,373,708 B). [MEMORY_PATH.md](MEMORY_PATH.md)
 §4.7.
 
+**2^20 staircase row (2026-11-14)**: ran for the first time with
+`MAGNETAR_SERIALIZE_PRODUCTS=1 MAGNETAR_STREAM_PCS_OPEN=1` (ADDS=1048575,
+budget_log=26, watchdog 9.5 GiB): proof 1,592,334 B, prove CPU 5278 s,
+peak **12.74 GiB footprint / 7.66 GiB RSS** — it proved through swap on a
+10.25 GiB free+inactive window, so quote it as completed, not as a quiet-host
+peak. Stage footprints: context 6.31, Commit 9.26, Access 4.96, Opening 9.98
+GiB. It wants a >=13 GiB footprint window before the number is repeatable.
+
 **Opt-in Access scheduling switch (2026-11-08)**: `MAGNETAR_SERIALIZE_ACCESS=1`
 starts the selected commit/products after the Access stage instead of after the
 mosaic Commit, so the two working sets do not overlap. Byte-identical proofs

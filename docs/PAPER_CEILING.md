@@ -132,6 +132,8 @@ format, against a 36 GiB host.
 4. (c)/(b) format change, only after deciding the wire-format break.
 5. Virtual one-hot Access prover (finishes the Access term).
 6. `2^19` / `2^20` staircase rows in dedicated quiet windows, with
-   `MAGNETAR_SERIALIZE_PRODUCTS=1` and `MAGNETAR_STREAM_PCS_OPEN=1`. **`2^19` is
-   now measured** (peak 7.66 GiB streamed vs 11.93 retained, proof
-   1,373,708 B); `2^20` projects to ~11-15 GiB and is the next row.
+   `MAGNETAR_SERIALIZE_PRODUCTS=1` and `MAGNETAR_STREAM_PCS_OPEN=1`. **Both rows
+   are now measured** (2026-11-14): `2^19` peak **5.74 GiB** streamed vs
+   11.93 retained (proof 1,373,708 B), `2^20` **12.74 GiB footprint / 7.66 GiB
+   RSS** (proof 1,592,334 B, proved through swap — it wants a >=13 GiB
+   footprint window before it can be quoted as a quiet-host number).
