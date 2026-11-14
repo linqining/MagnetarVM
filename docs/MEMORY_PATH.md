@@ -841,3 +841,10 @@ Reading:
   query-opening pass over the same chunked encoder (the fold is a weighted row
   sum, so it can consume cosets as they are produced), then the tree only has
   to be built for the leaves the opening actually queries.
+
+**Verification tail for §4.6.** Full workspace gate on the streaming tree:
+**679 passed / 0 failed / 8 ignored** (39 binaries) — the documented 675/0/8
+plus the four `streaming::*` tests. Byte equality was re-confirmed after the
+hardening pass (guarded `stacked_variables` check, checked coset/height
+arithmetic) at both `2^16` and `2^17`: proof / varint / compressed sizes
+identical to the legacy commit in the same binary.
