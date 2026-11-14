@@ -101,6 +101,11 @@ byte-identical (1,018,155 / 1,110,291 / 1,230,360 B). Measured with
 `2^16` peak floor is the selected product phase (1.47-1.54 GiB) while its
 Opening stage falls 1.45 -> 0.83 GiB. Cost: +3-4 % prove CPU from repeating the
 cap pass; passing the commit-time cap into the opening is the next increment.
+The **`2^19` staircase row is measured** in the same mode (2026-11-14, 11.8 GiB
+free+inactive): peak **7.66 GiB** against the retained path's **11.93 GiB**
+(-36 %), proof 1,373,708 B identical, prove CPU 2661 vs 2584 s — the row the
+previous sessions recorded as needing >=13 GiB now fits a 7.7 GiB envelope.
+`2^20` projects to ~11-15 GiB.
 [MEMORY_PATH.md](MEMORY_PATH.md) §4.7.
 
 **Opt-in Access scheduling switch (2026-11-08)**: `MAGNETAR_SERIALIZE_ACCESS=1`

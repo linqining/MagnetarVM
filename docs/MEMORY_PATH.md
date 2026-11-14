@@ -939,11 +939,24 @@ streamed proof verifies.
 | `2^16` | 1.45 -> **0.83 GiB** | 1.49-1.50 -> 1.47-1.54 (peak floor is the selected product phase) | 287 -> 299 s (**+4.1 %**) | identical |
 | `2^17` | 3.02 -> **1.65 GiB** | 3.02 -> **2.10 GiB (-0.92, -30 %)** | 597 -> 622 s (+4.3 %) | identical |
 | `2^18` | 5.86 -> **2.89 GiB** | 5.96 -> **3.60 GiB (-2.36, -40 %)** | 1246 -> 1285 s (+3.1 %) | identical |
+| `2^19` | 11.67 -> **6.23 GiB** | 11.93 -> **7.66 GiB (-4.27, -36 %)** | 2584 -> 2661 s (+3.0 %) | identical |
 
 Proof bytes at those sizes: 1,018,155 / 1,110,291 / 1,230,360 B (varint and
 compressed identical too). So the opening half of the PCS lever is now a
 measured `-2.4 GiB` at `2^18` and the `2^18` products-gated peak drops below
 4 GiB for the first time (5.96 -> 3.60 GiB).
+
+**`2^19` staircase, 2026-11-14 quiet window** (`ADDS=524287`,
+`MAGNETAR_STREAM_BUDGET_LOG=25`, `MAGNETAR_SERIALIZE_PRODUCTS=1`, watchdog
+8 GiB; host had 11.8 GiB free+inactive, the first window all session above the
+old >=13 GiB requirement). Streamed opening: peak footprint **7.66 GiB**, RSS
+peak 6.47 GiB, Opening footprint 6.23 GiB, prove CPU 2661.4 s, proof
+1,373,708 B. Retained opening in the same window: peak footprint **11.93 GiB**,
+Opening footprint 11.67 GiB, CPU 2584.4 s, proof byte-identical. So:
+**`-4.27 GiB` peak (-36 %) at `2^19`**, and the staircase row the previous
+sessions could not run (docs `PAPER_CEILING` §2 item 5: "needs >=13 GiB
+free+inactive") now fits in a 7.7 GiB envelope. A `2^20` row needs roughly
+`2*7.66 - 4.0 (context)` ≈ 11.3-15 GiB and is the next staircase target.
 
 **The remaining cost.** The opening recomputes the cap (`streamed_codeword_root`
 inside `streamed_open`) even though the prover committed the same message
