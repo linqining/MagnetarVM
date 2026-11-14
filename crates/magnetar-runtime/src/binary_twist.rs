@@ -1016,6 +1016,11 @@ pub struct BinaryTwistRamProof {
     /// M4a (version 5): packed Access proof; when present it replaces `linear`.
     #[serde(default)]
     pub linear_m4a: Option<BinaryTwistLinearM4aProof>,
+    /// M4a statement-level dedup: the mosaic has no address table for this
+    /// twist, so the outer-claim table indices are shifted and Address claims
+    /// are omitted (they come from the ring-switch instead).
+    #[serde(default)]
+    pub addr_table_dropped: bool,
 }
 
 fn eq_at_index(point: &[F2_128], index: usize) -> F2_128 {
@@ -1879,17 +1884,27 @@ pub(crate) fn linear_outer_mosaic_claims(
 
 pub(crate) const LINEAR_TWIST_MIN_CYCLES: usize = 8192;
 
+/// M4a statement-level dedup: the mosaic drops the register address table and
+/// the ring-switch claims replace the Address outer claims. Requires the
+/// packed Access proof.
+pub(crate) fn m4a_addr_dedup() -> bool {
+    std::env::var_os("MAGNETAR_M4A_DEDUP").is_some()
+        && std::env::var_os("MAGNETAR_M4A_ACCESS").is_some()
+}
+
 fn prove_binary_twist_claims_linear(
     tables: &BatchTables,
     witness: &BinaryTwistWitness,
     _commitment: &P3MosaicCommitment,
     table_index: usize,
+    dedup: bool,
 ) -> Result<ClaimedRam, ProofError> {
     prove_binary_twist_claims_linear_shape(
         witness,
         tables.address_bits,
         tables.cycle_bits,
         table_index,
+        dedup,
     )
 }
 
@@ -1897,18 +1912,34 @@ fn prove_binary_twist_claims_linear(
 pub(crate) fn m4a_linear_outer_mosaic_claims(
     proof: &BinaryTwistLinearM4aProof,
     table_index: usize,
+    dedup: bool,
 ) -> Result<MosaicClaims, ProofError> {
     use crate::linear_twist::LinearOuterTable;
     let claims = crate::local_shared::m4a_access_outer_claims(&proof.m4a)?;
     let mut points = Vec::with_capacity(claims.len());
     let mut expected = Vec::with_capacity(claims.len());
     for claim in claims {
-        let table = match claim.table {
-            LinearOuterTable::Address => table_index,
-            LinearOuterTable::Increment => table_index + 1,
-            LinearOuterTable::Initial | LinearOuterTable::Final => table_index + 2,
-            LinearOuterTable::ReadValue => table_index + 3,
-            LinearOuterTable::WriteValue => table_index + 4,
+        // With dedup the address table is gone: Address claims are proven by the
+        // ring-switch and the remaining tables shift down by one.
+        if dedup && claim.table == LinearOuterTable::Address {
+            continue;
+        }
+        let table = if dedup {
+            match claim.table {
+                LinearOuterTable::Address => continue,
+                LinearOuterTable::Increment => table_index,
+                LinearOuterTable::Initial | LinearOuterTable::Final => table_index + 1,
+                LinearOuterTable::ReadValue => table_index + 2,
+                LinearOuterTable::WriteValue => table_index + 3,
+            }
+        } else {
+            match claim.table {
+                LinearOuterTable::Address => table_index,
+                LinearOuterTable::Increment => table_index + 1,
+                LinearOuterTable::Initial | LinearOuterTable::Final => table_index + 2,
+                LinearOuterTable::ReadValue => table_index + 3,
+                LinearOuterTable::WriteValue => table_index + 4,
+            }
         };
         points.push(P3MosaicPoint {
             table,
@@ -1931,12 +1962,18 @@ pub(crate) fn prove_binary_twist_claims_linear_shape(
     address_bits: usize,
     cycle_bits: usize,
     table_index: usize,
+    dedup: bool,
 ) -> Result<ClaimedRam, ProofError> {
     let use_m4a = std::env::var_os("MAGNETAR_M4A_ACCESS").is_some();
+    if dedup && !use_m4a {
+        return Err(ProofError::Pcs(
+            "M4a address dedup requires the packed Access proof".into(),
+        ));
+    }
     let (linear, linear_m4a, claims) = if use_m4a {
         let m4a = crate::local_shared::prove_access_m4a(witness)?;
         let wrapper = BinaryTwistLinearM4aProof { m4a };
-        let claims = m4a_linear_outer_mosaic_claims(&wrapper, table_index)?;
+        let claims = m4a_linear_outer_mosaic_claims(&wrapper, table_index, dedup)?;
         (None, Some(wrapper), claims)
     } else {
         let linear = BinaryTwistLinearProof {
@@ -1973,6 +2010,7 @@ pub(crate) fn prove_binary_twist_claims_linear_shape(
         address_bits,
         linear,
         linear_m4a,
+        addr_table_dropped: dedup,
     };
     Ok((proof, claims))
 }
@@ -1987,9 +2025,15 @@ pub(crate) fn prove_binary_twist_claims(
     witness: &BinaryTwistWitness,
     commitment: &P3MosaicCommitment,
     table_index: usize,
+    dedup: bool,
 ) -> Result<ClaimedRam, ProofError> {
+    if dedup && witness.cycles < LINEAR_TWIST_MIN_CYCLES {
+        return Err(ProofError::Pcs(
+            "M4a address dedup requires the linear twist path".into(),
+        ));
+    }
     if witness.cycles >= LINEAR_TWIST_MIN_CYCLES {
-        return prove_binary_twist_claims_linear(tables, witness, commitment, table_index);
+        return prove_binary_twist_claims_linear(tables, witness, commitment, table_index, dedup);
     }
     let addr = tables.address_columns();
     let increments = tables.increments();
@@ -2751,6 +2795,7 @@ pub(crate) fn prove_binary_twist_claims(
             address_bits: tables.address_bits,
             linear: None,
             linear_m4a: None,
+            addr_table_dropped: false,
         },
         (addr_points, addr_expected),
     ))
@@ -2773,7 +2818,7 @@ pub fn prove_binary_twist_ram(
     ];
     let commitment = pcs.commit_mosaic(&mosaic_tables)?;
     let (mut proof, (points, expected)) =
-        prove_binary_twist_claims(&tables, witness, &commitment, 0)?;
+        prove_binary_twist_claims(&tables, witness, &commitment, 0, false)?;
     let mut pairs = points.into_iter().zip(expected).collect::<Vec<_>>();
     pairs.sort_by_key(|(point, _)| point.table);
     let (points, expected): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
@@ -2806,7 +2851,9 @@ fn verify_binary_twist_from_proof_inner(
     table_index: usize,
     witness: Option<&BinaryTwistWitness>,
 ) -> Result<Option<MosaicClaims>, ProofError> {
-    if commitment.tables.len() <= table_index + 4 {
+    let addr_table_dropped = proof.addr_table_dropped;
+    let required = if addr_table_dropped { 4 } else { 5 };
+    if commitment.tables.len() < table_index + required {
         return Ok(None);
     }
     if let Some(linear_m4a) = &proof.linear_m4a {
@@ -2816,7 +2863,11 @@ fn verify_binary_twist_from_proof_inner(
         {
             return Ok(None);
         }
-        return Ok(Some(m4a_linear_outer_mosaic_claims(linear_m4a, table_index)?));
+        return Ok(Some(m4a_linear_outer_mosaic_claims(
+            linear_m4a,
+            table_index,
+            addr_table_dropped,
+        )?));
     }
     if let Some(linear) = &proof.linear {
         if linear.local.shape.address_bits != proof.address_bits

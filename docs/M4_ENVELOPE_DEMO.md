@@ -948,3 +948,74 @@ full verifier audit, not a same-round flag.
 The `2^22` envelope after that dedup is ~2 GiB message and ~20-22 GiB peak
 (§17.1); the last 2x needs M4b's 64-bit alphabet for the trace table, and the
 context term (15-21 GiB) still dominates.
+
+## 19. Statement-level dedup: implemented behind `MAGNETAR_M4A_DEDUP`
+
+The register address table can now be removed from the mosaic, with the
+packed-bit commitment (already carried by the v5 Access proof) taking over its
+role:
+
+* `magnetar_runtime::binary_twist::m4a_addr_dedup()` — the switch (requires
+  `MAGNETAR_M4A_DEDUP` **and** `MAGNETAR_M4A_ACCESS`).
+* `BinaryTwistRamProof` gains `addr_table_dropped` (always serialized, so the
+  format is bumped again: the default proof goes 1,018,157 -> 1,018,159 B at
+  `2^16`).
+* Prover: the unified mosaic no longer pushes the register 12-column address
+  table (both the linear and the quadratic twist branches); the twist outer
+  claims shift down one table and the Address claims are dropped
+  (`m4a_linear_outer_mosaic_claims(..., dedup)`), because the address bits are
+  proven by the batched ring-switch inside the v5 Access proof.
+* Verifier: `verify_binary_twist_from_proof_inner` reads the proof's
+  `addr_table_dropped` flag, adjusts the required table span, and maps the
+  remaining claims to the shifted indices.
+
+Measured (`paper_unified_bench`, `TRACE_SHOUT=1`, products-gated, streamed
+opening):
+
+| cycles | metric | default | M4a Access | **M4a + dedup** |
+| --- | --- | ---: | ---: | ---: |
+| 2^16 | mosaic tables / cells | 12 / 2,293,918 | 12 / 2,293,918 | **11 / 1,507,486 (-34 %)** |
+| 2^16 | stacked vars / message | 22 / 64 MiB | 22 / 64 MiB | **21 / 32 MiB (2x)** |
+| 2^16 | proof | 1,018,159 B | 1,115,283 B | **1,098,355 B** |
+| 2^16 | peak footprint | ~1.40 GiB | 1.38-1.40 GiB | **1.37 GiB** |
+| 2^18 | mosaic tables / cells | 12 / 9,175,198 | 12 / 9,175,198 | **11 / 6,029,470 (-34 %)** |
+| 2^18 | stacked vars / message | 24 / 256 MiB | 24 / 256 MiB | **23 / 128 MiB (2x)** |
+| 2^18 | proof | 1,230,362 B | 1,347,398 B | **1,329,368 B** |
+| 2^18 | Access stage wall | 15.6 s | 8.7 s | **3.6 s** |
+| 2^18 | Opening stage wall | 12.7 s | 13.6 s | **2.9 s** |
+| 2^18 | peak footprint | 3.52 GiB | 3.25 GiB | **3.31 GiB** (host noise) |
+
+Dedup recovers part of the packed Access proof growth (2^18 1,347,398 ->
+1,329,368 B: -1.3 %, i.e. the default's +9.5 % becomes **+8.0 %**) and halves
+the mosaic message at both sizes, while the Access and Opening stages get much
+cheaper (the opening re-encode works on half the message).
+
+### 19.1 E4: tamper matrix on the deduped proof (`BENCH_AUDIT=1`)
+
+| mutation | result |
+| --- | --- |
+| baseline | **accepted** |
+| `bits_claims[0] += 1` | rejected — register access claims rejected |
+| `bits_opening.packed_values[0] += 1` | rejected — register access claims rejected |
+| `addr_table_dropped` flag cleared | rejected — core opening rejected |
+| RAM `boolean_evals[0] += 1` | rejected — RAM access claims rejected |
+
+The "flag cleared" case is the important one for dedup: a prover cannot claim
+the address table is still committed (the verifier then expects claims/points
+that the reduced mosaic cannot satisfy).
+
+### 19.2 What is still missing before this is paper-grade
+
+The dedup currently relies on the existing binding chain (§4 audit: Access
+relations + shared mosaic opening against claims + statement root equality);
+it does **not** yet add the packed-bits commitment root as a component of the
+statement root (the `access_final`-style binding). Recommended before a paper
+run:
+
+1. add `bits_root` (domain-separated digest of `linear_m4a.bits_commitment`) as
+   a fourth component of `claim_shout_v4_root` (and the classic composed root
+   used by the benchmark's statement path), with a version bump;
+2. rerun the E4 matrix plus a root-substitution case (swap the commitment and
+   recompute the root: must fail against the trace-derived statement root);
+3. then the `2^22` projection with dedup: mosaic 146.8 M -> 96.5 M cells
+   (message 4 -> 2 GiB; with M4b's trace alphabet 1 GiB).

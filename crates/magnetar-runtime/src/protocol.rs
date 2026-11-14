@@ -2019,6 +2019,7 @@ impl<'a> UnifiedProveContext<'a> {
             mosaic_tables.push(table.clone());
             (index, table)
         });
+        let m4a_addr_dedup = crate::binary_twist::m4a_addr_dedup();
         let register_index = mosaic_tables.len();
         let (register_access, register_mosaic_tables) = if linear_twist {
             let BatchTables {
@@ -2031,21 +2032,30 @@ impl<'a> UnifiedProveContext<'a> {
                 cycle_bits,
                 ..
             } = register_tables;
+            let mut tables = vec![addr, inc, initial, read_value, write_value];
+            if m4a_addr_dedup {
+                // M4a statement-level dedup: the packed bit commitment from the
+                // Access proof replaces this 12-column address table.
+                tables.remove(0);
+            }
             (
                 TwistAccessInputs::Linear {
                     address_bits,
                     cycle_bits,
                 },
-                vec![addr, inc, initial, read_value, write_value],
+                tables,
             )
         } else {
-            let copies = vec![
+            let mut copies = vec![
                 register_tables.addr.clone(),
                 register_tables.inc.clone(),
                 register_tables.initial.clone(),
                 register_tables.read_value.clone(),
                 register_tables.write_value.clone(),
             ];
+            if m4a_addr_dedup {
+                copies.remove(0);
+            }
             (TwistAccessInputs::Quadratic(register_tables), copies)
         };
         mosaic_tables.extend(register_mosaic_tables);
@@ -2264,6 +2274,7 @@ impl<'a> UnifiedProveContext<'a> {
         let inputs = self.access_inputs.as_ref().ok_or_else(|| {
             RuntimeError::Proof("access stage requires the RAM/register twist witnesses".into())
         })?;
+        let m4a_addr_dedup = crate::binary_twist::m4a_addr_dedup();
         let (access, (points, values), register_claims) = match (&inputs.ram, &inputs.register) {
             (
                 TwistAccessInputs::Linear {
@@ -2295,6 +2306,7 @@ impl<'a> UnifiedProveContext<'a> {
                 register_tables,
                 self.ram_index,
                 self.register_index,
+                m4a_addr_dedup,
             )?,
             _ => {
                 return Err(RuntimeError::Proof(

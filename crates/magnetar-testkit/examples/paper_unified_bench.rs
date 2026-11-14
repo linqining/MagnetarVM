@@ -178,6 +178,18 @@ fn main() {
             let value = linear_m4a.m4a.bits_claims[0];
             tampered.access.registers.linear_m4a.as_mut().unwrap().m4a.bits_claims[0] = value + plus;
             line("register m4a bits_claims[0] += 1", &verify(&tampered));
+
+            let mut tampered = proof.clone();
+            let value = linear_m4a.m4a.bits_opening.packed_values[0];
+            tampered.access.registers.linear_m4a.as_mut().unwrap().m4a.bits_opening.packed_values[0] =
+                value + plus;
+            line("register m4a bits opening packed_value[0] += 1", &verify(&tampered));
+
+            if proof.access.registers.addr_table_dropped {
+                let mut tampered = proof.clone();
+                tampered.access.registers.addr_table_dropped = false;
+                line("register addr_table_dropped flag cleared", &verify(&tampered));
+            }
         }
         if let Some(value) = proof.access.ram.boolean_evals.first().copied() {
             let mut tampered = proof.clone();

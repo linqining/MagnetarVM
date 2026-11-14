@@ -1040,6 +1040,7 @@ pub(crate) fn prove_trace_access_shared(
     register_tables: &BatchTables,
     ram_index: usize,
     register_index: usize,
+    register_dedup: bool,
 ) -> Result<(TraceAccessProof, MosaicClaims, MosaicClaims), RuntimeError> {
     check_trace_access_bindings(trace, witness)?;
     let profile = std::env::var_os("MAGNETAR_PROFILE_ACCESS").is_some();
@@ -1047,7 +1048,7 @@ pub(crate) fn prove_trace_access_shared(
     if profile {
         eprintln!("access start: {}", crate::memory_gib());
     }
-    let (ram, ram_claims) = prove_binary_twist_claims(tables, witness, commitment, ram_index)
+    let (ram, ram_claims) = prove_binary_twist_claims(tables, witness, commitment, ram_index, false)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     if profile {
         eprintln!(
@@ -1062,6 +1063,7 @@ pub(crate) fn prove_trace_access_shared(
         register_witness,
         commitment,
         register_index,
+        register_dedup,
     )
     .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     if profile {
@@ -1098,6 +1100,7 @@ pub(crate) fn prove_trace_access_shared_linear(
         ram_shape.0,
         ram_shape.1,
         ram_index,
+        false,
     )
     .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let (registers, register_claims) =
@@ -1106,6 +1109,7 @@ pub(crate) fn prove_trace_access_shared_linear(
             register_shape.0,
             register_shape.1,
             register_index,
+            crate::binary_twist::m4a_addr_dedup(),
         )
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     Ok((
@@ -5166,6 +5170,7 @@ fn prove_chunked_shared_access(
         &register_tables,
         0,
         5,
+        false,
     )?;
     let (points, values) = ram_claims;
     let (register_points, register_values) = register_claims;
