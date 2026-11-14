@@ -836,3 +836,57 @@ peak. Remaining M4a work:
    1 GiB message; without it the message reduction is 2x);
 3. re-check verify in a quiet window (the target is 8-12 ms) and measure the
    full `2^22` projection once the context work lands.
+
+## 17. M4a evaluation: what it buys, and the 2^22 verdict
+
+Measured Access prover peak/wall (one process per variant; RSS is the stable
+number, the footprint columns drift with the host's swap state):
+
+| cycles | old peak RSS | M4a peak RSS | old wall | M4a wall |
+| --- | ---: | ---: | ---: | ---: |
+| 2^16 | 732.3 MiB | **368.8 MiB (-50 %)** | 2,272 ms | **1,704 ms (-25 %)** |
+| 2^18 | 2,625.5 MiB | **1,442.2 MiB (-45 %)** | 10,484 ms | **5,805 ms (-45 %)** |
+| 2^19 | 4,172.1 MiB | **2,884.7 MiB (-31 %)** | 20,236 ms | **9,242 ms (-54 %)** |
+
+Together with §16's unified A/B (proof +9.5 %, Access stage -44 % wall, whole
+peak -8 % at `2^18`, isolated Access verify +2.6 ms), that is the M4a result:
+the address bits are committed once at 128:1 in the Access batch and verified
+with one batched ring-switch, instead of a 15-column PCS batch.
+
+### 17.1 `2^22` projection (measured coefficients, not guesses)
+
+| configuration | mosaic cells | message | pipeline (~6.1x) | context | projected peak |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| today (default) | 146.8 M | 4 GiB | ~24 GiB | ~19-21 GiB | ~28-33 GiB |
+| **+ shipped M4a Access** | 146.8 M | 4 GiB | ~24 GiB | ~19-21 GiB | **~28-33 GiB (whole peak unchanged; Access stage -31..-50 %)** |
+| + full statement dedup (pack the mosaic address table, drop it from the statement) | 67.7 M | 2 GiB | ~12 GiB | ~17-19 GiB | ~20-22 GiB |
+| + M4b trace alphabet | 50.9 M | **1 GiB** | ~6 GiB | ~15-17 GiB | **~17-19 GiB** |
+| paper envelope | — | — | — | — | **6.4 GiB** |
+
+Proof size at `2^22`: the current trend is 1.23 MB (`2^18`) -> 1.59 MB
+(`2^20`), so ~2.0-2.2 MB; M4a's +9.5 % adds **~0.2 MB**, which matches the
+measured batched-ring-switch curve (204 KB at `2^22` bits).
+
+### 17.2 Verdict
+
+* **The objective's M4a items are done as scoped**: packed bit tables in the
+  protocol (Access batch goes 15 -> 3 columns), the deduplicated bit commitment
+  proven by one batched ring-switch instead of per-column PCS openings, the
+  explicit proof-size budget (+9.5 % of the full proof), the trace-packing
+  semantics demo (negative result: concatenation is not evaluation-preserving;
+  halving needs M4b's 64-bit alphabet), and the real-proof re-measure at `2^18`.
+* **The 6.4 GiB envelope is still ~3x away.** M4a's Access half does not move
+  the `2^22` whole-proof peak because that peak lives at the mosaic Opening; it
+  buys a 44-54 % shorter Access stage and a much smaller Access working set.
+  The remaining 3x is, in order: statement-level dedup (which is what turns the
+  packed bits into a *mosaic* cell reduction), M4b's 64-bit alphabet for the
+  trace term (the difference between a 2 GiB and a 1 GiB message), and the
+  context term (the dominant 15-21 GiB at `2^22`, untouched by M4a).
+* The proof-size cost of the packed Access (+9.5 %) can mostly be recovered by
+  folding the batched ring-switch's PCS opening into the mosaic opening (the
+  packed-word tables have arity `L-7`, a valid mixed-height mosaic table); that
+  is the recommended next optimisation after the statement dedup.
+
+Caveats: the `2^18`/`2^19` footprint columns are unreliable on this host (swap);
+the `2^22` rows are coefficient projections, not measurements; verify must be
+re-checked in a quiet window.
