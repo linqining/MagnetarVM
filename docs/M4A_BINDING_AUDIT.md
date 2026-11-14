@@ -133,7 +133,42 @@ accompanied by an equivalent binding, or it will rest on F1.
 3. remap the twist table indices and shape checks (mosaic table count changes);
 4. record that the mosaic commitment itself remains unbound, as today.
 
-## 4. Experiments that settle the open links (1-3 days total)
+## 4. Experiments and first results
+
+**E1 result (paper/statement path, 2^16, `ADDS=65535`, `BENCH_AUDIT=1`).**
+The benchmark can now run a tamper matrix on the real paper trace
+(`paper_unified_bench.rs`, `BENCH_AUDIT=1`, verifying with
+`verify_native_unified` — the benchmark's statement path):
+
+| mutation | result |
+| --- | --- |
+| baseline | **accepted** |
+| register `linear.values[3][0]` (address terminal) += 1 | rejected — core verifier: register access claims rejected |
+| register `linear.endpoints[0]` (initial) += 1 | rejected — same |
+| register `linear.values[2][0]` (increment) += 1 | rejected — same |
+| RAM `boolean_evals[0]` += 1 | rejected — RAM access claims rejected |
+
+So in the statement path the twist claims are bound tightly enough that a
+claim-only tamper is caught (the claim is an expected value of the shared
+mosaic opening and of the Access claim derivation).
+
+**E2 attempt (coherent fake register witness).** A prover-only, env-gated hook
+(`MAGNETAR_TEST_FAKE_REG="cell,delta"`, `protocol.rs`) adds `delta` to the first
+increment and to that cell's final value before the twist tables/proofs are
+built. `BENCH_AUDIT=1` then verifies the resulting proof against the **true**
+statement: **rejected — "register access claims rejected"**, i.e. the Access
+verifier itself refuses the perturbed witness before the statement-level checks
+are reached (the perturbation is not algebraically coherent with the val/RW
+relations). A *fully* coherent fabricated witness would have to come from a
+different trace — and the statement root equality (claim table / trace
+commitment) already rejects a different trace. This weakens F1: no statement
+binding gap was demonstrated; the twist layer is bound by (a) the Access
+relations, (b) the shared mosaic opening against claims, (c) the statement root
+equality over the claim table / trace commitment.
+
+**Remaining experiments** (they are now confirmatory rather than decisive):
+
+
 
 Each experiment runs at the linear-twist minimum (`ADDS=8191`, 8192 cycles) so
 `prove_local_shared` is active, using in-memory proof mutation (the benchmark
@@ -172,7 +207,25 @@ verifies in memory, so this is the same trust boundary).
   v4 root, and rerun E2/E3 plus the E1 tamper matrix: the forged splice must
   now be rejected by the root comparison (as `access_final` was).
 
-## 5. Recommendation
+## 5. Recommendation (revised after E1/E2)
+
+* F1 is **not** demonstrated to be a gap: the classic/statement verifiers reject
+  claim tampering (E1) and a perturbed witness fails inside the Access verifier
+  (E2); trace substitution is blocked by the statement root equality.
+* Statement-level dedup therefore reduces to the F2 pattern: add the packed-bits
+  commitment root as a component of the statement root (mirroring
+  `access_final_root` / `claim_shout_v4_root`), drop the Address outer claims,
+  remap table indices, and version-bump. The pre-existing binding chain is
+  unchanged by that.
+* The residual risk is the soundness of the *relations themselves* (already the
+  project's existing argument for the twist layer), not something dedup adds.
+* Recommended next step: implement the dedup behind a switch with the bits-root
+  binding, then rerun the E1 matrix on the deduped proof (address claims now come
+  from the ring-switch, so the matrix should reject the same mutations) and add
+  the root-tamper cases (packed commitment swapped, root recomputed, root
+  dropped). That is the E4 in §4.
+
+## 6. Older recommendation wording (kept for context)
 
 1. Run **E1 and E2** first (half a day to a day): they decide whether dedup is a
    routine "mirror `access_final`" change or whether there is a pre-existing

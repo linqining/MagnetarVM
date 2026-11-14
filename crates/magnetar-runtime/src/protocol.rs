@@ -1911,8 +1911,31 @@ impl<'a> UnifiedProveContext<'a> {
             BinaryRouterWitness::from_trace_mode(trace, RouterMode::Shifts).ok();
         let store_router_witness =
             BinaryRouterWitness::from_trace_mode(trace, RouterMode::Stores).ok();
-        let register_witness = crate::register_twist::register_twist_witness(trace)
+        let mut register_witness = crate::register_twist::register_twist_witness(trace)
             .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        // BENCH_AUDIT E2 (prover-only, opt-in): coherently perturb the register
+        // witness so the Access proof is self-consistent but describes a
+        // different machine. `MAGNETAR_TEST_FAKE_REG="cell,delta"` adds delta to
+        // the first increment and to that cell's final value.
+        if let Ok(spec) = std::env::var("MAGNETAR_TEST_FAKE_REG") {
+            let (cell, delta) = spec.split_once(',').ok_or_else(|| {
+                RuntimeError::Proof("MAGNETAR_TEST_FAKE_REG expects cell,delta".into())
+            })?;
+            let cell: usize = cell
+                .parse()
+                .map_err(|_| RuntimeError::Proof("fake register cell".into()))?;
+            let delta = F2_128::from(
+                delta
+                    .parse::<u64>()
+                    .map_err(|_| RuntimeError::Proof("fake register delta".into()))?,
+            );
+            if let Some(slot) = register_witness.increment.first_mut() {
+                *slot = *slot + delta;
+            }
+            if let Some(slot) = register_witness.final_value.get_mut(cell) {
+                *slot = *slot + delta;
+            }
+        }
         let register_tables = if linear_twist {
             batch_tables_committed_only(&register_witness)
         } else {

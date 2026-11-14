@@ -142,6 +142,50 @@ fn main() {
     if profile {
         eprintln!("bench prove peak rss={:.2} GiB", gib(prove_peak.swap(0, std::sync::atomic::Ordering::Relaxed)));
     }
+    // BENCH_AUDIT: binding-audit tamper matrix (docs/M4A_BINDING_AUDIT.md E1).
+    // One proof, several in-memory mutations, one verify each.
+    if std::env::var_os("BENCH_AUDIT").is_some() {
+        let verify = |candidate: &magnetar_runtime::UnifiedTraceProof| {
+            verify_native_unified(&statement, candidate, width()).map_err(|error| error.to_string())
+        };
+        let plus = magnetar_constraint::F2_128::from(1u64);
+        let line = |label: &str, result: &Result<(), String>| match result {
+            Ok(()) => println!("audit {label:<46} ACCEPTED"),
+            Err(error) => println!(
+                "audit {label:<46} rejected: {}",
+                error.chars().take(90).collect::<String>()
+            ),
+        };
+        line("baseline", &verify(&proof));
+        if let Some(linear) = proof.access.registers.linear.as_ref() {
+            let mut tampered = proof.clone();
+            let value = linear.local.values[3][0];
+            tampered.access.registers.linear.as_mut().unwrap().local.values[3][0] = value + plus;
+            line("register linear values[3][0] (address) += 1", &verify(&tampered));
+
+            let mut tampered = proof.clone();
+            let value = linear.local.endpoints[0];
+            tampered.access.registers.linear.as_mut().unwrap().local.endpoints[0] = value + plus;
+            line("register linear endpoints[0] (initial) += 1", &verify(&tampered));
+
+            let mut tampered = proof.clone();
+            let value = linear.local.values[2][0];
+            tampered.access.registers.linear.as_mut().unwrap().local.values[2][0] = value + plus;
+            line("register linear values[2][0] (increment) += 1", &verify(&tampered));
+        }
+        if let Some(linear_m4a) = proof.access.registers.linear_m4a.as_ref() {
+            let mut tampered = proof.clone();
+            let value = linear_m4a.m4a.bits_claims[0];
+            tampered.access.registers.linear_m4a.as_mut().unwrap().m4a.bits_claims[0] = value + plus;
+            line("register m4a bits_claims[0] += 1", &verify(&tampered));
+        }
+        if let Some(value) = proof.access.ram.boolean_evals.first().copied() {
+            let mut tampered = proof.clone();
+            tampered.access.ram.boolean_evals[0] = value + plus;
+            line("ram boolean_evals[0] += 1", &verify(&tampered));
+        }
+        return;
+    }
     let sizes = unified_proof_sizes(&proof).unwrap();
     let serialized = bincode::serialize(&proof).unwrap();
     let bytes = serialized.len();

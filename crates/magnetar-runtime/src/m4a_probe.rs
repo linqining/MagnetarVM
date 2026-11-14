@@ -846,28 +846,29 @@ fn binding_audit_tamper_matrix() {
         halted: trace.halted,
         exit_code: trace.exit_code,
     };
+    let prove_started = std::time::Instant::now();
     let proof = crate::prove_unified_trace_dynamic_native(&trace, 64).expect("prove");
+    println!("binding audit E1 prove={:?}", prove_started.elapsed());
+    let baseline_started = std::time::Instant::now();
     let baseline_full = crate::verify_unified_trace(&trace, &proof, 64).is_ok();
-    let baseline_statement = crate::verify_native_unified(&statement, &proof, 64).is_ok();
     println!(
-        "binding audit E1 baseline: trace-carrying={baseline_full} statement={baseline_statement}"
+        "binding audit E1 baseline: trace-carrying={baseline_full} verify={:?}",
+        baseline_started.elapsed()
     );
-    assert!(baseline_full && baseline_statement, "baseline proof must verify");
+    let _ = &statement;
+    assert!(baseline_full, "baseline proof must verify");
 
     let outcome = |label: &str, candidate: &crate::UnifiedTraceProof| {
         let full = crate::verify_unified_trace(&trace, candidate, 64);
-        let statement = crate::verify_native_unified(&statement, candidate, 64);
         println!(
-            "binding audit E1 {label:<42} trace-carrying={:<5} statement={:<5} ({})",
+            "binding audit E1 {label:<44} trace-carrying={:<5} ({})",
             full.is_ok(),
-            statement.is_ok(),
             full.as_ref()
                 .err()
                 .map(|error| error.to_string())
-                .or_else(|| statement.as_ref().err().map(|error| error.to_string()))
                 .unwrap_or_default()
                 .chars()
-                .take(70)
+                .take(90)
                 .collect::<String>(),
         );
     };
@@ -902,4 +903,55 @@ fn binding_audit_tamper_matrix() {
         tampered.access.registers.linear.as_mut().unwrap().local.values[2][0] = value + plus_one;
         outcome("register linear values[2][0] (increment) += 1", &tampered);
     }
+}
+
+
+/// Binding-audit probe: which twist-proof branch does the paper prover take?
+/// Proves only (no verification) and prints the branch presence, so E1/E2 can
+/// be aimed at the path the benchmark actually uses.
+#[test]
+#[ignore = "proves a unified proof and prints branches; ADDS/TRACE_SHOUT env"]
+fn binding_audit_branches() {
+    use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+    let adds: u32 = std::env::var("ADDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(16383);
+    let mut rom = (0..adds)
+        .map(|index| {
+            Instruction {
+                op: Op::Addi,
+                rd: 1,
+                rs1: 1,
+                rs2: 0,
+                imm: i64::from(index) + 1,
+                shamt: 0,
+            }
+            .encode()
+        })
+        .collect::<Vec<_>>();
+    rom.push(Instruction::new(Op::Ecall).encode());
+    let program = ProgramImage::new(0x1000, rom);
+    let config = MachineConfig {
+        entry: 0x1000,
+        rom_base: 0x1000,
+        ram_base: 0x1000_0000,
+        ram_size: 0x100,
+        stack_top: 0x1000_0100,
+        max_cycles: 10_000_000,
+    };
+    let trace = magnetar_executor::execute(&program, config).expect("trace");
+    let proof = crate::prove_unified_trace_dynamic_native(&trace, 64).expect("prove");
+    println!(
+        "binding audit branches: adds={adds} tr_shout={} m4a={} ram(linear={}, m4a={}, opening={}) \
+         reg(linear={}, m4a={}, opening={})",
+        std::env::var_os("TRACE_SHOUT").is_some(),
+        std::env::var_os("MAGNETAR_M4A_ACCESS").is_some(),
+        proof.access.ram.linear.is_some(),
+        proof.access.ram.linear_m4a.is_some(),
+        proof.access.ram.opening.is_some(),
+        proof.access.registers.linear.is_some(),
+        proof.access.registers.linear_m4a.is_some(),
+        proof.access.registers.opening.is_some(),
+    );
 }
