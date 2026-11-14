@@ -115,9 +115,11 @@ slot in `u64` words (`magnetar_memory::AddressRows`) instead of
 internal only: committed tables and proof bytes unchanged. Measured:
 `2^18` unified context 2.60 -> 1.77 GiB, Access-stage footprint 2.72 ->
 1.24 GiB, peak 3.58 GiB (Opening-bound); `2^19` peak 7.66 -> 7.11 GiB; proofs
-identical (1,230,360 / 1,373,708 B). Runtime 364/0/8 green. Next slice: pack
-the witness `value` matrix (and skip it on the linear path, which never reads
-it). [MEMORY_PATH.md](MEMORY_PATH.md) §4.8.
+identical (1,230,360 / 1,373,708 B). Runtime 364/0/8 green. The next slice
+also landed: the witness `value` history is a flat `Vec<u64>` now, taking
+`2^18` from 3.58 to **3.20 GiB** peak and `2^19` from 7.11 to **5.79 GiB**,
+proofs byte-identical. What remains under (h) is the *committed* `addr` table
+(format change). [MEMORY_PATH.md](MEMORY_PATH.md) §4.8.
 
 **Opt-in Access scheduling switch (2026-11-08)**: `MAGNETAR_SERIALIZE_ACCESS=1`
 starts the selected commit/products after the Access stage instead of after the
