@@ -17,13 +17,16 @@
 //! cargo build --release -p magnetar-pcs --example p3_stage_probe
 //! REPEAT=3 MAGNETAR_TRACE_SPANS=1 target/release/examples/p3_stage_probe
 //! ```
+//!
+//! Each case line reports the commit-phase high-water RSS (`getrusage`
+//! `ru_maxrss`), the post-commit live RSS (`proc_pidinfo`) and the process
+//! peak. Set `COMMIT_ONLY=1` to skip the opening phase, so the process peak is
+//! the commit peak; per-case overrides are `CASES=selected:commit,mosaic:full`.
 
 use std::time::Instant;
 
 use magnetar_constraint::F2_128;
-use magnetar_pcs::{
-    P3BatchPoint, P3BinaryPcs, P3MosaicPoint, P3MosaicTable,
-};
+use magnetar_pcs::{P3BatchPoint, P3BinaryPcs, P3MosaicPoint, P3MosaicTable};
 use magnetar_proof::Pcs;
 
 fn values(count: usize, seed: u64) -> Vec<F2_128> {
@@ -51,10 +54,107 @@ fn repeat() -> usize {
         .unwrap_or(1)
 }
 
-fn report(name: &str, runs: &[(std::time::Duration, std::time::Duration)]) {
-    let commit = runs.iter().map(|(commit, _)| *commit).min().unwrap();
-    let open = runs.iter().map(|(_, open)| *open).min().unwrap();
-    println!("{name}: commit={commit:?} open={open:?} runs={}", runs.len());
+fn truthy(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// One measured run of a case.
+///
+/// `ru_maxrss` is a monotonic high-water mark, so `peak_after_commit` is the
+/// commit-phase peak as long as this is the only run in the process (or the
+/// first one); the live readings bracket what the phase actually holds.
+struct CaseRun {
+    commit: std::time::Duration,
+    open: Option<std::time::Duration>,
+    live_before: u64,
+    peak_after_commit: u64,
+    live_after_commit: u64,
+    peak_at_end: u64,
+    live_at_end: u64,
+}
+
+/// Peak RSS of this process in bytes. `ru_maxrss` is bytes on macOS and KiB on
+/// Linux, matching the watchdog below.
+fn peak_rss_bytes() -> u64 {
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } != 0 {
+        return 0;
+    }
+    let peak = usage.ru_maxrss as u64;
+    #[cfg(not(target_os = "macos"))]
+    let peak = peak.saturating_mul(1024);
+    peak
+}
+
+/// Current resident set size in bytes (macOS `proc_pidinfo`; 0 elsewhere).
+fn live_rss_bytes() -> u64 {
+    #[cfg(target_os = "macos")]
+    {
+        let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+        let written = unsafe {
+            libc::proc_pidinfo(
+                libc::getpid(),
+                libc::PROC_PIDTASKINFO,
+                0,
+                &mut info as *mut libc::proc_taskinfo as *mut libc::c_void,
+                size,
+            )
+        };
+        if written == size {
+            info.pti_resident_size
+        } else {
+            0
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        0
+    }
+}
+
+fn mib(bytes: u64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0)
+}
+
+fn report(name: &str, runs: &[CaseRun], commit_only: bool) {
+    let commit = runs.iter().map(|run| run.commit).min().unwrap();
+    let open = runs
+        .iter()
+        .filter_map(|run| run.open)
+        .min()
+        .map(|open| format!("{open:?}"))
+        .unwrap_or_else(|| "n/a".to_string());
+    // Peaks are high-water marks, so report the last (largest) one; live
+    // readings are the last run's.
+    let last = runs.last().unwrap();
+    println!(
+        "{name}:{mode} commit={commit:?} open={open} runs={runs} \
+         commit_peak_rss={commit_peak}B({commit_peak_mib:.1}MiB) \
+         post_commit_live_rss={post_commit_live}B({post_commit_mib:.1}MiB) \
+         process_peak_rss={process_peak}B({process_peak_mib:.1}MiB) \
+         final_live_rss={final_live}B({final_mib:.1}MiB) \
+         rss_before_commit={rss_before}B({rss_before_mib:.1}MiB)",
+        mode = if commit_only { " commit-only" } else { "" },
+        runs = runs.len(),
+        commit_peak = last.peak_after_commit,
+        commit_peak_mib = mib(last.peak_after_commit),
+        post_commit_live = last.live_after_commit,
+        post_commit_mib = mib(last.live_after_commit),
+        process_peak = last.peak_at_end,
+        process_peak_mib = mib(last.peak_at_end),
+        final_live = last.live_at_end,
+        final_mib = mib(last.live_at_end),
+        rss_before = last.live_before,
+        rss_before_mib = mib(last.live_before),
+    );
 }
 
 /// A tiny `tracing` subscriber that sums the wall time of same-named spans.
@@ -166,26 +266,41 @@ fn dump_spans() {
     }
 }
 
-fn selected_witness() {
+fn selected_witness(commit_only: bool) {
     let pcs = P3BinaryPcs::with_params(100, 1, 20, 3);
     let table = values(1 << 22, 1);
     let at = point(22, 2);
     let mut runs = Vec::new();
     for _ in 0..repeat() {
+        let live_before = live_rss_bytes();
         let commit_started = Instant::now();
         let commitment = pcs.commit(&table).unwrap();
         let commit = commit_started.elapsed();
-        let open_started = Instant::now();
-        let opening = pcs.open(&table, &at).unwrap();
-        let open = open_started.elapsed();
-        let value = magnetar_proof::Mle::new(table.clone())
-            .unwrap()
-            .eval(&at)
-            .unwrap();
-        assert!(pcs.verify(&commitment, &at, value, &opening).unwrap());
-        runs.push((commit, open));
+        let peak_after_commit = peak_rss_bytes();
+        let live_after_commit = live_rss_bytes();
+        let mut open = None;
+        if !commit_only {
+            let open_started = Instant::now();
+            let opening = pcs.open(&table, &at).unwrap();
+            open = Some(open_started.elapsed());
+            let value = magnetar_proof::Mle::new(table.clone())
+                .unwrap()
+                .eval(&at)
+                .unwrap();
+            assert!(pcs.verify(&commitment, &at, value, &opening).unwrap());
+        }
+        std::hint::black_box(&commitment);
+        runs.push(CaseRun {
+            commit,
+            open,
+            live_before,
+            peak_after_commit,
+            live_after_commit,
+            peak_at_end: peak_rss_bytes(),
+            live_at_end: live_rss_bytes(),
+        });
     }
-    report("selected", &runs);
+    report("selected", &runs, commit_only);
 }
 
 /// The mosaic commitment: the RV64 `2^16` table shapes, rate 1/4, 21 grinding
@@ -244,28 +359,43 @@ fn mosaic_points() -> Vec<P3MosaicPoint> {
     points
 }
 
-fn mosaic_case() {
+fn mosaic_case(commit_only: bool) {
     let pcs = P3BinaryPcs::with_params(100, 2, 21, 2);
     let tables = mosaic();
     let points = mosaic_points();
     let mut runs = Vec::new();
     for _ in 0..repeat() {
+        let live_before = live_rss_bytes();
         let commit_started = Instant::now();
         let commitment = pcs.commit_mosaic(&tables).unwrap();
         let commit = commit_started.elapsed();
-        let open_started = Instant::now();
-        let opening = pcs.open_mosaic(&tables, &points).unwrap();
-        let open = open_started.elapsed();
-        assert_eq!(opening.commitment, commitment);
-        runs.push((commit, open));
+        let peak_after_commit = peak_rss_bytes();
+        let live_after_commit = live_rss_bytes();
+        let mut open = None;
+        if !commit_only {
+            let open_started = Instant::now();
+            let opening = pcs.open_mosaic(&tables, &points).unwrap();
+            open = Some(open_started.elapsed());
+            assert_eq!(opening.commitment, commitment);
+        }
+        std::hint::black_box(&commitment);
+        runs.push(CaseRun {
+            commit,
+            open,
+            live_before,
+            peak_after_commit,
+            live_after_commit,
+            peak_at_end: peak_rss_bytes(),
+            live_at_end: live_rss_bytes(),
+        });
     }
-    report("mosaic", &runs);
+    report("mosaic", &runs, commit_only);
 }
 
 /// The local Twist PCS: 15 columns x `2^16` rows (stacked arity 20 at RV64
 /// `2^16`), rate 1/8, 20 grinding bits, 8-way folding, one prepared commit and
 /// one batched open (the Access register-twist path).
-fn local_twist() {
+fn local_twist(commit_only: bool) {
     let pcs = P3BinaryPcs::with_params(100, 3, 20, 3);
     let columns = (0..15usize)
         .map(|column| values(1 << 16, column as u64 + 7))
@@ -290,16 +420,32 @@ fn local_twist() {
     ];
     let mut runs = Vec::new();
     for _ in 0..repeat() {
+        let live_before = live_rss_bytes();
         let commit_started = Instant::now();
         let prepared = pcs.commit_batch_prepared(&columns).unwrap();
         let commit = commit_started.elapsed();
-        let open_started = Instant::now();
-        let opening = pcs.open_batch_prepared(prepared, &points).unwrap();
-        let open = open_started.elapsed();
-        assert_eq!(opening.commitment.num_columns, 15);
-        runs.push((commit, open));
+        let peak_after_commit = peak_rss_bytes();
+        let live_after_commit = live_rss_bytes();
+        let mut open = None;
+        if !commit_only {
+            let open_started = Instant::now();
+            let opening = pcs.open_batch_prepared(prepared, &points).unwrap();
+            open = Some(open_started.elapsed());
+            assert_eq!(opening.commitment.num_columns, 15);
+        } else {
+            std::hint::black_box(&prepared);
+        }
+        runs.push(CaseRun {
+            commit,
+            open,
+            live_before,
+            peak_after_commit,
+            live_after_commit,
+            peak_at_end: peak_rss_bytes(),
+            live_at_end: live_rss_bytes(),
+        });
     }
-    report("local", &runs);
+    report("local", &runs, commit_only);
 }
 
 /// Abort if the process peak RSS passes a limit (default 2 GiB, override with
@@ -339,10 +485,7 @@ fn grind_case() {
     use p3_binary_field::{BinaryChallenger, BinaryField128, TowerLevel};
     use p3_challenger::{CanObserve, GrindingChallenger, HashChallenger};
     use p3_keccak::Keccak256Hash;
-    type Ch = BinaryChallenger<
-        BinaryField128,
-        HashChallenger<u8, Keccak256Hash, 32>,
-    >;
+    type Ch = BinaryChallenger<BinaryField128, HashChallenger<u8, Keccak256Hash, 32>>;
     for (bits, prefix_values) in [(20usize, 4usize), (21, 4), (21, 32), (21, 0)] {
         let mut challenger = Ch::from_hasher(Vec::new(), Keccak256Hash);
         for index in 0..prefix_values {
@@ -353,27 +496,59 @@ fn grind_case() {
         let witness = challenger.grind(bits);
         let cpu = process_cpu_seconds() - cpu_started;
         let wall = started.elapsed();
-        println!(
-            "grind bits={bits} prefix={prefix_values} values: wall={wall:?} cpu={cpu:.3}s"
-        );
+        println!("grind bits={bits} prefix={prefix_values} values: wall={wall:?} cpu={cpu:.3}s");
     }
+}
+
+/// The `(case, commit_only)` pairs to run.
+///
+/// `COMMIT_ONLY=1` makes every case commit-only, so the process peak measured
+/// by `/usr/bin/time -l` is the commit peak. A `CASES` token can override the
+/// mode per case: `selected:commit`, `mosaic:full`.
+fn selected_cases() -> Vec<(&'static str, bool)> {
+    let raw = std::env::var("CASES").unwrap_or_else(|_| "selected,mosaic,local".into());
+    let default_commit_only = truthy("COMMIT_ONLY");
+    let mut cases: Vec<(&'static str, bool)> = Vec::new();
+    for token in raw.split(',') {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+        let (name, mode) = match token.split_once(':') {
+            Some((name, mode)) => (name.trim(), Some(mode.trim().to_ascii_lowercase())),
+            None => (token, None),
+        };
+        let commit_only = match mode.as_deref() {
+            Some("commit" | "commit-only" | "commit_only") => true,
+            Some("full" | "open") => false,
+            _ => default_commit_only,
+        };
+        let name = match name {
+            "selected" => "selected",
+            "mosaic" => "mosaic",
+            "local" => "local",
+            "grind" => "grind",
+            other => {
+                eprintln!("unknown case {other:?}; expected selected, mosaic, local or grind");
+                continue;
+            }
+        };
+        cases.push((name, commit_only));
+    }
+    cases
 }
 
 fn main() {
     let _watchdog = install_memory_watchdog(2.0);
     init_spans();
-    let cases = std::env::var("CASES").unwrap_or_else(|_| "selected,mosaic,local".into());
-    if cases.contains("selected") {
-        selected_witness();
-    }
-    if cases.contains("mosaic") {
-        mosaic_case();
-    }
-    if cases.contains("local") {
-        local_twist();
-    }
-    if cases.contains("grind") {
-        grind_case();
+    for (name, commit_only) in selected_cases() {
+        match name {
+            "selected" => selected_witness(commit_only),
+            "mosaic" => mosaic_case(commit_only),
+            "local" => local_twist(commit_only),
+            "grind" => grind_case(),
+            _ => {}
+        }
     }
     dump_spans();
 }
