@@ -153,6 +153,12 @@ more claim work (§5 item 1).
 
 ---
 
+**Performance-ceiling snapshot:** [PAPER_CEILING.md](PAPER_CEILING.md) collects
+the current measured numbers (`2^16`/`2^17`/`2^18`, both schedules), the
+remaining levers ranked by measured size (PCS codeword transient first, then
+(h) bit-packing, (c)/(b) format changes, the virtual one-hot Access prover) with
+effort estimates, and the recommended order for the next sessions.
+
 ## 1. Run it
 
 **Cargo home on this checkout (2026-11-14).** The machine's `~/.cargo` is not
