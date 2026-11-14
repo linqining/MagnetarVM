@@ -925,10 +925,9 @@ fn store_word(old_word: u64, lane: u8, width: u8, value: u64) -> u64 {
 
 fn twist_word(witness: &BinaryTwistWitness, event: usize, word: u64) -> Result<u64, RuntimeError> {
     witness
-        .value
-        .get(event)
-        .and_then(|values| values.get(word as usize))
-        .map(|value| value.value() as u64)
+        .value_row(event)
+        .get(word as usize)
+        .copied()
         .ok_or_else(|| RuntimeError::Proof("BinaryTwist history is missing an event".into()))
 }
 

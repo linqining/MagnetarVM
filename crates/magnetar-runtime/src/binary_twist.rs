@@ -139,7 +139,8 @@ fn tables(
         witness
             .read_address
             .row_into_field(cycle, &mut ra[cycle * cells..(cycle + 1) * cells]);
-        val[cycle * cells..(cycle + 1) * cells].copy_from_slice(&witness.value[cycle]);
+        witness
+            .value_row_into_field(cycle, &mut val[cycle * cells..(cycle + 1) * cells]);
     }
     Ok((ra, val, address_bits, cycle_bits))
 }
@@ -398,7 +399,8 @@ fn write_tables(witness: &BinaryTwistWitness) -> Result<WriteTables, ProofError>
         witness
             .write_address
             .row_into_field(cycle, &mut wa[start..start + cells]);
-        val[start..start + cells].copy_from_slice(&witness.value[cycle]);
+        witness
+            .value_row_into_field(cycle, &mut val[start..start + cells]);
         for cell in 0..cells {
             inc[start + cell] = witness.increment[cycle];
         }
@@ -628,7 +630,8 @@ fn update_tables(witness: &BinaryTwistWitness) -> Result<UpdateTables, ProofErro
     let mut inc = vec![F2_128::from(0u64); len];
     for cycle in 0..witness.cycles {
         let start = cycle * cells;
-        val[start..start + cells].copy_from_slice(&witness.value[cycle]);
+        witness
+            .value_row_into_field(cycle, &mut val[start..start + cells]);
         witness
             .write_address
             .row_into_field(cycle, &mut wa[start..start + cells]);
@@ -636,11 +639,11 @@ fn update_tables(witness: &BinaryTwistWitness) -> Result<UpdateTables, ProofErro
             inc[start + cell] = witness.increment[cycle];
         }
         let following = if cycle + 1 < witness.cycles {
-            &witness.value[cycle + 1]
+            witness.value_row_vec(cycle + 1)
         } else {
-            &witness.final_value
+            witness.final_value.clone()
         };
-        next[start..start + cells].copy_from_slice(following);
+        next[start..start + cells].copy_from_slice(&following);
     }
     Ok((next, val, wa, inc, address_bits, cycle_bits))
 }

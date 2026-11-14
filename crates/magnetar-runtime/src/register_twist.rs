@@ -43,7 +43,7 @@ pub fn register_twist_witness(trace: &Trace) -> Result<BinaryTwistWitness, Proof
         let write = rd.filter(|index| *index != 0);
 
         let mut push_phase = |read: Option<usize>, write: Option<usize>| {
-            value.push(registers.iter().map(|word| F2_128::from(*word)).collect());
+            value.extend(registers.iter().copied());
             let mut read_slot = None;
             let mut write_slot = None;
             let mut read_scalar = F2_128::from(0u64);
@@ -93,7 +93,7 @@ pub fn register_twist_witness(trace: &Trace) -> Result<BinaryTwistWitness, Proof
     let witness = BinaryTwistWitness {
         address_bits: REGISTER_BITS,
         cell_bits: 64,
-        cycles: value.len(),
+        cycles: value.len() / REGISTER_COUNT,
         initial,
         read_address,
         write_address,

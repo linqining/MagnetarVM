@@ -20,7 +20,7 @@ pub struct BinaryTwistWitness {
     pub read_address: AddressRows,
     pub write_address: AddressRows,
     pub increment: Vec<F2_128>,
-    pub value: Vec<Vec<F2_128>>,
+    pub value: Vec<u64>,
     pub read_value: Vec<F2_128>,
     pub write_value: Vec<F2_128>,
     pub final_value: Vec<F2_128>,
@@ -215,7 +215,7 @@ impl BinaryTwistWitness {
                     access.addr
                 )));
             }
-            value.push(current.clone());
+            value.extend(current.iter().map(|cell| cell.value() as u64));
             let old = current[word];
             read_value.push(old);
             let (write_slot, delta, written) = if access.is_write {
@@ -247,7 +247,7 @@ impl BinaryTwistWitness {
         Ok(Self {
             address_bits,
             cell_bits: 64,
-            cycles: value.len(),
+            cycles: value.len() / cells,
             initial,
             read_address,
             write_address,
@@ -311,7 +311,7 @@ impl BinaryTwistWitness {
                     "full-cycle RAM witness does not support extra_mem rows".into(),
                 ));
             }
-            value.push(current.clone());
+            value.extend(current.iter().map(|cell| cell.value() as u64));
             let Some(access) = row.mem else {
                 read_address.push_zero_row();
                 write_address.push_zero_row();
@@ -372,8 +372,8 @@ impl BinaryTwistWitness {
                 current[word] = written;
             }
         }
-        while value.len() < cycles {
-            value.push(current.clone());
+        while value.len() < cycles * cells {
+            value.extend(current.iter().map(|cell| cell.value() as u64));
             read_address.push_zero_row();
             write_address.push_zero_row();
             let cycle = read_address.rows() - 1;
@@ -385,7 +385,7 @@ impl BinaryTwistWitness {
         Ok(Self {
             address_bits,
             cell_bits: 64,
-            cycles: value.len(),
+            cycles: value.len() / cells,
             initial,
             read_address,
             write_address,
@@ -400,7 +400,7 @@ impl BinaryTwistWitness {
 
     pub fn validate(&self) -> Result<(), MemoryError> {
         let cells = self.initial.len();
-        if self.cycles != self.value.len()
+        if self.cycles != self.value.len() / cells
             || self.cycles != self.read_address.rows()
             || self.cycles != self.write_address.rows()
             || self.cycles != self.increment.len()
@@ -418,7 +418,12 @@ impl BinaryTwistWitness {
         }
         let mut previous = self.initial.clone();
         for cycle in 0..self.cycles {
-            if self.value[cycle] != previous {
+            if self
+                .value_row(cycle)
+                .iter()
+                .zip(&previous)
+                .any(|(word, value)| *word != value.value() as u64)
+            {
                 return Err(MemoryError::InvalidBinaryTwist(format!(
                     "cycle {cycle} value history is inconsistent"
                 )));
@@ -464,11 +469,41 @@ impl BinaryTwistWitness {
         Ok(())
     }
 
+    /// One-hot slots per row, i.e. cells in the value history.
+    #[must_use]
+    pub fn cells(&self) -> usize {
+        1usize << self.address_bits
+    }
+
+    /// The value history row of one cycle: one 64-bit word per cell.
+    ///
+    /// The history is stored as `u64` rather than as 16-byte field elements
+    /// because a cell is a 64-bit word: the packed form is half the bytes and
+    /// keeps one allocation for the whole matrix.
+    #[must_use]
+    pub fn value_row(&self, cycle: usize) -> &[u64] {
+        let cells = self.cells();
+        &self.value[cycle * cells..(cycle + 1) * cells]
+    }
+
+    /// Write one value row into `out` as field elements.
+    pub fn value_row_into_field(&self, cycle: usize, out: &mut [F2_128]) {
+        for (value, word) in out.iter_mut().zip(self.value_row(cycle)) {
+            *value = F2_128::from(*word);
+        }
+    }
+
+    /// One value row as owned field elements, for callers that need a slice.
+    #[must_use]
+    pub fn value_row_vec(&self, cycle: usize) -> Vec<F2_128> {
+        self.value_row(cycle)
+            .iter()
+            .map(|word| F2_128::from(*word))
+            .collect()
+    }
+
     pub fn word_value(&self, cycle: usize, cell: usize) -> Option<Word> {
-        self.value
-            .get(cycle)
-            .and_then(|row| row.get(cell))
-            .map(|value| value.value() as Word)
+        self.value_row(cycle).get(cell).copied()
     }
 }
 
@@ -564,8 +599,9 @@ mod tests {
         tampered.write_address.set(0, 1);
         assert!(tampered.validate().is_err());
 
+        let cells = witness.cells();
         let mut tampered = witness;
-        tampered.value[1][0] = tampered.value[1][0] + F2_128::from(1u64);
+        tampered.value[cells] ^= 1;
         assert!(tampered.validate().is_err());
     }
 

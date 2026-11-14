@@ -2971,7 +2971,7 @@ pub fn gated_memory_twist_witness(
         }
         let old = current[address];
         let new = F2_128::from(data as u64);
-        value.push(current.clone());
+        value.extend(current.iter().map(|cell| cell.value() as u64));
         read_address.push_zero_row();
         write_address.push_zero_row();
         let cycle = read_address.rows() - 1;

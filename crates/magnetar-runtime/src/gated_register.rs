@@ -50,7 +50,7 @@ pub fn gated_register_twist_witness(
         let rd = usize::from(event.rd);
 
         // Phase 1: read rs1, no write.
-        value.push(registers.iter().map(|word| F2_128::from(*word)).collect());
+        value.extend(registers.iter().copied());
         read_address.push_zero_row();
         write_address.push_zero_row();
         let cycle = read_address.rows() - 1;
@@ -60,7 +60,7 @@ pub fn gated_register_twist_witness(
         write_value.push(F2_128::from(0u64));
 
         // Phase 2: read rs2, then write rd.
-        value.push(registers.iter().map(|word| F2_128::from(*word)).collect());
+        value.extend(registers.iter().copied());
         read_address.push_zero_row();
         write_address.push_zero_row();
         let cycle = read_address.rows() - 1;
@@ -82,7 +82,7 @@ pub fn gated_register_twist_witness(
     let witness = BinaryTwistWitness {
         address_bits: REGISTER_BITS,
         cell_bits: 64,
-        cycles: value.len(),
+        cycles: value.len() / REGISTER_COUNT,
         initial: initial.iter().map(|word| F2_128::from(*word)).collect(),
         read_address,
         write_address,
