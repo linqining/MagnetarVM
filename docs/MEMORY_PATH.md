@@ -996,3 +996,34 @@ tree: **683 passed / 0 failed / 8 ignored** (39 binaries) — the 679/0/8 of
 The default (opt-in off) path is byte-identical to the pre-change tree, and the
 `MAGNETAR_STREAM_PCS_OPEN=1` path produces identical proof bytes at `2^16`,
 `2^17` and `2^18`.
+
+**§4.8 addendum (2026-11-14): the concrete (h) first slice.** Reading the
+witness definition fixes the target. `magnetar-memory::BinaryTwistWitness`
+stores three *bit* matrices as `Vec<Vec<F2_128>>`, one 16-byte field element per
+bit and one heap row per cycle:
+
+| field | shape | bytes at `2^16` | at `2^18` |
+| --- | --- | --- | --- |
+| `read_address` | `cell_bits x cycles` | 64 MiB | 256 MiB |
+| `write_address` | `cell_bits x cycles` | 64 MiB | 256 MiB |
+| `value` | `value_bits x cycles` | 64 MiB | 256 MiB |
+| `increment`/`read_value`/`write_value` | `cycles` each | 3 MiB | 12 MiB |
+
+plus one allocator row per `(bit, cycle)` pair. A register-twist witness
+therefore costs ~192 MiB at `2^16` and ~768 MiB at `2^18` *before* it is
+converted into `BatchTables`, and it stays live through the Access stage.
+
+The first slice is to store each cycle's bit row as one `u128` word
+(`read_address: Vec<u128>`, bit `i` = address bit `i`; `value: Vec<u128>`
+likewise), which cuts those three matrices 16x and removes the per-row
+allocations — `2^16`: 192 MiB -> 12 MiB, `2^18`: 768 MiB -> 48 MiB. It is
+prover-internal only: the committed `BatchTables::addr`/`initial`/values and
+the Access sum-check are unchanged, so the proof bytes stay identical. The
+readers are mechanical and enumerable: `batch_tables_inner`'s `one_hot_address`
+(use a `u128` + `address_bits` decoder), the quadratic path's bit-table fills,
+`binary_twist_address.rs`'s two slice reads, `virtual_onehot.rs`'s witness
+access, `register_twist.rs`'s builder, and `protocol.rs`'s `len()` use.
+Verification: the existing byte-equality tests plus the full gate; the memory
+A/B reads the Access stage RSS with the same watchdog used in §4.2. A second
+slice would then pack the *committed* `addr` table itself (format change,
+§4.8 above), which is the part that also shrinks codewords and Merkle trees.
