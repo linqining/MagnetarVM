@@ -513,3 +513,64 @@ fn m4a_real_table_set_projection() {
         "M4a must remove at least 60% of the committed cells"
     );
 }
+
+
+/// M4a step 1 wiring evidence: the Access batch's 12 bit-column evaluations can
+/// be produced by one batched ring-switch proof instead of the PCS batch.
+///
+/// Run the existing Access prover, take the terminal bit evaluations its
+/// verifier consumes (`proof.values[3]`), then prove the same 12 evaluations
+/// from the packed bit table with a batched ring-switch and compare element by
+/// element. This is the drop-in equivalence for the Access verifier change, with
+/// no proof-format change yet.
+#[test]
+#[ignore = "runs the full Access prover; --ignored --nocapture"]
+fn m4a_access_bit_claims_match_the_pcs_terminal_values() {
+    use magnetar_pcs::P3BatchColumnPcs;
+    use magnetar_proof::{BatchColumnPcs, BatchedRingSwitch, PackedBits};
+
+    let trace = bench_trace((1 << BUILT_LOG_CYCLES) - 1);
+    let witness = register_twist_witness(&trace).expect("register witness");
+    let proof = crate::local_shared::prove_local_shared(&witness).expect("access proof");
+    assert_eq!(proof.values.len(), 4, "Access PCS batches: rw, rj, val, virtual");
+    let terminal = &proof.values[3];
+    let address_bits = crate::linear_twist::witness_shape(&witness).address_bits;
+    assert_eq!(terminal.len(), 2 * address_bits + 2);
+
+    let packed_access = crate::m4a_tables::pack_access_batch(&witness).expect("packed bits");
+    assert_eq!(packed_access.bits.columns.len(), terminal.len());
+    let mut packed_bits = Vec::with_capacity(packed_access.bits.columns.len());
+    for column in &packed_access.bits.columns {
+        let bits = crate::m4a_tables::unpack_bit_column(column, witness.cycles.next_power_of_two());
+        packed_bits.push(PackedBits::from_bools(
+            &bits.iter().map(|value| value.value() & 1 == 1).collect::<Vec<_>>(),
+        ));
+    }
+
+    let backend = P3BatchColumnPcs::new(magnetar_pcs::P3BinaryPcs::with_params(100, 2, 21, 2));
+    let batched = BatchedRingSwitch::new(backend.clone());
+    let commitment = backend
+        .commit_columns(&packed_access.bits.columns)
+        .expect("bits commit");
+    let (claims, opening) = batched
+        .open(&packed_bits, &proof.virtual_challenges, Some(&commitment))
+        .expect("batched ring switch");
+    for (index, (claim, expected)) in claims.iter().zip(terminal).enumerate() {
+        assert_eq!(
+            *claim, *expected,
+            "M4a bit claim {index} must equal the Access verifier's terminal value"
+        );
+    }
+    assert!(
+        batched
+            .verify(&commitment, &proof.virtual_challenges, &claims, &opening)
+            .expect("verify"),
+        "the batched ring-switch proof must verify"
+    );
+    let proof_bytes = bincode::serialize(&opening).map(|bytes| bytes.len()).unwrap_or(0);
+    println!(
+        "m4a access bits: columns={} ring_switch_proof={} B (vs PCS opening for the same 12 columns)",
+        claims.len(),
+        proof_bytes
+    );
+}

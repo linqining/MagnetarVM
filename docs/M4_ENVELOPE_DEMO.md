@@ -673,3 +673,40 @@ So M4a's remaining protocol work is (1) wire the packed address tables and the
 batched ring-switch into `protocol.rs`/`local_shared` with a proof-format bump,
 and (2) decide whether the trace table gains the 64-bit alphabet together with
 M4b or waits for a separate evaluation argument.
+
+## 13. M4a protocol wiring, first evidence: the Access bit claims are drop-in equal
+
+Before changing the proof format, this step checks that the Access verifier can
+consume the batched ring-switch output **without changing any of its checks**.
+
+`m4a_access_bit_claims_match_the_pcs_terminal_values` runs the existing Access
+prover on the real `2^16` paper witness, takes the terminal values its verifier
+consumes (`proof.values[3]` — the 12 address-bit evaluations the PCS batch opens
+at `virtual_challenges`), then proves the same 12 evaluations from the **packed**
+bit table (built by `m4a_tables::pack_access_batch`, i.e. the deduplicated 12
+columns) with one `BatchedRingSwitch` proof at the same point:
+
+* all 12 ring-switch claims equal the PCS terminal values element by element;
+* the batched proof verifies;
+* the proof is **120,152 B** at `2^16` cycles and 12 columns.
+
+So the verifier's product formula (`terminal[bit]`, `terminal[address_bits]`,
+...) can be fed from the ring-switch claims unchanged. What remains is
+structural, not semantic:
+
+1. drop the 12 bit columns from the Access PCS batch (15 -> 3 scalar columns),
+   so the PCS opening shrinks at every point;
+2. carry the packed bit commitment + batched ring-switch opening in
+   `LocalSharedProof` behind a version tag (`MAGNETAR_M4A_ACCESS` for the A/B),
+   and have `verify_local_shared` take `terminal` from the ring-switch claims;
+3. measure the **net** proof-size change after that wiring: the ring-switch proof
+   is ~120 KB at `2^16`, while the PCS opening loses 12 columns x 4 points, so
+   the two run in opposite directions and the net has to be measured (the PCS
+   part grows with `cycles` while the ring-switch part grows logarithmically, so
+   the balance should improve with scale);
+4. then re-measure a real proof at `2^18` (peak + proof size).
+
+The M4a pieces are now all available: the packed-table module (§10), the batched
+ring-switch (§11, with its proof-size budget), the trace-packing negative result
+(§12) and this Access drop-in equivalence. The next change is the gated protocol
+wiring and the proof-format version bump.
