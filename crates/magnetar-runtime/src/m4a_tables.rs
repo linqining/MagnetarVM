@@ -264,6 +264,64 @@ mod tests {
     }
 
     #[test]
+    fn trace_word_pair_packing_is_not_evaluation_preserving() {
+        use magnetar_proof::Mle;
+
+        // A trace-shaped table: 8 rows x 8 fields, flattened into 64 values,
+        // packed into 32 cells.
+        let values: Vec<F2_128> = (0..64)
+            .map(|index| F2_128::from(index as u64 * 3 + 1))
+            .collect();
+        let packed = pack_word_pairs(&values).expect("trace values fit 64 bits each");
+        assert_eq!(packed.len(), 32);
+
+        // Concatenation IS F2-linear on the bit pattern: packing a sum is the
+        // sum of packings.
+        let other: Vec<F2_128> = (0..64)
+            .map(|index| F2_128::from(index as u64 * 5 + 7))
+            .collect();
+        let sum: Vec<F2_128> = values.iter().zip(&other).map(|(a, b)| *a + *b).collect();
+        let packed_sum = pack_word_pairs(&sum).expect("sum stays in 64 bits");
+        let packed_pair: Vec<F2_128> = pack_word_pairs(&values)
+            .unwrap()
+            .iter()
+            .zip(pack_word_pairs(&other).unwrap())
+            .map(|(a, b)| *a + b)
+            .collect();
+        assert_eq!(packed_sum, packed_pair, "concatenation is F2-linear");
+
+        // But the multilinear extension does not commute with concatenation:
+        // the trace claims live on log2(8C) variables, the packed table on
+        // log2(4C), and no point of the packed table reproduces the trace
+        // evaluation. This is why a packed trace table cannot feed the trace
+        // claims without a new argument.
+        let trace_point: Vec<F2_128> = (0..6)
+            .map(|bit| F2_128::from(((bit * 7 + 3) % 2) as u64))
+            .collect();
+        let trace_claim = Mle::new(values.clone()).expect("mle").eval(&trace_point).expect("eval");
+        let mut packed_point = trace_point[..5].to_vec();
+        let packed_claim = Mle::new(packed.clone()).expect("mle").eval(&packed_point).expect("eval");
+        assert_ne!(
+            trace_claim, packed_claim,
+            "packing must change the MLE; otherwise the trace claims would carry over"
+        );
+        // Shifting the point does not recover it either: the packed polynomial
+        // has one variable fewer, so there is no relabelling that maps its
+        // evaluation onto the trace's.
+        for offset in [0usize, 1] {
+            let shifted = trace_point[offset..offset + 5].to_vec();
+            let folded = Mle::new(packed.clone()).expect("mle").eval(&shifted).expect("eval");
+            assert_ne!(folded, trace_claim, "no relabelled point reproduces the trace evaluation");
+        }
+
+        // The clean way to halve the trace table is the 64-bit committed
+        // alphabet (M4b): it keeps the evaluation a field-linear map (challenges
+        // stay 128-bit), so the trace claims keep their meaning. Concatenating
+        // two 64-bit fields per cell cannot do that, as the mismatch above
+        // shows.
+    }
+
+    #[test]
     fn split_and_pack_keeps_scalars_and_packs_bits() {
         let bits = vec![seeded_bits(512, 1), seeded_bits(512, 2)];
         let scalars: Vec<F2_128> = (0..512).map(|index| F2_128::from(index as u64 * 3)).collect();

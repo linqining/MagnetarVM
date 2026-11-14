@@ -629,3 +629,47 @@ Status: the Access verifier can now be switched to this primitive. Remaining:
 2. trace-table consumption demo (the word-pair byte layout read by the trace
    verifier, not just measured);
 3. re-measure a real proof at `2^18` (peak + proof size), then evaluate `2^22`.
+
+## 12. M4a step 3: trace word-pair packing semantics — demo result
+
+The §8.2 projection assumed the trace table could be halved by storing two
+64-bit fields per cell (the `pack_word_pairs` helper). That was a memory-only
+measurement; this step checks the semantics the verifier would need, and the
+answer is **no**: concatenation packing cannot feed the trace claims.
+
+`trace_word_pair_packing_is_not_evaluation_preserving` in
+`m4a_tables.rs` shows why:
+
+* concatenation **is** F2-linear on the bit pattern — packing a sum is the sum
+  of packings (`pack(p + q) == pack(p) + pack(q)`), which is what makes it
+  look promising;
+* but the multilinear extension does **not** commute with it: for a trace-shaped
+  column (8 rows x 8 fields, 64 values -> 32 packed cells), the trace claim
+  lives on 6 variables and the packed table on 5, and neither the truncated nor
+  any shifted point of the packed table reproduces the trace evaluation — so a
+  verifier holding a packed opening cannot check the existing trace claims;
+* this is structural: the packed value is a bit concatenation, an F2-linear but
+  not F2^128-linear map, while the PCS opening is an F2^128-linear functional.
+  There is no field-linear relation to exploit.
+
+Consequence for the plan:
+
+* `pack_word_pairs` stays a **memory-experiment helper** (it is what
+  `m4a_pcs_peak` uses for the packed peak) and must **not** be wired into the
+  protocol until an evaluation argument exists for it.
+* The clean way to halve the trace table is the **64-bit committed alphabet**
+  (M4b): the evaluation stays a field-linear map (challenges remain 128-bit), so
+  the trace claims keep their meaning. That is consistent with §6's measurement
+  (equal-arity peak -17 %) and with §9.4's decision to keep M4b for the context
+  term.
+* **Projection correction**: at `2^22` the mosaic message after M4a steps (a)-(c)
+  is 2 GiB (`2^27` cells) — a 2x reduction. Reaching the 4x / 1 GiB figure
+  requires the trace term to shrink too, i.e. M4b's 64-bit alphabet; without it
+  the M4a-only envelope improvement is 2x on the message and the ~62 % committed
+  cell reduction. The rest of §8.2 stands (the cell-count arithmetic and the
+  padding boundary).
+
+So M4a's remaining protocol work is (1) wire the packed address tables and the
+batched ring-switch into `protocol.rs`/`local_shared` with a proof-format bump,
+and (2) decide whether the trace table gains the 64-bit alphabet together with
+M4b or waits for a separate evaluation argument.
