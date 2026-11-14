@@ -1057,3 +1057,16 @@ slice would then pack the *committed* `addr` table itself (format change,
 magnetar-runtime suite and the 14-test magnetar-memory suite. Proof bytes are
 identical at `2^18` and `2^19` (`1,230,360` / `1,373,708 B`, varint and
 compressed too), so the packing is witness-lifetime memory only.
+
+**§4.8 second-slice verification tail.** Full workspace gate after the value
+history packing: **683 passed / 0 failed / 8 ignored** (39 binaries), and
+proof bytes are identical at `2^18`/`2^19` (`1,230,360` / `1,373,708 B`,
+varint and compressed too). Cumulative effect of the two (h) witness slices
+together with the streamed connection paths:
+
+| peak footprint (products-gated, streamed opening) | `2^18` | `2^19` |
+| --- | --- | --- |
+| before this session's PCS work | 5.96 GiB | 11.93 GiB |
+| after streamed commit + streamed opening | 3.60 GiB | 7.66 GiB |
+| + packed twist address rows | 3.58 GiB | 7.11 GiB |
+| + packed twist value history | **3.20 GiB** | **5.79 GiB** |
