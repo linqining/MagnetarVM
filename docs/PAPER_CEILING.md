@@ -21,6 +21,7 @@ update are the 2026-11-14 follow-up described in
 | peak footprint, `MAGNETAR_SERIALIZE_PRODUCTS=1` | **1.64 GiB** | **3.28 GiB** | **6.05 GiB** |
 | peak footprint, default schedule + streaming PCS commit | **1.49 GiB** | - | - |
 | peak footprint, products-gated + streaming PCS commit | **1.45 GiB** | **3.03 GiB** | - |
+| peak footprint, products-gated + streamed opening (`MAGNETAR_STREAM_PCS_OPEN=1`) | 1.47-1.54 GiB (floor) | **2.10 GiB** | **3.60 GiB** |
 | Commit-stage peak, products-gated | 1.28 GiB | 2.56 GiB | 5.17 GiB |
 | Commit-stage peak, products-gated + streaming commit | **0.63 GiB** | **1.28 GiB** | - |
 | proof | 1,018,155 B | 1,110,291 B | 1,230,360 B |
@@ -59,15 +60,17 @@ format, against a 36 GiB host.
    What is left of the same lever is the **opening-side re-encode**:
    `open`/`open_batch`/`open_mosaic` still materialise the codeword and tree for
    the FRI fold and the query openings, and that is where the `2^16` peak now
-   sits (Opening footprint 1.46 GiB against a 0.47 GiB context, via a 0.81 GiB
-   transient; `2^17`: 3.03 vs ~1.1 GiB). The plan is a three-pass streamed
-   opening (commit / fold / query) in [MEMORY_PATH](MEMORY_PATH.md) §4.7: the
-   per-coset fold engine already exists (`fold::fold_coset`), and the streaming
-   pruned-multiproof primitive landed this round with byte-for-byte tests
-   against `Mmcs::open_multi_batch` (`StreamingMultiProof`). Remaining work is
-   the generic `StreamingMmcs` + chunked-encoder seams and
-   `BinaryPcs::open_at_streaming`. Projected: **`2^16` peak 1.45 -> ~0.7 GiB,
-   `2^17` 3.03 -> ~1.6-1.7 GiB**, byte-identical proofs, +1 encode pass.
+   sits (Opening footprint 1.45 GiB against a 0.47 GiB context, via a 0.81 GiB
+   transient; `2^17`: 3.02 vs ~1.1 GiB; `2^18`: 5.86 vs 2.60 GiB). The
+   three-pass streamed opening is **DONE (2026-11-14)** behind
+   `MAGNETAR_STREAM_PCS_OPEN=1` ([MEMORY_PATH](MEMORY_PATH.md) §4.7): streamed
+   commit, per-coset fold through `fold::fold_coset`, streamed query opening
+   through the new `StreamingMmcs`/`MerkleStreamingOpener` seam. Measured
+   byte-identical: Opening 5.86 -> 2.89 GiB and peak 5.96 -> 3.60 GiB at
+   `2^18`; 3.02 -> 2.10 GiB at `2^17`; the `2^16` peak floor is the selected
+   product phase (1.47-1.54 GiB). Cost: +3-4 % prove CPU from the cap pass the
+   opening repeats; passing the already-computed cap into the opening is the
+   next increment and should remove it.
 2. **(h) bit-pack the twist witnesses / batch tables** — the twist tables are
    committed as 16-byte field elements although they hold bits (the single
    `2^22`-value commit above is the biggest instance). Bit-packing cuts that
@@ -110,10 +113,15 @@ format, against a 36 GiB host.
    the **opening-side** re-encode (stream the FRI fold + query pass), which is
    now the tallest remaining PCS term; its design and the landed multiproof
    primitive are [MEMORY_PATH](MEMORY_PATH.md) §4.7.
-2. (h) bit-pack the twist tables (largest remaining *format* win, and it
-   compounds with 1).
-3. (c)/(b) format change, only after deciding the wire-format break.
-4. Virtual one-hot Access prover (finishes the Access term).
-5. `2^19` / `2^20` staircase rows in dedicated quiet windows, with
+2. Pass the commit-time cap into `open`/`open_batch`/`open_mosaic` so the
+   streamed opening stops repeating the cap hash (removes the +3-4 % CPU and
+   makes the memory mode free), then measure `2^19` in a quiet window — with
+   the `2^18` peak now 3.60 GiB the `2^19` projection (roughly `2x - context`
+   ≈ 4.9-5.5 GiB) finally fits the host's 8-10 GiB quiet windows.
+3. (h) bit-pack the twist tables (largest remaining *format* win, and it
+   compounds with 1/2).
+4. (c)/(b) format change, only after deciding the wire-format break.
+5. Virtual one-hot Access prover (finishes the Access term).
+6. `2^19` / `2^20` staircase rows in dedicated quiet windows, with
    `MAGNETAR_SERIALIZE_PRODUCTS=1` (still environment-blocked: free+inactive
    stayed at 4-6 GiB on 2026-11-14; a `2^17` row is the practical ceiling).

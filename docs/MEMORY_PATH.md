@@ -218,6 +218,9 @@ Peak footprint at `2^16` native default, chronological:
 | + `MAGNETAR_SERIALIZE_PRODUCTS=1` (strongest mode) | **1.64 GiB** | 41.1 s prove (2^16, load 28) |
 | + streaming PCS commit (§4.6, default schedule) | **1.49 GiB** | 295.9 s prove CPU (4-pair mean, ±8 s host drift) |
 | + streaming PCS commit + `MAGNETAR_SERIALIZE_PRODUCTS=1` | **1.45 GiB** | - |
+| + streamed opening (`MAGNETAR_STREAM_PCS_OPEN=1`), `2^16` | 1.47-1.54 GiB (floor: selected products) | 299 s CPU |
+| + streamed opening, `2^17` products-gated | **2.10 GiB** (from 3.02) | 622 s CPU |
+| + streamed opening, `2^18` products-gated | **3.60 GiB** (from 5.96) | 1285 s CPU |
 
 At `2^18` the 2026-11-08 sequence is 8.72 -> 7.96 -> 6.96 GiB footprint. The
 remaining peak terms are quantified in §4.2: the mosaic Commit/Opening
@@ -239,11 +242,11 @@ session starts here):**
   left of that route is virtualising the two one-hot address matrices and the
   value matrix, which needs a restructured (Jolt-style) sum-check over the
   address bits rather than a factor representation change.
-- streaming PCS commit: **done** (§4.6) for the cap-only entry points
-  (`-0.41 GiB` peak at `2^16` default schedule, proof bytes identical). The
-  remaining half of that lever is the *opening-side* re-encode: `open` /
-  `open_batch` / `open_mosaic` still materialise the codeword and tree because
-  the FRI fold and the query openings read them.
+- streaming PCS commit: **done** (§4.6) for the cap-only entry points, and the
+  **opening half is done too** (§4.7, opt-in `MAGNETAR_STREAM_PCS_OPEN=1`):
+  `-2.36 GiB` peak at `2^18`, `-0.92 GiB` at `2^17`, byte-identical proofs.
+  What remains under this lever is only the cap pass it repeats (`+3-4 %` CPU),
+  fixed by passing the already-computed commitment into the opening.
 - `2^19` staircase: environment-blocked (needs >=13 GiB free+inactive; the host
   stayed at 10.8-14.2 GiB with swap ~9 GiB used all session, and at 4-6 GiB
   free+inactive on 2026-11-14).
@@ -261,13 +264,13 @@ equality pin for the new switch).
 
 Order by GiB saved per unit of work:
 
-1. ~~**(e) + stage RSS instrumentation**~~ and ~~**streaming PCS commit**~~
-   are done (§4.2, §4.6): stage peak prints exist, and the cap-only commits
-   stream (`-0.41 GiB` default-schedule peak at `2^16`, byte-identical). The
-   next memory step is the **opening-side** of the same seam: fold the codeword
-   and collect the query rows while the chunked encoder emits cosets, so
-   `open`/`open_batch`/`open_mosaic` stop materialising the full codeword and
-   Merkle tree. That is where the `2^16` peak (1.45-1.49 GiB) now sits.
+1. ~~**(e) + stage RSS instrumentation**~~, ~~**streaming PCS commit**~~ and
+   ~~**streamed opening**~~ are done (§4.2, §4.6, §4.7): the cap-only commits
+   stream (`-0.41 GiB` default-schedule peak at `2^16`) and the openings stream
+   behind `MAGNETAR_STREAM_PCS_OPEN=1` (`-2.36 GiB` peak at `2^18`,
+   `-0.92 GiB` at `2^17`, byte-identical). The cheap follow-up is to pass the
+   cap already computed at commit into the opening so the extra leaf-hash pass
+   disappears and the streamed path wins CPU as well as memory.
 2. **(d) context lifetime/dedup** (2-4 days): removes 10-20 GiB at `2^22` and
    0.3-0.6 GiB at `2^16` with no proof-format change.
 3. **(c)+(h) bit-packed mosaic commitment and twist witnesses** (1-2 weeks):
@@ -902,43 +905,56 @@ streaming pruned-multiproof builder; this round adds and pins one:
   index sets and three row chunkings (`streaming_multiproof_matches_mmcs`), and
   the multi-block frontier path at `2^16`/`2^17` (`streaming_multiproof_spans_blocks`).
 
-**What is still missing for the win.**
+**Implemented (same day).** All three seams landed:
 
-1. A `StreamingMmcs`-style seam so `binary-pcs` (generic over `MT: Mmcs`) can
-   ask for the streaming multiproof. The collector above is concrete to
-   `P3Mmcs`; lift it into `p3-merkle-tree` behind a small trait in `p3-commit`
-   (`streaming_open(height, width, indices) -> builder`, with `push_rows` and
-   `finish -> (rows, MultiProof)`), implemented for `MerkleTreeMmcs`. The
-   generic packed debug/lane arms can stay on the existing `MerkleTree` path;
-   the streaming arm only needs the scalar leaf/compress calls this codeword
-   shape uses (`P::WIDTH == 1`, `N == 2`), asserted at runtime.
-2. ~~A chunked encoder seam in `p3-commit`~~ **done**: `Encoder::encode_batch_chunks`
-   (default: `encode_batch_borrowed` then one run) is overridden by
-   `AdditiveRsEncoder` in `binary-dft` to hand over one rate coset per run,
-   reusing the transform's returned buffer. Pinned by
-   `chunked_encoder_reproduces_the_borrowed_codeword` (concatenation equals
-   `encode_batch_borrowed` and the run count equals `2^log_inv_rate`, heights
-   `2^0..2^6`, widths 1/2/3, rates 0-3). `binary-pcs` then needs neither
-   magnetar types nor a full codeword.
-3. `BinaryPcs::open_at_streaming(message, cap, protocol, points, challenger)`:
-   observe `cap` (supplied by the caller, which already computed it in pass 1
-   with the identical root), run the sumcheck/fold passes with streamed
-   encodings, then pass 3. Return the same `BinaryPcsProof`.
-4. Magnetar wiring: `Pcs::open` / `open_batch` / `open_mosaic` pass the stacked
-   message (`Layout::borrowed_message` / `write_message`) and the cap from their
-   existing streamed commit instead of calling `commit_with` and
-   `open_at(data, ...)`.
+1. `p3-commit`: `StreamingMmcs` / `StreamingOpener` — plan a streamed pruned
+   multiproof over a `height x width` matrix, accept whole-row runs, return the
+   same `(opened_values, MultiProof)` `Mmcs::open_multi_batch` returns.
+2. `p3-merkle-tree`: `MerkleStreamingOpener` implements it for `MerkleTreeMmcs`
+   on the codeword shape (one matrix, binary, `cap_height = 0`, power-of-two
+   height): the frontier plan is built in index space, 2^15-row block subtrees
+   hash in parallel, each reduction level runs through `compress_many`, and only
+   the boundary digests are kept. Byte equality is pinned in magnetar-pcs (the
+   vendored crates ship no compilable unit tests here) over heights `2^0..2^10`,
+   widths 1/2/3, empty/single/first-last/all/random/duplicate index sets, three
+   chunkings, and the multi-block path at `2^16`/`2^17`.
+3. `p3-binary-pcs`: `fold_codeword_streamed` folds each rate coset through the
+   existing `fold_coset` engine (the one `fold_codeword_batch` already uses, so
+   the fold is identical by construction); `fold_rounds_streaming` and
+   `open_queries_streaming` mirror the shipped fold and query phases with the
+   base codeword re-derived instead of read; `BinaryPcs::open_at_streaming`
+   builds the layout from the witness and assembles the same `BinaryPcsProof`.
 
-**Expected effect.** The opening transient loses the base codeword + tree
-(0.81 GiB at `2^16`, ~1.5 GiB at `2^17`) and gains the streamed re-encode
-(message + one coset, ~0.13 / ~0.26 GiB) plus the round codewords it already
-had. That projects the products-gated `2^16` peak from **1.45 to ~0.7 GiB** and
-the `2^17` peak from **3.03 to ~1.6-1.7 GiB**, with byte-identical proofs: the
-encoder output, the fold (same `fold_coset`), the opened rows and the boundary
-digests are all pinned by tests, and the cap is the one pass 1 already produced.
-CPU: one extra encode pass per opening (~0.13 s at `2^16`) and no extra Merkle
-hash pass (pass 1 and pass 3 together hash the leaves exactly as commit +
-opening re-commit do today).
+Magnetar-pcs routes `Pcs::open`, `open_batch` and `open_mosaic` to it behind
+`MAGNETAR_STREAM_PCS_OPEN=1` (opt-in for memory-bound runs). A new test,
+`streamed_opening_matches_the_retained_path`, pins the serialized proof bytes
+equal to the retained path at `2^8`/`2^10` rows, rates 1-2, and checks the
+streamed proof verifies.
+
+**Measured** (`paper_unified_bench`, `TRACE_SHOUT=1`,
+`MAGNETAR_SERIALIZE_PRODUCTS=1`, same binary, env-switched):
+
+| size | Opening footprint | bench peak footprint | prove CPU | proof |
+| --- | --- | --- | --- | --- |
+| `2^16` | 1.45 -> **0.83 GiB** | 1.49-1.50 -> 1.47-1.54 (peak floor is the selected product phase) | 287 -> 299 s (**+4.1 %**) | identical |
+| `2^17` | 3.02 -> **1.65 GiB** | 3.02 -> **2.10 GiB (-0.92, -30 %)** | 597 -> 622 s (+4.3 %) | identical |
+| `2^18` | 5.86 -> **2.89 GiB** | 5.96 -> **3.60 GiB (-2.36, -40 %)** | 1246 -> 1285 s (+3.1 %) | identical |
+
+Proof bytes at those sizes: 1,018,155 / 1,110,291 / 1,230,360 B (varint and
+compressed identical too). So the opening half of the PCS lever is now a
+measured `-2.4 GiB` at `2^18` and the `2^18` products-gated peak drops below
+4 GiB for the first time (5.96 -> 3.60 GiB).
+
+**The remaining cost.** The opening recomputes the cap (`streamed_codeword_root`
+inside `streamed_open`) even though the prover committed the same message
+earlier, so it costs one extra codeword encode and one extra leaf-hash pass —
+the `+3-4 %` above. The fix is to pass the already-computed cap (and its
+commitment) into `open`/`open_batch`/`open_mosaic`: the runtime already holds
+it from the Commit stage, and the trait boundary is where the extra pass hides.
+That is the next increment under this lever; it should bring the streamed
+opening to cost parity or below the retained path (the retained path also
+re-hashes inside the opening, so with the cap passed the streamed opening would
+do *less* work than the batch path).
 
 ### 4.8 (h) bit-packed twist tables: assessment (not started)
 

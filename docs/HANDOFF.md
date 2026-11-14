@@ -88,6 +88,21 @@ generic `StreamingMmcs` seam, `Encoder::encode_batch_chunks`, and
 `2^17` 3.03 -> ~1.6-1.7 GiB, byte-identical. The (h) twist bit-packing
 assessment (layout/consumer list, format break, first increment) is §4.8.
 
+**Streamed opening (2026-11-14, opt-in `MAGNETAR_STREAM_PCS_OPEN=1`)**: the
+Opening stage no longer materialises the base codeword or its Merkle tree.
+Three vendor seams: `StreamingMmcs`/`StreamingOpener` in `p3-commit`,
+`MerkleStreamingOpener` in `p3-merkle-tree` (pruning-frontier plan in index
+space, boundary digests only), and `BinaryPcs::open_at_streaming` in
+`p3-binary-pcs` (per-coset `fold::fold_coset`, streamed query re-encode).
+Magnetar routes `Pcs::open`/`open_batch`/`open_mosaic` through it; proofs are
+byte-identical (1,018,155 / 1,110,291 / 1,230,360 B). Measured with
+`MAGNETAR_SERIALIZE_PRODUCTS=1`: Opening footprint 5.86 -> 2.89 GiB and peak
+5.96 -> **3.60 GiB at `2^18` (-40 %)**; 3.02 -> **2.10 GiB at `2^17`**; the
+`2^16` peak floor is the selected product phase (1.47-1.54 GiB) while its
+Opening stage falls 1.45 -> 0.83 GiB. Cost: +3-4 % prove CPU from repeating the
+cap pass; passing the commit-time cap into the opening is the next increment.
+[MEMORY_PATH.md](MEMORY_PATH.md) §4.7.
+
 **Opt-in Access scheduling switch (2026-11-08)**: `MAGNETAR_SERIALIZE_ACCESS=1`
 starts the selected commit/products after the Access stage instead of after the
 mosaic Commit, so the two working sets do not overlap. Byte-identical proofs
