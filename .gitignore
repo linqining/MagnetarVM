@@ -5,3 +5,4 @@
 
 # Local IDE state (openIDE)
 .openidea/
+.cargo-home/

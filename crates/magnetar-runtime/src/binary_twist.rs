@@ -1188,6 +1188,77 @@ fn legacy_eval_points() -> bool {
     }
 }
 
+/// One factor of a sum-check, stored in the form that keeps it small.
+///
+/// The Access prover's sum-checks run over the index space `cell * cycles +
+/// cycle` (`2^(address_bits + cycle_bits)` entries). Four of its seven factor
+/// arrays do not depend on the full index:
+///
+/// * `eq(cycle_point)[cycle]` and `increment[cycle]` repeat under every cell
+///   (`at(i) = values[i & mask]`),
+/// * `eq(cell_point)[cell]` is constant along the low cycle bits
+///   (`at(i) = values[i >> cycle_bits]`).
+///
+/// Storing the distinct block instead of the expanded array keeps exactly the
+/// same values (and therefore the same round polynomials) while dropping
+/// `cells - 1` copies of each block: 4 arrays of `cells * cycles` field
+/// elements at RV64 `2^16`-`2^18`.
+pub(crate) enum SumcheckFactor {
+    /// Every entry stored explicitly.
+    Dense(Vec<F2_128>),
+    /// `at(index) = values[index & mask]`, `values.len() == 1 << block_bits`.
+    RepeatLow { values: Vec<F2_128>, block_bits: usize },
+    /// `at(index) = values[index >> block_bits]`, constant along the low bits.
+    RepeatHigh { values: Vec<F2_128>, block_bits: usize },
+}
+
+impl SumcheckFactor {
+    /// `eq(cycle_point)` / `increment`: one distinct value per cycle.
+    pub(crate) fn repeat_low(values: Vec<F2_128>, block_bits: usize) -> Self {
+        debug_assert_eq!(values.len(), 1usize << block_bits);
+        Self::RepeatLow { values, block_bits }
+    }
+
+    /// `eq(cell_point)`: one distinct value per cell, constant along the cycles.
+    pub(crate) fn repeat_high(values: Vec<F2_128>, block_bits: usize) -> Self {
+        Self::RepeatHigh { values, block_bits }
+    }
+
+    /// The factor's value at this multilinear index.
+    #[inline]
+    pub(crate) fn at(&self, index: usize) -> F2_128 {
+        match self {
+            Self::Dense(values) => values[index],
+            Self::RepeatLow { values, block_bits } => values[index & ((1usize << block_bits) - 1)],
+            Self::RepeatHigh { values, block_bits } => values[index >> block_bits],
+        }
+    }
+
+    /// Fold the lowest index bit into the challenge, in place.
+    fn fold(&mut self, challenge: F2_128) {
+        match self {
+            Self::Dense(values) => fold_factor_in_place(values, challenge),
+            // `values[index & mask]`: the lowest index bit is the lowest bit of
+            // the block, so the block itself halves.
+            Self::RepeatLow { values, block_bits } => {
+                if *block_bits > 0 {
+                    fold_factor_in_place(values, challenge);
+                    *block_bits -= 1;
+                }
+            }
+            // `values[index >> block_bits]`: while the folded bit is still one
+            // of the constant low bits nothing changes; afterwards it is dense.
+            Self::RepeatHigh { values, block_bits } => {
+                if *block_bits > 0 {
+                    *block_bits -= 1;
+                } else {
+                    fold_factor_in_place(values, challenge);
+                }
+            }
+        }
+    }
+}
+
 /// Accumulate the round-polynomial samples over one range of factor pairs.
 ///
 /// The folded value at evaluation point `p` is `a + p·(a + b)`, where `a` and
@@ -1413,6 +1484,174 @@ pub(crate) fn sumcheck_terms_indexed(
         challenges.push(challenge);
     }
     Ok((polynomials, challenges))
+}
+
+/// Accumulate the round-polynomial samples over one range of factor pairs,
+/// reading each factor through [`SumcheckFactor::at`].
+fn evaluate_points_mixed_range(
+    factors: &[SumcheckFactor],
+    points: usize,
+    start: usize,
+    end: usize,
+    summand_at: &(impl Fn(&[F2_128]) -> F2_128 + Sync),
+    local: &mut [F2_128],
+) {
+    let count = factors.len();
+    let mut even_values = vec![F2_128::from(0u64); count];
+    let mut odd_values = vec![F2_128::from(0u64); count];
+    let mut slopes = vec![F2_128::from(0u64); count];
+    let mut folded = vec![F2_128::from(0u64); count];
+    for index in start..end {
+        let (even, odd) = (2 * index, 2 * index + 1);
+        for (slot, factor) in factors.iter().enumerate() {
+            let a = factor.at(even);
+            let b = factor.at(odd);
+            even_values[slot] = a;
+            odd_values[slot] = b;
+            slopes[slot] = a + b;
+        }
+        local[0] = local[0] + summand_at(&even_values);
+        if points > 1 {
+            local[1] = local[1] + summand_at(&odd_values);
+        }
+        for (point, target) in local.iter_mut().enumerate().skip(2) {
+            let r = F2_128::from(point as u64);
+            for (slot, (a, slope)) in even_values.iter().zip(&slopes).enumerate() {
+                folded[slot] = *a + r * *slope;
+            }
+            *target = *target + summand_at(&folded);
+        }
+    }
+}
+
+/// Round-polynomial evaluation over [`SumcheckFactor`]s.
+///
+/// Produces exactly the same polynomial as [`evaluate_points_at`] on the
+/// expanded arrays: the factors hold the same values and the pair ranges are
+/// split, summed and combined in the same order.
+pub(crate) fn evaluate_points_mixed(
+    factors: &[SumcheckFactor],
+    len: usize,
+    points: usize,
+    summand_at: &(impl Fn(&[F2_128]) -> F2_128 + Sync),
+) -> Vec<F2_128> {
+    let pairs = len / 2;
+    let requested = std::env::var("MAGNETAR_SUMCHECK_THREADS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|count| count.get())
+                .unwrap_or(1)
+        });
+    let workers = requested.max(1).min(pairs.div_ceil(4096).max(1));
+    let mut polynomial = vec![F2_128::from(0u64); points];
+    if workers > 1 {
+        let partials = std::thread::scope(|scope| {
+            let chunk = pairs.div_ceil(workers);
+            let mut handles = Vec::with_capacity(workers);
+            for start in (0..pairs).step_by(chunk) {
+                let end = (start + chunk).min(pairs);
+                let factors: &[SumcheckFactor] = factors;
+                handles.push(scope.spawn(move || {
+                    let mut local = vec![F2_128::from(0u64); points];
+                    evaluate_points_mixed_range(factors, points, start, end, summand_at, &mut local);
+                    local
+                }));
+            }
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("sumcheck worker"))
+                .collect::<Vec<_>>()
+        });
+        for partial in partials {
+            for (target, value) in polynomial.iter_mut().zip(partial) {
+                *target = *target + value;
+            }
+        }
+    } else {
+        evaluate_points_mixed_range(factors, points, 0, pairs, summand_at, &mut polynomial);
+    }
+    polynomial
+}
+
+/// Fold every factor at `challenge` in place; a round with large dense factors
+/// folds them on separate threads, as [`fold_factors_in_place`] does.
+fn fold_mixed_in_place(factors: &mut [SumcheckFactor], challenge: F2_128) {
+    let large = factors.iter().any(|factor| match factor {
+        SumcheckFactor::Dense(values) => values.len() >= 1 << 16,
+        SumcheckFactor::RepeatLow { values, block_bits }
+        | SumcheckFactor::RepeatHigh { values, block_bits } => values.len() << block_bits >= 1 << 16,
+    });
+    if large && factors.len() > 1 {
+        std::thread::scope(|scope| {
+            for factor in factors.iter_mut() {
+                scope.spawn(move || factor.fold(challenge));
+            }
+        });
+    } else {
+        for factor in factors.iter_mut() {
+            factor.fold(challenge);
+        }
+    }
+}
+
+/// [`sumcheck_terms_indexed`] over [`SumcheckFactor`]s.
+///
+/// `len` is the logical length of the index space (`cells * cycles`); it halves
+/// every round and is the authoritative length, because a fully folded
+/// repeated factor stores a single constant.
+pub(crate) fn sumcheck_terms_mixed(
+    factors: &mut [SumcheckFactor],
+    len: usize,
+    degrees: &[usize],
+    transcript: &mut Sha256Transcript,
+    summand_at: impl Fn(&[F2_128]) -> F2_128 + Sync,
+) -> Result<(Vec<Vec<F2_128>>, Vec<F2_128>), ProofError> {
+    let rounds = len.trailing_zeros() as usize;
+    if degrees.len() != rounds {
+        return Err(ProofError::DimensionMismatch);
+    }
+    let mut polynomials = Vec::with_capacity(rounds);
+    let mut challenges = Vec::with_capacity(rounds);
+    let mut len = len;
+    for degree in degrees {
+        let polynomial = evaluate_points_mixed(factors, len, degree + 1, &summand_at);
+        for coefficient in &polynomial {
+            transcript.absorb("round", &coefficient.value().to_le_bytes());
+        }
+        let challenge = challenge(transcript, "sumcheck");
+        fold_mixed_in_place(factors, challenge);
+        len /= 2;
+        polynomials.push(polynomial);
+        challenges.push(challenge);
+    }
+    Ok((polynomials, challenges))
+}
+
+/// [`fixed_sumcheck_indexed`] over [`SumcheckFactor`]s.
+pub(crate) fn fixed_sumcheck_mixed(
+    factors: &mut [SumcheckFactor],
+    len: usize,
+    challenges: &[F2_128],
+    summand_at: impl Fn(&[F2_128]) -> F2_128 + Sync,
+) -> (Vec<Vec<F2_128>>, F2_128) {
+    let rounds = len.trailing_zeros() as usize;
+    assert_eq!(rounds, challenges.len(), "one challenge per index bit");
+    let mut polynomials = Vec::with_capacity(challenges.len());
+    let mut len = len;
+    for challenge in challenges {
+        polynomials.push(evaluate_points_mixed(factors, len, 3, &summand_at));
+        fold_mixed_in_place(factors, *challenge);
+        len /= 2;
+    }
+    let terminal = summand_at(
+        &factors
+            .iter()
+            .map(|factor| factor.at(0))
+            .collect::<Vec<_>>(),
+    );
+    (polynomials, terminal)
 }
 
 fn sumcheck_terms_shared(
@@ -3148,6 +3387,77 @@ mod tests {
     use super::*;
     use magnetar_executor::execute;
     use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+    /// The compact (`SumcheckFactor`) route must produce exactly the round
+    /// polynomials and challenges of the expanded-array route: the factors hold
+    /// the same values and the pair ranges are summed in the same order.
+    #[test]
+    fn compact_factors_match_the_expanded_sumcheck() {
+        let (cells, cycles) = (4usize, 8usize);
+        let cycle_bits = cycles.trailing_zeros() as usize;
+        let mut state = 0x5eed_0f_c0ffeeu64;
+        let mut fill = |len: usize| -> Vec<F2_128> {
+            (0..len)
+                .map(|_| {
+                    state = state
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    F2_128::from(state)
+                })
+                .collect()
+        };
+        let eq_cycle = fill(cycles);
+        let increment = fill(cycles);
+        let eq_cell = fill(cells);
+        let write = fill(cells * cycles);
+        let value = fill(cells * cycles);
+        let expand_low = |block: &[F2_128]| {
+            let mut out = Vec::with_capacity(cells * block.len());
+            for _ in 0..cells {
+                out.extend_from_slice(block);
+            }
+            out
+        };
+        let expand_high = |block: &[F2_128]| {
+            let mut out = Vec::with_capacity(block.len() * cycles);
+            for element in block {
+                for _ in 0..cycles {
+                    out.push(*element);
+                }
+            }
+            out
+        };
+        let mut dense = vec![
+            expand_low(&eq_cycle),
+            write.clone(),
+            expand_low(&increment),
+            value.clone(),
+            expand_high(&eq_cell),
+        ];
+        let mut compact = vec![
+            SumcheckFactor::repeat_low(eq_cycle, cycle_bits),
+            SumcheckFactor::Dense(write),
+            SumcheckFactor::repeat_low(increment, cycle_bits),
+            SumcheckFactor::Dense(value),
+            SumcheckFactor::repeat_high(eq_cell, cycle_bits),
+        ];
+        let summand = |folded: &[F2_128]| folded[0] * (folded[1] * folded[2] + folded[3] * folded[4]);
+        let degrees = vec![3usize; cells.trailing_zeros() as usize + cycle_bits];
+        let mut dense_transcript = Sha256Transcript::new("compact-factor-test");
+        let (dense_rounds, dense_challenges) =
+            sumcheck_terms_indexed(&mut dense, &degrees, &mut dense_transcript, summand).unwrap();
+        let mut compact_transcript = Sha256Transcript::new("compact-factor-test");
+        let (compact_rounds, compact_challenges) = sumcheck_terms_mixed(
+            &mut compact,
+            cells * cycles,
+            &degrees,
+            &mut compact_transcript,
+            summand,
+        )
+        .unwrap();
+        assert_eq!(dense_rounds, compact_rounds);
+        assert_eq!(dense_challenges, compact_challenges);
+    }
 
     fn lcg_factors(count: usize, len: usize) -> Vec<Vec<F2_128>> {
         let mut state = 0x1234_5678_9abc_def0u64;

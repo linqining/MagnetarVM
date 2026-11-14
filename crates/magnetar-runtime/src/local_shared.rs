@@ -8,11 +8,11 @@ use magnetar_proof::ProofError;
 use magnetar_transcript::Sha256Transcript;
 
 use crate::binary_twist::{
-    eq_vector, replay_terms_derived, sample_point, sumcheck_terms_indexed,
+    eq_vector, fixed_sumcheck_mixed, replay_terms_derived, sample_point, sumcheck_terms_indexed,
+    sumcheck_terms_mixed, SumcheckFactor,
 };
 use crate::linear_twist::{
-    eq_points_local, eval_mle, fixed_sumcheck_indexed, linear_pcs, replay_fixed, witness_shape,
-    LinearTwistShape,
+    eq_points_local, eval_mle, linear_pcs, replay_fixed, witness_shape, LinearTwistShape,
 };
 use crate::local_twist::padded;
 
@@ -89,6 +89,10 @@ fn flat_onehot(witness: &BinaryTwistWitness, write: bool, cycles: usize) -> Vec<
 }
 
 /// Repeats one cycle-indexed vector under every cell of the flattened layout.
+///
+/// The prover no longer builds these arrays (the sum-checks read the compact
+/// [`SumcheckFactor`] form instead); the test below pins the layout it replaces.
+#[cfg(test)]
 fn repeated_blocks(values: &[F2_128], cells: usize, cycles: usize) -> Vec<F2_128> {
     let mut flat = vec![F2_128::from(0u64); cells * cycles];
     for cell in 0..cells {
@@ -218,7 +222,6 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
     let write_flat = flat_onehot(witness, true, cycles);
     let read_flat = flat_onehot(witness, false, cycles);
     let (val_flat, inc) = build_val_flat(witness);
-    let inc_flat = repeated_blocks(&inc, cells, cycles);
     profile.mark("tables", started.elapsed());
     let started = std::time::Instant::now();
     let pcs = linear_pcs(cycles);
@@ -257,21 +260,35 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
     profile.mark("commit", started.elapsed());
     let started = std::time::Instant::now();
     let eq = eq_vector(&cycle_point, cycles);
-    let eq_flat = repeated_blocks(&eq, cells, cycles);
-    let mut factors = vec![eq_flat, write_flat.clone(), inc_flat, val_flat.clone(), read_flat];
+    // `eq(cycle_point)` and the increment column repeat under every cell, so
+    // they stay as `cycles`-long blocks instead of being expanded to
+    // `cells * cycles` field elements each (the summand reads the same values,
+    // so the round polynomials and the proof are unchanged).
+    let mut factors = vec![
+        SumcheckFactor::repeat_low(eq, cycle_bits),
+        SumcheckFactor::Dense(write_flat.clone()),
+        SumcheckFactor::repeat_low(inc.clone(), cycle_bits),
+        SumcheckFactor::Dense(val_flat.clone()),
+        SumcheckFactor::Dense(read_flat),
+    ];
     profile.mark("rw factors", started.elapsed());
     if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
+        let dense = factors
+            .iter()
+            .filter(|factor| matches!(factor, SumcheckFactor::Dense(_)))
+            .count();
         eprintln!(
-            "local factors: {} dense arrays of {} fields, {}",
-            factors.len(),
+            "local factors: {dense} dense arrays of {} fields ({} stored compactly), {}",
             cells * cycles,
+            factors.len() - dense,
             crate::memory_gib()
         );
     }
     let started = std::time::Instant::now();
     let gamma_copy = gamma;
-    let (rw_rounds, rw_challenges) = sumcheck_terms_indexed(
+    let (rw_rounds, rw_challenges) = sumcheck_terms_mixed(
         &mut factors,
+        cells * cycles,
         &vec![3usize; cells.trailing_zeros() as usize + cycle_bits],
         &mut transcript,
         move |folded| {
@@ -449,23 +466,25 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
     let _ = (read_valid_index, write_bits_start, write_valid_index, endpoint_start);
     // Final state rounds.
     let eq_cell = eq_vector(&rk, cells);
-    let mut eq_cell_flat = vec![F2_128::from(0u64); cells * cycles];
-    let mut inc_cell_flat = vec![F2_128::from(0u64); cells * cycles];
-    for (cell, eq_value) in eq_cell.iter().enumerate() {
-        for (cycle, inc_value) in inc.iter().enumerate() {
-            let index = cell * cycles + cycle;
-            eq_cell_flat[index] = *eq_value;
-            inc_cell_flat[index] = *inc_value;
-        }
-    }
+    // Both cell-indexed factors repeat over the index space: the equality
+    // vector is constant along the cycles, the increment column along the
+    // cells. Storing the blocks (`cells` and `cycles` entries) instead of two
+    // `cells * cycles` arrays leaves the round polynomials unchanged.
     if std::env::var_os("MAGNETAR_PROFILE_LOCAL").is_some() {
         eprintln!("local final factors ready: {}", crate::memory_gib());
     }
     let final_rounds = {
-        let mut final_factors = vec![eq_cell_flat, write_flat, inc_cell_flat];
-        let (rounds, _) = fixed_sumcheck_indexed(&mut final_factors, &rw_challenges, |folded| {
-            folded[0] * folded[1] * folded[2]
-        });
+        let mut final_factors = vec![
+            SumcheckFactor::repeat_high(eq_cell, cycle_bits),
+            SumcheckFactor::Dense(write_flat),
+            SumcheckFactor::repeat_low(inc, cycle_bits),
+        ];
+        let (rounds, _) = fixed_sumcheck_mixed(
+            &mut final_factors,
+            cells * cycles,
+            &rw_challenges,
+            |folded| folded[0] * folded[1] * folded[2],
+        );
         rounds
     };
     profile.mark("final rounds", started.elapsed());
