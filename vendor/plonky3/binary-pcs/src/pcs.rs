@@ -32,7 +32,7 @@ use p3_binary_dft::{AdditiveNtt, AdditiveRsEncoder, EncodableLevel};
 use p3_binary_field::TowerLevel;
 use p3_challenger::fs::TranscriptField;
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
-use p3_commit::{Encoder, Mmcs, MultilinearPcs};
+use p3_commit::{Encoder, Mmcs, MultilinearPcs, StreamingMmcs};
 use p3_field::ExtensionField;
 use p3_multilinear_util::point::Point;
 use p3_multilinear_util::poly::Poly;
@@ -49,7 +49,10 @@ use crate::error::BinaryPcsError;
 use crate::fold::{ChallengeField, FoldAlphabet};
 use crate::params::{BinaryPcsConfig, BinaryPcsConfigError};
 use crate::proof::BinaryPcsProof;
-use crate::prover::{BinaryPcsProverData, commit, fold_rounds_with, open_queries};
+use crate::prover::{
+    BinaryPcsProverData, commit, fold_rounds_streaming, fold_rounds_with, open_queries,
+    open_queries_streaming,
+};
 use crate::transcript::{BinaryPcsProverTranscript, BinaryPcsShape, BinaryPcsVerifierTranscript};
 use crate::verifier::{
     check_canonical_pow_witness, check_round_and_final_lengths, verify_query_paths,
@@ -301,6 +304,117 @@ where
             })
             .collect();
         Ok(self.finish_open(prover_data, evals, challenger))
+    }
+
+    /// Produce a prescribed-point opening from the message, re-deriving its codeword.
+    ///
+    /// [`Self::try_open_at`] needs a committed codeword because the first fold batch
+    /// reads its leaves and the query phase opens rows from its Merkle tree. This
+    /// entry point instead folds a streamed encoding of `message` one rate coset at a
+    /// time, and builds the base opened rows plus pruned multiproof from a second
+    /// streamed encoding, so neither the codeword nor its tree is ever materialised.
+    ///
+    /// The caller must already have committed the same message (through a batch or
+    /// streamed commit) and observed the returned root, exactly as `commit` does:
+    /// this method performs no commitment observation of its own.
+    ///
+    /// `message` holds one cell per stacked evaluation in the layout's variable
+    /// order ([`Layout::write_message`] / [`Layout::borrowed_message`]), and `folding`
+    /// is the commit phase's folding factor. Only zero is supported, the width-one
+    /// codeword [`Self::try_open_at`] also commits.
+    ///
+    /// The returned proof is byte-identical to [`Self::try_open_at`]'s over the same
+    /// message: same fold engine (the per-coset `fold_coset` the committed fold also
+    /// uses), same round commitments, same queried rows and boundary digests.
+    ///
+    /// # Errors
+    ///
+    /// The same protocol and point-shape errors [`Self::try_open_at`] returns; the
+    /// challenger is untouched before those checks pass.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless `folding` is zero, the layout commits at zero preprocessing
+    /// depth, and `message` covers the committed hypercube.
+    #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(name = "binary pcs open streamed", skip_all)]
+    pub fn open_at_streaming<Challenger>(
+        &self,
+        witness: Witness<F>,
+        message: &[F],
+        folding: usize,
+        protocol: &OpeningProtocol,
+        points: &[Point<EF>],
+        challenger: &mut Challenger,
+    ) -> Opening<F, EF, MT, MX>
+    where
+        MT: StreamingMmcs<F>,
+        Challenger: FieldChallenger<F>
+            + GrindingChallenger<Witness = F>
+            + CanSampleUniformBits<F>
+            + CanObserve<MT::Commitment>
+            + CanObserve<MX::Commitment>,
+    {
+        self.validate_opening_protocol(protocol)?;
+        let mut layout = PcsLayout::<F, EF>::from_witness(witness);
+        let layout_folding = layout.folding();
+        if layout_folding != 0 {
+            return Err(BinaryPcsError::OpeningPreprocessingDepth {
+                folding: layout_folding,
+            });
+        }
+        assert_eq!(folding, 0, "the streamed opening commits a width-one codeword");
+        assert_eq!(
+            message.len(),
+            1usize << self.config.num_variables(),
+            "the message must cover the committed hypercube"
+        );
+        Self::validate_points(protocol, points)?;
+
+        let evals = protocol
+            .iter_openings()
+            .zip(points)
+            .map(|((table_idx, batch), point)| {
+                layout.eval_at(table_idx, batch, point, challenger)
+            })
+            .collect::<Vec<_>>();
+
+        let shape = BinaryPcsShape::new(&self.config);
+        let mut transcript = BinaryPcsProverTranscript::new(challenger, shape);
+
+        let (sumcheck_data, rounds, _randomness, final_codeword) =
+            fold_rounds_streaming::<F, EF, E, MX, _>(
+                layout,
+                &self.config,
+                &self.encoder,
+                &self.round_mmcs,
+                message,
+                folding,
+                &mut transcript,
+            );
+        let query_proofs = open_queries_streaming::<F, EF, E, MT, MX, _>(
+            &self.config,
+            &self.encoder,
+            message,
+            &self.mmcs,
+            &self.round_mmcs,
+            &mut transcript,
+            &rounds,
+            &final_codeword,
+        );
+
+        // Require that every described step was played.
+        transcript.finish();
+
+        Ok(BinaryPcsProof {
+            sumcheck: sumcheck_data,
+            rounds: query_proofs.rounds,
+            base_opened_values: query_proofs.base_opened_values,
+            base_multi_proof: query_proofs.base_multi_proof,
+            final_codeword: Poly::new(final_codeword),
+            pow_witness: query_proofs.pow_witness,
+            evals,
+        })
     }
 
     /// Produce a prescribed-point opening from evaluations the caller already holds.

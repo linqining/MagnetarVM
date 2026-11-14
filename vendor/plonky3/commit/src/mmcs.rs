@@ -336,3 +336,59 @@ impl<'a, T: Send + Sync + Clone, InputMmcs: Mmcs<T>> From<&'a BatchOpening<T, In
         Self::new(&batch_opening.opened_values, &batch_opening.opening_proof)
     }
 }
+
+/// A commitment scheme that can rebuild one committed matrix's pruned
+/// multiproof from a streamed leaf sequence.
+///
+/// [`Mmcs::open_multi_batch`] needs the scheme's whole prover data: the leaves
+/// to read the opened rows from and every digest layer to collect the paths.
+/// A prover that can re-derive the committed matrix one row run at a time (an
+/// RS codeword, a streamed trace) can instead hash the runs as they arrive and
+/// keep only what the proof sends. This trait is that seam.
+///
+/// The builder hashes a whole number of rows per call, keeps the asked-for
+/// rows as they pass, and records only the boundary sibling digests of the
+/// pruned frontier. Its output must be the same `(opened_values, MultiProof)`
+/// `Mmcs::open_multi_batch` returns for the same matrix and indices.
+pub trait StreamingMmcs<T: Send + Sync + Clone>: Mmcs<T> {
+    /// The builder one streamed multiproof uses.
+    type Opener: StreamingOpener<T, MultiProof = Self::MultiProof>;
+
+    /// Plan a streamed multiproof over a `height x width` matrix.
+    ///
+    /// `indices` are the leaf rows the proof opens, in the caller's order; a
+    /// repeated index is kept once per occurrence, exactly as
+    /// [`Mmcs::open_multi_batch`] returns it.
+    ///
+    /// # Panics
+    ///
+    /// Implementations may panic on a shape or index set their commitment
+    /// scheme cannot stream (for example a tree their frontier walk does not
+    /// build); a shape they reject must be one `Mmcs::commit` rejects too.
+    fn streaming_opener(&self, height: usize, width: usize, indices: &[usize]) -> Self::Opener;
+}
+
+/// One streamed matrix's pruned multiproof builder.
+///
+/// See [`StreamingMmcs`]. Push the matrix's rows in order in whole-row runs;
+/// [`Self::finish`] consumes the builder and returns the opened rows (in the
+/// caller's index order) and the scheme's pruned multi-opening proof.
+pub trait StreamingOpener<T: Send + Sync + Clone> {
+    /// The scheme's pruned multi-opening proof type.
+    type MultiProof;
+
+    /// Hand the next run of matrix rows to the builder.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `rows.len()` is not a whole number of the matrix's rows, or if
+    /// more rows are pushed than the builder was planned for.
+    fn push_rows(&mut self, rows: &[T]);
+
+    /// Finish the opening: the opened rows and the pruned multiproof.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless every planned row was pushed.
+    fn finish(self) -> (Vec<Vec<T>>, Self::MultiProof);
+}

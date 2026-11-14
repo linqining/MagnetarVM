@@ -8,6 +8,7 @@ mod hiding_mmcs;
 mod merkle_tree;
 mod mmcs;
 mod pruning;
+mod streaming;
 
 #[cfg(test)]
 mod packed_row_tests;
@@ -17,3 +18,4 @@ pub use merkle_tree::MerkleTree;
 pub use mmcs::{MerkleTreeError, MerkleTreeMmcs, PrunedBatchOpening, PrunedProofError};
 pub use p3_symmetric::MerkleCap;
 pub use pruning::{MerkleAuthPath, PrunedMerklePaths};
+pub use streaming::MerkleStreamingOpener;

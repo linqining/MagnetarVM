@@ -415,6 +415,58 @@ impl P3BinaryPcs {
         std::env::var_os("MAGNETAR_LEGACY_PCS_COMMIT").is_some()
     }
 
+    /// Whether the streamed opening path is selected (`MAGNETAR_STREAM_PCS_OPEN=1`).
+    ///
+    /// The streamed opening re-derives the codeword from the stacked message one
+    /// coset at a time, so neither the codeword nor its Merkle tree is
+    /// materialised (see `open_at_streaming` in the vendored binary PCS). It is
+    /// byte-identical but costs one extra codeword re-encode and one extra leaf
+    /// hash pass today (the cap is recomputed inside the opening), so it stays
+    /// opt-in for memory-bound runs: at `2^17` it takes the peak footprint from
+    /// 3.02 to 2.10 GiB for ~+4 % prove CPU, and at `2^16` the peak floor is the
+    /// selected product phase, so it moves no peak there.
+    fn stream_open() -> bool {
+        std::env::var_os("MAGNETAR_STREAM_PCS_OPEN").is_some()
+    }
+
+    /// The stacked message for a witness: one cell per stacked evaluation.
+    fn stacked_message(
+        witness: &Witness<F>,
+        stacked_variables: usize,
+    ) -> Result<Vec<F>, ProofError> {
+        let len = 1usize
+            .checked_shl(stacked_variables as u32)
+            .ok_or_else(|| ProofError::Pcs("stacked variable count overflows usize".into()))?;
+        let mut message = F::zero_vec(len);
+        <SuffixProver<F, F> as Layout<F, F>>::write_message(witness, 0, &mut message);
+        Ok(message)
+    }
+
+    /// Streamed commit + streamed opening.
+    ///
+    /// Returns the same `(cap, proof)` the retained path returns: the cap comes
+    /// from [`crate::streaming::streamed_codeword_root`] over the same message,
+    /// it is observed into a fresh transcript exactly as `commit` observes the
+    /// batch root, and the vendored `open_at_streaming` runs the same fold and
+    /// query phases over a streamed re-encode.
+    fn streamed_open(
+        &self,
+        backend: &P3PcsBackend,
+        witness: Witness<F>,
+        stacked_variables: usize,
+        protocol: &OpeningProtocol,
+        points: &[Point<F>],
+    ) -> Result<(P3Cap, P3Proof), ProofError> {
+        let message = Self::stacked_message(&witness, stacked_variables)?;
+        let cap = crate::streaming::streamed_codeword_root(&message, 1, self.log_inv_rate);
+        let mut challenger = Self::challenger();
+        backend.observe_commitment(&cap, &mut challenger);
+        let proof = backend
+            .open_at_streaming(witness, &message, 0, protocol, points, &mut challenger)
+            .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        Ok((cap, proof))
+    }
+
     /// Root-only commitment of a stacked witness: streamed encode + incremental root.
     ///
     /// The commit-only entry points (`Pcs::commit`, `commit_batch`,
@@ -656,18 +708,23 @@ impl P3BinaryPcs {
             self.pow_bits,
             self.log_folding_factor,
         )?;
-        let mut challenger = Self::challenger();
         let witness = SuffixProver::<F, F>::new_witness(vec![table], 0);
-        let (cap, data) = backend
-            .commit(witness, &mut challenger)
-            .map_err(|error| ProofError::Pcs(error.to_string()))?;
         let p3_points = points
             .iter()
             .map(|point| Self::point(&point.point))
             .collect::<Vec<_>>();
-        let proof = backend
-            .open_at(data, &protocol, &p3_points, &mut challenger)
-            .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        let (cap, proof) = if !Self::stream_open() {
+            let mut challenger = Self::challenger();
+            let (cap, data) = backend
+                .commit(witness, &mut challenger)
+                .map_err(|error| ProofError::Pcs(error.to_string()))?;
+            let proof = backend
+                .open_at(data, &protocol, &p3_points, &mut challenger)
+                .map_err(|error| ProofError::Pcs(error.to_string()))?;
+            (cap, proof)
+        } else {
+            self.streamed_open(&backend, witness, stacked_variables, &protocol, &p3_points)?
+        };
         Ok(P3BatchOpening {
             commitment: P3BatchCommitment {
                 cap,
@@ -923,23 +980,28 @@ impl P3BinaryPcs {
             self.pow_bits,
             self.log_folding_factor,
         )?;
-        let mut challenger = Self::challenger();
         let witness = SuffixProver::<F, F>::new_witness(p3_tables, 0);
-        let commit_started = std::time::Instant::now();
-        let (cap, data) = backend
-            .commit(witness, &mut challenger)
-            .map_err(|error| ProofError::Pcs(error.to_string()))?;
-        let commit_time = commit_started.elapsed();
+        let streamed = Self::stream_open();
         let open_started = std::time::Instant::now();
-        let proof = backend
-            .open_at(data, &protocol, &p3_points, &mut challenger)
-            .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        let (cap, proof) = if !streamed {
+            let mut challenger = Self::challenger();
+            let (cap, data) = backend
+                .commit(witness, &mut challenger)
+                .map_err(|error| ProofError::Pcs(error.to_string()))?;
+            let proof = backend
+                .open_at(data, &protocol, &p3_points, &mut challenger)
+                .map_err(|error| ProofError::Pcs(error.to_string()))?;
+            (cap, proof)
+        } else {
+            self.streamed_open(&backend, witness, stacked_variables, &protocol, &p3_points)?
+        };
         let open_time = open_started.elapsed();
         if profile {
             eprintln!(
-                "pcs open_mosaic: tables {tables_time:?} commit {commit_time:?} open_at {open_time:?} tables={} points={} stacked_vars={stacked_variables}",
+                "pcs open_mosaic: tables {tables_time:?} open {open_time:?} tables={} points={} stacked_vars={stacked_variables} streamed={}",
                 tables.len(),
-                points.len()
+                points.len(),
+                streamed
             );
         }
         Ok(P3MosaicOpening {
@@ -1067,24 +1129,37 @@ impl Pcs for P3BinaryPcs {
             self.pow_bits,
             self.log_folding_factor,
         )?;
-        let mut challenger = Self::challenger();
-        let commit_started = std::time::Instant::now();
-        let (cap, data) = Self::commit_with(&backend, values, &mut challenger)?;
-        let commit_time = commit_started.elapsed();
+        let streamed = Self::stream_open();
         let open_started = std::time::Instant::now();
-        let proof = backend
-            .open_at(
-                data,
+        let (cap, proof) = if !streamed {
+            let mut challenger = Self::challenger();
+            let (cap, data) = Self::commit_with(&backend, values, &mut challenger)?;
+            let proof = backend
+                .open_at(
+                    data,
+                    &Self::protocol(pcs_log),
+                    core::slice::from_ref(&Self::point(point)),
+                    &mut challenger,
+                )
+                .map_err(|error| ProofError::Pcs(error.to_string()))?;
+            (cap, proof)
+        } else {
+            let (table, _, _) = Self::table(values)?;
+            let witness = SuffixProver::<F, F>::new_witness(vec![table], 0);
+            self.streamed_open(
+                &backend,
+                witness,
+                pcs_log,
                 &Self::protocol(pcs_log),
                 core::slice::from_ref(&Self::point(point)),
-                &mut challenger,
-            )
-            .map_err(|error| ProofError::Pcs(error.to_string()))?;
+            )?
+        };
         let open_time = open_started.elapsed();
         if profile {
             eprintln!(
-                "pcs open: commit {commit_time:?} open_at {open_time:?} values={} pcs_log={pcs_log}",
-                values.len()
+                "pcs open: {open_time:?} values={} pcs_log={pcs_log} streamed={}",
+                values.len(),
+                streamed
             );
         }
         Ok(P3Opening {
@@ -1688,5 +1763,71 @@ mod tests {
         let opening = pcs.open_mosaic(&tables, &points).unwrap();
         assert!(pcs.verify_mosaic(&opening, &points, &values).unwrap());
         let _ = commitment;
+    }
+
+    /// The streamed opening must reproduce the retained path byte for byte: the
+    /// same commitment root, and a proof whose transcript, fold batches and
+    /// query openings are identical.
+    #[test]
+    fn streamed_opening_matches_the_retained_path() {
+        for bits in [8usize, 10] {
+            for rate in [1usize, 2] {
+                let pcs = P3BinaryPcs::with_params(100, rate, 16, 1);
+                let values = values(1 << bits);
+                let point = (0..bits as u64).map(F2_128::from).collect::<Vec<_>>();
+                let protocol = P3BinaryPcs::protocol(bits);
+                let at = [P3BinaryPcs::point(&point)];
+
+                // Retained path: materialise the codeword and its Merkle tree.
+                let backend = P3BinaryPcs::backend_with(
+                    bits,
+                    pcs.security_level,
+                    pcs.log_inv_rate,
+                    pcs.pow_bits,
+                    pcs.log_folding_factor,
+                )
+                .unwrap();
+                let mut challenger = P3BinaryPcs::challenger();
+                let (retained_cap, data) =
+                    P3BinaryPcs::commit_with(&backend, &values, &mut challenger).unwrap();
+                let retained_proof = backend
+                    .open_at(data, &protocol, &at, &mut challenger)
+                    .unwrap();
+
+                // Streamed path: the same message, re-derived one coset at a time.
+                let (table, _, _) = P3BinaryPcs::table(&values).unwrap();
+                let witness = SuffixProver::<F, F>::new_witness(vec![table], 0);
+                let message = P3BinaryPcs::stacked_message(&witness, bits).unwrap();
+                let streamed_cap =
+                    crate::streaming::streamed_codeword_root(&message, 1, rate);
+                let mut streamed_challenger = P3BinaryPcs::challenger();
+                backend.observe_commitment(&streamed_cap, &mut streamed_challenger);
+                let streamed_proof = backend
+                    .open_at_streaming(
+                        witness,
+                        &message,
+                        0,
+                        &protocol,
+                        &at,
+                        &mut streamed_challenger,
+                    )
+                    .unwrap();
+
+                assert_eq!(retained_cap, streamed_cap, "cap bits={bits} rate={rate}");
+                assert_eq!(
+                    bincode::serialize(&retained_proof).unwrap(),
+                    bincode::serialize(&streamed_proof).unwrap(),
+                    "proof bytes bits={bits} rate={rate}"
+                );
+
+                // The streamed proof still verifies, against the streamed cap.
+                let mut verifier = P3BinaryPcs::challenger();
+                backend.observe_commitment(&streamed_cap, &mut verifier);
+                let evals = backend
+                    .verify_at(&streamed_cap, &streamed_proof, &protocol, &at, &mut verifier)
+                    .unwrap();
+                assert!(!evals.is_empty());
+            }
+        }
     }
 }

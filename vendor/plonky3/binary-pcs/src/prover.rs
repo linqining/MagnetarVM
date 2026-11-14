@@ -24,17 +24,18 @@
 
 use alloc::vec::Vec;
 
+use p3_binary_field::TowerLevel;
 use p3_challenger::fs::TranscriptField;
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
-use p3_commit::{Encoder, Mmcs};
+use p3_commit::{Encoder, Mmcs, StreamingMmcs, StreamingOpener};
 use p3_field::{ExtensionField, Field};
-use p3_matrix::dense::{DenseMatrix, RowMajorMatrix};
+use p3_matrix::dense::{DenseMatrix, RowMajorMatrix, RowMajorMatrixView};
 use p3_multilinear_util::point::Point;
 use p3_sumcheck::SumcheckData;
 use p3_sumcheck::layout::{Layout, SuffixResidualProver, Table, Witness};
 
 use crate::PcsLayout;
-use crate::fold::{ChallengeField, FoldAlphabet, fold_codeword_batch};
+use crate::fold::{ChallengeField, FoldAlphabet, fold_codeword_batch, fold_coset};
 use crate::params::BinaryPcsConfig;
 use crate::proof::RoundProof;
 use crate::transcript::BinaryPcsProverTranscript;
@@ -297,6 +298,268 @@ where
         randomness,
         final_codeword,
     )
+}
+
+/// Fold one batch out of a message that is re-encoded on the fly.
+///
+/// `fold_codeword_batch` maps each aligned `2^arity`-symbol coset to one output
+/// symbol, and `fold_coset` is that computation including its global offsets.
+/// So the codeword never has to exist: the encoder hands over one rate coset at
+/// a time and every `2^arity` run is folded as it arrives, keeping only one run
+/// plus the output live.
+///
+/// The codeword is a single column (the commit phase runs at zero preprocessing
+/// depth), so a symbol is one matrix row.
+fn fold_codeword_streamed<F, E, EF>(
+    encoder: &E,
+    message: &[F],
+    log_inv_rate: usize,
+    challenges: &[EF],
+) -> Vec<EF>
+where
+    F: TowerLevel,
+    EF: ExtensionField<F> + TowerLevel,
+    E: Encoder<F>,
+{
+    assert!(!challenges.is_empty(), "a fold runs at least one round");
+    let arity = challenges.len();
+    let run = 1usize << arity;
+    let codeword_len = message
+        .len()
+        .checked_shl(log_inv_rate as u32)
+        .expect("codeword length overflows usize");
+    assert!(
+        codeword_len.is_multiple_of(run),
+        "the fold coset must divide the codeword"
+    );
+
+    let mut folded = Vec::with_capacity(codeword_len / run);
+    let mut scratch = Vec::new();
+    let mut pending: Vec<F> = Vec::with_capacity(run);
+    let mut coset_index = 0usize;
+    encoder.encode_batch_chunks(
+        RowMajorMatrixView::new(message, 1),
+        log_inv_rate,
+        &mut |chunk| {
+            for &symbol in chunk {
+                pending.push(symbol);
+                if pending.len() == run {
+                    folded.push(fold_coset(
+                        coset_index,
+                        &pending,
+                        challenges,
+                        &mut scratch,
+                    ));
+                    pending.clear();
+                    coset_index += 1;
+                }
+            }
+        },
+    );
+    assert!(
+        pending.is_empty(),
+        "the encoder's codeword length must be a whole number of fold cosets"
+    );
+    folded
+}
+
+/// The fold phase, re-deriving the base codeword instead of reading committed leaves.
+///
+/// This mirrors [`fold_rounds_with`] exactly - same sumcheck rounds, same batch
+/// schedule, same round commitments - with one change: the first batch's
+/// codeword is folded out of a streamed encoding of `message`, so neither the
+/// base codeword nor its Merkle tree is ever materialised. Batches after the
+/// first fold the previous batch's committed leaves as usual.
+///
+/// # Panics
+///
+/// Panics unless the commit phase ran at zero preprocessing depth (a width-one
+/// codeword) and `message` covers the committed hypercube.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+#[tracing::instrument(name = "binary pcs fold rounds streamed", skip_all)]
+pub(crate) fn fold_rounds_streaming<F, EF, E, MX, Ch>(
+    layout: PcsLayout<F, EF>,
+    config: &BinaryPcsConfig,
+    encoder: &E,
+    round_mmcs: &MX,
+    message: &[F],
+    folding: usize,
+    transcript: &mut BinaryPcsProverTranscript<'_, F, EF, Ch>,
+) -> (
+    SumcheckData<F, EF>,
+    Vec<RoundCommitment<EF, MX>>,
+    Point<EF>,
+    Vec<EF>,
+)
+where
+    F: TranscriptField + FoldAlphabet<EF> + TowerLevel,
+    EF: ChallengeField<F> + ExtensionField<F> + FoldAlphabet<EF> + TowerLevel,
+    E: Encoder<F> + Sync,
+    MX: Mmcs<EF>,
+    Ch: FieldChallenger<F>
+        + GrindingChallenger<Witness = F>
+        + CanSampleUniformBits<F>
+        + CanObserve<MX::Commitment>,
+{
+    assert_eq!(folding, 0, "the streamed fold commits a width-one codeword");
+    assert_eq!(
+        message.len(),
+        1usize << config.num_variables(),
+        "the message must cover the committed hypercube"
+    );
+
+    let mut sumcheck_data = SumcheckData::default();
+
+    // Each challenge width uses its carryless-multiply representation for round arithmetic.
+    // The transcript carries tower elements in both cases.
+    let (mut sumcheck, mut randomness) = transcript.fold_batch(|challenger| {
+        layout.into_sumcheck_in::<<EF as ChallengeField<F>>::SumcheckRepr, _>(
+            &mut sumcheck_data,
+            0,
+            challenger,
+        )
+    });
+    assert_eq!(
+        randomness.num_variables(),
+        0,
+        "the commit phase runs at zero preprocessing depth, so the sumcheck consumes no head rounds"
+    );
+
+    let num_batches = config.num_fold_batches();
+    let mut rounds: Vec<RoundCommitment<EF, MX>> = Vec::with_capacity(num_batches - 1);
+    let mut final_codeword = Vec::new();
+    for (batch, (start, arity)) in config.fold_batches().enumerate() {
+        let _batch_span = tracing::info_span!("fold batch", batch, start, arity).entered();
+        let mut challenges = Vec::with_capacity(arity);
+        for round in start..start + arity {
+            let challenge = tracing::debug_span!("sumcheck round", round).in_scope(|| {
+                // A sumcheck round seeds a sub-transcript of its own.
+                transcript.fold_batch(|challenger| {
+                    sumcheck.compute_sumcheck_polynomials(&mut sumcheck_data, challenger, 1, 0)
+                })
+            });
+            challenges.push(challenge.as_slice()[0]);
+            randomness.extend(&challenge);
+        }
+
+        let folded = tracing::info_span!("fold codeword").in_scope(|| {
+            let encoded = (arity >= MIN_ENCODED_ARITY)
+                .then(|| encode_bound_message(&mut sumcheck, config.log_inv_rate()))
+                .flatten();
+            encoded.unwrap_or_else(|| {
+                if batch == 0 {
+                    fold_codeword_streamed(encoder, message, config.log_inv_rate(), &challenges)
+                } else {
+                    let source = &rounds[batch - 1].merkle_data;
+                    fold_codeword_batch(&round_mmcs.get_matrices(source)[0].values, &challenges)
+                }
+            })
+        });
+        if batch + 1 < num_batches {
+            let (commitment, round_data) = tracing::info_span!("commit folded codeword")
+                .in_scope(|| round_mmcs.commit_matrix(RowMajorMatrix::new(folded, 1)));
+            transcript.oracle_commitment(commitment.clone());
+            rounds.push(RoundCommitment {
+                commitment,
+                merkle_data: round_data,
+            });
+        } else {
+            final_codeword = folded;
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    sumcheck.settle();
+
+    (sumcheck_data, rounds, randomness, final_codeword)
+}
+
+/// The query phase, re-deriving the base codeword instead of reading committed leaves.
+///
+/// Mirrors [`open_queries`] with one change: the base commitment's opened rows
+/// and pruned multiproof are built by a streamed encoding fed to the scheme's
+/// [`StreamingMmcs`] opener. The round openings still read their committed
+/// leaves, which are small.
+///
+/// # Panics
+///
+/// Panics unless `message` covers the committed hypercube and the codeword
+/// height is a power of two.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+#[tracing::instrument(name = "binary pcs open queries streamed", skip_all)]
+pub(crate) fn open_queries_streaming<F, EF, E, MT, MX, Ch>(
+    config: &BinaryPcsConfig,
+    encoder: &E,
+    message: &[F],
+    mmcs: &MT,
+    round_mmcs: &MX,
+    transcript: &mut BinaryPcsProverTranscript<'_, F, EF, Ch>,
+    rounds: &[RoundCommitment<EF, MX>],
+    final_codeword: &[EF],
+) -> QueryProofs<F, EF, MT, MX>
+where
+    F: TranscriptField + TowerLevel,
+    EF: ExtensionField<F> + TowerLevel,
+    E: Encoder<F> + Sync,
+    MT: StreamingMmcs<F>,
+    MX: Mmcs<EF>,
+    Ch: FieldChallenger<F> + GrindingChallenger<Witness = F> + CanSampleUniformBits<F>,
+{
+    assert_eq!(
+        rounds.len(),
+        config.num_fold_batches() - 1,
+        "rounds is the caller's own fold-phase output, never proof-supplied data"
+    );
+
+    // The last word is sent in the clear, not committed by a Merkle root. Bind every
+    // symbol before grinding or sampling so it cannot be chosen after seeing queries.
+    transcript.final_codeword(final_codeword);
+    let pow_witness = transcript.query_pow();
+
+    // The draw indexes pairs, so each position is lifted back to a coset start.
+    let shift = config.log_folding_factor() - 1;
+    let indices: Vec<usize> = transcript
+        .query_pairs()
+        .into_iter()
+        .map(|pair| pair << shift)
+        .collect();
+    let base_indices = flat_coset_indices(&indices, 0, config.log_folding_factor());
+
+    // Re-derive the base codeword one rate coset at a time and keep only what the
+    // proof sends: the opened rows and the pruned paths' boundary digests.
+    let codeword_height = message
+        .len()
+        .checked_shl(config.log_inv_rate() as u32)
+        .expect("codeword height overflows usize");
+    let mut opener = mmcs.streaming_opener(codeword_height, 1, &base_indices);
+    encoder.encode_batch_chunks(
+        RowMajorMatrixView::new(message, 1),
+        config.log_inv_rate(),
+        &mut |chunk| opener.push_rows(chunk),
+    );
+    let (base_opened_values, base_multi_proof) = opener.finish();
+
+    let opened_rounds = rounds
+        .iter()
+        .zip(config.fold_batches().skip(1))
+        .map(|(round, (start, arity))| {
+            let round_indices = flat_coset_indices(&indices, start, arity);
+            let (values, multi_proof) =
+                round_mmcs.open_multi_batch(&round_indices, &round.merkle_data);
+            RoundProof {
+                commitment: round.commitment.clone(),
+                opened_values: single_matrix_rows(values),
+                multi_proof,
+            }
+        })
+        .collect();
+
+    QueryProofs {
+        base_opened_values,
+        base_multi_proof,
+        rounds: opened_rounds,
+        pow_witness,
+    }
 }
 
 /// Encodes the message the rounds played so far bound, when the sumcheck holds it.

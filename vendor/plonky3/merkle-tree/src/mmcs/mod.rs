@@ -98,6 +98,15 @@ pub struct MerkleTreeMmcs<P, PW, H, C, const N: usize, const DIGEST_ELEMS: usize
     _phantom: PhantomData<(P, PW)>,
 }
 
+impl<P, PW, H, C, const N: usize, const DIGEST_ELEMS: usize>
+    MerkleTreeMmcs<P, PW, H, C, N, DIGEST_ELEMS>
+{
+    /// The row hasher and the digest compressor, for the streamed opener.
+    pub(crate) fn hash_and_compress(&self) -> (&H, &C) {
+        (&self.hash, &self.compress)
+    }
+}
+
 /// The outcome of one amortized pruned-frontier walk.
 ///
 /// Produced by [`MerkleTreeMmcs::walk_pruned_frontier`] and consumed by both of its callers:
