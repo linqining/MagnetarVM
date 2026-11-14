@@ -848,3 +848,110 @@ plus the four `streaming::*` tests. Byte equality was re-confirmed after the
 hardening pass (guarded `stacked_variables` check, checked coset/height
 arithmetic) at both `2^16` and `2^17`: proof / varint / compressed sizes
 identical to the legacy commit in the same binary.
+
+### 4.7 Opening-side streaming: the query half (2026-11-14, in progress)
+
+§4.6 removed the commit half of the PCS transient. The `Opening` stage is now
+the peak: at `2^16` with `MAGNETAR_SERIALIZE_PRODUCTS=1` it holds **1.45 GiB
+footprint** against a 0.47 GiB unified context, and at `2^17` **3.03 GiB**
+against ~1.1 GiB. That transient is the opening-side re-commit: `open` /
+`open_batch` / `open_mosaic` call `BinaryPcs::open_at` with a
+`BinaryPcsProverData` whose `merkle_data` owns *both* the whole codeword (the
+tree's leaves) and every digest layer. The fold phase reads the base codeword
+for batch 0, and the query phase opens base rows and their pruned Merkle
+multiproof from the same tree. Measured base transient at the Commit stage:
+0.81 GiB of work above the context at `2^16`, ~1.5 GiB at `2^17`.
+
+**Why the code materialises it.** `fold_rounds_with` folds
+`mmcs.get_matrices(&merkle_data)[0].values` (the base codeword) for the first
+fold batch unless it can instead encode the message the sumcheck already bound
+(`encode_bound_message`, only for `arity >= MIN_ENCODED_ARITY` with the bound
+column held). `open_queries` then calls `mmcs.open_multi_batch(&base_indices,
+&merkle_data)`, which needs the queried leaf rows and the digest layers for the
+pruned paths.
+
+**The streaming opening: three passes over the same stacked message.**
+
+```text
+pass 1  commit   stream encode -> incremental cap                      (done, §4.6)
+pass 2  fold     stream encode -> fold each 2^a-symbol coset           (new)
+                 -> round codewords (small) -> commit round codewords  (normal path)
+                 -> final codeword in the clear
+pass 3  query    after grind/sampling: stream encode ->               (new)
+                 * keep only the queried base rows          (openings)
+                 * record only the boundary digests         (pruned multiproof)
+```
+
+Neither the base codeword nor its digest layers stay live. The fold half is
+already expressible with existing vendor code: `fold::fold_coset(coset_index,
+values, challenges, scratch)` is exactly the per-coset engine
+`fold_codeword_batch` already uses, including the global index offsets, and a
+rate coset (size `2^(stacked_vars - log_inv_rate)`) is a whole number of
+fold cosets (`2^arity` each) for every batch in use. The query half needs a
+streaming pruned-multiproof builder; this round adds and pins one:
+
+- `crates/magnetar-pcs/src/streaming.rs::StreamingMultiProof` plans the
+  `p3_merkle_tree` pruning frontier in *index* space from the queried leaves
+  (binary arity, `cap_height = 0`, one matrix, power-of-two height), then a
+  single row pass keeps the queried rows and records every sent boundary digest
+  into its wire slot. `finish` produces exactly the
+  `Mmcs::open_multi_batch` result: same opened rows in the caller's index order,
+  same `PrunedMerklePaths` sibling order.
+- Tests pin byte-for-byte equality against `P3Mmcs::open_multi_batch` for
+  heights `2^0..2^10`, widths 1/2/3, empty/single/all-leaves/random/duplicate
+  index sets and three row chunkings (`streaming_multiproof_matches_mmcs`), and
+  the multi-block frontier path at `2^16`/`2^17` (`streaming_multiproof_spans_blocks`).
+
+**What is still missing for the win.**
+
+1. A `StreamingMmcs`-style seam so `binary-pcs` (generic over `MT: Mmcs`) can
+   ask for the streaming multiproof. The collector above is concrete to
+   `P3Mmcs`; lift it into `p3-merkle-tree` behind a small trait in `p3-commit`
+   (`streaming_open(height, width, indices) -> builder`, with `push_rows` and
+   `finish -> (rows, MultiProof)`), implemented for `MerkleTreeMmcs`. The
+   generic packed debug/lane arms can stay on the existing `MerkleTree` path;
+   the streaming arm only needs the scalar leaf/compress calls this codeword
+   shape uses (`P::WIDTH == 1`, `N == 2`), asserted at runtime.
+2. A chunked encoder seam in `p3-commit`: `Encoder::encode_batch_chunks(message,
+   log_inv_rate, sink)` with the default `encode_batch_borrowed` then chunking,
+   overridden by `AdditiveRsEncoder` with the per-coset transform §4.6 already
+   uses. `binary-pcs` then needs neither magnetar types nor a full codeword.
+3. `BinaryPcs::open_at_streaming(message, cap, protocol, points, challenger)`:
+   observe `cap` (supplied by the caller, which already computed it in pass 1
+   with the identical root), run the sumcheck/fold passes with streamed
+   encodings, then pass 3. Return the same `BinaryPcsProof`.
+4. Magnetar wiring: `Pcs::open` / `open_batch` / `open_mosaic` pass the stacked
+   message (`Layout::borrowed_message` / `write_message`) and the cap from their
+   existing streamed commit instead of calling `commit_with` and
+   `open_at(data, ...)`.
+
+**Expected effect.** The opening transient loses the base codeword + tree
+(0.81 GiB at `2^16`, ~1.5 GiB at `2^17`) and gains the streamed re-encode
+(message + one coset, ~0.13 / ~0.26 GiB) plus the round codewords it already
+had. That projects the products-gated `2^16` peak from **1.45 to ~0.7 GiB** and
+the `2^17` peak from **3.03 to ~1.6-1.7 GiB**, with byte-identical proofs: the
+encoder output, the fold (same `fold_coset`), the opened rows and the boundary
+digests are all pinned by tests, and the cap is the one pass 1 already produced.
+CPU: one extra encode pass per opening (~0.13 s at `2^16`) and no extra Merkle
+hash pass (pass 1 and pass 3 together hash the leaves exactly as commit +
+opening re-commit do today).
+
+### 4.8 (h) bit-packed twist tables: assessment (not started)
+
+The committed twist tables are 16-byte field elements holding bits or words:
+`BatchTables::addr` is `2 * address_bits + 2` bit columns over `cycles` rows,
+`initial`/`read_value`/`write_value` hold one 64-bit word per cycle, and `inc`
+holds cycle counters. Packing them to bits/words shrinks the committed cells,
+the codeword and the Merkle tree of the Access PCS by up to 16x, and it
+compounds with §4.6/§4.7 because the streamed encoder works on whatever message
+layout the prover writes.
+
+It is a format change: the mosaic layout (`P3MosaicTable` columns and their
+arities), the Access sum-check consumers (`address_columns()`, `increments()`,
+`increments()` bit roles), the mosaic opening schedule and the verifier's
+mosaic checks all move together, and the proof bytes change. A first increment
+is to bit-pack only the **address** table (the one-hot bit columns,
+`2*bits+2` columns) behind an env switch with proof-byte diffing and a prover
+commitment A/B, then extend to the value/initial columns once the sum-check
+factors are re-derived. Not started; recorded here so the next session picks up
+the layout and consumer list rather than rediscovering them.

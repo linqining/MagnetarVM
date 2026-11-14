@@ -59,9 +59,15 @@ format, against a 36 GiB host.
    What is left of the same lever is the **opening-side re-encode**:
    `open`/`open_batch`/`open_mosaic` still materialise the codeword and tree for
    the FRI fold and the query openings, and that is where the `2^16` peak now
-   sits (Opening footprint 1.46 GiB). Streaming the fold and the query pass
-   over the chunked encoder is the next step, ~-0.3 to -0.5 GiB at `2^16` and
-   the larger `2^18` share.
+   sits (Opening footprint 1.46 GiB against a 0.47 GiB context, via a 0.81 GiB
+   transient; `2^17`: 3.03 vs ~1.1 GiB). The plan is a three-pass streamed
+   opening (commit / fold / query) in [MEMORY_PATH](MEMORY_PATH.md) §4.7: the
+   per-coset fold engine already exists (`fold::fold_coset`), and the streaming
+   pruned-multiproof primitive landed this round with byte-for-byte tests
+   against `Mmcs::open_multi_batch` (`StreamingMultiProof`). Remaining work is
+   the generic `StreamingMmcs` + chunked-encoder seams and
+   `BinaryPcs::open_at_streaming`. Projected: **`2^16` peak 1.45 -> ~0.7 GiB,
+   `2^17` 3.03 -> ~1.6-1.7 GiB**, byte-identical proofs, +1 encode pass.
 2. **(h) bit-pack the twist witnesses / batch tables** — the twist tables are
    committed as 16-byte field elements although they hold bits (the single
    `2^22`-value commit above is the biggest instance). Bit-packing cuts that
@@ -102,7 +108,8 @@ format, against a 36 GiB host.
    stream; `-0.41 GiB` default-schedule peak at `2^16`, proof bytes identical
    ([MEMORY_PATH](MEMORY_PATH.md) §4.6). The follow-up under the same lever is
    the **opening-side** re-encode (stream the FRI fold + query pass), which is
-   now the tallest remaining PCS term.
+   now the tallest remaining PCS term; its design and the landed multiproof
+   primitive are [MEMORY_PATH](MEMORY_PATH.md) §4.7.
 2. (h) bit-pack the twist tables (largest remaining *format* win, and it
    compounds with 1).
 3. (c)/(b) format change, only after deciding the wire-format break.

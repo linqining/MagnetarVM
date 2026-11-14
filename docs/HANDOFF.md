@@ -73,6 +73,21 @@ binary for an A/B. The peak is now the mosaic **Opening**, which still
 re-encodes for its FRI fold and query openings — that is the next step in the
 same lever. [MEMORY_PATH.md](MEMORY_PATH.md) §4.6.
 
+**Opening-side streaming, query half (2026-11-14, in progress)**: the Opening
+stage is now the peak (1.45 GiB footprint at `2^16` against a 0.47 GiB context,
+3.03 GiB at `2^17` against ~1.1). The plan is a three-pass streamed opening —
+commit (done), fold (per-coset `fold::fold_coset`), query (streamed pruned
+multiproof) — in [MEMORY_PATH.md](MEMORY_PATH.md) §4.7. This round adds and
+pins the query half: `StreamingMultiProof` keeps only the queried base rows and
+the boundary sibling digests, and reproduces `Mmcs::open_multi_batch`'s opened
+rows and `PrunedMerklePaths` wire order exactly (tests over heights `2^0..2^10`,
+widths, empty/single/all/random/duplicate index sets and three chunkings, plus
+the multi-block frontier at `2^16`/`2^17`). Still missing before the win: the
+generic `StreamingMmcs` seam, `Encoder::encode_batch_chunks`, and
+`BinaryPcs::open_at_streaming`; projected `2^16` peak 1.45 -> ~0.7 GiB and
+`2^17` 3.03 -> ~1.6-1.7 GiB, byte-identical. The (h) twist bit-packing
+assessment (layout/consumer list, format break, first increment) is §4.8.
+
 **Opt-in Access scheduling switch (2026-11-08)**: `MAGNETAR_SERIALIZE_ACCESS=1`
 starts the selected commit/products after the Access stage instead of after the
 mosaic Commit, so the two working sets do not overlap. Byte-identical proofs
