@@ -10994,3 +10994,6 @@ mod m5_v4_tests {
         std::env::remove_var("MAGNETAR_CLAIM_V4");
     }
 }
+
+#[cfg(test)]
+mod m4a_probe;

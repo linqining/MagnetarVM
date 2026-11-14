@@ -351,25 +351,34 @@ Three findings the replica could not show:
    commits (`build_columns` derives them from the same witness), so the bit
    data is currently committed **twice** (786,432 + 786,432 cells at `2^16`).
 
-### 8.2 The packed plan and the padding boundary
+### 8.2 The packed plan and the padding boundary (real table set)
 
-Applying (a) table 6 packed, (b) table 5 split with its 7 bit columns packed,
-(c) the Access batch's 12 bit columns dropped in favour of ring-switch claims
-against the single packed table, (d) the trace table packed 2x (two 64-bit
-fields per cell):
+`crates/magnetar-runtime/src/m4a_probe.rs` rebuilds the real table set from the
+paper trace through the same private builders the prover uses (RAM-twist batch
+tables, ROM table, register-twist batch tables, trace table), and it
+**reproduces the production profile exactly** at `2^16` (2,293,918 mosaic
+cells). Run it with:
 
-| size | today committed cells | after (a)-(c) | message | after (d) | message |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 2^16 | 3,276,958 | 1,255,070 (-62 %) | 16 MiB (4x) | ~731 k | 16 MiB |
-| 2^18 | 13,107,358 | 5,019,806 (-62 %) | 128 MiB (2x) | ~3.97 M | 64 MiB (4x) |
-| 2^22 | 209.7 M | 80.3 M (-62 %) | 4 GiB (1x) | **50.8 M** | **1 GiB (4x)** |
+```sh
+cargo test -p magnetar-runtime --release m4a_real -- --ignored --nocapture
+```
 
-The stacked message is `next_pow2(cells)`, and at `2^18`/`2^22` the (a)-(c)
-reduction lands just above a power of two (4.23 M vs 4.19 M; 67.6 M vs
-67.1 M), so it buys only 2x there. **The trace packing (d) is what makes the
-reduction cross the padding boundary and deliver the full 4x** — it is not an
-optional extra but part of the envelope math. At `2^16` (a)-(c) alone already
-lands at 1.06 M (< 2^20), which is why the synthetic replica showed 4x.
+Projected committed cells and stacked-message sizes (step 1 = register address
+table packed, step 2 = ROM bit columns split/packed, step 3 = Access batch
+bit columns dropped): stepping 1-2 gives only **2x** at every size because the
+mosaic lands just above a power of two; the trace packing (step 4) is what
+crosses the boundary and delivers **4x**:
+
+| cycles | current cells | msg | after steps 1-2 | msg | after step 4 | msg | Access batch | msg |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2^16 | 2,293,918 | 64 MiB | 1,058,462 | 32 MiB | **796,318** | **16 MiB (4x)** | 983,040 -> 196,608 | 16 -> **4 MiB** |
+| 2^18 | 9,175,198 | 256 MiB | 4,233,374 | 128 MiB | **3,184,798** | **64 MiB (4x)** | 3,932,160 -> 786,432 | 64 -> **16 MiB** |
+| 2^22 | 146,800,798 | 4 GiB | 67,731,614 | 2 GiB | **50,954,398** | **1 GiB (4x)** | 62,914,560 -> 12,582,912 | 1 GiB -> **256 MiB** |
+
+Combined committed cells at `2^22` (mosaic + Access batch): **209,715,358 ->
+63,537,310 (-70 %)**. The trace table (33.5 M cells at `2^22`) is the second
+largest term after the two 12-column tables and is the one that decides the
+padding crossing, so it must be part of M4a rather than a later optimisation.
 
 ### 8.3 Verifier scheme decision
 
