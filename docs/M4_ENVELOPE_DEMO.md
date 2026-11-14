@@ -225,3 +225,84 @@ Caveats: the probe is single-threaded and its wall times are not comparable to
 `paper_unified_bench`; the host was swapping during some of the larger runs; the
 `2^22`-cycle message is 4x the largest probe case, so the projection is a
 coefficient fit, not a measurement.
+
+## 7. M4a prototype: bit-packing the committed twist address tables
+
+M4a is the cell-packing lever: the unified mosaic commits each twist `addr`
+table as `2*address_bits + 2` bit columns with **one 16-byte field element per
+bit**. At RV64 `2^16` the two 12-column address tables are 1.57 M of the
+2.29 M mosaic cells (69 %), and the table is `12 x 2*cycles`, so the share is
+scale-free. `crates/magnetar-pcs/examples/m4a_packed_mosaic_probe.rs` measures
+both halves of the change.
+
+### 7.1 Part A — cells and memory (streamed commit + streamed opening)
+
+It rebuilds the `p3_stage_probe::mosaic()` replica (the same table list the PCS
+benchmarks use; at `LOG=16` it reproduces the production 2,293,918 cells
+exactly), commits and opens it through the real `P3BinaryPcs`, and reports the
+same run with the two 12-column address tables packed 128 bits per cell:
+
+| cycles log | variant | cells | stacked vars | message | peak RSS | commit | open | proof |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2^16 | current | 2,293,918 | 22 | 64 MiB | 534 MiB | 630 ms | 1,668 ms | 234,552 B |
+| 2^16 | packed | **733,342 (-68 %)** | **20** | **16 MiB (4x)** | **148 MiB (-72 %)** | 170 ms | 436 ms | 197,584 B (-16 %) |
+| 2^18 | current | 9,175,672 | 24 | 256 MiB | 2,086 MiB | 1,716 ms | 7,033 ms | 278,848 B |
+| 2^18 | packed | **2,933,368 (-68 %)** | **22** | **64 MiB (4x)** | **541 MiB (-74 %)** | 671 ms | 1,982 ms | 237,912 B (-15 %) |
+
+All four openings verify against the MLE of every opened column. The message
+crosses a power of two, so the stacked-message/Codeword buffer is **4x**
+smaller, the whole probe is ~-73 %, and the proof is ~15 % smaller (fewer
+columns to open: 12 dense cells per packed row open as one cell instead of 12
+bit cells).
+
+### 7.2 Part B — the verifier relation exists already
+
+A packed address table is a table of 128-bit words, not of 0/1 cells, so the
+Access verifier must evaluate the *bit* vector without unpacking it. The repo
+already owns that machinery: `magnetar_proof::RingSwitchPackedBitPcs` commits
+256+ bits as `len/128` field elements and proves an MLE evaluation of the bit
+vector with a ring-switch sum-check. Part B runs it on all 12 address columns:
+
+| bits log | columns | packed cells | unpacked cells | commit | largest opening | wall | verified |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 2^16 | 12 | 6,144 | 786,432 (128x fewer) | 1,056 B | 54,168 B | 116 ms | yes |
+| 2^20 | 12 | 98,304 | 12,582,912 (128x fewer) | 1,056 B | 97,896 B | 968 ms | yes |
+
+Every opening verifies and the claimed value equals the MLE of the unpacked bit
+column. So the soundness half of M4a needs **no new cryptography**.
+
+### 7.3 What M4a still needs, and the projection
+
+The remaining engineering, in order:
+
+1. **Batch the per-column ring-switch proofs.** Part B's per-column opening is
+   54 KB at `2^16` bits and 98 KB at `2^20` bits; 12 columns would add
+   0.65-2.4 MB to the proof. The Access relation must be re-derived in terms of
+   the eq-weighted combination the ring-switch claim provides (one claim for the
+   whole packed table, like packed Shout's batched claim), or the 12 columns
+   must be packed into one bit vector with the column index as extra variables.
+   This is the real M4a protocol work.
+2. **Shape and schedule change.** Packed rows are `2^(log-7)`, so the mosaic
+   table shape (`num_variables`, `num_columns`), the mosaic opening schedule and
+   the verifier's per-table checks all move; the proof format changes, so a
+   version bump and new goldens replace the byte-identical gate.
+3. **Applicability.** This demo packs the two dominant 12-column tables. The
+   real table set also has small bit tables and the router/Shout columns; the
+   production mosaic profile should be extended to print per-table cells first,
+   so the packing order (and whether routers/Shout qualify) is decided from
+   measurements, not the replica.
+
+Projection to `2^22` cycles (mosaic = 2,293,918 x 64 = 146.8 M cells today):
+
+| mosaic at 2^22 | cells | stacked message | Part-A peak coefficient | mosaic pipeline |
+| --- | ---: | ---: | ---: | ---: |
+| current | 146.8 M | 4 GiB | ~8.2x | ~33 GiB |
+| M4a packed | **46.9 M** | **1 GiB** | ~8.4x | **~8.4 GiB** |
+
+(The Part-A coefficient includes table construction plus commit plus open, so it
+is larger than the `6.1x` opening-only coefficient of §2; it is used here as a
+same-method A/B.) Adding the out-of-core cache of §6 (`~3.2x` of the message)
+puts the packed mosaic at `~3.2 GiB`. The envelope then depends on the
+non-mosaic context, which is what M4b/(d) must shrink; M4a is the single largest
+reduction available at any scale and the only one that shrinks the *message*
+itself.
