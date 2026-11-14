@@ -17,6 +17,7 @@ pub mod ligerito;
 pub use ligerito::{LigeritoCommitment, LigeritoIndexOpening, LigeritoPcs, LigeritoProof};
 
 pub mod p3_pcs;
+mod streaming;
 pub use p3_pcs::{
     P3BatchCommitment, P3BatchOpening, P3BatchPoint, P3BinaryPcs, P3Commitment, P3MosaicCommitment,
     P3MosaicOpening, P3MosaicPoint, P3MosaicTable, P3MosaicTableShape, P3Opening, P3SharedPcs,

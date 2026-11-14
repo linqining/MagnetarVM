@@ -18,11 +18,9 @@ use p3_keccak::Keccak256Hash;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_multilinear_util::point::Point;
-use p3_sumcheck::layout::{Layout, SuffixProver, Table};
+use p3_sumcheck::layout::{Layout, SuffixProver, Table, Witness};
 use p3_sumcheck::{OpeningBatch, OpeningProtocol, PrescribedPointPcs, TableShape, TableSpec};
-use p3_symmetric::{
-    CompressionFunctionFromHasher, CryptographicHasher, SerializingHasher,
-};
+use p3_symmetric::{CompressionFunctionFromHasher, CryptographicHasher, SerializingHasher};
 
 type F = BinaryField128;
 
@@ -33,7 +31,6 @@ type F = BinaryField128;
 fn profile_pcs() -> bool {
     std::env::var_os("MAGNETAR_PROFILE_PCS").is_some()
 }
-
 
 /// Keccak-256 truncated to 16 bytes. The Merkle tree over the codeword is the
 /// largest single term of the prover peak (`2^(N+12)` B at 32 B per node), so
@@ -100,9 +97,9 @@ impl CryptographicHasher<u8, [u8; 16]> for Keccak256Hash16 {
     }
 }
 
-type P3Hash = SerializingHasher<Keccak256Hash16>;
-type P3Compress = CompressionFunctionFromHasher<Keccak256Hash16, 2, 16>;
-type P3Mmcs = MerkleTreeMmcs<F, u8, P3Hash, P3Compress, 2, 16>;
+pub(crate) type P3Hash = SerializingHasher<Keccak256Hash16>;
+pub(crate) type P3Compress = CompressionFunctionFromHasher<Keccak256Hash16, 2, 16>;
+pub(crate) type P3Mmcs = MerkleTreeMmcs<F, u8, P3Hash, P3Compress, 2, 16>;
 type P3Challenger = BinaryChallenger<F, HashChallenger<u8, Keccak256Hash, 32>>;
 type P3PcsBackend = BinaryPcs<F, F, P3Mmcs, P3Mmcs>;
 type P3Proof = BinaryPcsProof<F, F, P3Mmcs, P3Mmcs>;
@@ -309,13 +306,13 @@ impl P3BinaryPcs {
             // 2^16 packs the witness into 2^22 field elements) hit this cap, so
             // clamp the target to the achievable ceiling. Prover and verifier
             // derive the schedule from the same domain size and therefore agree.
-            Err(BinaryPcsConfigError::SecurityLevelExceedsFieldCapacity { max, .. }) => build(
-                BinaryPcsParams {
+            Err(BinaryPcsConfigError::SecurityLevelExceedsFieldCapacity { max, .. }) => {
+                build(BinaryPcsParams {
                     security_level: max,
                     ..params
-                },
-            )
-            .map_err(|error| ProofError::Pcs(error.to_string()))?,
+                })
+                .map_err(|error| ProofError::Pcs(error.to_string()))?
+            }
             Err(error) => return Err(ProofError::Pcs(error.to_string())),
         };
         if profile_pcs() {
@@ -401,6 +398,66 @@ impl P3BinaryPcs {
             .map_err(|error| ProofError::Pcs(error.to_string()))
     }
 
+    /// Whether the batch commit path is forced for a same-binary memory A/B.
+    ///
+    /// Streaming is the default: it returns the same cap (pinned by the
+    /// `streaming` module's tests) while keeping only the message, one codeword
+    /// coset and a logarithmic Merkle frontier live.
+    ///
+    /// The switch follows the repo's env-flag convention: *any* value of
+    /// `MAGNETAR_LEGACY_PCS_COMMIT`, including `0` or an empty string, forces
+    /// the batch path. There is no unit test for the branch itself because the
+    /// variable is process-wide and would race the parallel test runner; the
+    /// equivalence it selects between is covered by
+    /// `streaming_root_matches_pcs_commit_entry_points`, and the switch is
+    /// exercised by `p3_stage_probe` and `paper_unified_bench` A/Bs.
+    fn legacy_commit() -> bool {
+        std::env::var_os("MAGNETAR_LEGACY_PCS_COMMIT").is_some()
+    }
+
+    /// Root-only commitment of a stacked witness: streamed encode + incremental root.
+    ///
+    /// The commit-only entry points (`Pcs::commit`, `commit_batch`,
+    /// `commit_mosaic`) drop the prover data immediately, so the full codeword
+    /// and the full Merkle tree they used to build are pure transients.
+    fn streamed_commit(
+        &self,
+        witness: &Witness<F>,
+        stacked_variables: usize,
+    ) -> Result<P3Cap, ProofError> {
+        // The retained path asserts this against the backend config; streaming
+        // never builds that config, so check the same invariant here and report
+        // it as an error rather than letting `write_message` catch a bad shape.
+        if witness.num_variables() != stacked_variables {
+            return Err(ProofError::Pcs(format!(
+                "streamed commit: witness has {} variables but the schedule stacks {stacked_variables}",
+                witness.num_variables()
+            )));
+        }
+        let len = 1usize
+            .checked_shl(stacked_variables as u32)
+            .ok_or_else(|| ProofError::Pcs("stacked variable count overflows usize".into()))?;
+        let mut owned;
+        let message: &[F] = match <SuffixProver<F, F> as Layout<F, F>>::borrowed_message(witness) {
+            Some(values) if values.len() == len => values,
+            _ => {
+                owned = F::zero_vec(len);
+                <SuffixProver<F, F> as Layout<F, F>>::write_message(witness, 0, &mut owned);
+                &owned
+            }
+        };
+        // A codeword row is `1 << folding` cells and binary-pcs pins
+        // `const FOLDING: usize = 0` (vendor/plonky3/binary-pcs/src/prover.rs),
+        // so the base message is one column wide. The small-shape entry-point
+        // test pins this against the retained path, which would diverge first
+        // if that constant ever changed.
+        Ok(crate::streaming::streamed_codeword_root(
+            message,
+            1,
+            self.log_inv_rate,
+        ))
+    }
+
     fn batch_table(columns: &[Vec<F2_128>]) -> Result<(Table<F>, usize, usize), ProofError> {
         if columns.is_empty() {
             return Err(ProofError::DimensionMismatch);
@@ -477,11 +534,16 @@ impl P3BinaryPcs {
             self.pow_bits,
             self.log_folding_factor,
         )?;
-        let mut challenger = Self::challenger();
         let witness = SuffixProver::<F, F>::new_witness(vec![table], 0);
-        let (cap, _) = backend
-            .commit(witness, &mut challenger)
-            .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        let cap = if Self::legacy_commit() {
+            let mut challenger = Self::challenger();
+            backend
+                .commit(witness, &mut challenger)
+                .map_err(|error| ProofError::Pcs(error.to_string()))?
+                .0
+        } else {
+            self.streamed_commit(&witness, stacked_variables)?
+        };
         Ok(P3BatchCommitment {
             cap,
             num_variables,
@@ -799,12 +861,17 @@ impl P3BinaryPcs {
             self.pow_bits,
             self.log_folding_factor,
         )?;
-        let mut challenger = Self::challenger();
         let witness = SuffixProver::<F, F>::new_witness(p3_tables, 0);
         let commit_started = std::time::Instant::now();
-        let (cap, _) = backend
-            .commit(witness, &mut challenger)
-            .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        let cap = if Self::legacy_commit() {
+            let mut challenger = Self::challenger();
+            backend
+                .commit(witness, &mut challenger)
+                .map_err(|error| ProofError::Pcs(error.to_string()))?
+                .0
+        } else {
+            self.streamed_commit(&witness, stacked_variables)?
+        };
         let commit_time = commit_started.elapsed();
         if profile {
             let cells: u64 = tables
@@ -963,14 +1030,22 @@ impl Pcs for P3BinaryPcs {
             self.pow_bits,
             self.log_folding_factor,
         )?;
-        let mut challenger = Self::challenger();
+        let legacy = Self::legacy_commit();
         let started = std::time::Instant::now();
-        let (cap, _) = Self::commit_with(&backend, values, &mut challenger)?;
+        let cap = if legacy {
+            let mut challenger = Self::challenger();
+            Self::commit_with(&backend, values, &mut challenger)?.0
+        } else {
+            let (table, _, _) = Self::table(values)?;
+            let witness = SuffixProver::<F, F>::new_witness(vec![table], 0);
+            self.streamed_commit(&witness, pcs_log)?
+        };
         if profile {
             eprintln!(
-                "pcs commit: {:?} values={} pcs_log={pcs_log}",
+                "pcs commit: {:?} values={} pcs_log={pcs_log} streamed={}",
                 started.elapsed(),
-                values.len()
+                values.len(),
+                !legacy
             );
         }
         Ok(P3Commitment { cap, num_variables })
@@ -1210,17 +1285,59 @@ mod tests {
         let pcs = P3BinaryPcs::with_params(100, 2, 21, 2);
         pcs.commit_mosaic(&tables).unwrap();
         let point = |variables: usize| -> Vec<F2_128> {
-            (0..variables).map(|index| F2_128::from(index as u64 + 1)).collect()
+            (0..variables)
+                .map(|index| F2_128::from(index as u64 + 1))
+                .collect()
         };
         let points = vec![
-            P3MosaicPoint { table: 0, point: point(1), columns: (0..12).collect(), next_columns: Vec::new() },
-            P3MosaicPoint { table: 1, point: point(1), columns: vec![0], next_columns: Vec::new() },
-            P3MosaicPoint { table: 2, point: point(5), columns: vec![0], next_columns: Vec::new() },
-            P3MosaicPoint { table: 2, point: point(5), columns: vec![0], next_columns: Vec::new() },
-            P3MosaicPoint { table: 2, point: point(5), columns: vec![0], next_columns: Vec::new() },
-            P3MosaicPoint { table: 3, point: point(1), columns: vec![0], next_columns: Vec::new() },
-            P3MosaicPoint { table: 4, point: point(4), columns: vec![0], next_columns: Vec::new() },
-            P3MosaicPoint { table: 4, point: point(4), columns: vec![0], next_columns: Vec::new() },
+            P3MosaicPoint {
+                table: 0,
+                point: point(1),
+                columns: (0..12).collect(),
+                next_columns: Vec::new(),
+            },
+            P3MosaicPoint {
+                table: 1,
+                point: point(1),
+                columns: vec![0],
+                next_columns: Vec::new(),
+            },
+            P3MosaicPoint {
+                table: 2,
+                point: point(5),
+                columns: vec![0],
+                next_columns: Vec::new(),
+            },
+            P3MosaicPoint {
+                table: 2,
+                point: point(5),
+                columns: vec![0],
+                next_columns: Vec::new(),
+            },
+            P3MosaicPoint {
+                table: 2,
+                point: point(5),
+                columns: vec![0],
+                next_columns: Vec::new(),
+            },
+            P3MosaicPoint {
+                table: 3,
+                point: point(1),
+                columns: vec![0],
+                next_columns: Vec::new(),
+            },
+            P3MosaicPoint {
+                table: 4,
+                point: point(4),
+                columns: vec![0],
+                next_columns: Vec::new(),
+            },
+            P3MosaicPoint {
+                table: 4,
+                point: point(4),
+                columns: vec![0],
+                next_columns: Vec::new(),
+            },
         ];
         let values = points
             .iter()
