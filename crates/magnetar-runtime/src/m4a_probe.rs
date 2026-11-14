@@ -789,3 +789,117 @@ fn m4a_access_peak() {
         footprint_bytes() as f64 / 1048576.0,
     );
 }
+
+
+/// Binding-audit experiment E1: tamper the Access claims in an in-memory proof
+/// and record which verifier stage rejects it (see docs/M4A_BINDING_AUDIT.md).
+///
+/// Runs at the linear-twist minimum (8192 cycles) so `prove_local_shared` /
+/// `prove_access_m4a` are active. In-memory mutation matches the benchmark's
+/// trust boundary (it verifies the in-memory proof).
+#[test]
+#[ignore = "runs a small unified proof; --ignored --nocapture"]
+fn binding_audit_tamper_matrix() {
+    use magnetar_spec::{Instruction, MachineConfig, Op, ProgramImage};
+
+    let adds: u32 = std::env::var("ADDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(8191);
+    let mut rom = (0..adds)
+        .map(|index| {
+            Instruction {
+                op: Op::Addi,
+                rd: 1,
+                rs1: 1,
+                rs2: 0,
+                imm: i64::from(index) + 1,
+                shamt: 0,
+            }
+            .encode()
+        })
+        .collect::<Vec<_>>();
+    rom.push(Instruction::new(Op::Ecall).encode());
+    let program = ProgramImage::new(0x1000, rom);
+    let config = MachineConfig {
+        entry: 0x1000,
+        rom_base: 0x1000,
+        ram_base: 0x1000_0000,
+        ram_size: 0x100,
+        stack_top: 0x1000_0100,
+        max_cycles: 1_000_000,
+    };
+    let trace = magnetar_executor::execute(&program, config).expect("trace");
+    let statement = crate::Statement {
+        program_hash: crate::program_hash(&program),
+        rom: trace.rom.clone(),
+        trace_commitment: crate::trace_digest(&trace),
+        trace_claim_root: crate::claim_table::statement_claim_root(&trace),
+        access_statement_digest: crate::statement_access_digest(&trace),
+        config: trace.config.clone(),
+        initial_state: trace.initial_state.clone(),
+        initial_ram: trace.initial_ram.clone(),
+        final_state: trace.final_state.clone(),
+        trace_len: trace.len() as u64,
+        output: trace.io_output.clone(),
+        input: trace.io_input.clone(),
+        halted: trace.halted,
+        exit_code: trace.exit_code,
+    };
+    let proof = crate::prove_unified_trace_dynamic_native(&trace, 64).expect("prove");
+    let baseline_full = crate::verify_unified_trace(&trace, &proof, 64).is_ok();
+    let baseline_statement = crate::verify_native_unified(&statement, &proof, 64).is_ok();
+    println!(
+        "binding audit E1 baseline: trace-carrying={baseline_full} statement={baseline_statement}"
+    );
+    assert!(baseline_full && baseline_statement, "baseline proof must verify");
+
+    let outcome = |label: &str, candidate: &crate::UnifiedTraceProof| {
+        let full = crate::verify_unified_trace(&trace, candidate, 64);
+        let statement = crate::verify_native_unified(&statement, candidate, 64);
+        println!(
+            "binding audit E1 {label:<42} trace-carrying={:<5} statement={:<5} ({})",
+            full.is_ok(),
+            statement.is_ok(),
+            full.as_ref()
+                .err()
+                .map(|error| error.to_string())
+                .or_else(|| statement.as_ref().err().map(|error| error.to_string()))
+                .unwrap_or_default()
+                .chars()
+                .take(70)
+                .collect::<String>(),
+        );
+    };
+
+    let plus_one = magnetar_constraint::F2_128::from(1u64);
+    println!(
+        "binding audit E1 branches: ram.linear={} ram.m4a={} reg.linear={} reg.m4a={}",
+        proof.access.ram.linear.is_some(),
+        proof.access.ram.linear_m4a.is_some(),
+        proof.access.registers.linear.is_some(),
+        proof.access.registers.linear_m4a.is_some(),
+    );
+    if proof.access.ram.linear.is_some() {
+        let mut tampered = proof.clone();
+        let value = tampered.access.ram.linear.as_ref().unwrap().local.values[3][0];
+        tampered.access.ram.linear.as_mut().unwrap().local.values[3][0] = value + plus_one;
+        outcome("ram linear values[3][0] (address terminal) += 1", &tampered);
+    }
+    if proof.access.registers.linear.is_some() {
+        let mut tampered = proof.clone();
+        let value = tampered.access.registers.linear.as_ref().unwrap().local.values[3][0];
+        tampered.access.registers.linear.as_mut().unwrap().local.values[3][0] = value + plus_one;
+        outcome("register linear values[3][0] (address) += 1", &tampered);
+
+        let mut tampered = proof.clone();
+        let value = tampered.access.registers.linear.as_ref().unwrap().local.endpoints[0];
+        tampered.access.registers.linear.as_mut().unwrap().local.endpoints[0] = value + plus_one;
+        outcome("register linear endpoints[0] (initial) += 1", &tampered);
+
+        let mut tampered = proof.clone();
+        let value = tampered.access.registers.linear.as_ref().unwrap().local.values[2][0];
+        tampered.access.registers.linear.as_mut().unwrap().local.values[2][0] = value + plus_one;
+        outcome("register linear values[2][0] (increment) += 1", &tampered);
+    }
+}
