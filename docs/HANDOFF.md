@@ -144,6 +144,16 @@ more claim work (§5 item 1).
 
 ## 1. Run it
 
+**Cargo home on this checkout (2026-11-14).** The machine's `~/.cargo` is not
+writable from the sandbox and the checkout ships no `target/`, so a build fails
+with `failed to create directory .../.cargo/registry/cache/...`. Fetch once into
+a workspace-local cargo home (git-ignored) and prefix every cargo command:
+
+```sh
+export CARGO_HOME=$PWD/.cargo-home
+cargo fetch
+```
+
 ```sh
 cargo build --release -p magnetar-testkit --example paper_unified_bench
 
