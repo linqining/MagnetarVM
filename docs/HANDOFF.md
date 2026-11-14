@@ -5,8 +5,8 @@ branch `virtual-claims-rewrite`. Commits through `299b08b` (M6 increments 1-3:
 parallel/phase-split statement-only v4 verifier + shared access claims; M4b
 paper-path default flip; memory route (d) increments 1+2; stage memory
 instrumentation; Access-PCS lifetime; opt-in Access scheduling switch; compact
-Access sum-check factors). Gate on the current tree: **675 passed / 0 failed /
-7 ignored** (39 binaries): `1b26b4e`
+Access sum-check factors; products-gated memory mode). Gate on the current
+tree: **675 passed / 0 failed / 8 ignored** (39 binaries): `1b26b4e`
 (2^16 optimization + polylog claim table), `9e805f2` (segment claims),
 `a3a6e9c` (packed CSR + fast pair), `e320cf9` (M4v3 batched committed-Shout
 opening + M4b paper-path replacement, opt-in), `9556746` (M5 scaffold:

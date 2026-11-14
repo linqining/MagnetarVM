@@ -247,8 +247,10 @@ session starts here):**
 byte-identical; `m6_verify_ab` parallel verify 10.83 ms (min 10.64) vs serial
 24.87 ms; `2^16` proof 1,018,155 B and paper-path proof 1,169,603 B unchanged
 by every memory change; full workspace gate **675 passed / 0 failed /
-7 ignored** (39 binaries) after the compact-factor change (`27ebcf5`; the extra
-passing test is `compact_factors_match_the_expanded_sumcheck`).
+8 ignored** (39 binaries) after the compact-factor change and the
+products-gated mode (`299b08b`; the extra passing test is
+`compact_factors_match_the_expanded_sumcheck`, the extra ignored one the byte
+equality pin for the new switch).
 
 ## 5. Recommended order and tests
 
