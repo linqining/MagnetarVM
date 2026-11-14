@@ -57,6 +57,22 @@ runs. `2^18` confirmed the same: **7.96 -> 6.05 GiB (-24 %)** with the proof
 bytes unchanged, peak at the mosaic Opening.
 [MEMORY_PATH.md](MEMORY_PATH.md) §4.2.
 
+**Streaming PCS commit (2026-11-14)**: the cap-only PCS entry points
+(`Pcs::commit`, `commit_batch`, `commit_mosaic`) no longer materialise the whole
+Reed-Solomon codeword and Merkle tree before dropping them. The encoder emits
+one coset at a time (`PolyBasisNtt::shifted_ntt_batch`) and `StreamingRoot`
+hashes rows as they arrive, keeping a logarithmic subtree frontier; the cap is
+unchanged because `P3Mmcs` has `cap_height = 0`, so the proof bytes are
+identical (**1,018,155 B** at `2^16`, varint/compressed too). Measured at
+`2^16`: with the products-gated mode the peak **1.64 -> 1.45 GiB**, on the
+default schedule **1.90 -> 1.49 GiB (-22 %)**, Commit stage **1.28 -> 0.63
+GiB**; isolated commit peak **517 -> 205 MiB** (single column) and **843 -> 212
+MiB** (mosaic); commit CPU unchanged, whole-prove CPU within the host's ±8 s
+drift. `MAGNETAR_LEGACY_PCS_COMMIT=1` restores the batch path in the same
+binary for an A/B. The peak is now the mosaic **Opening**, which still
+re-encodes for its FRI fold and query openings — that is the next step in the
+same lever. [MEMORY_PATH.md](MEMORY_PATH.md) §4.6.
+
 **Opt-in Access scheduling switch (2026-11-08)**: `MAGNETAR_SERIALIZE_ACCESS=1`
 starts the selected commit/products after the Access stage instead of after the
 mosaic Commit, so the two working sets do not overlap. Byte-identical proofs

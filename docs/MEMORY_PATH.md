@@ -193,6 +193,7 @@ Protocol for the `2^20` window:
 | (b) 64-bit committed alphabet (`BinaryField64` for codewords, 128-bit challenges) | PCS `F` type; halves leaves + layout, tree unchanged | ~−0.2 GiB | −18 GiB (mosaic −10, selected −8) | log_len = num_vars+log_inv_rate ≤ 64 ✓ (selected 23, mosaic 30); encoder becomes 64-bit tower; proof-format break; measure encode/verify | do after (c); best pure-PCS step |
 | (c) bit-pack the mosaic commitment | commit the boolean mosaic as a packed bit witness (128 bits/field, ring-switch, like the selected witness / claim table) instead of 16 B/cell | **−0.56 GiB (28 %)** | **−32 GiB** transient, −2.3 GiB resident, −4 GiB layout | high: mosaic committed layout + opening path (`protocol.rs`), verifier, new claim layer; proof-format break; p3 boolean/mixed-trace support exists (`vendor/plonky3/binary-pcs/src/boolean.rs`) | the only route that removes the dominant term; headline |
 | (d) context lifetime + dedup | (i) drop Access-only witnesses/batch tables once Access is done; (ii) `Arc`-share the register tables instead of cloning into `mosaic_tables`; (iii) reuse `trace_witness.values` for the trace table | −0.3-0.6 GiB | −10-20 GiB | medium-low: ownership/lifetime refactor of `UnifiedProveContext`; no proof-byte change | best value; do first |
+| (i) streaming PCS commit on the cap-only paths (§4.6) | chunked RS encode (coset at a time) + incremental Merkle root; commit-only entry points drop the prover data anyway | **−0.41 GiB (default)**, −0.19 GiB products-gated, −0.65 GiB at the Commit stage | commit term halves; ~−1 to −2.5 GiB at `2^18` (projected, not measured) | medium; **done** — no format change, proof bytes identical; the Opening re-encode remains | **landed 2026-11-14** |
 | (e) release freed pages between stages (§3.1) | `malloc_zone_pressure_relief`/`madvise(MADV_FREE)` after each big transient | −0.1-0.4 GiB | −10-30 GiB (if retention is real) | 1-day experiment; macOS malloc may already `munmap` large blocks, so measure stage RSS first | cheapest; measure before building on it |
 | (f) shrink level stores | inner budget 24 → 22 | −0.5 GiB | −0.5 GiB | +7 s prove at `2^16` (+22 %); recompute passes scale with `cycles` | not a memory lever; keep for a hard cap only |
 | (g) Merkle cap height / arity | top layers only | −ε | −ε | trivial | skip |
@@ -215,6 +216,8 @@ Peak footprint at `2^16` native default, chronological:
 | compact sum-check factors (2026-11-14) | **1.89 GiB** | 22.4 -> 18.1 s / 288.1 -> 280.0 s |
 | + `MAGNETAR_SERIALIZE_ACCESS=1` (memory mode) | 1.78 GiB | 31.2 s prove |
 | + `MAGNETAR_SERIALIZE_PRODUCTS=1` (strongest mode) | **1.64 GiB** | 41.1 s prove (2^16, load 28) |
+| + streaming PCS commit (§4.6, default schedule) | **1.49 GiB** | 295.9 s prove CPU (4-pair mean, ±8 s host drift) |
+| + streaming PCS commit + `MAGNETAR_SERIALIZE_PRODUCTS=1` | **1.45 GiB** | - |
 
 At `2^18` the 2026-11-08 sequence is 8.72 -> 7.96 -> 6.96 GiB footprint. The
 remaining peak terms are quantified in §4.2: the mosaic Commit/Opening
@@ -236,12 +239,14 @@ session starts here):**
   left of that route is virtualising the two one-hot address matrices and the
   value matrix, which needs a restructured (Jolt-style) sum-check over the
   address bits rather than a factor representation change.
-- streaming PCS commit (mosaic and Access): the measured largest remaining
-  peak term. Both commits materialise a rate-1/8 codeword plus Merkle tree
-  before dropping it; encoding in chunks and hashing leaves incrementally
-  would remove the transient without changing the commitment root.
-- `2^19` staircase: environment-blocked (needs >=15 GiB free+inactive; the host
-  stayed at 10.8-14.2 GiB with swap ~9 GiB used all session).
+- streaming PCS commit: **done** (§4.6) for the cap-only entry points
+  (`-0.41 GiB` peak at `2^16` default schedule, proof bytes identical). The
+  remaining half of that lever is the *opening-side* re-encode: `open` /
+  `open_batch` / `open_mosaic` still materialise the codeword and tree because
+  the FRI fold and the query openings read them.
+- `2^19` staircase: environment-blocked (needs >=13 GiB free+inactive; the host
+  stayed at 10.8-14.2 GiB with swap ~9 GiB used all session, and at 4-6 GiB
+  free+inactive on 2026-11-14).
 
 **Verification tail (current tree):** `protocol_determinism` 20/20
 byte-identical; `m6_verify_ab` parallel verify 10.83 ms (min 10.64) vs serial
@@ -256,10 +261,13 @@ equality pin for the new switch).
 
 Order by GiB saved per unit of work:
 
-1. **(e) + stage RSS instrumentation** (1 day, design in §3.1): per-stage peak prints already
-   exist (`MAGNETAR_PROFILE_UNIFIED`/`SELECTED`); add an explicit
-   release-and-measure hook, decide whether retention is real, and fix the
-   `≈20 GiB` sentence in results §6 with the §3 numbers.
+1. ~~**(e) + stage RSS instrumentation**~~ and ~~**streaming PCS commit**~~
+   are done (§4.2, §4.6): stage peak prints exist, and the cap-only commits
+   stream (`-0.41 GiB` default-schedule peak at `2^16`, byte-identical). The
+   next memory step is the **opening-side** of the same seam: fold the codeword
+   and collect the query rows while the chunked encoder emits cosets, so
+   `open`/`open_batch`/`open_mosaic` stop materialising the full codeword and
+   Merkle tree. That is where the `2^16` peak (1.45-1.49 GiB) now sits.
 2. **(d) context lifetime/dedup** (2-4 days): removes 10-20 GiB at `2^22` and
    0.3-0.6 GiB at `2^16` with no proof-format change.
 3. **(c)+(h) bit-packed mosaic commitment and twist witnesses** (1-2 weeks):
@@ -734,3 +742,102 @@ calls), so the proof bytes stay identical and a test can pin the roots. Expected
 effect: the `2^16` mosaic Commit transient (~0.74 GiB) shrinks to the tree
 (~0.15-0.2 GiB), i.e. roughly **-0.5 GiB at `2^16` and -2 to -3 GiB at `2^18`**,
 which is the largest single remaining memory lever.
+
+### 4.6 Streaming PCS commit implemented (2026-11-14)
+
+The locus in §4.5 is now a streaming commit; the proof bytes are unchanged.
+
+**What changed.** Both seams are implemented for the shipped `P3BinaryPcs`
+(`crates/magnetar-pcs/src/streaming.rs`, `p3_pcs.rs`):
+
+1. **Encoder seam.** A rate-`2^log_inv_rate` RS codeword is the concatenation of
+   `2^log_inv_rate` cosets, each the message transformed on its own shifted
+   subspace — the identity `PolyBasisNtt::ntt_batch_padded` already exploits.
+   `streamed_codeword_root` copies the message into one message-sized scratch
+   buffer per coset, applies `PolyBasisNtt::shifted_ntt_batch`, and hands the
+   coset rows to the Merkle builder. The buffer the transform returns is reused
+   as the next coset's copy, so one message plus one coset is live instead of
+   the whole codeword.
+2. **Merkle seam.** `StreamingRoot` hashes codeword rows as they arrive, builds
+   one perfect subtree per `2^15`-row block (blocks hash and compress in
+   parallel), and keeps a logarithmic frontier of completed subtree roots.
+   `P3Mmcs` has `cap_height = 0`, so the cap is one root and no level needs to
+   be retained for an opening.
+
+The wiring is the three **cap-only** wrapper entry points, which used to build
+the full codeword and tree and immediately drop both: `Pcs::commit`
+(single-column), `commit_batch` (the local/shared twist and Shout tables) and
+`commit_mosaic` (the unified mosaic, the `Commit` stage). The retained paths —
+`commit_batch_prepared` / `open_batch_prepared` and `open` / `open_batch` /
+`open_mosaic` — still materialise the codeword and tree, because their openings
+need them. `MAGNETAR_LEGACY_PCS_COMMIT=1` restores the batch path in the same
+binary for an A/B.
+
+**Why the root is identical.** Same leaf order (coset `c` is codeword rows
+`[c * message_rows, (c+1) * message_rows)`), same leaf hashing
+(`CryptographicHasher::hash_many` over the contiguous rows of a block, which is
+the tree's own leaf arm), same binary compression over the same subtree
+boundaries (the block size divides every power-of-two codeword height). Three
+tests pin it: `streaming_root_matches_mmcs` (root equality against
+`MerkleTreeMmcs::commit_matrix` for heights `2^0..2^10`, widths 1/2/3/5/8 and
+five push chunkings), `streaming_codeword_root_matches_batch_encoder`
+(cap equality against `encode_batch_borrowed` + tree for heights `2^0..2^7`,
+rates 0-3), and `streaming_root_matches_pcs_commit_entry_points` (each streamed
+entry point against the retained path's commitment over the same tables).
+
+**Isolated PCS probe** (`p3_stage_probe`, commit-only, same binary env-switched,
+peak RSS from `getrusage`; `MAGNETAR_SERIALIZE_PRODUCTS` not involved):
+
+| commit | shape | legacy peak | streamed peak | legacy / streamed CPU (user+sys) |
+| --- | --- | --- | --- | --- |
+| single column | `2^22` values, rate 1/2 | 516.7 MiB | **205.2 MiB (-60 %)** | 1.82 / 1.83 s |
+| mosaic | 12 tables, `cells=2,293,918`, rate 1/4 | 843.3 MiB | **211.5 MiB (-75 %)** | 3.62 / 3.58 s |
+| local twist (control) | 15 cols `x 2^16`, rate 1/8, *prepared* path | 418.5 MiB | 418.6 MiB | 178 / 179 ms |
+
+The local-twist row is the control: it goes through `commit_batch_prepared`, so
+it must not move — and does not.
+
+**Whole prover at `2^16`** (`paper_unified_bench`, `ADDS=65535`,
+`TRACE_SHOUT=1`, same binary, env-switched):
+
+| metric | legacy commit | streamed commit |
+| --- | --- | --- |
+| unified `Commit` stage rss / footprint | 1.28 / 1.28 GiB | **0.63 / 0.63 GiB** |
+| unified `Opening` stage rss / footprint | 1.90 / 1.46 GiB | 1.51 / 1.46 GiB |
+| peak footprint, default schedule | 1.90 GiB | **1.49 GiB (-0.41 GiB, -22 %)** |
+| peak footprint, `MAGNETAR_SERIALIZE_PRODUCTS=1` | 1.64 GiB | **1.45 GiB (-0.19 GiB)** |
+| prove CPU (4 interleaved pairs) | 288.9 s mean (280.4-298.9) | 295.9 s mean (287.8-304.8) |
+| proof / varint / compressed | 1,018,155 / 829,744 / 667,091 B | identical |
+
+**`2^17` staircase** (`ADDS=131071`, `MAGNETAR_STREAM_BUDGET_LOG=23`,
+`MAGNETAR_SERIALIZE_PRODUCTS=1`, one interleaved pair, host load 59-84 during
+the leg so wall times are not comparable):
+
+| metric | legacy commit | streamed commit |
+| --- | --- | --- |
+| unified `Commit` stage rss / footprint | 2.56 / 2.56 GiB | **1.28 / 1.28 GiB (-50 %)** |
+| unified `Opening` stage rss / footprint | 3.13 / 3.03 GiB | 2.93 / 3.02 GiB |
+| peak footprint | 3.29 GiB | **3.03 GiB (-0.26 GiB, -8 %)** |
+| prove cpu | 590.2 s | 614.3 s (+4.1 %, host load 59-84) |
+| proof / varint / compressed | 1,110,291 / 915,539 / 749,347 B | identical |
+
+The commit transient halves exactly as at `2^16`; the process peak only moves
+0.26 GiB because the `2^17` peak is the Opening (3.03 GiB), which is untouched.
+
+Reading:
+
+- The `Commit` stage drops by 0.65 GiB, matching §4.5's prediction, but the
+  **peak moves to the Opening**, which still re-encodes the full codeword and
+  tree for its FRI folding and query openings. That is why the products-gated
+  peak only moves 0.19 GiB while the default schedule (where the commit
+  transient overlapped the selected products) moves 0.41 GiB.
+- Prove CPU is unchanged within this host's ±8 s whole-prove drift, and the
+  isolated commit CPU is identical (the per-coset encode does the same field
+  work as the batch encode; the only extra passes are the message copies, which
+  are memory-bandwidth noise at this size). Verify is unchanged because the
+  proof is byte-identical.
+- The remaining PCS term is now the **opening-side re-encode**: chunking the
+  encode is in place, so the next step is to stream the codeword *fold* and the
+  query-opening pass over the same chunked encoder (the fold is a weighted row
+  sum, so it can consume cosets as they are produced), then the tree only has
+  to be built for the leaves the opening actually queries.
