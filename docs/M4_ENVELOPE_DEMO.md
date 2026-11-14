@@ -1019,3 +1019,37 @@ run:
    recompute the root: must fail against the trace-derived statement root);
 3. then the `2^22` projection with dedup: mosaic 146.8 M -> 96.5 M cells
    (message 4 -> 2 GiB; with M4b's trace alphabet 1 GiB).
+
+### 19.3 The packed-bits commitment is now bound into the statement root
+
+`crates/magnetar-runtime/src/m4a_binding.rs` completes the `access_final`-style
+binding:
+
+* `bits_root_from_trace(trace)` — rebuilds the register witness, commits the
+  packed address-bit columns exactly like the Access v5 proof and takes a
+  domain-separated digest (`m4a-dedup-bits-v1`);
+* `bits_root_from_proof(proof)` — same digest from the proof-carried
+  `linear_m4a.bits_commitment`;
+* `bind_root(base, bits)` — `sha256("m4a-dedup-root-v1" || base || bits_root)`;
+* `claim_table::statement_claim_root` wraps the trace-derived statement root
+  when `MAGNETAR_M4A_DEDUP` is on; `composed_statement_root` (the verifier's
+  recomposition from the proof) wraps the same way; the prover's final
+  `trace_claim_root` is set to the trace-derived wrapped root; the v4
+  three-component root path refuses the dedup combination explicitly;
+* version bump: the dedup root is a new domain, and the proof carries the
+  `addr_table_dropped` flag (default proof 1,018,157 -> 1,018,159 B).
+
+Verified at `2^16` with `BENCH_AUDIT=1`:
+
+| case | result |
+| --- | --- |
+| honest dedup baseline | **accepted** (`bits_root` from trace == from proof) |
+| bits claim / opening value tamper | rejected |
+| `addr_table_dropped` cleared | rejected (core opening) |
+| RAM claim tamper | rejected |
+| fabricated register witness (`MAGNETAR_TEST_FAKE_REG=1,1`) | rejected |
+
+The honest run also prints (with `BENCH_ROOT_DEBUG=1`) equal statement and proof
+roots and equal trace-derived / proof-derived bits digests, i.e. the packed
+commitment is now explicitly bound into the public statement root rather than
+only checked through the Access relations.

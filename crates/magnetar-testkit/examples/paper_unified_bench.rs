@@ -156,6 +156,15 @@ fn main() {
                 error.chars().take(90).collect::<String>()
             ),
         };
+        if std::env::var_os("BENCH_ROOT_DEBUG").is_some() {
+            println!(
+                "root debug: stmt={:?} proof={:?} bits_trace={:?} bits_proof={:?}",
+                statement.trace_claim_root,
+                proof.trace_claim_root,
+                magnetar_runtime::m4a_binding::bits_root_from_trace(&trace),
+                magnetar_runtime::m4a_binding::bits_root_from_proof(&proof),
+            );
+        }
         line("baseline", &verify(&proof));
         if let Some(linear) = proof.access.registers.linear.as_ref() {
             let mut tampered = proof.clone();

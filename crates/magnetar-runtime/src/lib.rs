@@ -2951,7 +2951,13 @@ pub fn prove_unified_trace_dynamic_native(
     trace: &Trace,
     width: usize,
 ) -> Result<UnifiedTraceProof, RuntimeError> {
-    Ok(prove_unified_trace_dynamic_native_profile(trace, width)?.0)
+    let mut proof = prove_unified_trace_dynamic_native_profile(trace, width)?.0;
+    if crate::m4a_binding::dedup_enabled() {
+        // M4a dedup: the statement root carries the packed-bits commitment; the
+        // prover must bind the same trace-derived root.
+        proof.trace_claim_root = crate::claim_table::statement_claim_root(trace);
+    }
+    Ok(proof)
 }
 
 /// Native trace-verifier mode: the caller supplies the trace, so the O(rows)
@@ -2964,6 +2970,9 @@ pub fn prove_unified_trace_dynamic_native_trace(
     let mut proof = prove_unified_trace_dynamic_native_profile(trace, width)?.0;
     proof.claim_proof = None;
     proof.trace_claim_root = crate::trace_claims::TraceClaimTree::build(trace).root();
+        if crate::m4a_binding::dedup_enabled() {
+        proof.trace_claim_root = crate::paper_statement_claim_root(trace, width);
+    }
     Ok(proof)
 }
 
@@ -3071,6 +3080,10 @@ pub fn prove_unified_trace_paper(
         if let Ok(set) = crate::virtual_claims::VirtualClaimSet::from_selected(selected) {
             proof.virtual_claim_root = set.root;
         }
+    }
+    crate::m4a_binding::bind_proof_root(&mut proof);
+    if crate::m4a_binding::dedup_enabled() {
+        proof.trace_claim_root = crate::paper_statement_claim_root(trace, width);
     }
     Ok(proof)
 }
@@ -4023,12 +4036,18 @@ pub(crate) fn cpu_statement_claims(
 /// Compose the statement root the verifier expects: the M2/M3 claim binding,
 /// plus the M4 v3 committed Shout tables when the proof carries them.
 fn composed_statement_root(proof: &UnifiedTraceProof, claim_binding_v1: &[u8; 32]) -> [u8; 32] {
-    match &proof.committed_logup_shout {
+    let base = match &proof.committed_logup_shout {
         Some(committed) => {
             crate::logup_shout::statement_root_from_commitments(claim_binding_v1, committed)
         }
         None => *claim_binding_v1,
+    };
+    if crate::m4a_binding::dedup_enabled() {
+        let bits = crate::m4a_binding::bits_root_from_proof(proof)
+            .unwrap_or(crate::m4a_binding::MISSING_BITS);
+        return crate::m4a_binding::bind_root(&base, &bits);
     }
+    base
 }
 
 pub fn verify_unified_trace(
@@ -4597,6 +4616,12 @@ pub fn verify_unified_trace_statement(
             crate::claim_table::claim_shout_v3_root(&expected_statement_root, &tables);
         expected_proof_root =
             crate::claim_table::claim_shout_v3_root(&expected_proof_root, &tables);
+    }
+    if crate::m4a_binding::dedup_enabled() {
+        let bits = crate::m4a_binding::bits_root_from_trace(trace)
+            .unwrap_or(crate::m4a_binding::MISSING_BITS);
+        expected_statement_root = crate::m4a_binding::bind_root(&expected_statement_root, &bits);
+        expected_proof_root = crate::m4a_binding::bind_root(&expected_proof_root, &bits);
     }
     if statement.trace_claim_root != expected_statement_root
         || proof.trace_claim_root != expected_proof_root
@@ -11004,3 +11029,5 @@ mod m5_v4_tests {
 mod m4a_probe;
 
 pub(crate) mod m4a_tables;
+
+pub mod m4a_binding;

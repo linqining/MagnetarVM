@@ -34,6 +34,14 @@ pub(crate) fn verify_native_unified_v4(
             "proof width does not match the requested width".into(),
         ));
     }
+    // M4a statement-level dedup is wired through the classic composed root, not
+    // the v4 three-component root; refuse the combination instead of comparing
+    // incompatible roots.
+    if crate::m4a_binding::dedup_enabled() {
+        return Err(RuntimeError::Proof(
+            "M4a address dedup requires the classic claims path".into(),
+        ));
+    }
     // v4 requires the committed access columns: without them the final-RAM
     // table cannot bind the access layer witness-free.
     if !crate::access_table::access_columns_enabled() {

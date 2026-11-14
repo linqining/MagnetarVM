@@ -346,6 +346,17 @@ pub fn statement_claim_root_v4(
 }
 
 pub fn statement_claim_root(trace: &magnetar_spec::Trace) -> [u8; 32] {
+    let root = statement_claim_root_base(trace);
+    if crate::m4a_binding::dedup_enabled() {
+        if let Some(bits) = crate::m4a_binding::bits_root_from_trace(trace) {
+            return crate::m4a_binding::bind_root(&root, &bits);
+        }
+        return crate::m4a_binding::bind_root(&root, &crate::m4a_binding::MISSING_BITS);
+    }
+    root
+}
+
+fn statement_claim_root_base(trace: &magnetar_spec::Trace) -> [u8; 32] {
     if claims_v4_enabled() && claim_table_enabled() {
         if let Ok(columns) = claim_table_columns(trace) {
             let bits = claim_table_bits(&columns);
