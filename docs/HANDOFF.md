@@ -121,6 +121,17 @@ also landed: the witness `value` history is a flat `Vec<u64>` now, taking
 proofs byte-identical. What remains under (h) is the *committed* `addr` table
 (format change). [MEMORY_PATH.md](MEMORY_PATH.md) §4.8.
 
+**Streamed opening reaches CPU parity (2026-11-14)**: the opening no longer
+recomputes the cap. `magnetar_proof::Pcs::open_with_commitment` (default:
+`open`) plus the cap-aware `P3BinaryPcs` entry points and the `P3SharedPcs` /
+`BitPcs` forwarding thread the Commit stage's root into the streamed opening;
+wired at the unified mosaic, packed Shout/Router trails, bound rows, trace
+commitment and local twist batches. Measured: `2^18` CPU 1249 -> 1225 s, peak
+3.60 -> 3.33 GiB; `2^19` CPU 2638 -> 2541 s, peak 5.79 -> **5.74 GiB** — now
+less CPU than the retained path (2584 s) at 11.93 GiB peak; proofs
+byte-identical (1,230,360 / 1,373,708 B). [MEMORY_PATH.md](MEMORY_PATH.md)
+§4.7.
+
 **Opt-in Access scheduling switch (2026-11-08)**: `MAGNETAR_SERIALIZE_ACCESS=1`
 starts the selected commit/products after the Access stage instead of after the
 mosaic Commit, so the two working sets do not overlap. Byte-identical proofs

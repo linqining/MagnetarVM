@@ -962,16 +962,22 @@ sessions could not run (docs `PAPER_CEILING` §2 item 5: "needs >=13 GiB
 free+inactive") now fits in a 7.7 GiB envelope. A `2^20` row needs roughly
 `2*7.66 - 4.0 (context)` ≈ 11.3-15 GiB and is the next staircase target.
 
-**The remaining cost.** The opening recomputes the cap (`streamed_codeword_root`
-inside `streamed_open`) even though the prover committed the same message
-earlier, so it costs one extra codeword encode and one extra leaf-hash pass —
-the `+3-4 %` above. The fix is to pass the already-computed cap (and its
-commitment) into `open`/`open_batch`/`open_mosaic`: the runtime already holds
-it from the Commit stage, and the trait boundary is where the extra pass hides.
-That is the next increment under this lever; it should bring the streamed
-opening to cost parity or below the retained path (the retained path also
-re-hashes inside the opening, so with the cap passed the streamed opening would
-do *less* work than the batch path).
+**The remaining cost — fixed (same day).** The opening used to recompute the
+cap (`streamed_codeword_root` inside `streamed_open`) even though the prover
+had committed the same message earlier: one extra codeword encode and one extra
+leaf-hash pass, the `+3-4 %` above. `magnetar_proof::Pcs` now has
+`open_with_commitment(values, point, commitment)` (default: `open`), the
+`P3BinaryPcs` open entry points take the known cap
+(`open_with_cap`/`open_batch_with_cap`/`open_mosaic_with_cap`) and skip the cap
+pass, `P3SharedPcs` and the `BitPcs` wrappers forward it, and the call sites
+with the commitment in scope use it (unified mosaic, packed Shout/Router
+trails, bound rows, trace commitment, local twist batches).
+
+Measured on the same binary: `2^18` prove CPU 1249 -> **1225 s** (legacy
+1201 s, host drift) and peak 3.60 -> **3.33 GiB**; `2^19` CPU 2638 ->
+**2541 s**, peak 5.79 -> **5.74 GiB**. The streamed opening is now *cheaper*
+than the retained path in CPU (2541 s vs 2584 s at `2^19`) while using
+5.74 GiB against 11.93 GiB. Proofs unchanged at both sizes.
 
 ### 4.8 (h) bit-packed twist tables: assessment (not started)
 

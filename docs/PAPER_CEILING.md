@@ -69,9 +69,10 @@ format, against a 36 GiB host.
    through the new `StreamingMmcs`/`MerkleStreamingOpener` seam. Measured
    byte-identical: Opening 5.86 -> 2.89 GiB and peak 5.96 -> 3.60 GiB at
    `2^18`; 3.02 -> 2.10 GiB at `2^17`; the `2^16` peak floor is the selected
-   product phase (1.47-1.54 GiB). Cost: +3-4 % prove CPU from the cap pass the
-   opening repeats; passing the already-computed cap into the opening is the
-   next increment and should remove it. The `2^19` row now runs too:
+   product phase (1.47-1.54 GiB). The cap pass the opening used to repeat is
+   gone: `Pcs::open_with_commitment` + the cap-aware entry points thread the
+   Commit stage's root through, so the streamed opening now costs *less* CPU
+   than the retained path (`2^19` 2541 vs 2584 s) at 5.74 vs 11.93 GiB peak. The `2^19` row now runs too:
    **11.93 -> 7.66 GiB peak (-36 %)**, proof 1,373,708 B identical, which
    unblocks the staircase previously recorded as environment-blocked (item 5).
 2. **(h) bit-pack the twist witnesses / batch tables** — WITNESS HALF DONE
@@ -93,10 +94,10 @@ format, against a 36 GiB host.
    Effort: days. Expected: the remaining ~0.23 GiB of Access arrays at `2^16`.
 5. **`2^19` / `2^20` staircase rows** — `2^19` is **measured** (2026-11-14,
    11.8 GiB free+inactive window): with `MAGNETAR_SERIALIZE_PRODUCTS=1` and
-   `MAGNETAR_STREAM_PCS_OPEN=1` the peak is **5.79 GiB** after the (h) witness
-   slices (7.66 GiB before them; retained opening 11.93 GiB), proof
-   1,373,708 B, so the row that needed >=13 GiB now fits in a 5.8 GiB
-   envelope. `2^20` projects to ~8-11 GiB and needs a quiet window.
+   `MAGNETAR_STREAM_PCS_OPEN=1` the peak is **5.74 GiB** after the (h) witness
+   slices and the cap plumbing (7.66 GiB before them; retained opening
+   11.93 GiB), proof 1,373,708 B, so the row that needed >=13 GiB now fits in a
+   5.7 GiB envelope. `2^20` projects to ~8-11 GiB and needs a quiet window.
 
 ## 3. What "the ceiling" looks like
 
