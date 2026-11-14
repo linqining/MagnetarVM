@@ -794,3 +794,45 @@ its peak and a large wall win**, which is exactly the M4a trade at work. The
 remaining M4a step is to call `prove_access_m4a` from the unified prover behind
 `MAGNETAR_M4A_ACCESS`, wire the bit commitment into the statement root, and
 re-measure `paper_unified_bench` at `2^18` (full-proof peak and size).
+
+## 16. M4a end to end: the unified prover runs the packed Access path
+
+`MAGNETAR_M4A_ACCESS=1` now routes the unified prover's Access stage through
+`prove_access_m4a`: `BinaryTwistRamProof` carries a new `linear_m4a` field
+(`BinaryTwistLinearM4aProof`, version 5), the verifier prefers it and checks the
+outer claims with `m4a_access_outer_claims` (bit values from the ring-switch
+claims). The proof format is bumped: the field is always serialized, so the
+default proof grows by exactly **+2 bytes** (one Option tag per twist proof) —
+`2^16` 1,018,155 -> 1,018,157 B, `2^18` 1,230,360 -> 1,230,362 B.
+
+End-to-end A/B (`paper_unified_bench`, `TRACE_SHOUT=1`, products-gated,
+streamed opening):
+
+| metric | default | `MAGNETAR_M4A_ACCESS=1` |
+| --- | ---: | ---: |
+| proof, 2^16 | 1,018,157 B | 1,115,281 B (**+9.5 %**) |
+| proof, 2^18 | 1,230,362 B | 1,347,398 B (**+9.5 %**) |
+| Access component, 2^18 | 254,222 B | 369,082 B |
+| Access stage wall, 2^18 | 15.6 s | **8.7 s (-44 %)** |
+| Access stage RSS, 2^18 | 2.93 GiB | **2.53 GiB** |
+| peak footprint, 2^18 | 3.52 GiB | **3.25 GiB (-8 %)** |
+| prove CPU, 2^18 | 1306.5 s | 1260.3 s (-3.5 %) |
+| verify, 2^16 (2x interleaved) | 66.2 / 78.7 ms | 74.6 / 60.2 ms (noise) |
+
+The isolated Access verification costs **+2.6 ms** (`verify_access_m4a` 6.19 ms
+vs `verify_local_shared` 3.61 ms at `2^16`), and interleaved unified runs show
+no verify penalty beyond host noise. The proof-size increase is exactly the
+§14 budget (+9.5 % of the full proof).
+
+So the M4a delivery is now real: an opt-in unified proof that commits the
+address bits once (128:1 packed) and verifies them with one batched
+ring-switch, trading +9.5 % proof for a ~44 % shorter Access stage and a smaller
+peak. Remaining M4a work:
+
+1. fold the batched ring-switch's PCS opening into the mosaic opening (the
+   packed-word tables have arity `L-7`, a valid mixed-height mosaic table), which
+   should recover most of the +9.5 %;
+2. decide on M4b's 64-bit alphabet for the trace term (needed for the `2^22`
+   1 GiB message; without it the message reduction is 2x);
+3. re-check verify in a quiet window (the target is 8-12 ms) and measure the
+   full `2^22` projection once the context work lands.

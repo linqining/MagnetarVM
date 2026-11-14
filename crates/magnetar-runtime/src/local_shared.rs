@@ -1336,3 +1336,96 @@ pub fn verify_access_m4a(proof: &M4aAccessProof) -> Result<bool, ProofError> {
 
 
 
+
+
+/// Outer Access-table claims implied by the M4a Access proof (version 5).
+///
+/// Mirrors [`local_shared_outer_claims`] but the address-bit values come from
+/// the batched ring-switch claims instead of the PCS batch's terminal values.
+pub fn m4a_access_outer_claims(
+    proof: &M4aAccessProof,
+) -> Result<Vec<crate::linear_twist::LinearOuterClaim>, ProofError> {
+    use crate::linear_twist::{LinearOuterClaim, LinearOuterTable};
+    let shape = proof.shape;
+    let address_bits = shape.address_bits;
+    let cycle_bits = shape.cycle_bits();
+    let mut transcript = Sha256Transcript::new("magnetar-local-shared-m4a-v5");
+    transcript.absorb(
+        "commitment",
+        &bincode::serialize(&proof.opening.commitment)
+            .map_err(|error| ProofError::Pcs(error.to_string()))?,
+    );
+    transcript.absorb(
+        "bits-commitment",
+        &bincode::serialize(&proof.bits_commitment)
+            .map_err(|error| ProofError::Pcs(error.to_string()))?,
+    );
+    let _gamma = sample_point(&mut transcript, 1)[0];
+    let cycle_point = sample_point(&mut transcript, cycle_bits);
+    let rk = proof.rw_challenges[cycle_bits..].to_vec();
+    let mut claims = vec![LinearOuterClaim {
+        table: LinearOuterTable::ReadValue,
+        column: 0,
+        point: cycle_point.clone(),
+        value: proof.values[0][0],
+    }];
+    claims.push(LinearOuterClaim {
+        table: LinearOuterTable::WriteValue,
+        column: 0,
+        point: cycle_point,
+        value: proof.values[0][1],
+    });
+    claims.push(LinearOuterClaim {
+        table: LinearOuterTable::Increment,
+        column: 0,
+        point: proof.rw_challenges[..cycle_bits].to_vec(),
+        value: proof.values[1][0],
+    });
+    claims.push(LinearOuterClaim {
+        table: LinearOuterTable::Increment,
+        column: 0,
+        point: proof.val_challenges.clone(),
+        value: proof.values[2][0],
+    });
+    claims.push(LinearOuterClaim {
+        table: LinearOuterTable::Initial,
+        column: 0,
+        point: rk.clone(),
+        value: proof.endpoints[0],
+    });
+    claims.push(LinearOuterClaim {
+        table: LinearOuterTable::Final,
+        column: 1,
+        point: rk,
+        value: proof.endpoints[1],
+    });
+    let point = proof.virtual_challenges.clone();
+    let values = &proof.bits_claims;
+    for bit in 0..address_bits {
+        claims.push(LinearOuterClaim {
+            table: LinearOuterTable::Address,
+            column: bit,
+            point: point.clone(),
+            value: values[bit],
+        });
+        claims.push(LinearOuterClaim {
+            table: LinearOuterTable::Address,
+            column: address_bits + bit,
+            point: point.clone(),
+            value: values[address_bits + 1 + bit],
+        });
+    }
+    claims.push(LinearOuterClaim {
+        table: LinearOuterTable::Address,
+        column: 2 * address_bits,
+        point: point.clone(),
+        value: values[address_bits],
+    });
+    claims.push(LinearOuterClaim {
+        table: LinearOuterTable::Address,
+        column: 2 * address_bits + 1,
+        point,
+        value: values[2 * address_bits + 1],
+    });
+    Ok(claims)
+}

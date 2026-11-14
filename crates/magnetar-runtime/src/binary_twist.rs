@@ -1013,6 +1013,9 @@ pub struct BinaryTwistRamProof {
     /// Twist proof plus its outer-table claims.
     #[serde(default)]
     pub linear: Option<BinaryTwistLinearProof>,
+    /// M4a (version 5): packed Access proof; when present it replaces `linear`.
+    #[serde(default)]
+    pub linear_m4a: Option<BinaryTwistLinearM4aProof>,
 }
 
 fn eq_at_index(point: &[F2_128], index: usize) -> F2_128 {
@@ -1814,6 +1817,13 @@ pub struct BinaryTwistLinearProof {
     pub local: crate::local_shared::LocalSharedProof,
 }
 
+/// M4a (version 5) wrapper: the Access proof with the packed bit table and the
+/// batched ring-switch instead of the 15-column PCS batch.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BinaryTwistLinearM4aProof {
+    pub m4a: crate::local_shared::M4aAccessProof,
+}
+
 pub fn prove_binary_twist_ram_linear(
     witness: &BinaryTwistWitness,
 ) -> Result<BinaryTwistLinearProof, ProofError> {
@@ -1883,6 +1893,34 @@ fn prove_binary_twist_claims_linear(
     )
 }
 
+/// M4a variant of [`linear_outer_mosaic_claims`].
+pub(crate) fn m4a_linear_outer_mosaic_claims(
+    proof: &BinaryTwistLinearM4aProof,
+    table_index: usize,
+) -> Result<MosaicClaims, ProofError> {
+    use crate::linear_twist::LinearOuterTable;
+    let claims = crate::local_shared::m4a_access_outer_claims(&proof.m4a)?;
+    let mut points = Vec::with_capacity(claims.len());
+    let mut expected = Vec::with_capacity(claims.len());
+    for claim in claims {
+        let table = match claim.table {
+            LinearOuterTable::Address => table_index,
+            LinearOuterTable::Increment => table_index + 1,
+            LinearOuterTable::Initial | LinearOuterTable::Final => table_index + 2,
+            LinearOuterTable::ReadValue => table_index + 3,
+            LinearOuterTable::WriteValue => table_index + 4,
+        };
+        points.push(P3MosaicPoint {
+            table,
+            point: claim.point,
+            columns: vec![claim.column],
+            next_columns: Vec::new(),
+        });
+        expected.push(vec![claim.value]);
+    }
+    Ok((points, expected))
+}
+
 /// Linear twist claims from just the witness and the two bit widths.
 ///
 /// The linear reduction reads no committed table content, so the unified
@@ -1894,10 +1932,19 @@ pub(crate) fn prove_binary_twist_claims_linear_shape(
     cycle_bits: usize,
     table_index: usize,
 ) -> Result<ClaimedRam, ProofError> {
-    let linear = BinaryTwistLinearProof {
-        local: crate::local_shared::prove_local_shared(witness)?,
+    let use_m4a = std::env::var_os("MAGNETAR_M4A_ACCESS").is_some();
+    let (linear, linear_m4a, claims) = if use_m4a {
+        let m4a = crate::local_shared::prove_access_m4a(witness)?;
+        let wrapper = BinaryTwistLinearM4aProof { m4a };
+        let claims = m4a_linear_outer_mosaic_claims(&wrapper, table_index)?;
+        (None, Some(wrapper), claims)
+    } else {
+        let linear = BinaryTwistLinearProof {
+            local: crate::local_shared::prove_local_shared(witness)?,
+        };
+        let claims = linear_outer_mosaic_claims(&linear, table_index)?;
+        (Some(linear), None, claims)
     };
-    let claims = linear_outer_mosaic_claims(&linear, table_index)?;
     let zero = F2_128::from(0u64);
     let proof = BinaryTwistRamProof {
         boolean: AddressBooleanClaim { rounds: Vec::new() },
@@ -1924,7 +1971,8 @@ pub(crate) fn prove_binary_twist_claims_linear_shape(
         final_values_evals: Vec::new(),
         cycle_bits,
         address_bits,
-        linear: Some(linear),
+        linear,
+        linear_m4a,
     };
     Ok((proof, claims))
 }
@@ -2702,6 +2750,7 @@ pub(crate) fn prove_binary_twist_claims(
             cycle_bits: tables.cycle_bits,
             address_bits: tables.address_bits,
             linear: None,
+            linear_m4a: None,
         },
         (addr_points, addr_expected),
     ))
@@ -2759,6 +2808,15 @@ fn verify_binary_twist_from_proof_inner(
 ) -> Result<Option<MosaicClaims>, ProofError> {
     if commitment.tables.len() <= table_index + 4 {
         return Ok(None);
+    }
+    if let Some(linear_m4a) = &proof.linear_m4a {
+        if linear_m4a.m4a.shape.address_bits != proof.address_bits
+            || linear_m4a.m4a.shape.cycle_bits() != proof.cycle_bits
+            || !crate::local_shared::verify_access_m4a(&linear_m4a.m4a)?
+        {
+            return Ok(None);
+        }
+        return Ok(Some(m4a_linear_outer_mosaic_claims(linear_m4a, table_index)?));
     }
     if let Some(linear) = &proof.linear {
         if linear.local.shape.address_bits != proof.address_bits

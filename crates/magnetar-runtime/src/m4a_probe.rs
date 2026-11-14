@@ -707,9 +707,16 @@ fn m4a_access_proof_round_trips() {
     let old = crate::local_shared::prove_local_shared(&witness).expect("old access proof");
     let m4a = crate::local_shared::prove_access_m4a(&witness).expect("m4a access proof");
     assert_eq!(m4a.version, crate::local_shared::M4A_ACCESS_VERSION);
-    assert!(
-        crate::local_shared::verify_access_m4a(&m4a).expect("verify"),
-        "the M4a Access proof must verify"
+    let verify_started = std::time::Instant::now();
+    let verified = crate::local_shared::verify_access_m4a(&m4a).expect("verify");
+    let m4a_verify_ms = verify_started.elapsed().as_secs_f64() * 1000.0;
+    assert!(verified, "the M4a Access proof must verify");
+    let old_verify_started = std::time::Instant::now();
+    let old_verified = crate::local_shared::verify_local_shared(&old).expect("verify");
+    let old_verify_ms = old_verify_started.elapsed().as_secs_f64() * 1000.0;
+    assert!(old_verified, "the old Access proof must verify");
+    println!(
+        "m4a access verify: old={old_verify_ms:.2} ms m4a={m4a_verify_ms:.2} ms"
     );
 
     // The ring-switch claims must be the real address-bit MLEs at the proof's
