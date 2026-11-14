@@ -456,9 +456,13 @@ impl P3BinaryPcs {
         stacked_variables: usize,
         protocol: &OpeningProtocol,
         points: &[Point<F>],
+        known_cap: Option<P3Cap>,
     ) -> Result<(P3Cap, P3Proof), ProofError> {
         let message = Self::stacked_message(&witness, stacked_variables)?;
-        let cap = crate::streaming::streamed_codeword_root(&message, 1, self.log_inv_rate);
+        let cap = match known_cap {
+            Some(cap) => cap,
+            None => crate::streaming::streamed_codeword_root(&message, 1, self.log_inv_rate),
+        };
         let mut challenger = Self::challenger();
         backend.observe_commitment(&cap, &mut challenger);
         let proof = backend
@@ -508,6 +512,141 @@ impl P3BinaryPcs {
             1,
             self.log_inv_rate,
         ))
+    }
+
+    /// Open a single column against a commitment the caller already owns.
+    ///
+    /// The streamed opening re-derives the codeword from the message, so it can
+    /// bind the given cap instead of recomputing it; the retained path ignores
+    /// the supplied cap and recomputes, so both return the retained path's
+    /// byte-identical proof.
+    pub fn open_with_cap(
+        &self,
+        values: &[F2_128],
+        point: &[F2_128],
+        cap: &P3Cap,
+    ) -> Result<P3Opening, ProofError> {
+        if !Self::stream_open() {
+            return <Self as Pcs>::open(self, values, point);
+        }
+        let (num_variables, pcs_log) = Self::table_shape(values)?;
+        if point.len() != num_variables {
+            return Err(ProofError::PointLength {
+                expected: num_variables,
+                actual: point.len(),
+            });
+        }
+        let backend = Self::backend_with(
+            pcs_log,
+            self.security_level,
+            self.log_inv_rate,
+            self.pow_bits,
+            self.log_folding_factor,
+        )?;
+        let (table, _, _) = Self::table(values)?;
+        let witness = SuffixProver::<F, F>::new_witness(vec![table], 0);
+        let (cap, proof) = self.streamed_open(
+            &backend,
+            witness,
+            pcs_log,
+            &Self::protocol(pcs_log),
+            core::slice::from_ref(&Self::point(point)),
+            Some(cap.clone()),
+        )?;
+        Ok(P3Opening {
+            commitment: P3Commitment { cap, num_variables },
+            proof,
+        })
+    }
+
+    /// Open a batch against a commitment the caller already owns.
+    pub fn open_batch_with_cap(
+        &self,
+        columns: &[Vec<F2_128>],
+        points: &[P3BatchPoint],
+        cap: &P3Cap,
+    ) -> Result<P3BatchOpening, ProofError> {
+        if !Self::stream_open() {
+            return self.open_batch(columns, points);
+        }
+        let (table, num_variables, num_columns) = Self::batch_table(columns)?;
+        let stacked_variables = Self::stacked_variables(num_variables, num_columns);
+        let protocol = Self::batch_protocol(num_variables, num_columns, points)?;
+        let backend = Self::backend_with(
+            stacked_variables,
+            self.security_level,
+            self.log_inv_rate,
+            self.pow_bits,
+            self.log_folding_factor,
+        )?;
+        let witness = SuffixProver::<F, F>::new_witness(vec![table], 0);
+        let p3_points = points
+            .iter()
+            .map(|point| Self::point(&point.point))
+            .collect::<Vec<_>>();
+        let (cap, proof) = self.streamed_open(
+            &backend,
+            witness,
+            stacked_variables,
+            &protocol,
+            &p3_points,
+            Some(cap.clone()),
+        )?;
+        Ok(P3BatchOpening {
+            commitment: P3BatchCommitment {
+                cap,
+                num_variables,
+                stacked_variables,
+                num_columns,
+            },
+            proof,
+        })
+    }
+
+    /// Open a mosaic against a commitment the caller already owns.
+    pub fn open_mosaic_with_cap(
+        &self,
+        tables: &[P3MosaicTable],
+        points: &[P3MosaicPoint],
+        cap: &P3Cap,
+    ) -> Result<P3MosaicOpening, ProofError> {
+        if !Self::stream_open() {
+            return self.open_mosaic(tables, points);
+        }
+        let mut p3_tables = Vec::with_capacity(tables.len());
+        let mut shapes = Vec::with_capacity(tables.len());
+        for table in tables {
+            let (p3_table, shape) = Self::mosaic_table(table)?;
+            p3_tables.push(p3_table);
+            shapes.push(shape);
+        }
+        let stacked_variables = Self::mosaic_stacked_variables(&shapes)?;
+        let (protocol, p3_points) = Self::mosaic_schedule(&shapes, points)?;
+        let backend = Self::backend_with(
+            stacked_variables,
+            self.security_level,
+            self.log_inv_rate,
+            self.pow_bits,
+            self.log_folding_factor,
+        )?;
+        let witness = SuffixProver::<F, F>::new_witness(p3_tables, 0);
+        let (cap, proof) = self.streamed_open(
+            &backend,
+            witness,
+            stacked_variables,
+            &protocol,
+            &p3_points,
+            Some(cap.clone()),
+        )?;
+        Ok(P3MosaicOpening {
+            commitment: P3MosaicCommitment {
+                cap,
+                tables: shapes,
+                stacked_variables,
+                binding: [0u8; 32],
+            },
+            proof,
+        })
     }
 
     fn batch_table(columns: &[Vec<F2_128>]) -> Result<(Table<F>, usize, usize), ProofError> {
@@ -723,7 +862,7 @@ impl P3BinaryPcs {
                 .map_err(|error| ProofError::Pcs(error.to_string()))?;
             (cap, proof)
         } else {
-            self.streamed_open(&backend, witness, stacked_variables, &protocol, &p3_points)?
+            self.streamed_open(&backend, witness, stacked_variables, &protocol, &p3_points, None)?
         };
         Ok(P3BatchOpening {
             commitment: P3BatchCommitment {
@@ -993,7 +1132,7 @@ impl P3BinaryPcs {
                 .map_err(|error| ProofError::Pcs(error.to_string()))?;
             (cap, proof)
         } else {
-            self.streamed_open(&backend, witness, stacked_variables, &protocol, &p3_points)?
+            self.streamed_open(&backend, witness, stacked_variables, &protocol, &p3_points, None)?
         };
         let open_time = open_started.elapsed();
         if profile {
@@ -1152,6 +1291,7 @@ impl Pcs for P3BinaryPcs {
                 pcs_log,
                 &Self::protocol(pcs_log),
                 core::slice::from_ref(&Self::point(point)),
+                None,
             )?
         };
         let open_time = open_started.elapsed();
@@ -1166,6 +1306,15 @@ impl Pcs for P3BinaryPcs {
             commitment: P3Commitment { cap, num_variables },
             proof,
         })
+    }
+
+    fn open_with_commitment(
+        &self,
+        values: &[F2_128],
+        point: &[F2_128],
+        commitment: &Self::Commitment,
+    ) -> Result<Self::Opening, ProofError> {
+        self.open_with_cap(values, point, &commitment.cap)
     }
 
     fn verify(
@@ -1297,6 +1446,25 @@ impl Pcs for P3SharedPcs {
             .max()
             .unwrap_or(0);
         Self::pcs_for(bits).open_mosaic(&tables, &self.points(point))
+    }
+
+    fn open_with_commitment(
+        &self,
+        values: &[F2_128],
+        point: &[F2_128],
+        commitment: &Self::Commitment,
+    ) -> Result<Self::Opening, ProofError> {
+        let tables = self.tables(values);
+        let bits = tables
+            .iter()
+            .map(|table| table.columns[0].len().trailing_zeros() as usize)
+            .max()
+            .unwrap_or(0);
+        Self::pcs_for(bits).open_mosaic_with_cap(
+            &tables,
+            &self.points(point),
+            &commitment.cap,
+        )
     }
 
     fn verify(

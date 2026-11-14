@@ -2789,10 +2789,15 @@ impl<'a> UnifiedProveContext<'a> {
             self.opening = None;
             return Ok(());
         }
-        let opening = self
-            .pcs
-            .open_mosaic(&self.mosaic_tables, &self.points)
-            .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+        let opening = match self.commitment.as_ref() {
+            Some(commitment) => self.pcs.open_mosaic_with_cap(
+                &self.mosaic_tables,
+                &self.points,
+                &commitment.cap,
+            ),
+            None => self.pcs.open_mosaic(&self.mosaic_tables, &self.points),
+        }
+        .map_err(|error| RuntimeError::Proof(error.to_string()))?;
         self.opening = Some(opening);
         Ok(())
     }

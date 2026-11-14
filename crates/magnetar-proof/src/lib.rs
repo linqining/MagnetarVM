@@ -75,6 +75,20 @@ pub trait Pcs {
         opening: &Self::Opening,
     ) -> Result<bool, ProofError>;
     fn commitment_bytes(&self, commitment: &Self::Commitment) -> Vec<u8>;
+
+    /// Open a witness whose commitment the caller already owns.
+    ///
+    /// Backends whose opening re-derives the codeword internalise the commitment
+    /// so they can bind the same root without recomputing it. The default
+    /// ignores it and calls [`Self::open`].
+    fn open_with_commitment(
+        &self,
+        values: &[F2_128],
+        point: &[F2_128],
+        _commitment: &Self::Commitment,
+    ) -> Result<Self::Opening, ProofError> {
+        self.open(values, point)
+    }
 }
 
 /// Evaluate the multilinear extension of a bit vector at `point` without

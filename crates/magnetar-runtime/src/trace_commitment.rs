@@ -82,7 +82,7 @@ pub fn prove_trace_commitment(
         .commit(&witness.values)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let opening = pcs
-        .open(&witness.values, &witness.point)
+        .open_with_commitment(&witness.values, &witness.point, &commitment)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     Ok((witness, commitment, opening))
 }

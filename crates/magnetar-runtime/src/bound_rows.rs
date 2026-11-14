@@ -60,7 +60,7 @@ pub fn prove_bound_rows(
             challenge(transcript, "bound-sumcheck")
         })?;
     let value = Mle::new(values.to_vec())?.eval(&point)?;
-    let opening = pcs.open(values, &point)?;
+    let opening = pcs.open_with_commitment(values, &point, &commitment)?;
     let _ = num_vars;
     Ok(BoundRowProof {
         commitment,

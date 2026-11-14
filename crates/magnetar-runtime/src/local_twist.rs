@@ -239,10 +239,10 @@ pub fn prove_local_twist(witness: &BinaryTwistWitness) -> Result<LocalTwistProof
         ],
     ];
     let values_opening = pcs
-        .open_batch(&values_columns, &values_points)
+        .open_batch_with_cap(&values_columns, &values_points, &values_commit.cap)
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
     let endpoints_opening = pcs
-        .open_batch(&endpoint_columns, &endpoints_points)
+        .open_batch_with_cap(&endpoint_columns, &endpoints_points, &endpoints_commit.cap)
         .map_err(|error| ProofError::Pcs(error.to_string()))?;
     // Final-state fixed sumcheck.
     let eq_cell = eq_vector(&cell_point, cells);

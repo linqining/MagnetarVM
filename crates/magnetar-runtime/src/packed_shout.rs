@@ -127,7 +127,7 @@ pub fn prove_packed_shout_profile(
         F2_128::from(0u64),
     );
     let (packed_value, packed_opening) = backend
-        .open(&packed_bits, &padded_point)
+        .open_with_commitment(&packed_bits, &padded_point, &packed_commitment)
         .map_err(|error| RuntimeError::Proof(error.to_string()))?;
     let expected = leaves
         .iter()

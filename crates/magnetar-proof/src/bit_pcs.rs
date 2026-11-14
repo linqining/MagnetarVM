@@ -71,6 +71,18 @@ impl<P: Pcs> BitPcs for DirectBitPcs<P> {
         Ok((value, opening))
     }
 
+    fn open_with_commitment(
+        &self,
+        bits: &PackedBits,
+        point: &[F2_128],
+        commitment: &Self::Commitment,
+    ) -> Result<(F2_128, Self::Opening), ProofError> {
+        let values = Self::values(bits);
+        let value = Mle::new(values.clone())?.eval(point)?;
+        let opening = self.pcs.open_with_commitment(&values, point, commitment)?;
+        Ok((value, opening))
+    }
+
     fn verify(
         &self,
         commitment: &Self::Commitment,
@@ -408,6 +420,28 @@ impl<P: Pcs> BitPcs for PackedBitPcs<P> {
         let packed_value = packed_mle.eval(&high)?;
         let value = Self::bit_value(packed_value, &point[..low_bits]);
         let opening = self.pcs.open(&packed, &high)?;
+        Ok((
+            value,
+            PackedOpening {
+                packed_value,
+                opening,
+            },
+        ))
+    }
+
+    fn open_with_commitment(
+        &self,
+        bits: &PackedBits,
+        point: &[F2_128],
+        commitment: &Self::Commitment,
+    ) -> Result<(F2_128, Self::Opening), ProofError> {
+        let packed = Self::pack(bits)?;
+        let low_bits = point.len().min(7);
+        let (_, high) = Self::high_point(point);
+        let packed_mle = Mle::new(packed.clone())?;
+        let packed_value = packed_mle.eval(&high)?;
+        let value = Self::bit_value(packed_value, &point[..low_bits]);
+        let opening = self.pcs.open_with_commitment(&packed, &high, commitment)?;
         Ok((
             value,
             PackedOpening {
@@ -995,7 +1029,7 @@ impl<P: Pcs> RingSwitchPackedBitPcs<P> {
         }
         let open_started = std::time::Instant::now();
         let packed_value = Self::evaluate(&packed, &ry);
-        let pcs_opening = self.pcs.open(&packed, &ry)?;
+        let pcs_opening = self.pcs.open_with_commitment(&packed, &ry, &commitment)?;
         if profile {
             eprintln!("ring p3 open: {:?}", open_started.elapsed());
         }

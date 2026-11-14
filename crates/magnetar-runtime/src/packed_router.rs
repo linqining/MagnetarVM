@@ -256,7 +256,7 @@ pub fn prove_packed_router(
                 .eval(&point)
                 .map_err(|e| RuntimeError::Proof(e.to_string()))?;
             let opening = pcs
-                .open(flat, &point)
+                .open_with_commitment(flat, &point, &field_commitments[field_index])
                 .map_err(|e| RuntimeError::Proof(e.to_string()))?;
             let expected = leaves
                 .iter()
@@ -295,7 +295,7 @@ pub fn prove_packed_router(
                 F2_128::from(0u64),
             );
             let (value, opening) = backend
-                .open(&bit_bits[bit_index], &point)
+                .open_with_commitment(&bit_bits[bit_index], &point, &bit_commitments[bit_index])
                 .map_err(|e| RuntimeError::Proof(e.to_string()))?;
             let expected = leaves
                 .iter()
