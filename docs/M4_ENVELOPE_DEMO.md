@@ -890,3 +890,61 @@ measured batched-ring-switch curve (204 KB at `2^22` bits).
 Caveats: the `2^18`/`2^19` footprint columns are unreliable on this host (swap);
 the `2^22` rows are coefficient projections, not measurements; verify must be
 re-checked in a quiet window.
+
+## 18. 2^19 unified A/B, and the statement-dedup follow-up
+
+`2^19` cycles (`ADDS=524287`, products-gated, streamed opening):
+
+| metric | default | `MAGNETAR_M4A_ACCESS=1` |
+| --- | ---: | ---: |
+| proof | 1,373,710 B | 1,507,298 B (**+9.7 %**) |
+| Access component | 265,550 B | 398,994 B |
+| Access stage wall | 16.5 s | **7.0 s (-57 %)** |
+| prove CPU | 2597.4 s | 2504.0 s (-3.6 %) |
+| peak footprint | 6.36 GiB | 6.52 GiB (host-swap noise; the stage peaks moved by <0.4 GiB in opposite directions) |
+| verify | 507 ms | 326 ms (loaded window, not comparable) |
+
+This confirms the `2^18` picture at the largest scale that fits this host: the
+Access stage halves its wall and the proof grows by the budgeted ~9.7 %; the
+whole-proof peak is noise-dominated at this size because the peak lives in the
+mosaic Opening, which M4a's Access half does not touch.
+
+### 18.1 What statement-level dedup would take (not shipped)
+
+The packed bits are currently committed in the Access proof, but the **mosaic
+still commits its own 12-column unpacked address table**, so the bit data is
+still committed twice and the mosaic message is unchanged. Removing the mosaic
+table (and dropping the Address outer claims in favour of the ring-switch
+claims) would give:
+
+| size | mosaic cells today | after dropping the address table | message today | message after |
+| --- | ---: | ---: | ---: | ---: |
+| 2^18 | 9.18 M | 6.03 M | 256 MiB | **128 MiB** |
+| 2^19 | 36.7 M | 24.1 M | 1 GiB | **0.5 GiB** |
+| 2^22 | 146.8 M | 96.5 M | 4 GiB | **2 GiB** |
+
+It is a real protocol change, not a flag flip, because the packed commitment
+must be **bound into the statement**: with the mosaic table gone, the address
+values exist only as ring-switch claims against `bits_commitment`, and the
+verifier must tie that commitment to the public statement. Two candidate binding
+points and their caveats:
+
+* fold a digest of `bits_commitment` into the composed claim root
+  (`composed_statement_root`), which both prover and verifier already compare
+  against `proof.trace_claim_root`. Cleanest, but the prover must build the
+  Access proof before the statement root is fixed (it currently builds the
+  statement first), and every statement producer/consumer needs the new digest.
+* reuse the mosaic commitment's unused `binding: [u8; 32]` field and have the
+  verifier recompute it from the Access proof. Cheap, but the mosaic commitment
+  object is proof-carried, so this only helps if the verifier also proves that
+  binding is statement-consistent — the claim/opening chain currently ties the
+  mosaic commitment to the statement through points and claims, which needs a
+  dedicated soundness argument.
+
+Because a wrong choice here is a soundness bug rather than a performance
+regression, this is left as a follow-up with its own binding analysis and a
+full verifier audit, not a same-round flag.
+
+The `2^22` envelope after that dedup is ~2 GiB message and ~20-22 GiB peak
+(§17.1); the last 2x needs M4b's 64-bit alphabet for the trace table, and the
+context term (15-21 GiB) still dominates.
