@@ -42,6 +42,7 @@ use p3_binary_field::BinaryField128 as F;
 use p3_field::PrimeCharacteristicRing;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_maybe_rayon::prelude::*;
+use p3_merkle_tree::PrunedMerklePaths;
 use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 
 use crate::p3_pcs::{P3Cap, P3Compress, P3Hash};
@@ -60,6 +61,21 @@ const BLOCK_LOG: usize = 15;
 /// same small per-worker footprint. The PCS commits `folding = 0` (one column),
 /// so this only guards the generic path.
 const BLOCK_BYTES: usize = 2 << 20;
+
+/// Base-two logarithm of the largest block one worker may hash at once.
+///
+/// The block's digest buffer is `2^block_log` 16-byte digests; the budget keeps
+/// that small enough that a worker's live set stays negligible while the row
+/// bytes stay cache-sized.
+fn max_block_log(width: usize) -> usize {
+    let row_bytes = width
+        .checked_mul(size_of::<F>())
+        .expect("codeword row bytes overflow");
+    BLOCK_BYTES
+        .checked_div(row_bytes)
+        .filter(|rows| *rows > 0)
+        .map_or(0, |rows| rows.trailing_zeros() as usize)
+}
 
 /// Incremental binary Merkle root over codeword rows.
 ///
@@ -127,14 +143,7 @@ impl StreamingRoot {
 
         // One block is as large as the row-bytes budget allows, but never larger
         // than the whole tree.
-        let row_bytes = width
-            .checked_mul(size_of::<F>())
-            .expect("codeword row bytes overflow");
-        let max_block_log = BLOCK_BYTES
-            .checked_div(row_bytes)
-            .filter(|rows| *rows > 0)
-            .map_or(0, |rows| rows.trailing_zeros() as usize);
-        let block_log = block_log.min(max_block_log);
+        let block_log = block_log.min(max_block_log(width));
         let block_rows = 1usize << block_log;
         let block_elems = block_rows
             .checked_mul(width)
@@ -332,6 +341,345 @@ pub(crate) fn streamed_codeword_root(message: &[F], width: usize, log_inv_rate: 
     }
 
     root.finish()
+}
+
+/// The wire plan of a pruned Merkle multi-opening for the codeword tree.
+///
+/// Wired into the opening in the next increment (MEMORY_PATH §4.7); until then
+/// only the tests construct it, so the production build allows it to be unused.
+///
+/// Mirrors `p3_merkle_tree`'s `walk_frontier` with binary arity: the walk folds
+/// the queried leaves up the tree level by level, and sends every child that
+/// has no queried leaf beneath it. Keeping the plan in *index* space (no
+/// digests) lets one streaming pass fill the proof: every sent node is
+/// finalized exactly once, and its wire slot is fixed before hashing starts.
+#[allow(dead_code)]
+struct OpeningPlan {
+    /// `levels[level]`: ascending node indices at that level whose digest is sent.
+    levels: Vec<Vec<usize>>,
+    /// `slots[level][j]`: the wire slot of `levels[level][j]`.
+    slots: Vec<Vec<usize>>,
+    /// Digests sent in total, i.e. the flat proof length.
+    wire_len: usize,
+}
+
+#[allow(dead_code)]
+impl OpeningPlan {
+    /// Plan the frontier over `sorted_unique` queried leaf indices.
+    fn new(sorted_unique: &[usize], log_height: usize) -> Self {
+        let mut levels: Vec<Vec<usize>> = vec![Vec::new(); log_height];
+        let mut slots: Vec<Vec<usize>> = vec![Vec::new(); log_height];
+        let mut wire_len = 0;
+        let mut nodes = sorted_unique.to_vec();
+
+        for level in 0..log_height {
+            let mut parents = Vec::with_capacity(nodes.len());
+            let mut i = 0;
+            while i < nodes.len() {
+                let group = nodes[i] / 2;
+                let start = i;
+                while i < nodes.len() && nodes[i] / 2 == group {
+                    i += 1;
+                }
+                // Every child of the group without a frontier node beneath it
+                // is a boundary digest, in ascending child order.
+                for k in 0..2 {
+                    if !nodes[start..i].contains(&(group * 2 + k)) {
+                        levels[level].push(group * 2 + k);
+                        slots[level].push(wire_len);
+                        wire_len += 1;
+                    }
+                }
+                parents.push(group);
+            }
+            nodes = parents;
+        }
+
+        Self {
+            levels,
+            slots,
+            wire_len,
+        }
+    }
+
+    /// Wire slot of one node's digest, when the plan sends it.
+    fn slot(&self, level: usize, node: usize) -> Option<usize> {
+        let nodes = self.levels.get(level)?;
+        let position = nodes.binary_search(&node).ok()?;
+        Some(self.slots[level][position])
+    }
+}
+
+/// Incremental pruned Merkle multi-opening over codeword rows.
+///
+/// The streaming counterpart of `Mmcs::open_multi_batch` for the concrete
+/// codeword shape the PCS commits: one width-`w` matrix, a binary tree with
+/// `cap_height = 0`, and a power-of-two height. Feed rows with
+/// [`Self::push_rows`]; the rows the caller asked to open are kept as they
+/// pass, and every boundary sibling digest is recorded into its planned slot.
+/// [`Self::finish`] then returns exactly what `open_multi_batch` would.
+///
+/// Wired into the opening in the next increment (MEMORY_PATH §4.7).
+#[allow(dead_code)]
+pub(crate) struct StreamingMultiProof {
+    hash: P3Hash,
+    compress: P3Compress,
+    /// Columns per codeword row.
+    width: usize,
+    /// Base-two logarithm of the rows one block subtree holds.
+    block_log: usize,
+    /// Rows one block subtree holds.
+    block_rows: usize,
+    /// Field elements of one block subtree (`block_rows * width`).
+    block_elems: usize,
+    /// Rows of the next unfinished block, laid out row after row.
+    row_buffer: Vec<F>,
+    /// Rows received so far.
+    rows: usize,
+    /// Rows the caller promised up front.
+    total_rows: usize,
+    /// Planned digests, indexed by wire slot.
+    digests: Vec<Option<Digest>>,
+    /// Planned nodes below the block level, bucketed per block as
+    /// `(level, index within the block's subtree, wire slot)`.
+    block_plans: Vec<Vec<(usize, usize, usize)>>,
+    /// Completed block roots, in block order.
+    block_roots: Vec<Digest>,
+    /// Rows to keep, as `(leaf index, output position)`, ascending by index.
+    capture: Vec<(usize, usize)>,
+    /// Next capture entry not yet copied.
+    next_capture: usize,
+    /// Kept rows, in the caller's index order.
+    opened: Vec<Vec<F>>,
+    /// The pruned frontier plan.
+    plan: OpeningPlan,
+}
+
+#[allow(dead_code)]
+impl StreamingMultiProof {
+    /// Plan a multiproof over `total_rows` codeword rows of `width` elements,
+    /// opening `indices` (in the caller's order, duplicates kept).
+    ///
+    /// # Panics
+    ///
+    /// - `total_rows` must be a power of two and at least one, `width` at least one.
+    /// - Every index must be below `total_rows`.
+    pub(crate) fn new(width: usize, total_rows: usize, indices: &[usize]) -> Self {
+        assert!(width > 0, "codeword rows must have a width");
+        assert!(
+            total_rows > 0 && total_rows.is_power_of_two(),
+            "streaming multiproof expects a power-of-two row count, got {total_rows}"
+        );
+        assert!(
+            indices.iter().all(|&index| index < total_rows),
+            "opened index out of bounds for {total_rows} rows"
+        );
+        let log_rows = total_rows.trailing_zeros() as usize;
+        let block_log = log_rows.min(BLOCK_LOG).min(max_block_log(width));
+        let block_rows = 1usize << block_log;
+        let block_elems = block_rows
+            .checked_mul(width)
+            .expect("block elements overflow");
+
+        let mut sorted_unique = indices.to_vec();
+        sorted_unique.sort_unstable();
+        sorted_unique.dedup();
+        let plan = OpeningPlan::new(&sorted_unique, log_rows);
+
+        // Bucket the planned nodes at or below the block level into their block,
+        // so a block never searches the plan.
+        let num_blocks = 1usize << (log_rows - block_log);
+        let mut block_plans: Vec<Vec<(usize, usize, usize)>> = vec![Vec::new(); num_blocks];
+        for level in 0..block_log {
+            let nodes = &plan.levels[level];
+            for (j, &node) in nodes.iter().enumerate() {
+                let block = node >> (block_log - level);
+                let local = node & ((1usize << (block_log - level)) - 1);
+                block_plans[block].push((level, local, plan.slots[level][j]));
+            }
+        }
+
+        let mut capture: Vec<(usize, usize)> = indices
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(position, index)| (index, position))
+            .collect();
+        capture.sort_unstable_by_key(|&(index, _)| index);
+
+        Self {
+            hash: P3Hash::new(crate::p3_pcs::Keccak256Hash16),
+            compress: P3Compress::new(crate::p3_pcs::Keccak256Hash16),
+            width,
+            block_log,
+            block_rows,
+            block_elems,
+            row_buffer: Vec::with_capacity(block_elems),
+            rows: 0,
+            total_rows,
+            digests: vec![None; plan.wire_len],
+            block_plans,
+            block_roots: Vec::new(),
+            capture,
+            next_capture: 0,
+            opened: vec![Vec::new(); indices.len()],
+            plan,
+        }
+    }
+
+    /// Record planned digests into their wire slots.
+    fn apply_records(&mut self, records: Vec<(usize, Digest)>) {
+        for (slot, digest) in records {
+            self.digests[slot] = Some(digest);
+        }
+    }
+
+    /// Hand the next run of codeword rows to the opening.
+    ///
+    /// # Panics
+    ///
+    /// - `values.len()` must be a whole number of rows.
+    /// - The caller must not push more rows than [`Self::new`] was told.
+    pub(crate) fn push_rows(&mut self, values: &[F]) {
+        assert!(
+            values.len().is_multiple_of(self.width),
+            "row chunk {} is not a whole number of {}-wide rows",
+            values.len(),
+            self.width
+        );
+        let incoming_rows = values.len() / self.width;
+        assert!(
+            self.rows + incoming_rows <= self.total_rows,
+            "more rows pushed than the planned {}",
+            self.total_rows
+        );
+
+        // Keep the rows the caller opens: they are exactly the base codeword
+        // symbols the query phase needs, so the codeword itself never stays live.
+        let start_row = self.rows;
+        let end_row = start_row + incoming_rows;
+        while self.next_capture < self.capture.len() && self.capture[self.next_capture].0 < end_row
+        {
+            let (index, position) = self.capture[self.next_capture];
+            assert!(
+                index >= start_row,
+                "opened row {index} was not captured when it streamed past"
+            );
+            let offset = (index - start_row) * self.width;
+            self.opened[position] = values[offset..offset + self.width].to_vec();
+            self.next_capture += 1;
+        }
+        self.rows = end_row;
+
+        let mut values = values;
+        // A partial block left over from an earlier chunk is finished first.
+        if !self.row_buffer.is_empty() {
+            let needed = self.block_elems - self.row_buffer.len();
+            let take = needed.min(values.len());
+            self.row_buffer.extend_from_slice(&values[..take]);
+            values = &values[take..];
+            if self.row_buffer.len() == self.block_elems {
+                let block = core::mem::take(&mut self.row_buffer);
+                let block_index = self.block_roots.len();
+                let (root, records) = self.block_root(&block, block_index);
+                self.row_buffer = block;
+                self.row_buffer.clear();
+                self.apply_records(records);
+                self.block_roots.push(root);
+            }
+        }
+
+        // Whole blocks hash and compress in parallel; their records land in wire
+        // slots, which are order-free, so block order only affects the roots.
+        let whole = values.len() / self.block_elems;
+        if whole > 0 {
+            let first_block = self.block_roots.len();
+            let computed: Vec<(Digest, Vec<(usize, Digest)>)> = values[..whole * self.block_elems]
+                .par_chunks(self.block_elems)
+                .enumerate()
+                .map(|(offset, block)| self.block_root(block, first_block + offset))
+                .collect();
+            for (root, records) in computed {
+                self.apply_records(records);
+                self.block_roots.push(root);
+            }
+            values = &values[whole * self.block_elems..];
+        }
+
+        self.row_buffer.extend_from_slice(values);
+    }
+
+    /// Root of one block subtree plus the planned digests inside it.
+    fn block_root(&self, block: &[F], block_index: usize) -> (Digest, Vec<(usize, Digest)>) {
+        let mut digests = vec![Digest::default(); self.block_rows];
+        self.hash.hash_many(block, &mut digests);
+        let mut records = Vec::new();
+        let mut len = digests.len();
+        let mut level = 0;
+        loop {
+            for &(entry_level, local, slot) in &self.block_plans[block_index] {
+                if entry_level == level {
+                    records.push((slot, digests[local]));
+                }
+            }
+            if len == 1 {
+                return (digests[0], records);
+            }
+            let half = len / 2;
+            for i in 0..half {
+                digests[i] = self.compress.compress([digests[2 * i], digests[2 * i + 1]]);
+            }
+            len = half;
+            level += 1;
+        }
+    }
+
+    /// Finish the opening and return the kept rows plus the pruned multiproof.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless every promised row was pushed and every opened row passed.
+    pub(crate) fn finish(mut self) -> (Vec<Vec<F>>, PrunedMerklePaths<u8, 16>) {
+        assert_eq!(
+            self.rows, self.total_rows,
+            "streaming multiproof finished after {} rows of {}",
+            self.rows, self.total_rows
+        );
+        assert_eq!(
+            self.next_capture,
+            self.capture.len(),
+            "not every opened row streamed past"
+        );
+        assert!(
+            self.row_buffer.is_empty(),
+            "the block size must divide the row count"
+        );
+
+        // Fold the block roots up, recording every planned node on the way; the
+        // last node is the root, which the cap already commits and no path sends.
+        let mut nodes = core::mem::take(&mut self.block_roots);
+        let mut level = self.block_log;
+        while nodes.len() > 1 {
+            for (index, digest) in nodes.iter().enumerate() {
+                if let Some(slot) = self.plan.slot(level, index) {
+                    self.digests[slot] = Some(*digest);
+                }
+            }
+            let mut parents = Vec::with_capacity(nodes.len() / 2);
+            for pair in nodes.chunks_exact(2) {
+                parents.push(self.compress.compress([pair[0], pair[1]]));
+            }
+            nodes = parents;
+            level += 1;
+        }
+
+        let sibling_hashes = self
+            .digests
+            .into_iter()
+            .map(|digest| digest.expect("every planned digest is filled"))
+            .collect();
+        (self.opened, PrunedMerklePaths { sibling_hashes })
+    }
 }
 
 #[cfg(test)]
@@ -549,5 +897,129 @@ mod tests {
             mosaic.stacked_variables,
             opening.commitment.stacked_variables
         );
+    }
+
+    /// Reference pruned opening through the real MMCS: per index, per matrix, row.
+    fn reference_multi_open(
+        values: &[F],
+        width: usize,
+        indices: &[usize],
+    ) -> (Vec<Vec<Vec<F>>>, <P3Mmcs as Mmcs<F>>::MultiProof) {
+        let matrix = RowMajorMatrix::new(values.to_vec(), width);
+        let (_, data) = mmcs().commit_matrix(matrix);
+        mmcs().open_multi_batch(indices, &data)
+    }
+
+    /// Drive the collector with a given row chunking.
+    fn collect_multi_proof(
+        values: &[F],
+        width: usize,
+        rows: usize,
+        indices: &[usize],
+        chunk_rows: usize,
+    ) -> (Vec<Vec<F>>, <P3Mmcs as Mmcs<F>>::MultiProof) {
+        let mut collector = StreamingMultiProof::new(width, rows, indices);
+        for chunk in values.chunks(chunk_rows * width) {
+            collector.push_rows(chunk);
+        }
+        collector.finish()
+    }
+
+    /// The streamed pruned multiproof must equal `Mmcs::open_multi_batch`:
+    /// same opened rows in the caller's index order and the same boundary
+    /// digests in the same wire order, for every height, width, index set and
+    /// row chunking.
+    #[test]
+    fn streaming_multiproof_matches_mmcs() {
+        // A deterministic index generator, so a failure reproduces.
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = |bound: usize| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((state >> 33) as usize) % bound.max(1)
+        };
+
+        for log_rows in [0usize, 1, 2, 3, 5, 8, 10] {
+            let rows = 1usize << log_rows;
+            for width in [1usize, 2, 3] {
+                let values = values(rows * width, log_rows as u64 * 13 + width as u64);
+
+                let mut index_sets: Vec<Vec<usize>> =
+                    vec![Vec::new(), vec![0], vec![rows - 1], vec![0, rows - 1]];
+                let mut random: Vec<usize> = (0..6).map(|_| next(rows)).collect();
+                random.sort_unstable();
+                random.dedup();
+                index_sets.push(random);
+                if rows <= 32 {
+                    index_sets.push((0..rows).collect());
+                }
+                if rows >= 2 {
+                    index_sets.push(vec![0, 0, 1, rows - 1]);
+                }
+
+                for indices in index_sets {
+                    let (expected_rows, expected_proof) =
+                        reference_multi_open(&values, width, &indices);
+                    let expected_rows: Vec<Vec<F>> = expected_rows
+                        .into_iter()
+                        .map(|per_matrix| {
+                            assert_eq!(per_matrix.len(), 1, "one committed matrix");
+                            per_matrix.into_iter().next().unwrap()
+                        })
+                        .collect();
+
+                    let mut chunk_sizes = vec![1usize, 3, rows];
+                    chunk_sizes.sort_unstable();
+                    chunk_sizes.dedup();
+                    for chunk_rows in chunk_sizes {
+                        let (opened, proof) =
+                            collect_multi_proof(&values, width, rows, &indices, chunk_rows);
+                        assert_eq!(
+                            opened, expected_rows,
+                            "opened rows differ rows={rows} width={width} chunk_rows={chunk_rows}"
+                        );
+                        assert_eq!(
+                            proof.sibling_hashes, expected_proof.sibling_hashes,
+                            "pruned digests differ rows={rows} width={width} chunk_rows={chunk_rows}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The same equality once the opening spans several block subtrees, at the
+    /// production block size as well as a small one.
+    #[test]
+    fn streaming_multiproof_spans_blocks() {
+        for (log_rows, width) in [(16usize, 1usize), (17, 1), (16, 2)] {
+            let rows = 1usize << log_rows;
+            let values = values(rows * width, log_rows as u64 * 7 + width as u64);
+            let block_rows = 1usize << BLOCK_LOG;
+            let indices = if rows > (1 << 15) {
+                // Straddle block boundaries: first, last and two middle leaves.
+                let mut indices = vec![0, block_rows - 1, block_rows, rows / 2, rows - 1];
+                indices.sort_unstable();
+                indices.dedup();
+                indices
+            } else {
+                vec![0, rows / 3, rows - 1]
+            };
+            let (expected_rows, expected_proof) = reference_multi_open(&values, width, &indices);
+            let expected_rows: Vec<Vec<F>> = expected_rows
+                .into_iter()
+                .map(|per_matrix| per_matrix.into_iter().next().unwrap())
+                .collect();
+            for chunk_rows in [block_rows, block_rows / 2, rows] {
+                let (opened, proof) =
+                    collect_multi_proof(&values, width, rows, &indices, chunk_rows);
+                assert_eq!(opened, expected_rows, "rows={rows} width={width}");
+                assert_eq!(
+                    proof.sibling_hashes, expected_proof.sibling_hashes,
+                    "digests rows={rows} width={width} chunk_rows={chunk_rows}"
+                );
+            }
+        }
     }
 }
