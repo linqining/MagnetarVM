@@ -380,6 +380,34 @@ Combined committed cells at `2^22` (mosaic + Access batch): **209,715,358 ->
 largest term after the two 12-column tables and is the one that decides the
 padding crossing, so it must be part of M4a rather than a later optimisation.
 
+#### 8.2.1 Measured, not projected: real table set through the PCS
+
+`m4a_pcs_peak` in the same test module applies the packing to the real tables
+and runs the shipped streamed commit + streamed opening:
+
+```sh
+LOG=18 PACKED=0 cargo test -p magnetar-runtime --release m4a_pcs_peak -- --ignored --nocapture
+LOG=18 PACKED=1 cargo test -p magnetar-runtime --release m4a_pcs_peak -- --ignored --nocapture
+```
+
+| cycles | variant | tables | cells | stacked vars | message | peak RSS | footprint |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2^16 | current | 12 | 2,293,918 | 22 | 64 MiB | 581.8 MiB | 579.5 MiB |
+| 2^16 | M4a packed | 13 | 796,318 | 20 | 16 MiB | **225.2 MiB (-61 %)** | **222.7 MiB (-62 %)** |
+| 2^18 | current | 12 | 9,175,198 | 24 | 256 MiB | 2,162.9 MiB | 2,186.3 MiB |
+| 2^18 | M4a packed | 13 | 3,184,798 | 22 | 64 MiB | **853.4 MiB (-61 %)** | **799.5 MiB (-63 %)** |
+
+The measured peak tracks the projected 4x message reduction (the commit+open
+coefficient is ~8.5x message in both variants; the table count grows because the
+ROM table is split into its bit and scalar halves). This is a memory isolation:
+the openings are opaque PCS openings, so the Access claims/verifier wiring is
+not yet part of the run, and only the mosaic commit+open phases are measured.
+
+Combined committed cells at `2^22` (mosaic + Access batch): **209,715,358 ->
+63,537,310 (-70 %)**. The trace table (33.5 M cells at `2^22`) is the second
+largest term after the two 12-column tables and is the one that decides the
+padding crossing, so it must be part of M4a rather than a later optimisation.
+
 ### 8.3 Verifier scheme decision
 
 The Access relation needs **individual** address-bit evaluations (the summand

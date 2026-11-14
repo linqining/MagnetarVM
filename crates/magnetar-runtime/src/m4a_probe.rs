@@ -24,6 +24,7 @@
 //! and keeping the small (RAM/initial) tables fixed, which is what the profile
 //! at `2^18` showed to be exact.
 
+use magnetar_constraint::F2_128;
 use magnetar_executor::execute;
 use magnetar_memory::BinaryTwistWitness;
 use magnetar_pcs::P3MosaicTable;
@@ -60,6 +61,7 @@ enum Role {
     Other,
 }
 
+#[derive(Clone)]
 struct TableShape {
     name: String,
     rows: usize,
@@ -149,8 +151,8 @@ fn bench_trace(adds: usize) -> Trace {
 /// the five RAM-twist tables, the ROM table, the five register-twist tables and
 /// the trace table. Router tables are included only when the trace produces
 /// them (they are absent for the paper trace, matching the 12-table profile).
-fn real_shapes(trace: &Trace) -> Vec<TableShape> {
-    let mut shapes = Vec::new();
+fn real_tables(trace: &Trace) -> Vec<(TableShape, P3MosaicTable)> {
+    let mut shapes: Vec<(TableShape, P3MosaicTable)> = Vec::new();
 
     let ram_witness = BinaryTwistWitness::from_trace(trace).expect("RAM twist witness");
     let ram = batch_tables_committed_only(&ram_witness).expect("RAM batch tables");
@@ -161,7 +163,10 @@ fn real_shapes(trace: &Trace) -> Vec<TableShape> {
         ("ram.read_value", &ram.read_value),
         ("ram.write_value", &ram.write_value),
     ] {
-        shapes.push(TableShape::new(name, table, Scaling::Fixed, Role::Other));
+        shapes.push((
+            TableShape::new(name, table, Scaling::Fixed, Role::Other),
+            table.clone(),
+        ));
     }
 
     if let Ok(shout) = BinaryShoutWitness::from_trace(trace) {
@@ -173,70 +178,54 @@ fn real_shapes(trace: &Trace) -> Vec<TableShape> {
             // The ROM table is fixed (the program's instructions), but its rows
             // still scale with the trace length in this bench (one ROM row per
             // cycle); the profile shows rows == cycles at both sizes.
-            shapes.push(TableShape::new("rom", &rom, Scaling::Cycles, Role::Rom));
+            let shape = TableShape::new("rom", &rom, Scaling::Cycles, Role::Rom);
+            shapes.push((shape, rom));
         }
     }
     if let Ok(shift) = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Shifts) {
-        shapes.push(TableShape::new(
-            "shift_router",
-            &shift.table(),
-            Scaling::Cycles,
-            Role::Other,
+        let table = shift.table();
+        shapes.push((
+            TableShape::new("shift_router", &table, Scaling::Cycles, Role::Other),
+            table,
         ));
     }
     if let Ok(store) = BinaryRouterWitness::from_trace_mode(trace, RouterMode::Stores) {
-        shapes.push(TableShape::new(
-            "store_router",
-            &store.table(),
-            Scaling::Cycles,
-            Role::Other,
+        let table = store.table();
+        shapes.push((
+            TableShape::new("store_router", &table, Scaling::Cycles, Role::Other),
+            table,
         ));
     }
 
     let register_witness = register_twist_witness(trace).expect("register twist witness");
     let register = batch_tables_committed_only(&register_witness).expect("register batch tables");
-    shapes.push(TableShape::new(
-        "register.addr",
-        &register.addr,
-        Scaling::Cycles,
-        Role::RegisterAddress,
-    ));
-    shapes.push(TableShape::new(
-        "register.inc",
-        &register.inc,
-        Scaling::Cycles,
-        Role::Other,
-    ));
-    shapes.push(TableShape::new(
-        "register.initial",
-        &register.initial,
-        Scaling::Fixed,
-        Role::Other,
-    ));
-    shapes.push(TableShape::new(
-        "register.read_value",
-        &register.read_value,
-        Scaling::Cycles,
-        Role::Other,
-    ));
-    shapes.push(TableShape::new(
-        "register.write_value",
-        &register.write_value,
-        Scaling::Cycles,
-        Role::Other,
-    ));
+    for (name, table, scaling, role) in [
+        ("register.addr", &register.addr, Scaling::Cycles, Role::RegisterAddress),
+        ("register.inc", &register.inc, Scaling::Cycles, Role::Other),
+        ("register.initial", &register.initial, Scaling::Fixed, Role::Other),
+        ("register.read_value", &register.read_value, Scaling::Cycles, Role::Other),
+        ("register.write_value", &register.write_value, Scaling::Cycles, Role::Other),
+    ] {
+        shapes.push((TableShape::new(name, table, scaling, role), table.clone()));
+    }
 
     let trace_witness = trace_witness(trace).expect("trace witness");
-    shapes.push(TableShape::new(
-        "trace",
-        &P3MosaicTable {
-            columns: vec![trace_witness.values],
-        },
-        Scaling::Cycles,
-        Role::Trace,
+    let trace_table = P3MosaicTable {
+        columns: vec![trace_witness.values],
+    };
+    shapes.push((
+        TableShape::new("trace", &trace_table, Scaling::Cycles, Role::Trace),
+        trace_table,
     ));
 
     shapes
+}
+
+fn real_shapes(trace: &Trace) -> Vec<TableShape> {
+    real_tables(trace)
+        .into_iter()
+        .map(|(shape, _)| shape)
+        .collect()
 }
 
 fn mosaic_cells(shapes: &[TableShape], factor: usize, step: usize) -> usize {
@@ -255,6 +244,184 @@ fn message_bytes(cells: usize) -> u64 {
 
 fn mib(bytes: u64) -> f64 {
     bytes as f64 / 1048576.0
+}
+
+
+// ---------------------------------------------------------------------------
+// Measured peak: commit + open the real table set, current vs M4a-packed.
+// ---------------------------------------------------------------------------
+
+fn peak_rss_bytes() -> u64 {
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } != 0 {
+        return 0;
+    }
+    usage.ru_maxrss as u64
+}
+
+fn footprint_bytes() -> u64 {
+    #[cfg(target_os = "macos")]
+    {
+        let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
+        let status = unsafe {
+            libc::proc_pid_rusage(
+                libc::getpid(),
+                libc::RUSAGE_INFO_V4,
+                &mut info as *mut libc::rusage_info_v4 as *mut libc::rusage_info_t,
+            )
+        };
+        if status == 0 {
+            info.ri_phys_footprint
+        } else {
+            0
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        0
+    }
+}
+
+/// Pack one bit column 128 bits per cell (lowest bit first).
+fn pack_bit_column(column: &[F2_128]) -> Vec<F2_128> {
+    column
+        .chunks(128)
+        .map(|chunk| {
+            let mut word: u128 = 0;
+            for (index, value) in chunk.iter().enumerate() {
+                if value.value() & 1 == 1 {
+                    word |= 1u128 << index;
+                }
+            }
+            F2_128::from(word)
+        })
+        .collect()
+}
+
+/// Pack two 64-bit trace fields per cell.
+fn pack_trace_values(values: &[F2_128]) -> Vec<F2_128> {
+    values
+        .chunks(2)
+        .map(|pair| {
+            let low = pair[0].value() & 0xFFFF_FFFF_FFFF_FFFF;
+            let high = pair.get(1).map_or(0, |value| value.value() & 0xFFFF_FFFF_FFFF_FFFF);
+            F2_128::from(low | (high << 64))
+        })
+        .collect()
+}
+
+/// Apply M4a steps 1-2 and 4 to the real table set, returning the new mosaic
+/// tables (the Access batch dedup of step 3 is a separate commitment).
+fn packed_real_tables(shapes: &[TableShape], tables: &[P3MosaicTable]) -> Vec<P3MosaicTable> {
+    let mut packed = Vec::new();
+    for (shape, table) in shapes.iter().zip(tables) {
+        let rows = table.columns.first().map_or(0, |column| column.len());
+        match shape.role {
+            Role::RegisterAddress if rows.is_multiple_of(128) => {
+                packed.push(P3MosaicTable {
+                    columns: table.columns.iter().map(|column| pack_bit_column(column)).collect(),
+                });
+            }
+            Role::Rom if rows.is_multiple_of(128) => {
+                let mut columns = Vec::new();
+                for (column, &is_bits) in table.columns.iter().zip(&shape.bits) {
+                    if is_bits {
+                        columns.push(pack_bit_column(column));
+                    } else {
+                        columns.push(column.clone());
+                    }
+                }
+                // The packed bit columns are short; the scalar columns are full
+                // height, so split the ROM into two tables (bit table + scalar
+                // table), which is what the protocol will do.
+                let scalar: Vec<Vec<F2_128>> = columns
+                    .iter()
+                    .zip(&shape.bits)
+                    .filter(|(_, &is_bits)| !is_bits)
+                    .map(|(column, _)| column.clone())
+                    .collect();
+                let bits: Vec<Vec<F2_128>> = columns
+                    .into_iter()
+                    .zip(&shape.bits)
+                    .filter(|(_, &is_bits)| is_bits)
+                    .map(|(column, _)| column)
+                    .collect();
+                if !bits.is_empty() {
+                    packed.push(P3MosaicTable { columns: bits });
+                }
+                if !scalar.is_empty() {
+                    packed.push(P3MosaicTable { columns: scalar });
+                }
+            }
+            Role::Trace => {
+                let values = pack_trace_values(&table.columns[0]);
+                packed.push(P3MosaicTable {
+                    columns: vec![values],
+                });
+            }
+            _ => packed.push(table.clone()),
+        }
+    }
+    packed
+}
+
+/// Measure commit + streamed open of the real table set.
+fn measure_pcs(log_cycles: usize, packed: bool) {
+    // The M4a-packed table set only makes sense on the shipped streaming
+    // opening, so measure that path.
+    std::env::set_var("MAGNETAR_STREAM_PCS_OPEN", "1");
+    let trace = bench_trace((1 << log_cycles) - 1);
+    let pairs = real_tables(&trace);
+    let shapes: Vec<TableShape> = pairs.iter().map(|(shape, _)| shape.clone()).collect();
+    let tables_current: Vec<P3MosaicTable> = pairs.into_iter().map(|(_, table)| table).collect();
+    let tables = if packed {
+        packed_real_tables(&shapes, &tables_current)
+    } else {
+        tables_current
+    };
+    let pcs = magnetar_pcs::P3BinaryPcs::with_params(100, 2, 21, 2);
+    let mosaic_points: Vec<magnetar_pcs::P3MosaicPoint> = tables
+        .iter()
+        .enumerate()
+        .map(|(table, source)| magnetar_pcs::P3MosaicPoint {
+            table,
+            point: (0..source.columns[0].len().trailing_zeros() as usize)
+                .map(|bit| F2_128::from(((bit * 5 + table * 3) % 2) as u64))
+                .collect(),
+            columns: (0..source.columns.len()).collect(),
+            next_columns: Vec::new(),
+        })
+        .collect();
+    let cells: usize = tables
+        .iter()
+        .map(|table| table.columns[0].len() * table.columns.len())
+        .sum();
+    let commitment = pcs
+        .commit_mosaic(&tables)
+        .expect("mosaic commit must succeed");
+    let _opening = pcs
+        .open_mosaic_with_cap(&tables, &mosaic_points, &commitment.cap)
+        .expect("mosaic open must succeed");
+    println!(
+        "m4a pcs peak: log_cycles=2^{log_cycles} packed={packed} tables={} cells={cells} \
+         stacked_vars={} message={:.1} MiB peak_rss={:.1} MiB footprint={:.1} MiB",
+        tables.len(),
+        commitment.stacked_variables,
+        (1u64 << commitment.stacked_variables) as f64 * 16.0 / 1048576.0,
+        peak_rss_bytes() as f64 / 1048576.0,
+        footprint_bytes() as f64 / 1048576.0,
+    );
+}
+
+#[test]
+#[ignore = "measures the real table set; run with --ignored --nocapture"]
+fn m4a_pcs_peak() {
+    let log_cycles: usize = std::env::var("LOG")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(16);
+    let packed = std::env::var("PACKED").map(|value| value != "0").unwrap_or(false);
+    measure_pcs(log_cycles, packed);
 }
 
 #[test]

@@ -32,6 +32,7 @@ miniz_oxide = { path = "../../vendor/miniz_oxide" }
 
 [dev-dependencies]
 criterion.workspace = true
+libc = "0.2"
 
 [[bench]]
 name = "proof_path"
