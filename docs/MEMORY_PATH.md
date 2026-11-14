@@ -652,3 +652,38 @@ next target is the streaming PCS commit rather than more factor compaction.
 
 `MAGNETAR_PROFILE_LOCAL=1` now prints which factors are compact:
 `local factors: 3 dense arrays of 2097152 fields (2 stored compactly), ...`.
+
+### 4.5 Next target: streaming PCS commit (concrete locus)
+
+The measurement in §4.2 makes the PCS commit transient the leading peak term
+(the mosaic Commit alone reaches 1.28 GiB against a 0.55 GiB context at
+`2^16`). The codeword is materialised in exactly one place:
+
+```text
+magnetar-pcs/src/p3_pcs.rs   commit_batch / commit_batch_prepared
+  -> P3BinaryPcs::commit                       (vendored binary-pcs/src/pcs.rs)
+     -> prover.rs::commit -> PcsLayout::commit  (sumcheck/src/layout/prover/mod.rs:132)
+        -> commit_borrowed_base(encoder, mmcs, folding, log_inv_rate, message)
+           sumcheck/src/commit.rs:119-138
+             let encoded = encoder.encode_batch_borrowed(message, log_inv_rate); // full codeword
+             mmcs.commit_matrix(encoded)                                        // full leaf matrix
+```
+
+`encode_batch_borrowed` returns the whole rate-`1/8` codeword as a
+`DenseMatrix`, and `Mmcs::commit_matrix` then builds the tree from that matrix,
+so both the codeword and the leaf matrix are live at once.
+
+A streaming variant has two seams:
+
+1. an encoder that emits codeword rows in chunks (the RS encoder works row by
+   row already, it just collects into one matrix), and
+2. an incremental Merkle builder that hashes leaves as they arrive and keeps
+   only the tree levels (the `Mmcs` trait's `commit(Vec<M>)` contract takes the
+   whole leaf set, so this needs a small `Mmcs`-adjacent builder, not a change
+   to every MMCS).
+
+The commitment root is unchanged by construction (same leaf order, same hashing
+calls), so the proof bytes stay identical and a test can pin the roots. Expected
+effect: the `2^16` mosaic Commit transient (~0.74 GiB) shrinks to the tree
+(~0.15-0.2 GiB), i.e. roughly **-0.5 GiB at `2^16` and -2 to -3 GiB at `2^18`**,
+which is the largest single remaining memory lever.
