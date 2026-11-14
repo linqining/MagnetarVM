@@ -535,3 +535,45 @@ naive per-column scheme, and its size grows only logarithmically.
 
 Caveat: part D's timings are single-threaded and use the PCS directly; the
 production verifier's absolute numbers must be re-measured after integration.
+
+## 10. M4a step 1: the packed-table module (representation implemented)
+
+`crates/magnetar-runtime/src/m4a_tables.rs` now owns the prover-side
+representation change, so the protocol wiring can call one place instead of
+re-implementing bit packing per consumer:
+
+| function | what it does |
+| --- | --- |
+| `pack_bit_column` / `unpack_bit_column` | 128 bits per cell, lowest bit first, zero-padded to a multiple of 128 rows |
+| `packed_bit_table` | one table from equally long bit columns |
+| `split_and_pack` | split a mixed table (the ROM is 7/12 bit columns) into a packed bit table and a scalar table, returning the bit-column indices |
+| `pack_twist_tables` | the five twist tables with the address table packed |
+| `pack_access_batch` | the Access batch as three scalar columns plus **one** packed bit table, in the Access column order |
+| `pack_word_pairs` / `unpack_word_pairs` | the trace table's two 64-bit fields per cell (rejects fields wider than 64 bits) |
+
+Verified in-tree:
+
+* unit tests: `unpack(pack(x)) == x` at lengths 128/256/1000/4096/65536 (all
+  padding cases), non-bit rejection, word-pair round trip plus the 64-bit guard,
+  and split-and-pack preserving the scalar half exactly;
+* on the real `2^16` paper trace: mosaic cells **2,293,918 -> 796,318**
+  (exactly the M4a projection), the Access batch goes from **15 columns to 3
+  scalar columns plus one packed bit table** (12 columns), and every Access bit
+  column is **byte-identical** to the mosaic address table's packed column, so
+  the bit data is committed once instead of twice; the unpacked read-bit and
+  read-valid columns match the witness columns element for element;
+* the peak measurement (`m4a_pcs_peak`) now runs this production packing code
+  rather than local helpers: `2^16` peak 561.8 -> **222.8 MiB** footprint.
+
+Status: representation only. The protocol still commits the unpacked tables, the
+proof format is unchanged, and the Access verifier still reads the unpacked PCS
+batch. The remaining M4a work, in order:
+
+1. batched product2 sumcheck in `magnetar-proof::bit_pcs` (the scheme chosen in
+   §9), with the 12-19 individual bit evaluations as its outputs;
+2. wire `m4a_tables` into `protocol.rs`/`local_shared` (packed tables, one bit
+   commitment, Access claims against it), version-bump the proof format;
+3. trace-table consumption demo (the byte layout of §10's word pairs has to be
+   read by the trace verifier, not just measured);
+4. re-measure a real proof at `2^18` (peak + proof size) and then evaluate
+   `2^22`.

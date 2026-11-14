@@ -221,13 +221,6 @@ fn real_tables(trace: &Trace) -> Vec<(TableShape, P3MosaicTable)> {
     shapes
 }
 
-fn real_shapes(trace: &Trace) -> Vec<TableShape> {
-    real_tables(trace)
-        .into_iter()
-        .map(|(shape, _)| shape)
-        .collect()
-}
-
 fn mosaic_cells(shapes: &[TableShape], factor: usize, step: usize) -> usize {
     shapes
         .iter()
@@ -282,79 +275,25 @@ fn footprint_bytes() -> u64 {
     }
 }
 
-/// Pack one bit column 128 bits per cell (lowest bit first).
-fn pack_bit_column(column: &[F2_128]) -> Vec<F2_128> {
-    column
-        .chunks(128)
-        .map(|chunk| {
-            let mut word: u128 = 0;
-            for (index, value) in chunk.iter().enumerate() {
-                if value.value() & 1 == 1 {
-                    word |= 1u128 << index;
-                }
-            }
-            F2_128::from(word)
-        })
-        .collect()
-}
-
-/// Pack two 64-bit trace fields per cell.
-fn pack_trace_values(values: &[F2_128]) -> Vec<F2_128> {
-    values
-        .chunks(2)
-        .map(|pair| {
-            let low = pair[0].value() & 0xFFFF_FFFF_FFFF_FFFF;
-            let high = pair.get(1).map_or(0, |value| value.value() & 0xFFFF_FFFF_FFFF_FFFF);
-            F2_128::from(low | (high << 64))
-        })
-        .collect()
-}
-
-/// Apply M4a steps 1-2 and 4 to the real table set, returning the new mosaic
-/// tables (the Access batch dedup of step 3 is a separate commitment).
+/// Apply M4a steps to the real mosaic tables through the shared packing module.
 fn packed_real_tables(shapes: &[TableShape], tables: &[P3MosaicTable]) -> Vec<P3MosaicTable> {
     let mut packed = Vec::new();
     for (shape, table) in shapes.iter().zip(tables) {
-        let rows = table.columns.first().map_or(0, |column| column.len());
         match shape.role {
-            Role::RegisterAddress if rows.is_multiple_of(128) => {
-                packed.push(P3MosaicTable {
-                    columns: table.columns.iter().map(|column| pack_bit_column(column)).collect(),
-                });
+            Role::RegisterAddress => {
+                packed.push(crate::m4a_tables::packed_bit_table(&table.columns).expect("pack addr"));
             }
-            Role::Rom if rows.is_multiple_of(128) => {
-                let mut columns = Vec::new();
-                for (column, &is_bits) in table.columns.iter().zip(&shape.bits) {
-                    if is_bits {
-                        columns.push(pack_bit_column(column));
-                    } else {
-                        columns.push(column.clone());
-                    }
+            Role::Rom => {
+                let (bits, scalars, _) = crate::m4a_tables::split_and_pack(table).expect("split rom");
+                if let Some(bits) = bits {
+                    packed.push(bits);
                 }
-                // The packed bit columns are short; the scalar columns are full
-                // height, so split the ROM into two tables (bit table + scalar
-                // table), which is what the protocol will do.
-                let scalar: Vec<Vec<F2_128>> = columns
-                    .iter()
-                    .zip(&shape.bits)
-                    .filter(|(_, &is_bits)| !is_bits)
-                    .map(|(column, _)| column.clone())
-                    .collect();
-                let bits: Vec<Vec<F2_128>> = columns
-                    .into_iter()
-                    .zip(&shape.bits)
-                    .filter(|(_, &is_bits)| is_bits)
-                    .map(|(column, _)| column)
-                    .collect();
-                if !bits.is_empty() {
-                    packed.push(P3MosaicTable { columns: bits });
-                }
-                if !scalar.is_empty() {
-                    packed.push(P3MosaicTable { columns: scalar });
+                if let Some(scalars) = scalars {
+                    packed.push(scalars);
                 }
             }
             Role::Trace => {
-                let values = pack_trace_values(&table.columns[0]);
+                let values = crate::m4a_tables::pack_word_pairs(&table.columns[0]).expect("pack trace");
                 packed.push(P3MosaicTable {
                     columns: vec![values],
                 });
@@ -430,9 +369,63 @@ fn m4a_real_table_set_projection() {
     let trace = bench_trace((1 << BUILT_LOG_CYCLES) - 1);
     assert_eq!(trace.len(), 1 << BUILT_LOG_CYCLES, "one row per cycle");
 
-    let shapes = real_shapes(&trace);
+    let pairs = real_tables(&trace);
+    let shapes: Vec<TableShape> = pairs.iter().map(|(shape, _)| shape.clone()).collect();
+    let tables: Vec<P3MosaicTable> = pairs.into_iter().map(|(_, table)| table).collect();
     let register_witness = register_twist_witness(&trace).expect("register witness");
+    let register_tables =
+        batch_tables_committed_only(&register_witness).expect("register batch tables");
     let address_bits = crate::linear_twist::witness_shape(&register_witness).address_bits;
+
+    // M4a step 1/3 on the real tables, through the shared packing module.
+    let unpacked_cells: usize = tables
+        .iter()
+        .map(|table| table.columns[0].len() * table.columns.len())
+        .sum();
+    let packed_tables = packed_real_tables(&shapes, &tables);
+    let packed_cells: usize = packed_tables
+        .iter()
+        .map(|table| table.columns[0].len() * table.columns.len())
+        .sum();
+    assert_eq!(unpacked_cells, 2_293_918, "real mosaic cells");
+    assert_eq!(packed_cells, 796_318, "packed mosaic cells");
+
+    // The Access batch drops its duplicated bit columns: three scalar columns
+    // plus the one packed bit table that the mosaic address table already owns.
+    let access = crate::m4a_tables::pack_access_batch(&register_witness)
+        .expect("packed access batch");
+    assert_eq!(access.columns_before, 3 + 2 * address_bits + 2);
+    assert_eq!(access.scalars.len(), 3);
+    assert_eq!(access.bits.columns.len(), 2 * address_bits + 2);
+    let mosaic_address = crate::m4a_tables::pack_twist_tables(&register_tables)
+        .expect("packed twist tables")[0]
+        .columns
+        .clone();
+    for column in &access.bits.columns {
+        assert!(
+            mosaic_address.iter().any(|candidate| candidate == column),
+            "every Access bit column must be the mosaic address table's, so the data is committed once"
+        );
+    }
+    // The bit data itself is lossless against the unpacked Access columns.
+    let (read_bits, read_valid, _) = crate::virtual_onehot::bit_columns_pub(&register_witness, false);
+    let same = |left: &[F2_128], right: &[F2_128]| {
+        left.len() == right.len()
+            && left.iter().zip(right).all(|(a, b)| a == b)
+    };
+    let unpacked = crate::m4a_tables::unpack_bit_column(&access.bits.columns[0], read_bits[0].len());
+    assert!(
+        same(&unpacked, &read_bits[0]),
+        "packing must preserve the read bit 0 column"
+    );
+    // Access bit columns are ordered read bits, read valid, write bits, write
+    // valid, so the read-valid column sits right after the read bits.
+    let valid_unpacked =
+        crate::m4a_tables::unpack_bit_column(&access.bits.columns[address_bits], read_valid.len());
+    assert!(
+        same(&valid_unpacked, &read_valid),
+        "packing must preserve the read-valid column"
+    );
 
     for shape in &shapes {
         let bit_columns = shape.bits.iter().filter(|&&bit| bit).count();
