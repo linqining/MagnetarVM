@@ -306,3 +306,108 @@ puts the packed mosaic at `~3.2 GiB`. The envelope then depends on the
 non-mosaic context, which is what M4b/(d) must shrink; M4a is the single largest
 reduction available at any scale and the only one that shrinks the *message*
 itself.
+
+## 8. M4a on the real table set: composition, dedup, and the verifier scheme
+
+The §7 prototype packed a synthetic replica. This step profiles the **real**
+unified mosaic on the paper benchmark (`MAGNETAR_PROFILE_PCS=1
+MAGNETAR_PROFILE_LOCAL=1`) to decide what actually pays.
+
+### 8.1 Measured composition (streamed opening, products-gated)
+
+`2^16` (12 tables, 2,293,918 cells, 22 stacked variables):
+
+| # | rows | cols | cells | bit cols |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 2 | 12 | 24 | 12/12 |
+| 1 | 2 | 1 | 2 | 1/1 |
+| 2 | 32 | 2 | 64 | 2/2 |
+| 3 | 2 | 1 | 2 | 1/1 |
+| 4 | 2 | 1 | 2 | 1/1 |
+| 5 | 65,536 | 12 | 786,432 | **7/12** |
+| 6 | 65,536 | 12 | 786,432 | **12/12** |
+| 7 | 65,536 | 1 | 65,536 | 0/1 |
+| 8 | 32 | 2 | 64 | 1/2 |
+| 9 | 65,536 | 1 | 65,536 | 0/1 |
+| 10 | 65,536 | 1 | 65,536 | 0/1 |
+| 11 | 524,288 | 1 | 524,288 | 0/1 (trace) |
+
+Access batch: `15 x 65,536 = 983,040` cells, **12 bit columns**.
+`2^18` has the same shape (mosaic 9,175,198 cells, access batch 3,932,160
+cells, 12/15 bit columns) — the composition is scale-free.
+
+Three findings the replica could not show:
+
+1. **Table 6 is the fully bit-valued 12-column table** (register-twist address
+   columns): 786,432 cells at `2^16`, 3,145,728 at `2^18` — 34 % of the mosaic
+   at both sizes, and packable 128:1.
+2. **Table 5 has only 7 of its 12 columns bit-valued** (the remaining five are
+   scalar columns), so it must be **split** before packing: the 7 bit columns
+   pack, the 5 scalar columns stay.
+3. **The trace table (11) is the largest single table** (524,288 at `2^16`,
+   2,097,152 at `2^18`, and 33.5 M at `2^22`), and it is not bit-valued — it
+   is eight 64-bit trace fields per row in 16-byte cells.
+4. **The Access batch re-commits the same 12 bit columns** that table 6
+   commits (`build_columns` derives them from the same witness), so the bit
+   data is currently committed **twice** (786,432 + 786,432 cells at `2^16`).
+
+### 8.2 The packed plan and the padding boundary
+
+Applying (a) table 6 packed, (b) table 5 split with its 7 bit columns packed,
+(c) the Access batch's 12 bit columns dropped in favour of ring-switch claims
+against the single packed table, (d) the trace table packed 2x (two 64-bit
+fields per cell):
+
+| size | today committed cells | after (a)-(c) | message | after (d) | message |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2^16 | 3,276,958 | 1,255,070 (-62 %) | 16 MiB (4x) | ~731 k | 16 MiB |
+| 2^18 | 13,107,358 | 5,019,806 (-62 %) | 128 MiB (2x) | ~3.97 M | 64 MiB (4x) |
+| 2^22 | 209.7 M | 80.3 M (-62 %) | 4 GiB (1x) | **50.8 M** | **1 GiB (4x)** |
+
+The stacked message is `next_pow2(cells)`, and at `2^18`/`2^22` the (a)-(c)
+reduction lands just above a power of two (4.23 M vs 4.19 M; 67.6 M vs
+67.1 M), so it buys only 2x there. **The trace packing (d) is what makes the
+reduction cross the padding boundary and deliver the full 4x** — it is not an
+optional extra but part of the envelope math. At `2^16` (a)-(c) alone already
+lands at 1.06 M (< 2^20), which is why the synthetic replica showed 4x.
+
+### 8.3 Verifier scheme decision
+
+The Access relation needs **individual** address-bit evaluations (the summand
+multiplies the bit factors; `onehot_formula` takes a product over bits), so a
+single packed commitment cannot serve it with one evaluation — a packed
+evaluation is a linear combination over slots, and the verifier cannot soundly
+choose an isolating point. Two schemes were considered:
+
+* **Chosen: one ring-switch claim per bit column**, all against the *single*
+  packed 12-column table (the same commitment the statement binds; the Access
+  batch keeps only its 3 scalar columns). `RingSwitchPackedBitPcs::open` gives
+  exactly one bit column's MLE at the cycle point, and §7.2 measured the
+  per-column proof sizes: 54 KB at `2^16` bits, 98 KB at `2^20` bits
+  (extrapolating ~150-200 KB at `2^22` bits). For 12-19 columns that is
+  **~1-3 MB extra proof** at `2^22`, to be traded against the `~25 GiB` this
+  route removes; it also removes the duplicate commitment (-786 k cells at
+  `2^16`).
+* **Rejected: column-index-as-variables with one claim.** It proves a fixed
+  eq-weighted combination of the columns, not the individual values, and the
+  product over bits in the Access summand cannot consume that combination
+  without a different relation.
+
+Follow-up implementation order for M4a:
+
+1. split mixed tables by bit-ness in `BinaryTwistWitness::batch_tables` output
+   (table 5), and pack the bit tables 128:1;
+2. commit the packed bit table once and route both the mosaic statement binding
+   and the Access ring-switch claims through it (delete the duplicated Access
+   bit columns);
+3. pack the trace table 2x (two 64-bit fields per 16-byte cell; the byte layout
+   and opening compatibility need their own demo);
+4. re-derive the Access verifier to check 12-19 ring-switch openings plus the
+   scalar-column PCS batch, and budget the proof-size increase explicitly;
+5. version-bump the proof format and replace the byte-identical gate with golden
+   sizes plus the ring-switch verification tests.
+
+Profile prints added for this step: `MAGNETAR_PROFILE_PCS=1` now prints one
+`pcs mosaic table <i>: rows=... cols=... cells=... bit_cols=...` line per table
+plus a packing projection, and `MAGNETAR_PROFILE_LOCAL=1` prints the Access
+batch shape (`local access tables: ... bit_cols=...`).

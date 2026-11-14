@@ -1085,6 +1085,29 @@ impl P3BinaryPcs {
                 tables.len(),
                 cells
             );
+            // Per-table composition: which tables dominate, and how many of
+            // their columns are pure bits (the (h)/(c) packing candidates).
+            let mut packable = 0u64;
+            for (index, table) in tables.iter().enumerate() {
+                let rows = table.columns.first().map_or(0, |column| column.len());
+                let columns = table.columns.len();
+                let bit_columns = table
+                    .columns
+                    .iter()
+                    .filter(|column| column.iter().all(|value| value.value() <= 1))
+                    .count();
+                let table_cells = rows as u64 * columns as u64;
+                if bit_columns == columns && columns > 0 {
+                    packable += table_cells;
+                }
+                eprintln!(
+                    "pcs mosaic table {index}: rows={rows} cols={columns} cells={table_cells} bit_cols={bit_columns}/{columns}"
+                );
+            }
+            eprintln!(
+                "pcs mosaic packing: cells={cells} all-bit cells={packable} packed-total={} (if every all-bit table packs 128:1)",
+                cells - packable + packable.div_ceil(128)
+            );
         }
         Ok(P3MosaicCommitment {
             cap,

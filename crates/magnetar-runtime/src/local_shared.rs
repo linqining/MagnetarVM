@@ -220,6 +220,19 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
     let write_flat = flat_onehot(witness, true, cycles);
     let read_flat = flat_onehot(witness, false, cycles);
     let (val_flat, inc) = build_val_flat(witness);
+    if profile.enabled {
+        let rows = columns.first().map_or(0, |column| column.len());
+        let bit_columns = columns
+            .iter()
+            .filter(|column| column.iter().all(|value| value.value() <= 1))
+            .count();
+        eprintln!(
+            "local access tables: rows={rows} cols={} cells={} bit_cols={bit_columns} all_bit={}",
+            columns.len(),
+            rows as u64 * columns.len() as u64,
+            bit_columns == columns.len(),
+        );
+    }
     profile.mark("tables", started.elapsed());
     let started = std::time::Instant::now();
     let pcs = linear_pcs(cycles);
