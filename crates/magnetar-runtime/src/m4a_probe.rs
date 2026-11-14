@@ -574,3 +574,125 @@ fn m4a_access_bit_claims_match_the_pcs_terminal_values() {
         proof_bytes
     );
 }
+
+
+/// M4a step 1 proof-size budget: replace the Access PCS opening's 15 columns
+/// (four point groups) with a 3-column scalar batch plus one batched ring-switch
+/// for the 12 packed bit columns, and measure the net opening size.
+///
+/// This measures the actual replacement parts without changing the proof format
+/// yet: the rest of the Access proof (sum-checks, endpoints) is unchanged, so
+/// `new_total = old_total - old_opening + new_scalars_opening + bits_commitment
+/// + bits_ring_switch_opening`.
+#[test]
+#[ignore = "runs the Access prover at LOG cycles; --ignored --nocapture"]
+fn m4a_access_opening_size_budget() {
+    use magnetar_pcs::P3BatchColumnPcs;
+    use magnetar_proof::{BatchColumnPcs, BatchedRingSwitch, Mle, PackedBits, Pcs};
+    use magnetar_pcs::P3BatchPoint;
+
+    let log_cycles: usize = std::env::var("LOG")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(16);
+    let trace = bench_trace((1 << log_cycles) - 1);
+    let witness = register_twist_witness(&trace).expect("register witness");
+    let proof = crate::local_shared::prove_local_shared(&witness).expect("access proof");
+    let old_total = bincode::serialize(&proof).map(|bytes| bytes.len()).unwrap_or(0);
+    let old_opening = bincode::serialize(&proof.opening)
+        .map(|bytes| bytes.len())
+        .unwrap_or(0);
+
+    // Scalar columns: inc, read_value, write_value (columns 0..3).
+    let packed_access = crate::m4a_tables::pack_access_batch(&witness).expect("packed bits");
+    let scalars = &packed_access.scalars;
+    let cycle_bits = proof.shape.cycle_bits();
+    let cycle_point = {
+        // The Access prover derives it from the commitment transcript; recompute
+        // it the same way to keep the batch points valid.
+        use magnetar_transcript::Sha256Transcript;
+        let mut transcript = Sha256Transcript::new("magnetar-local-shared");
+        transcript.absorb(
+            "commitment",
+            &bincode::serialize(&proof.opening.commitment).expect("serialize"),
+        );
+        let _gamma = crate::binary_twist::sample_point(&mut transcript, 1)[0];
+        crate::binary_twist::sample_point(&mut transcript, cycle_bits)
+    };
+    let rj = proof.rw_challenges[..cycle_bits].to_vec();
+    let points = vec![
+        P3BatchPoint {
+            point: cycle_point.clone(),
+            columns: vec![1, 2],
+        },
+        P3BatchPoint {
+            point: rj.clone(),
+            columns: vec![0],
+        },
+        P3BatchPoint {
+            point: proof.val_challenges.clone(),
+            columns: vec![0],
+        },
+    ];
+    let pcs = crate::linear_twist::linear_pcs(proof.shape.cycles);
+    let commitment = pcs.commit_batch(scalars).expect("scalar commit");
+    let opening = pcs
+        .open_batch_with_cap(scalars, &points, &commitment.cap)
+        .expect("scalar open");
+    let evaluate = |column: &Vec<magnetar_constraint::F2_128>, point: &[magnetar_constraint::F2_128]| {
+        Mle::new(column.clone()).expect("mle").eval(point).expect("eval")
+    };
+    let values = vec![
+        vec![evaluate(&scalars[1], &cycle_point), evaluate(&scalars[2], &cycle_point)],
+        vec![evaluate(&scalars[0], &rj)],
+        vec![evaluate(&scalars[0], &proof.val_challenges)],
+    ];
+    assert!(
+        pcs.verify_batch(&opening, &points, &values).expect("verify"),
+        "the 3-column scalar batch must verify"
+    );
+    let scalars_bytes = bincode::serialize(&opening).map(|bytes| bytes.len()).unwrap_or(0);
+
+    // Packed bit columns: one batched ring-switch at the virtual point.
+    let mut packed_bits = Vec::with_capacity(packed_access.bits.columns.len());
+    for column in &packed_access.bits.columns {
+        let bits = crate::m4a_tables::unpack_bit_column(column, 1usize << cycle_bits);
+        packed_bits.push(PackedBits::from_bools(
+            &bits.iter().map(|value| value.value() & 1 == 1).collect::<Vec<_>>(),
+        ));
+    }
+    let backend = P3BatchColumnPcs::new(magnetar_pcs::P3BinaryPcs::with_params(100, 2, 21, 2));
+    let batched = BatchedRingSwitch::new(backend.clone());
+    let bits_commitment = backend
+        .commit_columns(&packed_access.bits.columns)
+        .expect("bits commit");
+    let (claims, bits_opening) = batched
+        .open(&packed_bits, &proof.virtual_challenges, Some(&bits_commitment))
+        .expect("bits ring switch");
+    assert!(
+        batched
+            .verify(&bits_commitment, &proof.virtual_challenges, &claims, &bits_opening)
+            .expect("verify"),
+        "the batched ring-switch must verify"
+    );
+    assert_eq!(claims.len(), proof.values[3].len());
+    for (claim, expected) in claims.iter().zip(&proof.values[3]) {
+        assert_eq!(*claim, *expected, "bit claims must equal the Access terminal values");
+    }
+    let bits_commitment_bytes = bincode::serialize(&bits_commitment)
+        .map(|bytes| bytes.len())
+        .unwrap_or(0);
+    let bits_opening_bytes = bincode::serialize(&bits_opening)
+        .map(|bytes| bytes.len())
+        .unwrap_or(0);
+    let new_opening = scalars_bytes + bits_commitment_bytes + bits_opening_bytes;
+    let new_total = old_total - old_opening + new_opening;
+    println!(
+        "m4a access budget: log=2^{log_cycles} old_opening={old_opening} B \
+         old_total={old_total} B | scalars={scalars_bytes} B bits_commitment={bits_commitment_bytes} B \
+         bits_ring_switch={bits_opening_bytes} B new_opening={new_opening} B new_total={new_total} B \
+         delta={delta:+} B ({percent:+.1}%)",
+        delta = new_total as i64 - old_total as i64,
+        percent = 100.0 * (new_total as f64 - old_total as f64) / old_total as f64,
+    );
+}

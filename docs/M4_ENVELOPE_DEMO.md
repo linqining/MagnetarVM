@@ -710,3 +710,41 @@ The M4a pieces are now all available: the packed-table module (§10), the batche
 ring-switch (§11, with its proof-size budget), the trace-packing negative result
 (§12) and this Access drop-in equivalence. The next change is the gated protocol
 wiring and the proof-format version bump.
+
+## 14. M4a step 1 budget: the Access replacement costs ~+9 % of the full proof
+
+`m4a_access_opening_size_budget` measures the actual replacement parts (no
+format change yet): run the existing Access prover, then build the M4a
+alternative on the same witness — a 3-column scalar batch (three point groups
+instead of four) plus one batched ring-switch over the 12 packed bit columns at
+the virtual point — and verify both.
+
+| cycles | old Access opening | old Access total | scalars batch | bits commitment | bits ring-switch | new Access total | delta | on the full proof |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2^16 | 174,632 B | 219,208 B | 152,160 B | 48 B | 120,152 B | 272,360 B | **+97,728 B** | +9.6 % (of 1,018,155 B) |
+| 2^18 | 206,240 B | 251,552 B | 175,544 B | 48 B | 145,408 B | 321,000 B | **+114,760 B** | +9.3 % (of 1,230,360 B) |
+
+The surprising part: dropping twelve columns from the Access batch saves almost
+nothing (206,240 -> 175,544 B at `2^18`), because a PCS batch opening is
+query/path-dominated, not column-dominated — the 12 address columns ride along
+on the same query paths. The batched ring-switch therefore adds nearly its full
+size (~145 KB at `2^18`), and the Access component grows ~+45 %.
+
+**Verdict: acceptable, but only because the denominator is the full proof.** On
+the whole proof the change is **+9.3-9.6 %** (1.23 MB -> ~1.35 MB at `2^18`),
+against M4a's **-62 % of committed cells** (`2^22` mosaic message 4 GiB -> 2 GiB,
+or 1 GiB with M4b's 64-bit trace). That is the trade to record; it also says the
+implementation should:
+
+* keep the batched ring-switch opening as its own component (do not try to fold
+  it into the Access batch — the heights differ: `cycles/128` vs `cycles`);
+* look for a later optimisation merging the ring-switch's final PCS opening into
+  the *mosaic* proof (mixed table heights are supported there), which would
+  remove most of the extra ~145 KB;
+* keep the old path behind the switch for A/B until the full proof is
+  re-measured at `2^18` with a real serialized proof.
+
+Remaining M4a work: implement the gated `MAGNETAR_M4A_ACCESS` wiring in
+`local_shared` (new proof variant with the packed bit commitment + batched
+opening, verifier reading `terminal` from the ring-switch claims), version-bump
+the proof format, and re-measure a real proof at `2^18` (peak + size).
