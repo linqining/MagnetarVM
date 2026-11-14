@@ -1040,3 +1040,9 @@ Verification: the existing byte-equality tests plus the full gate; the memory
 A/B reads the Access stage RSS with the same watchdog used in §4.2. A second
 slice would then pack the *committed* `addr` table itself (format change,
 §4.8 above), which is the part that also shrinks codewords and Merkle trees.
+
+**§4.8 verification tail.** Full workspace gate on the packed-address-row tree:
+**683 passed / 0 failed / 8 ignored** (39 binaries), including the 364-test
+magnetar-runtime suite and the 14-test magnetar-memory suite. Proof bytes are
+identical at `2^18` and `2^19` (`1,230,360` / `1,373,708 B`, varint and
+compressed too), so the packing is witness-lifetime memory only.
