@@ -134,3 +134,94 @@ message) and (ii) the context.
 * `crates/magnetar-pcs/examples/m4_envelope_probe.rs` — the demo and its
   measured cases.
 * this document.
+
+## 6. M4c demo: prover-side out-of-core codeword cache
+
+The M4c direction was "remove the three message-sized passes of the streamed
+opening". The demo validates the concrete variant that needs **no protocol,
+proof or verifier change**: encode the codeword once, spill it to a temporary
+file while hashing the Merkle cap, then stream the file back for the fold pass
+and for the query pass (rows + pruned multiproof). The codeword bytes are the
+same, so the proof is the same; only the prover's peak and its disk I/O change.
+
+`crates/magnetar-pcs/examples/m4_oot_probe.rs` (one case per process; the peak
+is monotonic, so two cases in one process would report retained pages):
+
+```sh
+LOG=25 CHECK=1 CHUNK_MIB=32 target/release/examples/m4_oot_probe
+```
+
+Every case checks end to end that the encode-pass cap agrees with the
+file-backed multiproof (`verify_multi_batch`), and with `CHECK=1` also compares
+**cap, folded codeword and pruned multiproof symbol for symbol** against an
+in-memory commit of the same message; all cases reported `verified=true
+in_memory=Some(true)`.
+
+Measured (128-bit base, `RATE_LOG=2`, 32 MiB read chunks, pipeline peak sampled
+before the optional in-memory check):
+
+| cells | message | codeword file | pipeline peak RSS | encode | fold | query |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2^20 | 16 MiB | 64 MiB | 162 MiB | 0.93 s | 0.23 s | 0.20 s |
+| 2^22 | 64 MiB | 256 MiB | 309 MiB | 3.41 s | 0.89 s | 0.87 s |
+| 2^23 | 128 MiB | 512 MiB | 500 MiB | 7.22 s | 1.75 s | 1.35 s |
+| 2^24 | 256 MiB | 1 GiB | 888 MiB | 13.6 s | 3.93 s | 3.25 s |
+| 2^25 | 512 MiB | 2 GiB | 1,659 MiB | 30.3 s | 8.94 s | 6.76 s |
+
+Against the in-memory three-pass pipeline of §1/§2 (same cells, same rate,
+`RATE_LOG=2`): `2^23` 922 -> **500 MiB (-46 %)**, `2^24` 1,976 -> **888 MiB
+(-55 %)**, `2^25` 3,124 -> **1,659 MiB (-47 %)**. The asymptotic coefficient
+drops from `~6.1x` to `~3.2x` message bytes: the two extra encode passes are
+gone, and what remains is the encode pass itself — message plus one
+message-sized coset scratch (and its NTT staging), i.e. `~2x` message plus the
+read/write chunk buffers. (At `2^20` the fixed ~100 MiB process baseline
+dominates and the win is only ~26 %.)
+
+Costs:
+* the codeword file is `2^rate_log x message` on disk (2 GiB at `2^25` cells,
+  16 GiB for the `2^22`-cycle mosaic message at rate 1/4), written once and
+  read twice — acceptable on the local SSD but a new operational constraint;
+* the extra wall time is the I/O plus a serialized encode in this probe; the
+  production encoder is parallel, so the incremental cost would be the file
+  traffic, not the encode.
+
+### 6.1 What this means for the envelope
+
+Projection to `2^22` cycles (mosaic message `2^28` cells today, 4 GiB at
+128-bit), adding the out-of-core factor to the table in §3:
+
+| configuration | message | pipeline (`~3.2x`) | context | total |
+| --- | ---: | ---: | ---: | ---: |
+| current | 4 GiB | 12.8 GiB | ~19-21 GiB | ~32-34 GiB |
+| + (h)-committed cell packing | 1 GiB | 3.2 GiB | ~17-19 GiB | ~20-22 GiB |
+| + 64-bit alphabet (M4b) | 0.5 GiB | ~1.6-2 GiB | ~15-17 GiB | ~17-19 GiB |
+| envelope target | - | - | - | **6.4 GiB** |
+
+So the out-of-core cache is a real, proof-identical `-47 %` on the pipeline and
+it removes the need for a *different commitment family* to get the pipeline
+term down — but it does not by itself reach 6.4 GiB: after it, the envelope is
+context-bound. The remaining `~3x` must come from the resident context ((c)
+committed-cell packing shrinks the mosaic tables, (d) lifetime/dedup, (b)
+alphabet) and from the encode-pass floor (message + one coset; only a
+sub-coset streaming NTT or a writer that consumes the transform's own buffers
+could push that below `2x`).
+
+### 6.2 M4 recommendation after both demos
+
+1. **M4a — (h)-committed/(c) cell packing**: the common multiplier for message,
+   pipeline and resident mosaic tables.
+2. **M4c — out-of-core codeword cache**: prover-only, proof-identical, `-47 %`
+   pipeline; no format change; adopt after M4a (it pays off in proportion to
+   the message that M4a leaves).
+3. **M4b — 64-bit alphabet**: only if the context remains the blocker after
+   M4a/M4c; it is worth ~17 % of peak at equal arity and needs the F64 NTT/verifier
+   path.
+4. **FRI/STIR-family change**: still the only way to shrink the *context*
+   depend on the commitment design; but the pipeline half of the envelope can
+   be solved without it. If the context work (M4a + (d) + (b)) lands, the
+   6.4 GiB envelope may be reachable without changing the proof format at all.
+
+Caveats: the probe is single-threaded and its wall times are not comparable to
+`paper_unified_bench`; the host was swapping during some of the larger runs; the
+`2^22`-cycle message is 4x the largest probe case, so the projection is a
+coefficient fit, not a measurement.
