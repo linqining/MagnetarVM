@@ -109,7 +109,7 @@ fn footprint_bytes() -> u64 {
     #[cfg(target_os = "macos")]
     {
         let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
-        let mut count: libc::mach_msg_type_number_t =
+        let count: libc::mach_msg_type_number_t =
             (std::mem::size_of::<libc::rusage_info_v4>() / std::mem::size_of::<libc::c_int>())
                 as libc::mach_msg_type_number_t;
         let _ = count;
@@ -150,7 +150,7 @@ where
     let mut block: Vec<F> = Vec::with_capacity(block_rows);
     let mut roots = 0usize;
 
-    let mut push_root = |root: Digest, pending: &mut Vec<Option<Digest>>, roots: &mut usize| {
+    let push_root = |root: Digest, pending: &mut Vec<Option<Digest>>, roots: &mut usize| {
         *roots += 1;
         let mut node = root;
         let mut level = 0;
@@ -171,7 +171,7 @@ where
         }
     };
 
-    let mut flush = |block: &mut Vec<F>,
+    let flush = |block: &mut Vec<F>,
                      pending: &mut Vec<Option<Digest>>,
                      roots: &mut usize| {
         if block.is_empty() {
