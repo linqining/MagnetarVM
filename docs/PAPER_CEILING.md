@@ -22,6 +22,7 @@ update are the 2026-11-14 follow-up described in
 | peak footprint, default schedule + streaming PCS commit | **1.49 GiB** | - | - | - |
 | peak footprint, products-gated + streaming PCS commit | **1.45 GiB** | **3.03 GiB** | - | - |
 | peak footprint, products-gated + streamed opening (`MAGNETAR_STREAM_PCS_OPEN=1`) | 1.47-1.54 GiB (floor) | **2.10 GiB** | **3.60 GiB** | **7.66 GiB** |
+| peak footprint, + packed twist witness (h slices 1+2) | - | - | **3.20 GiB** | **5.79 GiB** |
 | Commit-stage peak, products-gated | 1.28 GiB | 2.56 GiB | 5.17 GiB | - |
 | Commit-stage peak, products-gated + streaming commit | **0.63 GiB** | **1.28 GiB** | - | - |
 | proof | 1,018,155 B | 1,110,291 B | 1,230,360 B | - |
@@ -73,15 +74,14 @@ format, against a 36 GiB host.
    next increment and should remove it. The `2^19` row now runs too:
    **11.93 -> 7.66 GiB peak (-36 %)**, proof 1,373,708 B identical, which
    unblocks the staircase previously recorded as environment-blocked (item 5).
-2. **(h) bit-pack the twist witnesses / batch tables** — HALF DONE
-   (2026-11-14): the witness's one-hot read/write address rows are now one bit
-   per slot (`AddressRows`), which is prover-internal and byte-identical:
-   `2^18` context 2.60 -> 1.77 GiB, Access footprint 2.72 -> 1.24 GiB,
-   `2^19` peak 7.66 -> **7.11 GiB**. The next slice packs the witness `value`
-   matrix (full 64-bit words stored as 16-byte elements; the linear path never
-   reads it) for a further ~0.5 GiB at `2^19`, then the *committed* `addr`
-   table itself, which changes the format and shrinks its codeword and Merkle
-   tree (prover + verifier relation move together). Effort so far: one day.
+2. **(h) bit-pack the twist witnesses / batch tables** — WITNESS HALF DONE
+   (2026-11-14, byte-identical): the one-hot read/write address rows are one
+   bit per slot (`AddressRows`) and the value history is a flat `Vec<u64>`.
+   Measured: `2^18` context 2.60 -> 1.56 GiB, Access footprint 2.72 -> 1.22
+   GiB, peak 3.60 -> **3.20 GiB**; `2^19` peak 7.66 -> **5.79 GiB**. What
+   remains is the *committed* `addr` table itself (bits stored as 16-byte
+   elements): that changes the format and shrinks its codeword and Merkle
+   tree, so prover and verifier move together. Effort so far: one day.
 3. **(c) bit-pack the mosaic commitment / (b) 128 -> 64-bit alphabet** — scale
    every committed column and codeword; changes the wire format and the
    documented proof sizes. Effort: multi-day each; needs a decision on
@@ -93,10 +93,10 @@ format, against a 36 GiB host.
    Effort: days. Expected: the remaining ~0.23 GiB of Access arrays at `2^16`.
 5. **`2^19` / `2^20` staircase rows** — `2^19` is **measured** (2026-11-14,
    11.8 GiB free+inactive window): with `MAGNETAR_SERIALIZE_PRODUCTS=1` and
-   `MAGNETAR_STREAM_PCS_OPEN=1` the peak is **7.66 GiB** (retained opening:
-   11.93 GiB), proof 1,373,708 B, so the row that needed >=13 GiB now fits in
-   a 7.7 GiB envelope. `2^20` projects to ~11-15 GiB (about
-   `2*7.66 - 4.0 GiB` context) and needs a quiet window.
+   `MAGNETAR_STREAM_PCS_OPEN=1` the peak is **5.79 GiB** after the (h) witness
+   slices (7.66 GiB before them; retained opening 11.93 GiB), proof
+   1,373,708 B, so the row that needed >=13 GiB now fits in a 5.8 GiB
+   envelope. `2^20` projects to ~8-11 GiB and needs a quiet window.
 
 ## 3. What "the ceiling" looks like
 

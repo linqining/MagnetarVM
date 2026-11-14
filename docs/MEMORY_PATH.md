@@ -223,6 +223,8 @@ Peak footprint at `2^16` native default, chronological:
 | + streamed opening, `2^18` products-gated | **3.60 GiB** (from 5.96) | 1285 s CPU |
 | + packed twist address rows (h slice 1), `2^18` | 3.58 GiB (context 2.60 -> 1.77, Access footprint 2.72 -> 1.24) | 1294 s CPU |
 | + packed twist address rows, `2^19` | **7.11 GiB** (from 7.66) | 2685 s CPU |
+| + packed twist value history (h slice 2), `2^18` | **3.20 GiB** (context 1.56) | 1249 s CPU |
+| + packed twist value history (h slice 2), `2^19` | **5.79 GiB** (from 7.11) | 2638 s CPU |
 
 At `2^18` the 2026-11-08 sequence is 8.72 -> 7.96 -> 6.96 GiB footprint. The
 remaining peak terms are quantified in §4.2: the mosaic Commit/Opening
@@ -998,6 +1000,15 @@ tree: **683 passed / 0 failed / 8 ignored** (39 binaries) — the 679/0/8 of
 The default (opt-in off) path is byte-identical to the pre-change tree, and the
 `MAGNETAR_STREAM_PCS_OPEN=1` path produces identical proof bytes at `2^16`,
 `2^17` and `2^18`.
+
+**§4.8 second slice DONE (2026-11-14): packed value history.** The witness
+`value` matrix (one full cell history per cycle) is now a flat `Vec<u64>`
+instead of `Vec<Vec<F2_128>>`: half the bytes and one allocation per matrix
+instead of one per cycle. The linear path never reads it; the readers use
+`value_row` / `value_row_into_field`. Measured: `2^18` context 1.77 -> **1.56
+GiB**, peak 3.58 -> **3.20 GiB**; `2^19` peak 7.11 -> **5.79 GiB**; proofs
+identical. Together the two (h) witness slices take `2^19` from **7.66 to 5.79
+GiB** and `2^18` from 3.60 to 3.20 GiB (see the table below).
 
 **§4.8 first slice DONE (2026-11-14): packed address rows.** `AddressRows` now
 stores each cycle's one-hot read/write address row as one bit per slot in `u64`
