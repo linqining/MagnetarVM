@@ -35,7 +35,7 @@ use std::time::Instant;
 use magnetar_constraint::F2_128;
 use magnetar_pcs::{P3BinaryPcs, P3MosaicPoint, P3MosaicTable};
 use magnetar_proof::{
-    BitPcs, Mle, PackedBits, Pcs, RingSwitchPackedBitPcs, eval_bits_mle,
+    BitPcs, Mle, PackedBits, RingSwitchPackedBitPcs, eval_bits_mle,
 };
 use magnetar_pcs::P3SharedPcs;
 
