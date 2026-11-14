@@ -17,14 +17,148 @@ pub struct BinaryTwistWitness {
     pub cell_bits: usize,
     pub cycles: usize,
     pub initial: Vec<F2_128>,
-    pub read_address: Vec<Vec<F2_128>>,
-    pub write_address: Vec<Vec<F2_128>>,
+    pub read_address: AddressRows,
+    pub write_address: AddressRows,
     pub increment: Vec<F2_128>,
     pub value: Vec<Vec<F2_128>>,
     pub read_value: Vec<F2_128>,
     pub write_value: Vec<F2_128>,
     pub final_value: Vec<F2_128>,
     pub idle_word: Option<usize>,
+}
+
+/// One-hot address rows packed one bit per slot.
+///
+/// The twist witness used to hold each cycle's address row as a
+/// `Vec<F2_128>`: one 16-byte field element per bit, one heap allocation per
+/// cycle. The one-hot rows are the largest witness columns in the register
+/// instance (`cells = 32`, two rows per cycle), so at RV64 `2^16` the two
+/// matrices were 2 x 64 MiB of pure transient. One bit per slot costs 1/128 of
+/// that and removes the per-row allocations; every consumer reads through
+/// [`Self::one_hot`], [`Self::bit`] or [`Self::row_into_field`], so the
+/// committed tables and the proof bytes are unchanged.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AddressRows {
+    /// Slots per row (the one-hot width).
+    slots: usize,
+    /// Rows pushed so far.
+    rows: usize,
+    /// Bits, row after row, 64 slots per word.
+    bits: Vec<u64>,
+}
+
+impl AddressRows {
+    /// An empty set of one-hot rows with `slots` slots each.
+    #[must_use]
+    pub fn new(slots: usize) -> Self {
+        Self {
+            slots,
+            rows: 0,
+            bits: Vec::new(),
+        }
+    }
+
+    /// Slots per row.
+    #[must_use]
+    pub const fn slots(&self) -> usize {
+        self.slots
+    }
+
+    /// Rows pushed so far.
+    #[must_use]
+    pub const fn rows(&self) -> usize {
+        self.rows
+    }
+
+    /// A view of every row, for tests and diagnostics.
+    #[must_use]
+    pub fn one_hots(&self) -> impl Iterator<Item = Option<usize>> + '_ {
+        (0..self.rows).map(|row| self.one_hot(row))
+    }
+
+    /// Append one all-zero row.
+    pub fn push_zero_row(&mut self) {
+        self.rows += 1;
+        let words = self.rows * self.slots.div_ceil(64);
+        self.bits.resize(words, 0);
+    }
+
+    /// Set one slot of one row.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `row` is past the rows pushed so far or `slot` is out of range.
+    pub fn set(&mut self, row: usize, slot: usize) {
+        assert!(row < self.rows, "address row {row} of {}", self.rows);
+        assert!(slot < self.slots, "address slot {slot} of {}", self.slots);
+        let bit = row * self.slots + slot;
+        self.bits[bit >> 6] |= 1u64 << (bit & 63);
+    }
+
+    /// Clear one slot of one row.
+    pub fn clear(&mut self, row: usize, slot: usize) {
+        assert!(row < self.rows, "address row {row} of {}", self.rows);
+        assert!(slot < self.slots, "address slot {slot} of {}", self.slots);
+        let bit = row * self.slots + slot;
+        self.bits[bit >> 6] &= !(1u64 << (bit & 63));
+    }
+
+    /// Whether one slot of one row is set.
+    #[must_use]
+    pub fn bit(&self, row: usize, slot: usize) -> bool {
+        debug_assert!(row < self.rows && slot < self.slots);
+        let bit = row * self.slots + slot;
+        (self.bits[bit >> 6] >> (bit & 63)) & 1 == 1
+    }
+
+    /// The single set slot of one row, if it has exactly one.
+    #[must_use]
+    pub fn one_hot(&self, row: usize) -> Option<usize> {
+        debug_assert!(row < self.rows);
+        let base = row * self.slots;
+        let mut found = None;
+        for slot in 0..self.slots {
+            let bit = base + slot;
+            if (self.bits[bit >> 6] >> (bit & 63)) & 1 == 1 {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(slot);
+            }
+        }
+        found
+    }
+
+    /// Whether the row has any set slot.
+    #[must_use]
+    pub fn any_set(&self, row: usize) -> bool {
+        debug_assert!(row < self.rows);
+        (0..self.slots).any(|slot| self.bit(row, slot))
+    }
+
+    /// The set slot of one row, or zero when the row is empty.
+    ///
+    /// The twist treats "no write" as slot zero in the position-style readers.
+    #[must_use]
+    pub fn one_hot_or_zero(&self, row: usize) -> usize {
+        self.one_hot(row).unwrap_or(0)
+    }
+
+    /// Scatter one row into a column-major `slots x cycles` table:
+    /// `table[slot * cycles + row] = 1` for the set slot, nothing else.
+    pub fn scatter_column_major(&self, row: usize, table: &mut [F2_128], cycles: usize) {
+        if let Some(slot) = self.one_hot(row) {
+            table[slot * cycles + row] = F2_128::from(1u64);
+        }
+    }
+
+    /// Write one row into `out` as 0/1 field elements.
+    pub fn row_into_field(&self, row: usize, out: &mut [F2_128]) {
+        assert!(out.len() == self.slots, "row slice of {} slots", out.len());
+        for (slot, value) in out.iter_mut().enumerate() {
+            *value = F2_128::from(u64::from(self.bit(row, slot)));
+        }
+    }
 }
 
 impl BinaryTwistWitness {
@@ -43,8 +177,8 @@ impl BinaryTwistWitness {
                 F2_128::from(u64::from_le_bytes(chunk.try_into().expect("eight bytes")));
         }
         let initial = current.clone();
-        let mut read_address = Vec::new();
-        let mut write_address = Vec::new();
+        let mut read_address = AddressRows::new(cells);
+        let mut write_address = AddressRows::new(cells);
         let mut increment = Vec::new();
         let mut value = Vec::new();
         let mut read_value = Vec::new();
@@ -84,7 +218,7 @@ impl BinaryTwistWitness {
             value.push(current.clone());
             let old = current[word];
             read_value.push(old);
-            let (read, write, delta, written) = if access.is_write {
+            let (write_slot, delta, written) = if access.is_write {
                 let mask = if width == 8 {
                     u64::MAX
                 } else {
@@ -92,24 +226,17 @@ impl BinaryTwistWitness {
                 };
                 let shifted = access.value.wrapping_shl((lane * 8) as u32);
                 let new = F2_128::from(((old.value() as u64) & !mask) | (shifted & mask));
-                let delta = old + new;
-                let mut one_hot = vec![F2_128::from(0u64); cells];
-                one_hot[word] = F2_128::from(1u64);
-                let mut read_one_hot = vec![F2_128::from(0u64); cells];
-                read_one_hot[word] = F2_128::from(1u64);
-                (read_one_hot, one_hot, delta, new)
+                (Some(word), old + new, new)
             } else {
-                let mut one_hot = vec![F2_128::from(0u64); cells];
-                one_hot[word] = F2_128::from(1u64);
-                (
-                    one_hot,
-                    vec![F2_128::from(0u64); cells],
-                    F2_128::from(0u64),
-                    F2_128::from(0u64),
-                )
+                (None, F2_128::from(0u64), F2_128::from(0u64))
             };
-            read_address.push(read);
-            write_address.push(write);
+            read_address.push_zero_row();
+            write_address.push_zero_row();
+            let row = read_address.rows() - 1;
+            read_address.set(row, word);
+            if let Some(slot) = write_slot {
+                write_address.set(row, slot);
+            }
             increment.push(delta);
             write_value.push(written);
             if access.is_write {
@@ -171,8 +298,8 @@ impl BinaryTwistWitness {
                     "full-cycle RAM witness needs a zero, unwritten idle cell".into(),
                 )
             })?;
-        let mut read_address = Vec::new();
-        let mut write_address = Vec::new();
+        let mut read_address = AddressRows::new(cells);
+        let mut write_address = AddressRows::new(cells);
         let mut increment = Vec::new();
         let mut value = Vec::new();
         let mut read_value = Vec::new();
@@ -186,10 +313,10 @@ impl BinaryTwistWitness {
             }
             value.push(current.clone());
             let Some(access) = row.mem else {
-                let mut read = vec![F2_128::from(0u64); cells];
-                read[idle_word] = F2_128::from(1u64);
-                read_address.push(read);
-                write_address.push(vec![F2_128::from(0u64); cells]);
+                read_address.push_zero_row();
+                write_address.push_zero_row();
+                let cycle = read_address.rows() - 1;
+                read_address.set(cycle, idle_word);
                 increment.push(F2_128::from(0u64));
                 read_value.push(current[idle_word]);
                 write_value.push(F2_128::from(0u64));
@@ -220,7 +347,7 @@ impl BinaryTwistWitness {
             }
             let old = current[word];
             read_value.push(old);
-            let (read, write, delta, written) = if access.is_write {
+            let (write_slot, delta, written) = if access.is_write {
                 let mask = if width == 8 {
                     u64::MAX
                 } else {
@@ -228,23 +355,17 @@ impl BinaryTwistWitness {
                 };
                 let shifted = access.value.wrapping_shl((lane * 8) as u32);
                 let new = F2_128::from(((old.value() as u64) & !mask) | (shifted & mask));
-                let mut read_one_hot = vec![F2_128::from(0u64); cells];
-                read_one_hot[word] = F2_128::from(1u64);
-                let mut one_hot = vec![F2_128::from(0u64); cells];
-                one_hot[word] = F2_128::from(1u64);
-                (read_one_hot, one_hot, old + new, new)
+                (Some(word), old + new, new)
             } else {
-                let mut one_hot = vec![F2_128::from(0u64); cells];
-                one_hot[word] = F2_128::from(1u64);
-                (
-                    one_hot,
-                    vec![F2_128::from(0u64); cells],
-                    F2_128::from(0u64),
-                    F2_128::from(0u64),
-                )
+                (None, F2_128::from(0u64), F2_128::from(0u64))
             };
-            read_address.push(read);
-            write_address.push(write);
+            read_address.push_zero_row();
+            write_address.push_zero_row();
+            let cycle = read_address.rows() - 1;
+            read_address.set(cycle, word);
+            if let Some(slot) = write_slot {
+                write_address.set(cycle, slot);
+            }
             increment.push(delta);
             write_value.push(written);
             if access.is_write {
@@ -253,10 +374,10 @@ impl BinaryTwistWitness {
         }
         while value.len() < cycles {
             value.push(current.clone());
-            let mut read = vec![F2_128::from(0u64); cells];
-            read[idle_word] = F2_128::from(1u64);
-            read_address.push(read);
-            write_address.push(vec![F2_128::from(0u64); cells]);
+            read_address.push_zero_row();
+            write_address.push_zero_row();
+            let cycle = read_address.rows() - 1;
+            read_address.set(cycle, idle_word);
             increment.push(F2_128::from(0u64));
             read_value.push(current[idle_word]);
             write_value.push(F2_128::from(0u64));
@@ -280,8 +401,8 @@ impl BinaryTwistWitness {
     pub fn validate(&self) -> Result<(), MemoryError> {
         let cells = self.initial.len();
         if self.cycles != self.value.len()
-            || self.cycles != self.read_address.len()
-            || self.cycles != self.write_address.len()
+            || self.cycles != self.read_address.rows()
+            || self.cycles != self.write_address.rows()
             || self.cycles != self.increment.len()
             || self.cycles != self.read_value.len()
             || self.cycles != self.write_value.len()
@@ -302,37 +423,37 @@ impl BinaryTwistWitness {
                     "cycle {cycle} value history is inconsistent"
                 )));
             }
-            check_one_hot(&self.read_address[cycle], cycle, "read")?;
-            let is_write = self.write_address[cycle].iter().any(|bit| bit.value() != 0);
-            if is_write {
-                check_one_hot(&self.write_address[cycle], cycle, "write")?;
-            } else if self.write_address[cycle].iter().any(|bit| bit.value() != 0) {
-                return Err(MemoryError::InvalidBinaryTwist(format!(
-                    "cycle {cycle} write address is neither zero nor one-hot"
-                )));
-            }
-            let read: F2_128 = self.read_address[cycle]
-                .iter()
-                .zip(&previous)
-                .fold(F2_128::from(0u64), |sum, (bit, value)| sum + *bit * *value);
-            if read != self.read_value[cycle] {
+            let read_slot = self.read_address.one_hot(cycle).ok_or_else(|| {
+                MemoryError::InvalidBinaryTwist(format!(
+                    "cycle {cycle} read address is not one-hot"
+                ))
+            })?;
+            let write_slot = match self.write_address.one_hot(cycle) {
+                Some(slot) => Some(slot),
+                None if self.write_address.any_set(cycle) => {
+                    return Err(MemoryError::InvalidBinaryTwist(format!(
+                        "cycle {cycle} write address is not one-hot"
+                    )))
+                }
+                None => None,
+            };
+            if previous[read_slot] != self.read_value[cycle] {
                 return Err(MemoryError::InvalidBinaryTwist(format!(
                     "cycle {cycle} read value does not match the address history"
                 )));
             }
-            let written: F2_128 = self.write_address[cycle]
-                .iter()
-                .zip(&previous)
-                .fold(F2_128::from(0u64), |sum, (bit, value)| {
-                    sum + *bit * (*value + self.increment[cycle])
-                });
-            if written != self.write_value[cycle] {
+            if let Some(slot) = write_slot {
+                let written = previous[slot] + self.increment[cycle];
+                if written != self.write_value[cycle] {
+                    return Err(MemoryError::InvalidBinaryTwist(format!(
+                        "cycle {cycle} write value does not match the increment"
+                    )));
+                }
+                previous[slot] = written;
+            } else if self.write_value[cycle] != F2_128::from(0u64) {
                 return Err(MemoryError::InvalidBinaryTwist(format!(
-                    "cycle {cycle} write value does not match the increment"
+                    "cycle {cycle} write value set without a write address"
                 )));
-            }
-            for (value, &write) in previous.iter_mut().zip(&self.write_address[cycle]) {
-                *value = *value + write * self.increment[cycle];
             }
         }
         if previous != self.final_value {
@@ -349,20 +470,6 @@ impl BinaryTwistWitness {
             .and_then(|row| row.get(cell))
             .map(|value| value.value() as Word)
     }
-}
-
-fn check_one_hot(address: &[F2_128], cycle: usize, kind: &str) -> Result<(), MemoryError> {
-    if address.iter().any(|bit| bit.value() > 1) {
-        return Err(MemoryError::InvalidBinaryTwist(format!(
-            "cycle {cycle} {kind} address contains a non-boolean bit"
-        )));
-    }
-    if address.iter().filter(|bit| bit.value() == 1).count() != 1 {
-        return Err(MemoryError::InvalidBinaryTwist(format!(
-            "cycle {cycle} {kind} address is not one-hot"
-        )));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -454,7 +561,7 @@ mod tests {
         assert!(tampered.validate().is_err());
 
         let mut tampered = witness.clone();
-        tampered.write_address[0][1] = F2_128::from(1u64);
+        tampered.write_address.set(0, 1);
         assert!(tampered.validate().is_err());
 
         let mut tampered = witness;

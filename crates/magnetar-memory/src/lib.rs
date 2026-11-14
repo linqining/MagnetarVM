@@ -5,7 +5,7 @@
 
 pub mod binary_twist;
 pub mod mmu;
-pub use binary_twist::BinaryTwistWitness;
+pub use binary_twist::{AddressRows, BinaryTwistWitness};
 
 use magnetar_constraint::F2_128;
 use magnetar_spec::{Addr, MemoryEvent, Trace, Word};

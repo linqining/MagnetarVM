@@ -43,9 +43,9 @@ pub(crate) fn dense_onehot(witness: &BinaryTwistWitness, write: bool) -> Vec<Vec
         &witness.read_address
     };
     let mut dense = vec![vec![F2_128::from(0u64); cycles]; cells];
-    for (cycle, row) in source.iter().enumerate() {
-        for cell in 0..cells {
-            dense[cell][cycle] = row[cell];
+    for cycle in 0..source.rows() {
+        if let Some(cell) = source.one_hot(cycle) {
+            dense[cell][cycle] = F2_128::from(1u64);
         }
     }
     dense
@@ -162,8 +162,10 @@ pub fn prove_local_twist(witness: &BinaryTwistWitness) -> Result<LocalTwistProof
         .map(|cycle| {
             witness
                 .write_address
-                .get(cycle)
-                .map_or(F2_128::from(0u64), |row| eval_mle(row, &rk))
+                .one_hot(cycle)
+                .map_or(F2_128::from(0u64), |cell| {
+                    crate::linear_twist::eval_one_hot(cell, &rk)
+                })
         })
         .collect::<Vec<_>>();
     wa_at_rk.resize(cycles, F2_128::from(0u64));

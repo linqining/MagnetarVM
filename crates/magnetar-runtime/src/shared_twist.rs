@@ -33,13 +33,11 @@ impl SharedTwistTables {
         let mut initial = vec![F2_128::from(0u64); cells * cycles];
         let mut final_value = vec![F2_128::from(0u64); cells * cycles];
         for (cycle, &increment) in inc.iter().enumerate().take(witness.cycles) {
-            let read_row = &witness.read_address[cycle];
-            let write_row = &witness.write_address[cycle];
-            let read_cell = read_row.iter().position(|value| value.value() == 1);
-            let write_cell = write_row.iter().position(|value| value.value() == 1);
-            for (cell, read_bit) in read_row.iter().enumerate() {
+            let read_cell = witness.read_address.one_hot(cycle);
+            let write_cell = witness.write_address.one_hot(cycle);
+            for cell in 0..cells {
                 let index = cell * cycles + cycle;
-                columns[0][index] = *read_bit;
+                columns[0][index] = F2_128::from(u64::from(read_cell == Some(cell)));
                 columns[1][index] = wa[index];
                 columns[2][index] = val[index];
                 columns[3][index] = increment;

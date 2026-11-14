@@ -45,13 +45,13 @@ fn one_hot_columns(
     cycles: usize,
 ) -> Vec<Vec<F2_128>> {
     let mut columns = vec![vec![F2_128::from(0u64); cycles.max(2)]; cells];
+    let addresses = if write {
+        &witness.write_address
+    } else {
+        &witness.read_address
+    };
     for cycle in 0..witness.cycles {
-        let addresses = if write {
-            &witness.write_address[cycle]
-        } else {
-            &witness.read_address[cycle]
-        };
-        if let Some(cell) = addresses.iter().position(|bit| bit.value() == 1) {
+        if let Some(cell) = addresses.one_hot(cycle) {
             columns[cell][cycle] = F2_128::from(1u64);
         }
     }
@@ -522,16 +522,14 @@ pub(crate) fn table_and_flags(
 ) -> (Vec<F2_128>, Vec<F2_128>) {
     let mut table = vec![F2_128::from(0u64); cells * cycles];
     let mut expected = vec![F2_128::from(0u64); cycles];
+    let source = if write {
+        &witness.write_address
+    } else {
+        &witness.read_address
+    };
     for cycle in 0..witness.cycles {
-        let addresses = if write {
-            &witness.write_address[cycle]
-        } else {
-            &witness.read_address[cycle]
-        };
-        table[cycle * cells..(cycle + 1) * cells].copy_from_slice(addresses);
-        expected[cycle] = F2_128::from(u64::from(
-            !write || addresses.iter().any(|bit| bit.value() != 0),
-        ));
+        source.row_into_field(cycle, &mut table[cycle * cells..(cycle + 1) * cells]);
+        expected[cycle] = F2_128::from(u64::from(!write || source.any_set(cycle)));
     }
     (table, expected)
 }

@@ -35,8 +35,8 @@ pub(crate) fn bit_columns_pub(
     } else {
         &witness.read_address
     };
-    for (cycle, row) in source.iter().enumerate() {
-        let Some(cell) = row.iter().position(|value| value.value() == 1) else {
+    for cycle in 0..source.rows() {
+        let Some(cell) = source.one_hot(cycle) else {
             continue;
         };
         valid[cycle] = F2_128::from(1u64);

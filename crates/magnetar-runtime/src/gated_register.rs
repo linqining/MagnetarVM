@@ -4,7 +4,7 @@
 //! `rs2` and write `rd`, matching the paper's p = 2 register-file instance.
 
 use magnetar_constraint::F2_128;
-use magnetar_memory::BinaryTwistWitness;
+use magnetar_memory::{AddressRows, BinaryTwistWitness};
 use magnetar_proof::ProofError;
 
 const REGISTER_BITS: usize = 5;
@@ -37,8 +37,8 @@ pub fn gated_register_twist_witness(
         ));
     }
     let mut registers = *initial;
-    let mut read_address = Vec::with_capacity(events.len() * 2);
-    let mut write_address = Vec::with_capacity(events.len() * 2);
+    let mut read_address = AddressRows::new(REGISTER_COUNT);
+    let mut write_address = AddressRows::new(REGISTER_COUNT);
     let mut increment = Vec::with_capacity(events.len() * 2);
     let mut value = Vec::with_capacity(events.len() * 2);
     let mut read_value = Vec::with_capacity(events.len() * 2);
@@ -51,25 +51,29 @@ pub fn gated_register_twist_witness(
 
         // Phase 1: read rs1, no write.
         value.push(registers.iter().map(|word| F2_128::from(*word)).collect());
-        read_address.push(one_hot(rs1));
-        write_address.push(vec![F2_128::from(0u64); REGISTER_COUNT]);
+        read_address.push_zero_row();
+        write_address.push_zero_row();
+        let cycle = read_address.rows() - 1;
+        read_address.set(cycle, rs1);
         increment.push(F2_128::from(0u64));
         read_value.push(F2_128::from(registers[rs1]));
         write_value.push(F2_128::from(0u64));
 
         // Phase 2: read rs2, then write rd.
         value.push(registers.iter().map(|word| F2_128::from(*word)).collect());
-        read_address.push(one_hot(rs2));
+        read_address.push_zero_row();
+        write_address.push_zero_row();
+        let cycle = read_address.rows() - 1;
+        read_address.set(cycle, rs2);
         read_value.push(F2_128::from(registers[rs2]));
         if rd != 0 {
             let old = registers[rd];
             let new = event.out;
-            write_address.push(one_hot(rd));
+            write_address.set(cycle, rd);
             increment.push(F2_128::from(old ^ new));
             write_value.push(F2_128::from(new));
             registers[rd] = new;
         } else {
-            write_address.push(vec![F2_128::from(0u64); REGISTER_COUNT]);
             increment.push(F2_128::from(0u64));
             write_value.push(F2_128::from(0u64));
         }

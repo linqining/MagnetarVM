@@ -7,7 +7,7 @@
 //! proved by the existing BinaryTwist reduction without changing its protocol.
 
 use magnetar_constraint::F2_128;
-use magnetar_memory::BinaryTwistWitness;
+use magnetar_memory::{AddressRows, BinaryTwistWitness};
 use magnetar_proof::ProofError;
 use magnetar_spec::Trace;
 
@@ -21,8 +21,8 @@ pub fn register_twist_witness(trace: &Trace) -> Result<BinaryTwistWitness, Proof
         .iter()
         .map(|value| F2_128::from(*value))
         .collect::<Vec<_>>();
-    let mut read_address = Vec::with_capacity(trace.rows.len() * 2);
-    let mut write_address = Vec::with_capacity(trace.rows.len() * 2);
+    let mut read_address = AddressRows::new(REGISTER_COUNT);
+    let mut write_address = AddressRows::new(REGISTER_COUNT);
     let mut increment = Vec::with_capacity(trace.rows.len() * 2);
     let mut value = Vec::with_capacity(trace.rows.len() * 2);
     let mut read_value = Vec::with_capacity(trace.rows.len() * 2);
@@ -44,25 +44,32 @@ pub fn register_twist_witness(trace: &Trace) -> Result<BinaryTwistWitness, Proof
 
         let mut push_phase = |read: Option<usize>, write: Option<usize>| {
             value.push(registers.iter().map(|word| F2_128::from(*word)).collect());
-            let mut read_one_hot = vec![F2_128::from(0u64); REGISTER_COUNT];
-            let mut write_one_hot = vec![F2_128::from(0u64); REGISTER_COUNT];
+            let mut read_slot = None;
+            let mut write_slot = None;
             let mut read_scalar = F2_128::from(0u64);
             let mut write_scalar = F2_128::from(0u64);
             let mut increment_scalar = F2_128::from(0u64);
             if let Some(read) = read {
-                read_one_hot[read] = F2_128::from(1u64);
+                read_slot = Some(read);
                 read_scalar = F2_128::from(registers[read]);
             }
             if let Some(write) = write {
                 let old = registers[write];
                 let new = row.rd_val;
-                write_one_hot[write] = F2_128::from(1u64);
+                write_slot = Some(write);
                 increment_scalar = F2_128::from(old ^ new);
                 write_scalar = F2_128::from(new);
                 registers[write] = new;
             }
-            read_address.push(read_one_hot);
-            write_address.push(write_one_hot);
+            read_address.push_zero_row();
+            write_address.push_zero_row();
+            let cycle = read_address.rows() - 1;
+            if let Some(slot) = read_slot {
+                read_address.set(cycle, slot);
+            }
+            if let Some(slot) = write_slot {
+                write_address.set(cycle, slot);
+            }
             increment.push(increment_scalar);
             read_value.push(read_scalar);
             write_value.push(write_scalar);
@@ -153,8 +160,8 @@ mod tests {
             witness.final_value[3].value(),
             u128::from(trace.final_state.reg(3))
         );
-        for address in &witness.read_address {
-            assert_eq!(address.iter().filter(|value| value.value() == 1).count(), 1);
+        for row in 0..witness.read_address.rows() {
+            assert!(witness.read_address.one_hot(row).is_some());
         }
     }
 

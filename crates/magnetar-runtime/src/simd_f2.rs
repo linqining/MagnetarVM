@@ -2939,8 +2939,8 @@ pub fn gated_memory_twist_witness(
     let row = GatedCpuRow::new(width);
     let cells = 1usize << width;
     let mut current = vec![F2_128::from(0u64); cells];
-    let mut read_address = Vec::new();
-    let mut write_address = Vec::new();
+    let mut read_address = magnetar_memory::AddressRows::new(cells);
+    let mut write_address = magnetar_memory::AddressRows::new(cells);
     let mut increment = Vec::new();
     let mut value = Vec::new();
     let mut read_value = Vec::new();
@@ -2969,20 +2969,21 @@ pub fn gated_memory_twist_witness(
                 "gated memory address out of range".into(),
             ));
         }
-        let mut read = vec![F2_128::from(0u64); cells];
-        read[address] = F2_128::from(1u64);
         let old = current[address];
         let new = F2_128::from(data as u64);
         value.push(current.clone());
-        read_address.push(read.clone());
-        write_address.push(read);
+        read_address.push_zero_row();
+        write_address.push_zero_row();
+        let cycle = read_address.rows() - 1;
+        read_address.set(cycle, address);
+        write_address.set(cycle, address);
         increment.push(old + new);
         read_value.push(old);
         write_value.push(new);
         current[address] = new;
     }
 
-    if read_address.is_empty() {
+    if read_address.rows() == 0 {
         return Err(RuntimeError::Proof(
             "gated memory witness has no active rows".into(),
         ));
@@ -2990,7 +2991,7 @@ pub fn gated_memory_twist_witness(
     let witness = magnetar_memory::BinaryTwistWitness {
         address_bits: width,
         cell_bits: width,
-        cycles: read_address.len(),
+        cycles: read_address.rows(),
         initial: vec![F2_128::from(0u64); cells],
         read_address,
         write_address,

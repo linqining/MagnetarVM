@@ -136,7 +136,9 @@ fn tables(
     let mut ra = vec![F2_128::from(0u64); len];
     let mut val = vec![F2_128::from(0u64); len];
     for cycle in 0..witness.cycles {
-        ra[cycle * cells..(cycle + 1) * cells].copy_from_slice(&witness.read_address[cycle]);
+        witness
+            .read_address
+            .row_into_field(cycle, &mut ra[cycle * cells..(cycle + 1) * cells]);
         val[cycle * cells..(cycle + 1) * cells].copy_from_slice(&witness.value[cycle]);
     }
     Ok((ra, val, address_bits, cycle_bits))
@@ -393,7 +395,9 @@ fn write_tables(witness: &BinaryTwistWitness) -> Result<WriteTables, ProofError>
     let mut inc = vec![F2_128::from(0u64); len];
     for cycle in 0..witness.cycles {
         let start = cycle * cells;
-        wa[start..start + cells].copy_from_slice(&witness.write_address[cycle]);
+        witness
+            .write_address
+            .row_into_field(cycle, &mut wa[start..start + cells]);
         val[start..start + cells].copy_from_slice(&witness.value[cycle]);
         for cell in 0..cells {
             inc[start + cell] = witness.increment[cycle];
@@ -625,7 +629,9 @@ fn update_tables(witness: &BinaryTwistWitness) -> Result<UpdateTables, ProofErro
     for cycle in 0..witness.cycles {
         let start = cycle * cells;
         val[start..start + cells].copy_from_slice(&witness.value[cycle]);
-        wa[start..start + cells].copy_from_slice(&witness.write_address[cycle]);
+        witness
+            .write_address
+            .row_into_field(cycle, &mut wa[start..start + cells]);
         for cell in 0..cells {
             inc[start + cell] = witness.increment[cycle];
         }
@@ -811,22 +817,6 @@ impl BatchTables {
     }
 }
 
-fn one_hot_address(bits: &[F2_128]) -> Option<usize> {
-    let mut found = None;
-    for (index, bit) in bits.iter().enumerate() {
-        match bit.value() {
-            0 => {}
-            1 => {
-                if found.is_some() {
-                    return None;
-                }
-                found = Some(index);
-            }
-            _ => return None,
-        }
-    }
-    found
-}
 
 /// Batch tables for the quadratic twist path and for every consumer that needs
 /// the per-cell bit tables.
@@ -869,12 +859,12 @@ fn batch_tables_inner(
     let mut increments = vec![F2_128::from(0u64); 1usize << inc_bits];
     for cycle in 0..witness.cycles {
         addr[2 * address_bits][cycle] = F2_128::from(1u64);
-        if let Some(cell) = one_hot_address(&witness.read_address[cycle]) {
+        if let Some(cell) = witness.read_address.one_hot(cycle) {
             for bit in 0..address_bits {
                 addr[bit][cycle] = F2_128::from(((cell >> bit) & 1) as u64);
             }
         }
-        if let Some(cell) = one_hot_address(&witness.write_address[cycle]) {
+        if let Some(cell) = witness.write_address.one_hot(cycle) {
             addr[2 * address_bits + 1][cycle] = F2_128::from(1u64);
             for bit in 0..address_bits {
                 addr[address_bits + bit][cycle] = F2_128::from(((cell >> bit) & 1) as u64);
@@ -896,7 +886,7 @@ fn batch_tables_inner(
             for bit in 0..witness.cell_bits {
                 read_value_bits[bit][cycle] = F2_128::from((value >> bit) & 1);
             }
-            if let Some(cell) = one_hot_address(&witness.read_address[cycle]) {
+            if let Some(cell) = witness.read_address.one_hot(cycle) {
                 if witness.idle_word != Some(cell) {
                     for bit in 0..address_bits {
                         read_address_bits[bit][cycle] = F2_128::from(((cell >> bit) & 1) as u64);

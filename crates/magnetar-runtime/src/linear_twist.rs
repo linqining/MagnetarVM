@@ -93,20 +93,22 @@ fn build_tables(
     let mut value = vec![F2_128::from(0u64); cells * cycles];
     let mut current = witness.initial.clone();
     current.resize(cells, F2_128::from(0u64));
-    for (cycle, (read, write)) in witness
-        .read_address
-        .iter()
-        .zip(&witness.write_address)
-        .enumerate()
-    {
+    for cycle in 0..witness.cycles {
         let row = cycle * cells;
         eq_cycle[row..row + cells].copy_from_slice(&vec![eq[cycle]; cells]);
-        read_address[row..row + cells].copy_from_slice(read);
-        write_address[row..row + cells].copy_from_slice(write);
+        witness
+            .read_address
+            .row_into_field(cycle, &mut read_address[row..row + cells]);
+        witness
+            .write_address
+            .row_into_field(cycle, &mut write_address[row..row + cells]);
+        let write_slot = witness.write_address.one_hot(cycle);
         for (cell, current_cell) in current.iter_mut().enumerate().take(cells) {
             increment[row + cell] = witness.increment[cycle];
             value[row + cell] = *current_cell;
-            *current_cell = *current_cell + write[cell] * witness.increment[cycle];
+            if write_slot == Some(cell) {
+                *current_cell = *current_cell + witness.increment[cycle];
+            }
         }
     }
     Ok(LinearRwTables {
@@ -265,6 +267,25 @@ pub fn eval_mle(values: &[F2_128], point: &[F2_128]) -> F2_128 {
     folded[0]
 }
 
+/// Evaluation of a one-hot row at an address point, without materialising the row.
+///
+/// [`eval_mle`] folds index bit 0 first, so a one-hot vector's evaluation is the
+/// product of `point[bit]` over the cell's set bits and `1 + point[bit]` over
+/// its clear bits.
+pub(crate) fn eval_one_hot(cell: usize, point: &[F2_128]) -> F2_128 {
+    point
+        .iter()
+        .enumerate()
+        .fold(F2_128::from(1u64), |acc, (bit, coordinate)| {
+            let factor = if (cell >> bit) & 1 == 1 {
+                *coordinate
+            } else {
+                F2_128::from(1u64) + *coordinate
+            };
+            acc * factor
+        })
+}
+
 pub(crate) fn build_val_tables(witness: &BinaryTwistWitness) -> (Vec<F2_128>, Vec<F2_128>, Vec<F2_128>) {
     let cells = 1usize << witness.address_bits;
     let cycles = witness.cycles.next_power_of_two().max(2);
@@ -279,10 +300,10 @@ pub(crate) fn build_val_tables(witness: &BinaryTwistWitness) -> (Vec<F2_128>, Ve
             .get(cycle)
             .copied()
             .unwrap_or(F2_128::from(0u64));
-        let write = witness.write_address.get(cycle);
+        let write = witness.write_address.one_hot(cycle);
         for cell in 0..cells {
             let index = cell * cycles + cycle;
-            let write_bit = write.map_or(F2_128::from(0u64), |row| row[cell]);
+            let write_bit = F2_128::from(u64::from(write == Some(cell)));
             wa[index] = write_bit;
             val[index] = current[cell];
             current[cell] = current[cell] + write_bit * increment;
@@ -312,9 +333,10 @@ pub fn prove_val_evaluation(
     }
     let mut wa_at_rk = (0..cycles)
         .map(|cycle| {
-            witness.write_address.get(cycle).map_or(F2_128::from(0u64), |row| {
-                eval_mle(row, &rk)
-            })
+            witness
+                .write_address
+                .one_hot(cycle)
+                .map_or(F2_128::from(0u64), |cell| eval_one_hot(cell, &rk))
         })
         .collect::<Vec<_>>();
     wa_at_rk.resize(cycles, F2_128::from(0u64));
@@ -436,8 +458,8 @@ pub fn prove_val_pcs(witness: &BinaryTwistWitness) -> Result<ValPcsProof, ProofE
         .map(|cycle| {
             witness
                 .write_address
-                .get(cycle)
-                .map_or(F2_128::from(0u64), |row| eval_mle(row, &rk))
+                .one_hot(cycle)
+                .map_or(F2_128::from(0u64), |cell| eval_one_hot(cell, &rk))
         })
         .collect::<Vec<_>>();
     wa_at_rk.resize(cycles, F2_128::from(0u64));
@@ -612,10 +634,10 @@ pub fn prove_rw_pcs(witness: &BinaryTwistWitness) -> Result<RwPcsProof, ProofErr
     let cycle_bits = cycles.trailing_zeros() as usize;
     let (val, wa, inc) = build_val_tables(witness);
     let mut ra = vec![F2_128::from(0u64); cells * cycles];
-    for (cycle, read) in witness.read_address.iter().enumerate() {
-        for cell in 0..cells {
-            ra[cell * cycles + cycle] = read[cell];
-        }
+    for cycle in 0..witness.cycles {
+        witness
+            .read_address
+            .scatter_column_major(cycle, &mut ra, cycles);
     }
     let mut read_value = witness.read_value.clone();
     read_value.resize(cycles, F2_128::from(0u64));
@@ -839,9 +861,9 @@ fn onehot_columns(
         &witness.read_address
     };
     let mut columns = vec![vec![F2_128::from(0u64); cycles]; cells];
-    for (cycle, row) in source.iter().enumerate() {
-        for cell in 0..cells {
-            columns[cell][cycle] = row[cell];
+    for cycle in 0..source.rows() {
+        if let Some(cell) = source.one_hot(cycle) {
+            columns[cell][cycle] = F2_128::from(1u64);
         }
     }
     (columns, cells, cycles)
@@ -860,8 +882,8 @@ fn address_bit_columns(
     };
     let mut bits = vec![vec![F2_128::from(0u64); cycles]; witness.address_bits];
     let mut valid = vec![F2_128::from(0u64); cycles];
-    for (cycle, row) in source.iter().enumerate() {
-        let Some(cell) = row.iter().position(|value| value.value() == 1) else {
+    for cycle in 0..source.rows() {
+        let Some(cell) = source.one_hot(cycle) else {
             continue;
         };
         valid[cycle] = F2_128::from(1u64);
@@ -928,12 +950,8 @@ pub fn prove_onehot_pcs(
     } else {
         &witness.read_address
     }
-    .iter()
-    .map(|row| {
-        row.iter()
-            .position(|value| value.value() == 1)
-            .map_or(0, |cell| cells + cell)
-    })
+    .one_hots()
+    .map(|cell| cell.map_or(0, |cell| cells + cell))
     .collect::<Vec<_>>();
     let mut positions = positions;
     positions.resize(cycles, 0);
@@ -1635,10 +1653,10 @@ fn shared_rw_columns(
     let cycles = witness.cycles.next_power_of_two().max(2);
     let (val, wa, inc) = build_val_tables(witness);
     let mut ra = vec![F2_128::from(0u64); cells * cycles];
-    for (cycle, read) in witness.read_address.iter().enumerate() {
-        for cell in 0..cells {
-            ra[cell * cycles + cycle] = read[cell];
-        }
+    for cycle in 0..witness.cycles {
+        witness
+            .read_address
+            .scatter_column_major(cycle, &mut ra, cycles);
     }
     let mut read_value = witness.read_value.clone();
     read_value.resize(cycles, F2_128::from(0u64));
@@ -1693,8 +1711,8 @@ pub fn prove_val_shared(
         .map(|cycle| {
             witness
                 .write_address
-                .get(cycle)
-                .map_or(F2_128::from(0u64), |row| eval_mle(row, &rk))
+                .one_hot(cycle)
+                .map_or(F2_128::from(0u64), |cell| eval_one_hot(cell, &rk))
         })
         .collect::<Vec<_>>();
     wa_at_rk.resize(cycles, F2_128::from(0u64));
@@ -1958,8 +1976,8 @@ pub fn prove_shared_rwval(
         .map(|cycle| {
             witness
                 .write_address
-                .get(cycle)
-                .map_or(F2_128::from(0u64), |row| eval_mle(row, &rk))
+                .one_hot(cycle)
+                .map_or(F2_128::from(0u64), |cell| eval_one_hot(cell, &rk))
         })
         .collect::<Vec<_>>();
     wa_at_rk.resize(cycles, F2_128::from(0u64));
@@ -2337,21 +2355,13 @@ pub fn prove_shared_onehot(
     }];
     let read_positions = witness
         .read_address
-        .iter()
-        .map(|row| {
-            row.iter()
-                .position(|value| value.value() == 1)
-                .map_or(0, |cell| cells + cell)
-        })
+        .one_hots()
+        .map(|cell| cell.map_or(0, |cell| cells + cell))
         .collect::<Vec<_>>();
     let write_positions = witness
         .write_address
-        .iter()
-        .map(|row| {
-            row.iter()
-                .position(|value| value.value() == 1)
-                .map_or(0, |cell| cells + cell)
-        })
+        .one_hots()
+        .map(|cell| cell.map_or(0, |cell| cells + cell))
         .collect::<Vec<_>>();
     let mut read_positions = read_positions;
     read_positions.resize(cycles, 0);

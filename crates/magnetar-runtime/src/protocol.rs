@@ -1869,7 +1869,7 @@ impl<'a> UnifiedProveContext<'a> {
                 "after twist witness: {} (cycles {}, addrs {})",
                 crate::memory_gib(),
                 witness.cycles,
-                witness.read_address.len()
+                witness.read_address.rows()
             );
         }
         // Memory route (d): at RV64 scale the twist reduction is the linear one,

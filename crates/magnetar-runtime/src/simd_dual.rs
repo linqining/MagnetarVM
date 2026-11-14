@@ -11223,10 +11223,7 @@ mod virtual_spec_tests {
                         rows[cycle].1.cpu,
                         crate::simd_f2::GatedCpuRowInput::Memory { .. }
                     ) {
-                        let word = twist.read_address[event]
-                            .iter()
-                            .position(|bit| bit.value() == 1)
-                            .unwrap_or(0);
+                        let word = twist.read_address.one_hot_or_zero(event);
                         let address = trace.config.ram_base + 8 * word as u64;
                         for bit in 0..*len {
                             virtual_values[cursor + bit] = F2_128::from((address >> bit) & 1);
@@ -11689,10 +11686,7 @@ mod projection_tests {
                 gated_addr |= 1 << bit;
             }
         }
-        let twist_word = twist.read_address[0]
-            .iter()
-            .position(|bit| bit.value() == 1)
-            .unwrap_or(0);
+        let twist_word = twist.read_address.one_hot_or_zero(0);
         assert_eq!(
             gated_addr,
             trace.config.ram_base + 8 * twist_word as u64,

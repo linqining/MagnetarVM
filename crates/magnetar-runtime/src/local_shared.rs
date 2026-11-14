@@ -80,10 +80,8 @@ fn flat_onehot(witness: &BinaryTwistWitness, write: bool, cycles: usize) -> Vec<
         &witness.read_address
     };
     let mut flat = vec![F2_128::from(0u64); cells * cycles];
-    for (cycle, row) in source.iter().enumerate() {
-        for (cell, value) in row.iter().enumerate().take(cells) {
-            flat[cell * cycles + cycle] = *value;
-        }
+    for cycle in 0..source.rows() {
+        source.scatter_column_major(cycle, &mut flat, cycles);
     }
     flat
 }
@@ -117,10 +115,10 @@ fn build_val_flat(witness: &BinaryTwistWitness) -> (Vec<F2_128>, Vec<F2_128>) {
             .get(cycle)
             .copied()
             .unwrap_or(F2_128::from(0u64));
-        let write = witness.write_address.get(cycle);
+        let write = witness.write_address.one_hot(cycle);
         for cell in 0..cells {
             let index = cell * cycles + cycle;
-            let write_bit = write.map_or(F2_128::from(0u64), |row| row[cell]);
+            let write_bit = F2_128::from(u64::from(write == Some(cell)));
             val[index] = current[cell];
             current[cell] = current[cell] + write_bit * increment;
         }
@@ -317,8 +315,10 @@ pub fn prove_local_shared(witness: &BinaryTwistWitness) -> Result<LocalSharedPro
         .map(|cycle| {
             witness
                 .write_address
-                .get(cycle)
-                .map_or(F2_128::from(0u64), |row| eval_mle(row, &rk))
+                .one_hot(cycle)
+                .map_or(F2_128::from(0u64), |cell| {
+                    crate::linear_twist::eval_one_hot(cell, &rk)
+                })
         })
         .collect::<Vec<_>>();
     wa_at_rk.resize(cycles, F2_128::from(0u64));
