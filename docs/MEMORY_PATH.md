@@ -585,7 +585,14 @@ unified proofs).
 | `2^16` prove | 40.0 s / CPU 288.7 s | 41.1 s / 285.8 s | 41.1 s / CPU 281.2 s |
 | `2^17` peak footprint | 4.15 GiB | not re-measured | **3.28 GiB (-21 %)** |
 | `2^17` prove | 90.8 s / CPU 600.3 s | not re-measured | 93.6 s / CPU 604.8 s |
-| proof bytes | 1,018,155 / 1,110,291 B | identical | identical |
+| `2^18` peak footprint | 7.96 GiB (2026-11-08 window) | not re-measured | **6.05 GiB (-24 %)** |
+| `2^18` prove | 133.1 s / CPU 1240.3 s | not re-measured | 226.6 s / CPU 1277.1 s (load 31-58) |
+| proof bytes | 1,018,155 / 1,110,291 / 1,230,360 B | identical | identical |
+
+At `2^18` the mode's peak point is the mosaic Opening (`unified Opening` footprint
+5.61 GiB against 1.38 GiB live after Access), i.e. the products are fully out of
+the way and what is left is the opening re-encode transient on top of the
+resident context (2.24 GiB) -- again the PCS codeword, not the factors.
 
 At both scales the strongest mode costs **~3 % prove wall and no extra CPU**
 (the products start ~3-5 s later at `2^16`/`2^17` but run with less contention)

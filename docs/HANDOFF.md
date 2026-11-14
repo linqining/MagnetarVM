@@ -53,7 +53,9 @@ the products overlap neither Access nor Opening. Byte-identical proofs (ignored
 2.08 -> 1.64 GiB** and **2^17 4.15 -> 3.28 GiB (-21 % at both)**, for ~3 %
 prove wall and no CPU increase (2^16 prove 40.0 -> 41.1 s, CPU 288.7 -> 281.2 s;
 2^17 90.8 -> 93.6 s, CPU 600.3 -> 604.8 s). Recommended for the 2^19+ staircase
-runs. [MEMORY_PATH.md](MEMORY_PATH.md) §4.2.
+runs. `2^18` confirmed the same: **7.96 -> 6.05 GiB (-24 %)** with the proof
+bytes unchanged, peak at the mosaic Opening.
+[MEMORY_PATH.md](MEMORY_PATH.md) §4.2.
 
 **Opt-in Access scheduling switch (2026-11-08)**: `MAGNETAR_SERIALIZE_ACCESS=1`
 starts the selected commit/products after the Access stage instead of after the
