@@ -912,10 +912,14 @@ streaming pruned-multiproof builder; this round adds and pins one:
    generic packed debug/lane arms can stay on the existing `MerkleTree` path;
    the streaming arm only needs the scalar leaf/compress calls this codeword
    shape uses (`P::WIDTH == 1`, `N == 2`), asserted at runtime.
-2. A chunked encoder seam in `p3-commit`: `Encoder::encode_batch_chunks(message,
-   log_inv_rate, sink)` with the default `encode_batch_borrowed` then chunking,
-   overridden by `AdditiveRsEncoder` with the per-coset transform §4.6 already
-   uses. `binary-pcs` then needs neither magnetar types nor a full codeword.
+2. ~~A chunked encoder seam in `p3-commit`~~ **done**: `Encoder::encode_batch_chunks`
+   (default: `encode_batch_borrowed` then one run) is overridden by
+   `AdditiveRsEncoder` in `binary-dft` to hand over one rate coset per run,
+   reusing the transform's returned buffer. Pinned by
+   `chunked_encoder_reproduces_the_borrowed_codeword` (concatenation equals
+   `encode_batch_borrowed` and the run count equals `2^log_inv_rate`, heights
+   `2^0..2^6`, widths 1/2/3, rates 0-3). `binary-pcs` then needs neither
+   magnetar types nor a full codeword.
 3. `BinaryPcs::open_at_streaming(message, cap, protocol, points, challenger)`:
    observe `cap` (supplied by the caller, which already computed it in pass 1
    with the identical root), run the sumcheck/fold passes with streamed

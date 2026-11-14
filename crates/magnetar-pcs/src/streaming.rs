@@ -803,6 +803,52 @@ mod tests {
         }
     }
 
+    /// The chunked encoder seam hands over the borrowed encoder's codeword in
+    /// order, one rate coset per run, for every shape and rate the PCS uses.
+    ///
+    /// This is the encoder seam the streamed opening will re-encode through; it
+    /// has to be a plain concatenation of the batch codeword, or the fold and
+    /// the query rows would be hashed from different symbols.
+    #[test]
+    fn chunked_encoder_reproduces_the_borrowed_codeword() {
+        let encoder = <F as EncodableLevel>::Encoder::default();
+        for log_height in 0..=6 {
+            for width in [1usize, 2, 3] {
+                for log_inv_rate in 0..=3 {
+                    if log_inv_rate > log_height {
+                        continue;
+                    }
+                    let message = values(
+                        (1 << log_height) * width,
+                        log_height as u64 * 11 + width as u64,
+                    );
+                    let view = RowMajorMatrixView::new(&message, width);
+                    let expected = encoder.encode_batch_borrowed(view, log_inv_rate);
+
+                    let mut got = Vec::new();
+                    let mut runs = 0usize;
+                    encoder.encode_batch_chunks(view, log_inv_rate, &mut |chunk| {
+                        assert!(
+                            chunk.len().is_multiple_of(width),
+                            "every run is a whole number of rows"
+                        );
+                        got.extend_from_slice(chunk);
+                        runs += 1;
+                    });
+                    assert_eq!(
+                        got, expected.values,
+                        "log_height={log_height} width={width} rate={log_inv_rate}"
+                    );
+                    assert_eq!(
+                        runs,
+                        1usize << log_inv_rate,
+                        "one run per rate coset, log_height={log_height} width={width}"
+                    );
+                }
+            }
+        }
+    }
+
     /// The streamed encoder must produce the batch encoder's codeword exactly,
     /// and the streamed commitment the tree's root over it.
     #[test]

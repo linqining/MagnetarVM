@@ -7,6 +7,7 @@ use p3_binary_field::{
 };
 use p3_commit::Encoder;
 use p3_field::PrimeCharacteristicRing;
+use p3_matrix::Matrix;
 use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
 
 use crate::lch::LchNtt;
@@ -102,6 +103,48 @@ macro_rules! impl_additive_rs_encoder {
                 log_inv_rate: usize,
             ) -> RowMajorMatrix<$field> {
                 self.ntt.ntt_batch_borrowed(message, log_inv_rate)
+            }
+
+            /// Hands one rate coset over at a time.
+            ///
+            /// The codeword of a zero-padded message is the concatenation of one
+            /// coset per rate bit, each the message transformed on its own shifted
+            /// subspace: `AdditiveNtt::ntt_batch_padded` uses the same identity.
+            /// Each coset starts from a fresh copy of the message, and the buffer
+            /// the transform returns is reused as the next coset's copy, so one
+            /// message plus one coset stays live instead of the whole codeword.
+            fn encode_batch_chunks(
+                &self,
+                message: RowMajorMatrixView<'_, $field>,
+                log_inv_rate: usize,
+                sink: &mut dyn FnMut(&[$field]),
+            ) {
+                let width = message.width();
+                let log_height = p3_util::log2_strict_usize(message.height());
+                assert!(log_inv_rate <= log_height, "padding exceeds matrix height");
+                let cosets = 1usize
+                    .checked_shl(log_inv_rate as u32)
+                    .expect("log inverse rate exceeds usize");
+
+                let mut scratch = message.values.to_vec();
+                for coset in 0..cosets {
+                    // Coset zero is the message itself; every later one starts
+                    // from its own copy of the same coefficients.
+                    if coset > 0 {
+                        scratch.copy_from_slice(message.values);
+                    }
+                    let shift = crate::domain::domain_point::<$field>(
+                        coset
+                            .checked_shl(log_height as u32)
+                            .expect("coset offset overflows usize"),
+                    );
+                    let encoded = self.ntt.shifted_ntt_batch(
+                        RowMajorMatrix::new(scratch, width),
+                        shift,
+                    );
+                    sink(&encoded.values);
+                    scratch = encoded.values;
+                }
             }
         }
     )*};

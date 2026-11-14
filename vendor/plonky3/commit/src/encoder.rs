@@ -103,6 +103,35 @@ pub trait Encoder<F: Field> {
     ) -> RowMajorMatrix<F> {
         self.encode_batch_padded(zero_padded(message, log_inv_rate), log_inv_rate)
     }
+
+    /// Encodes a borrowed message and hands the codeword to `sink` in row runs.
+    ///
+    /// The concatenation of every run [`Self::encode_batch_chunks`] hands over is
+    /// exactly [`Self::encode_batch_borrowed`]'s codeword, in row order: each run
+    /// holds a whole number of `message.width()`-wide rows, and the runs tile the
+    /// codeword without overlap.
+    ///
+    /// A streaming commitment uses this to hash and fold the codeword without ever
+    /// materialising it, so an encoder whose code is a concatenation of independent
+    /// blocks (as every Reed-Solomon code's cosets are) should override it and hand
+    /// one block over at a time.
+    ///
+    /// The default builds the whole codeword and hands it over in one run. That
+    /// keeps the codeword live exactly as [`Self::encode_batch_borrowed`] does, so
+    /// callers that need a bounded live set must check the encoder overrides it.
+    ///
+    /// # Panics
+    ///
+    /// The same conditions as [`Self::encode_batch_borrowed`].
+    fn encode_batch_chunks(
+        &self,
+        message: RowMajorMatrixView<'_, F>,
+        log_inv_rate: usize,
+        sink: &mut dyn FnMut(&[F]),
+    ) {
+        let encoded = self.encode_batch_borrowed(message, log_inv_rate);
+        sink(&encoded.values);
+    }
 }
 
 /// Reed-Solomon over the two-adic subgroup of order `2^(k + log_inv_rate)`: each column of
