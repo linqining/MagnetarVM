@@ -19,6 +19,12 @@ proof 1,169,603 B. Full workspace gate on this tree: 675 passed / 0 failed /
 | peak footprint, `MAGNETAR_SERIALIZE_PRODUCTS=1` | **1.64 GiB** | **3.28 GiB** | **6.05 GiB** |
 | proof | 1,018,155 B | 1,110,291 B | 1,230,360 B |
 
+The paper-path default configuration (M4b committed Shout) at `2^16` in the
+memory mode: proof **1,169,603 B** (unchanged), peak **1.63 GiB footprint**
+against 1.97-2.06 GiB with the default schedule, prove CPU 286.4 s, verify
+20.3 ms in that loaded window (16.4 ms in the quiet window). So the memory mode
+applies to the paper numbers as well, not just the native default.
+
 The paper's verify target (8-12 ms) is **met** (10.8 ms) and the `2^16` prover
 is at 30 s / 280 CPU-s from 70.4 s / ~800 CPU-s. Memory is the binding ceiling
 for the paper envelope: the `2^22` projection is 26-30 GiB with the current
