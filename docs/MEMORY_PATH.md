@@ -213,7 +213,8 @@ Peak footprint at `2^16` native default, chronological:
 | route (d) increments 1+2 | 2.17 GiB | 30.4 s prove |
 | Access-PCS lifetime (default re-encode) | 1.98 GiB | 30.3 s prove |
 | compact sum-check factors (2026-11-14) | **1.89 GiB** | 22.4 -> 18.1 s / 288.1 -> 280.0 s |
-| + `MAGNETAR_SERIALIZE_ACCESS=1` (memory mode) | **1.78 GiB** | 31.2 s prove |
+| + `MAGNETAR_SERIALIZE_ACCESS=1` (memory mode) | 1.78 GiB | 31.2 s prove |
+| + `MAGNETAR_SERIALIZE_PRODUCTS=1` (strongest mode) | **1.64 GiB** | 41.1 s prove (2^16, load 28) |
 
 At `2^18` the 2026-11-08 sequence is 8.72 -> 7.96 -> 6.96 GiB footprint. The
 remaining peak terms are quantified in §4.2: the mosaic Commit/Opening
@@ -566,6 +567,32 @@ start is absorbed because the products then run with less contention) and at
 stage is much longer, so serializing it costs wall there (and the 2^19 window
 will decide the default).
 
+**Second (stronger) scheduling switch: `MAGNETAR_SERIALIZE_PRODUCTS=1`.** The
+first switch removed the products/Access overlap; the remaining overlap at
+`2^17`+ is the products against the **mosaic Opening**. This switch implies the
+Access gate and then also holds the selected thread until the Opening stage has
+finished, so during Access and Opening the selected prover has only done its
+setup/commit (nothing else). Proof bytes are unchanged (ignored test
+`m5_v4_tests::serialize_products_proof_bytes_match` proves one trace through the
+Access-gated and the products-gated schedule and compares the serialized
+unified proofs).
+
+| scale | default (no switch) | `SERIALIZE_ACCESS=1` | `SERIALIZE_PRODUCTS=1` |
+| --- | --- | --- | --- |
+| `2^16` peak footprint | 2.08 GiB | 1.78-1.79 GiB | **1.64 GiB (-21 %)** |
+| `2^16` prove | 40.0 s / CPU 288.7 s | 41.1 s / 285.8 s | 41.1 s / CPU 281.2 s |
+| `2^17` peak footprint | 4.15 GiB | not re-measured | **3.28 GiB (-21 %)** |
+| `2^17` prove | 90.8 s / CPU 600.3 s | not re-measured | 93.6 s / CPU 604.8 s |
+| proof bytes | 1,018,155 / 1,110,291 B | identical | identical |
+
+At both scales the strongest mode costs **~3 % prove wall and no extra CPU**
+(the products start ~3-5 s later at `2^16`/`2^17` but run with less contention)
+and removes a fifth of the peak. With it the `2^16` peak becomes the Access
+stage alone (1.64 GiB) and `2^17` drops from 4.15 to 3.28 GiB -- the largest
+single-step memory win measured so far without touching the format. It is the
+recommended mode for the large staircase runs (`2^19`+), where wall is dominated
+by `product6`/`product2` anyway and the products' late start is a fixed cost.
+
 **Kept (default flipped): the Access PCS prepared batch is not retained.** The
 local PCS used `commit_batch_prepared` and kept the prepared batch (codeword +
 Merkle tree of the address columns) live from the commit until the opening
@@ -672,6 +699,17 @@ magnetar-pcs/src/p3_pcs.rs   commit_batch / commit_batch_prepared
 `encode_batch_borrowed` returns the whole rate-`1/8` codeword as a
 `DenseMatrix`, and `Mmcs::commit_matrix` then builds the tree from that matrix,
 so both the codeword and the leaf matrix are live at once.
+
+Measured shapes at `2^16` (`MAGNETAR_PROFILE_PCS=1`):
+
+| commit | shape | cost |
+| --- | --- | --- |
+| mosaic `commit_mosaic` | `cells=2293918`, `stacked_vars=22`, rate `1/4` (log_inv_rate 2), 12 tables | 414 ms, codeword ~268 MB + tree ~134 MB |
+| single-column `pcs commit` (2^22-value table, used twice: commit and the opening re-encode) | `pcs_log=22`, rate `1/8` | 250 ms each, codeword ~536 MB + tree ~134 MB |
+
+That is why the `Commit` point jumps to 1.28-1.29 GiB over a 0.54 GiB context,
+and why `MAGNETAR_SERIALIZE_PRODUCTS` (§4.2) only removes 0.44 GiB of the `2^16`
+peak: the rest is a single thread's own commit transient.
 
 A streaming variant has two seams:
 

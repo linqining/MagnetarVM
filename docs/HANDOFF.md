@@ -1,7 +1,7 @@
 # Handoff — MagnetarVM streaming selected prover (RV64)
 
 Status: **incremental optimization phase (Part 1 closed, Part 2 in progress)**,
-branch `virtual-claims-rewrite`. Commits through `27ebcf5` (M6 increments 1-3:
+branch `virtual-claims-rewrite`. Commits through `299b08b` (M6 increments 1-3:
 parallel/phase-split statement-only v4 verifier + shared access claims; M4b
 paper-path default flip; memory route (d) increments 1+2; stage memory
 instrumentation; Access-PCS lifetime; opt-in Access scheduling switch; compact
@@ -45,6 +45,15 @@ The wall history is 42.8 -> 17.7 -> 13.4 -> **10.8 ms**; the paper-path default
 (verifier-only). Details:
 [POLYLOG_CLAIM_VERIFIER.md](POLYLOG_CLAIM_VERIFIER.md) §C.15, §C.17, §C.18,
 §C.20. Remaining levers are optional CPU/contention work only (§5 item 1).
+
+**Strongest memory mode (2026-11-14)**: `MAGNETAR_SERIALIZE_PRODUCTS=1` holds
+the selected thread's commit/products until the mosaic Opening has finished, so
+the products overlap neither Access nor Opening. Byte-identical proofs (ignored
+`m5_v4_tests::serialize_products_proof_bytes_match`). Peak footprint **2^16
+2.08 -> 1.64 GiB** and **2^17 4.15 -> 3.28 GiB (-21 % at both)**, for ~3 %
+prove wall and no CPU increase (2^16 prove 40.0 -> 41.1 s, CPU 288.7 -> 281.2 s;
+2^17 90.8 -> 93.6 s, CPU 600.3 -> 604.8 s). Recommended for the 2^19+ staircase
+runs. [MEMORY_PATH.md](MEMORY_PATH.md) §4.2.
 
 **Opt-in Access scheduling switch (2026-11-08)**: `MAGNETAR_SERIALIZE_ACCESS=1`
 starts the selected commit/products after the Access stage instead of after the
