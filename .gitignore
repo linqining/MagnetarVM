@@ -2,3 +2,6 @@
 .DS_Store
 
 *.profraw
+
+# Local IDE state (openIDE)
+.openidea/
