@@ -34,14 +34,6 @@ pub(crate) fn verify_native_unified_v4(
             "proof width does not match the requested width".into(),
         ));
     }
-    // M4a statement-level dedup is wired through the classic composed root, not
-    // the v4 three-component root; refuse the combination instead of comparing
-    // incompatible roots.
-    if crate::m4a_binding::dedup_enabled() {
-        return Err(RuntimeError::Proof(
-            "M4a address dedup requires the classic claims path".into(),
-        ));
-    }
     // v4 requires the committed access columns: without them the final-RAM
     // table cannot bind the access layer witness-free.
     if !crate::access_table::access_columns_enabled() {
@@ -87,8 +79,16 @@ pub(crate) fn verify_native_unified_v4(
         .as_ref()
         .map(|final_proof| crate::access_verify::access_final_root(&final_proof.commitment))
         .unwrap_or([0u8; 32]);
-    let expected_root =
+    let mut expected_root =
         crate::claim_table::claim_shout_v4_root(&claim_root, &shout_root, &final_root);
+    if crate::m4a_binding::dedup_enabled() {
+        // M4a dedup: the packed address-bit commitment is bound as an extra
+        // component, so the trace-free verifier recomposes the same root the
+        // trace-derived statement carries.
+        let bits = crate::m4a_binding::bits_root_from_proof(proof)
+            .unwrap_or(crate::m4a_binding::MISSING_BITS);
+        expected_root = crate::m4a_binding::bind_root(&expected_root, &bits);
+    }
     if expected_root != statement.trace_claim_root || proof.trace_claim_root != expected_root {
         return Err(RuntimeError::Proof(
             "M5c: committed v4 tables do not match the statement root".into(),

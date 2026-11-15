@@ -1053,3 +1053,49 @@ The honest run also prints (with `BENCH_ROOT_DEBUG=1`) equal statement and proof
 roots and equal trace-derived / proof-derived bits digests, i.e. the packed
 commitment is now explicitly bound into the public statement root rather than
 only checked through the Access relations.
+
+## 20. Dedup in the trace-free (v4 / M5c) statement-only verifier
+
+The paper's verify numbers come from the statement-only v4 verifier
+(`verify_native_unified` → `v4_verify::verify_native_unified_v4(statement,
+proof, width)`, opt-in via `MAGNETAR_CLAIM_V4=1` + `MAGNETAR_ACCESS_COLUMNS=1`).
+Dedup previously refused that combination; it is now wired:
+
+* `v4_verify::verify_native_unified_v4`: the three-component v4 root
+  (`claim_shout_v4_root(claim_table, shout_tables, access_final)`) is wrapped
+  with `bind_root(root, bits_root_from_proof(proof))` when dedup is on, so the
+  trace-free verifier recomposes the same root the trace-derived statement
+  carries;
+* `access_verify::verify_access_committed_with_claims` step 3a (the witness-free
+  access verifier's statement-root check) applies the same wrap;
+* the statement side already wraps through
+  `claim_table::statement_claim_root` (v4 branch + `m4a_binding::bind_root`), and
+  the prover's final `trace_claim_root` is set to that trace-derived root; the
+  rejection gate in `v4_verify` is removed.
+
+### 20.1 E4 under v4 (trace-free), 2^16
+
+`BENCH_AUDIT=1` with `MAGNETAR_CLAIM_V4=1 MAGNETAR_ACCESS_COLUMNS=1
+MAGNETAR_LINEAR_SHOUT=1 MAGNETAR_M4A_ACCESS=1 MAGNETAR_M4A_DEDUP=1`:
+
+| case | result |
+| --- | --- |
+| honest dedup baseline | **accepted** |
+| `bits_claims[0] += 1` | rejected (M5b: register twist claims rejected) |
+| `bits_opening.packed_values[0] += 1` | rejected (same) |
+| `addr_table_dropped` flag cleared | rejected (core opening) |
+| RAM `boolean_evals[0] += 1` | rejected (M5b: RAM twist claims rejected) |
+
+### 20.2 Statement-only verify re-measure (2^16, v4 envs, `MAGNETAR_VERIFY_CPU=25`)
+
+| config | proof | verify wall | verify CPU / iter |
+| --- | ---: | ---: | ---: |
+| v4 base (no M4a) | 1,174,289 B | 13.0 ms | 46.6 ms |
+| v4 + M4a Access | 1,271,413 B | **11.6 ms** | 43.3 ms |
+| **v4 + M4a + dedup** | **1,254,485 B** | **13.2 ms** | 46.6 ms |
+
+The wall numbers are from a loaded host (the 10.8 ms target was measured in a
+quiet window); dedup costs about +1.6 ms against the packed-Access variant and
+~+0.2 ms against the v4 base, while the proof is 17 KB smaller than the
+non-dedup packed variant and the mosaic message is halved (§19). A quiet-window
+re-run and a 2^18 statement-only measurement are the remaining follow-ups.

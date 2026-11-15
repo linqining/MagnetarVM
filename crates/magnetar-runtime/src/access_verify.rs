@@ -270,11 +270,18 @@ pub fn verify_access_committed_with_claims(
         .map(|committed| crate::logup_shout::committed_tables_root(&committed.table_commitment))
         .unwrap_or([0u8; 32]);
     let final_root = access_final_root(&final_proof.commitment);
-    let expected_root = crate::claim_table::claim_shout_v4_root(
+    let mut expected_root = crate::claim_table::claim_shout_v4_root(
         &claim_table_root,
         &shout_tables_root,
         &final_root,
     );
+    if crate::m4a_binding::dedup_enabled() {
+        // M4a dedup: the packed address-bit commitment is an extra root
+        // component (the statement side wraps it the same way).
+        let bits = crate::m4a_binding::bits_root_from_proof(proof)
+            .unwrap_or(crate::m4a_binding::MISSING_BITS);
+        expected_root = crate::m4a_binding::bind_root(&expected_root, &bits);
+    }
     if expected_root != statement.trace_claim_root {
         return Err(RuntimeError::Proof(
             "M5b: committed access tables do not match the statement root".into(),
