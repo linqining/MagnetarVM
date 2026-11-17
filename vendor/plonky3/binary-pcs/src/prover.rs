@@ -22,6 +22,8 @@
 //!
 //! The first fold of the first batch is the only one that crosses between them.
 
+use alloc::format;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use p3_binary_field::TowerLevel;
@@ -310,14 +312,100 @@ where
 ///
 /// The codeword is a single column (the commit phase runs at zero preprocessing
 /// depth), so a symbol is one matrix row.
+/// A disk-backed base codeword for the out-of-core opening.
+///
+/// The streamed opening re-encodes the message for the fold and again for the
+/// query pass, so the process peak is a multiple of the codeword. With
+/// `MAGNETAR_OOT_PCS=2` the codeword is encoded once into a temp file and both
+/// passes stream it back, so only the (halving) folded codewords stay resident.
+pub(crate) struct CodewordFile {
+    path: std::path::PathBuf,
+    len: usize,
+}
+
+impl CodewordFile {
+    pub(crate) fn create<F, E>(encoder: &E, message: &[F], log_inv_rate: usize) -> Self
+    where
+        F: TowerLevel + p3_field::RawDataSerializable,
+        E: Encoder<F>,
+    {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(format!(
+            "magnetar-codeword-{}-{}.bin",
+            std::process::id(),
+            message.len()
+        ));
+        let mut file = std::fs::File::create(&path).expect("codeword file create");
+        let mut buffer: Vec<u8> = Vec::with_capacity(1 << 20);
+        encoder.encode_batch_chunks(
+            RowMajorMatrixView::new(message, 1),
+            log_inv_rate,
+            &mut |chunk| {
+                buffer.clear();
+                for value in chunk {
+                    buffer.extend(value.into_bytes());
+                }
+                file.write_all(&buffer).expect("codeword file write");
+            },
+        );
+        file.flush().expect("codeword file flush");
+        Self {
+            path,
+            len: message.len() << log_inv_rate,
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+
+    pub(crate) fn read_chunks<F>(&self, mut sink: impl FnMut(&[F]))
+    where
+        F: TowerLevel + p3_field::RawDataSerializable,
+    {
+        use std::io::Read;
+        let mut file = std::fs::File::open(&self.path).expect("codeword file open");
+        let chunk_symbols = 1usize << 16;
+        let mut bytes = vec![0u8; chunk_symbols * F::NUM_BYTES];
+        let mut values: Vec<F> = Vec::with_capacity(chunk_symbols);
+        loop {
+            let mut filled = 0;
+            while filled < bytes.len() {
+                match file.read(&mut bytes[filled..]).expect("codeword file read") {
+                    0 => break,
+                    got => filled += got,
+                }
+            }
+            if filled == 0 {
+                break;
+            }
+            values.clear();
+            for element in bytes[..filled].chunks_exact(F::NUM_BYTES) {
+                values.push(F::from_le_byte_iter(element.iter().copied()));
+            }
+            sink(&values);
+            if filled < bytes.len() {
+                break;
+            }
+        }
+    }
+}
+
+impl Drop for CodewordFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 fn fold_codeword_streamed<F, E, EF>(
     encoder: &E,
     message: &[F],
     log_inv_rate: usize,
     challenges: &[EF],
+    codeword: Option<&CodewordFile>,
 ) -> Vec<EF>
 where
-    F: TowerLevel,
+    F: TowerLevel + p3_field::RawDataSerializable,
     EF: ExtensionField<F> + TowerLevel,
     E: Encoder<F>,
 {
@@ -337,25 +425,29 @@ where
     let mut scratch = Vec::new();
     let mut pending: Vec<F> = Vec::with_capacity(run);
     let mut coset_index = 0usize;
-    encoder.encode_batch_chunks(
-        RowMajorMatrixView::new(message, 1),
-        log_inv_rate,
-        &mut |chunk| {
-            for &symbol in chunk {
-                pending.push(symbol);
-                if pending.len() == run {
-                    folded.push(fold_coset(
-                        coset_index,
-                        &pending,
-                        challenges,
-                        &mut scratch,
-                    ));
-                    pending.clear();
-                    coset_index += 1;
-                }
+    let mut push = |chunk: &[F]| {
+        for &symbol in chunk {
+            pending.push(symbol);
+            if pending.len() == run {
+                folded.push(fold_coset(
+                    coset_index,
+                    &pending,
+                    challenges,
+                    &mut scratch,
+                ));
+                pending.clear();
+                coset_index += 1;
             }
-        },
-    );
+        }
+    };
+    match codeword {
+        Some(file) => file.read_chunks(&mut push),
+        None => encoder.encode_batch_chunks(
+            RowMajorMatrixView::new(message, 1),
+            log_inv_rate,
+            &mut push,
+        ),
+    }
     assert!(
         pending.is_empty(),
         "the encoder's codeword length must be a whole number of fold cosets"
@@ -384,6 +476,7 @@ pub(crate) fn fold_rounds_streaming<F, EF, E, MX, Ch>(
     round_mmcs: &MX,
     message: &[F],
     folding: usize,
+    codeword: Option<&CodewordFile>,
     transcript: &mut BinaryPcsProverTranscript<'_, F, EF, Ch>,
 ) -> (
     SumcheckData<F, EF>,
@@ -392,7 +485,7 @@ pub(crate) fn fold_rounds_streaming<F, EF, E, MX, Ch>(
     Vec<EF>,
 )
 where
-    F: TranscriptField + FoldAlphabet<EF> + TowerLevel,
+    F: TranscriptField + FoldAlphabet<EF> + TowerLevel + p3_field::RawDataSerializable,
     EF: ChallengeField<F> + ExtensionField<F> + FoldAlphabet<EF> + TowerLevel,
     E: Encoder<F> + Sync,
     MX: Mmcs<EF>,
@@ -448,7 +541,13 @@ where
                 .flatten();
             encoded.unwrap_or_else(|| {
                 if batch == 0 {
-                    fold_codeword_streamed(encoder, message, config.log_inv_rate(), &challenges)
+                    fold_codeword_streamed(
+                        encoder,
+                        message,
+                        config.log_inv_rate(),
+                        &challenges,
+                        codeword,
+                    )
                 } else {
                     let source = &rounds[batch - 1].merkle_data;
                     fold_codeword_batch(&round_mmcs.get_matrices(source)[0].values, &challenges)
@@ -496,9 +595,10 @@ pub(crate) fn open_queries_streaming<F, EF, E, MT, MX, Ch>(
     transcript: &mut BinaryPcsProverTranscript<'_, F, EF, Ch>,
     rounds: &[RoundCommitment<EF, MX>],
     final_codeword: &[EF],
+    codeword: Option<&CodewordFile>,
 ) -> QueryProofs<F, EF, MT, MX>
 where
-    F: TranscriptField + TowerLevel,
+    F: TranscriptField + TowerLevel + p3_field::RawDataSerializable,
     EF: ExtensionField<F> + TowerLevel,
     E: Encoder<F> + Sync,
     MT: StreamingMmcs<F>,
@@ -532,11 +632,14 @@ where
         .checked_shl(config.log_inv_rate() as u32)
         .expect("codeword height overflows usize");
     let mut opener = mmcs.streaming_opener(codeword_height, 1, &base_indices);
-    encoder.encode_batch_chunks(
-        RowMajorMatrixView::new(message, 1),
-        config.log_inv_rate(),
-        &mut |chunk| opener.push_rows(chunk),
-    );
+    match codeword {
+        Some(file) => file.read_chunks(|chunk| opener.push_rows(chunk)),
+        None => encoder.encode_batch_chunks(
+            RowMajorMatrixView::new(message, 1),
+            config.log_inv_rate(),
+            &mut |chunk| opener.push_rows(chunk),
+        ),
+    }
     let (base_opened_values, base_multi_proof) = opener.finish();
 
     let opened_rounds = rounds
@@ -686,7 +789,9 @@ fn single_matrix_rows<T>(values: Vec<Vec<Vec<T>>>) -> Vec<Vec<T>> {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
+    use alloc::format;
+use alloc::vec;
+use alloc::vec::Vec;
     use alloc::{format, vec};
 
     use p3_binary_dft::{AdditiveRsEncoder, EncodableLevel, NaiveAdditiveNtt};

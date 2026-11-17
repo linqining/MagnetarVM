@@ -382,6 +382,14 @@ where
         let shape = BinaryPcsShape::new(&self.config);
         let mut transcript = BinaryPcsProverTranscript::new(challenger, shape);
 
+        // Out-of-core codeword: encode once into a temp file and stream it back
+        // for the fold and the query pass (`MAGNETAR_OOT_PCS=2`).
+        let oot = std::env::var("MAGNETAR_OOT_PCS")
+            .map(|value| value == "2")
+            .unwrap_or(false);
+        let codeword_file = oot.then(|| {
+            crate::prover::CodewordFile::create(&self.encoder, message, self.config.log_inv_rate())
+        });
         let (sumcheck_data, rounds, _randomness, final_codeword) =
             fold_rounds_streaming::<F, EF, E, MX, _>(
                 layout,
@@ -390,6 +398,7 @@ where
                 &self.round_mmcs,
                 message,
                 folding,
+                codeword_file.as_ref(),
                 &mut transcript,
             );
         let query_proofs = open_queries_streaming::<F, EF, E, MT, MX, _>(
@@ -401,6 +410,7 @@ where
             &mut transcript,
             &rounds,
             &final_codeword,
+            codeword_file.as_ref(),
         );
 
         // Require that every described step was played.

@@ -300,3 +300,24 @@ and the spill matters more, but the dominant transients are the codeword and
 the fold codewords (the ~6x pipeline coefficient), which still live in memory:
 the next step is to spill those too (the `m4_oot_probe` demo already shows the
 disk-backed encode/fold/query path and its 6.1x -> 3.2x coefficient).
+
+
+## 6. Out-of-core codeword (full step, landed)
+
+`MAGNETAR_OOT_PCS=2` encodes the base codeword once into a temp file and streams
+it back for both the fold and the query pass (`CodewordFile` in the vendored
+binary-pcs, wired through `fold_rounds_streaming` / `open_queries_streaming`),
+so the codeword is never resident twice and the two re-encodes disappear. The
+proof is byte-identical and verification still passes.
+
+Measured at 2^20 (trace-free + M4a + dedup, streamed opening, watchdog 13 GiB):
+
+| | peak footprint | peak RSS | verify |
+| --- | ---: | ---: | ---: |
+| in-memory codeword | 12.28 GiB | 10.73 GiB | 14.3 ms |
+| **out-of-core codeword** | **9.93 GiB (-19 %)** | **5.55 GiB (-48 %)** | 14.8-16.7 ms |
+
+At 2^18 the peak is dominated by the context/allocator, so the codeword spill
+shows no measurable change there; the win grows with the codeword size (2^22
+projects to several GiB). The remaining transients are the folded round
+codewords and the context tables.

@@ -2,6 +2,9 @@
 #![no_std]
 
 extern crate alloc;
+// The out-of-core codeword cache uses std file I/O; the workspace always links
+// std, so the crate opts into it explicitly.
+extern crate std;
 
 use p3_sumcheck::layout::SuffixProver;
 
