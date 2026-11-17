@@ -6698,6 +6698,21 @@ impl GatedRowLike for SegmentedDynamicRow {
     }
 }
 
+/// Segment group size for the selected-CPU lockstep layout.
+///
+/// The proof carries one segment claim per group, so the group size trades
+/// proof size and verifier work (O(cycles/group)) against the per-segment
+/// lockstep cost. The default is 4096 (measured best at 2^18/2^19);
+/// `MAGNETAR_SEGMENT_GROUP` overrides it for A/B.
+fn segment_group(cycles: usize) -> usize {
+    let requested = std::env::var("MAGNETAR_SEGMENT_GROUP")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| value.is_power_of_two() && *value > 0)
+        .unwrap_or(4096);
+    requested.min(cycles).max(1)
+}
+
 /// Cached uniform segment layout for the selected-CPU verifier.
 ///
 /// The layout is a pure function of `(mask, width, cycles, block_cols)` and is
@@ -6713,15 +6728,20 @@ fn cached_segment_layout(
 ) -> Result<magnetar_constraint::WitnessLayout, RuntimeError> {
     use std::sync::{Mutex, OnceLock};
     static CACHE: OnceLock<
-        Mutex<std::collections::HashMap<(u8, usize, usize, usize), magnetar_constraint::WitnessLayout>>,
+        Mutex<
+            std::collections::HashMap<
+                (u8, usize, usize, usize, usize),
+                magnetar_constraint::WitnessLayout,
+            >,
+        >,
     > = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
-    let key = (mask, width, cycles, block_cols);
+    let group = segment_group(cycles);
+    let key = (mask, width, cycles, block_cols, group);
     if let Some(layout) = cache.lock().expect("layout cache").get(&key) {
         return Ok(layout.clone());
     }
     use magnetar_constraint::{Segment, SegmentKind, SegmentOwner, WitnessLayout};
-    let group = if cycles >= 64 { 64 } else { cycles };
     let mut segments = Vec::with_capacity(cycles / group);
     for start in (0..cycles).step_by(group) {
         segments.push(Segment::new(

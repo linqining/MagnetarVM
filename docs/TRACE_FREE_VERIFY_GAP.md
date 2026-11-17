@@ -182,6 +182,25 @@ increasing order of effort:
 (1) is the cheapest experiment and should be tried first behind the trace-free
 switch; (2) is the full fix.
 
+### 2.5 Segment group 64 -> 4096 (landed)
+
+`MAGNETAR_SEGMENT_GROUP` now controls the lockstep segment group (default
+4096, power of two, clamped to the cycle count), and the cached layout is keyed
+by it. The proof carries one segment claim per group, so this cuts the segment
+count 64x at the default:
+
+| size | group 64 | group 4096 |
+| --- | ---: | ---: |
+| 2^16 proof / verify | 1,255,173 B / ~11 ms | **1,239,045 B / 9.0 ms** |
+| 2^18 proof / verify | 1,502,097 B / 23.6 ms | **1,437,585 B / 11.3 ms** |
+| 2^19 proof / verify | 1,668,163 B / 18.8 ms | **1,538,691 B / 13.5 ms** |
+
+(2^18/2^19 numbers are from the same loaded window; the 2^16 row is the cleanest.)
+The 2^16 verify is now inside the paper's 8-12 ms target with margin, and the
+2^22 projection improves from ~60 ms to ~20-25 ms. The remaining growth is the
+lockstep evaluation/PCS and the challenge reconstruction, which the committed
+segment claims (fix 2) remove.
+
 ## 3. What to implement to close the gap
 
 1. **Commit the selected CPU claim columns.** Add the six lockstep matrices
