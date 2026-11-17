@@ -29,6 +29,47 @@ pub enum LazyExtraRows {
     },
 }
 
+/// `Σ_{i<2^k} eq(r, i)·eq(c, i)` in O(k).
+///
+/// Summing the product over the hypercube factorises per bit:
+/// `Π_j ((1+r_j)(1+c_j) + r_j c_j) = Π_j (1 + r_j + c_j)`.
+fn eq_dot_full(r: &[F2_128], c: &[F2_128]) -> F2_128 {
+    let one = F2_128::from(1u64);
+    let mut acc = one;
+    for (a, b) in r.iter().zip(c) {
+        acc = acc * (one + *a + *b);
+    }
+    acc
+}
+
+/// `Σ_{i<2^k} eq(r, i)·eq(c, i+1)` in O(k).
+///
+/// Split `i = 2j + b`: the `b = 0` half contributes
+/// `(1+r_0)c_0 · Σ_j eq(r_hi,j)eq(c_hi,j)` and the `b = 1` half contributes
+/// `r_0(1+c_0) · Σ_j eq(r_hi,j)eq(c_hi,j+1)`, so the shifted sum recurses on
+/// half the bits with a closed-form unshifted term.
+fn eq_dot_shifted_full(r: &[F2_128], c: &[F2_128]) -> F2_128 {
+    let k = r.len().min(c.len());
+    if k == 0 {
+        return F2_128::from(0u64);
+    }
+    // suffix[j] = Π_{t>=j} (1 + r_t c_t) for the unshifted term of each level.
+    let mut suffix = vec![F2_128::from(1u64); k + 1];
+    for j in (0..k).rev() {
+        suffix[j] = suffix[j + 1] * (F2_128::from(1u64) + r[j] + c[j]);
+    }
+    let one = F2_128::from(1u64);
+    // T_j = S on the suffix starting at bit j; T_k = 0 (no bits left).
+    // T_j = (1+r_j)c_j · U_{j+1} + r_j(1+c_j) · T_{j+1}, with
+    // U_{j+1} = Π_{t>j}(1+r_t+c_t) = suffix[j+1].
+    let mut shifted = F2_128::from(0u64);
+    for j in (0..k).rev() {
+        shifted = (one + r[j]) * c[j] * suffix[j + 1]
+            + r[j] * (one + c[j]) * shifted;
+    }
+    shifted
+}
+
 impl LazyExtraRows {
     /// Evaluate the extra-row sum using precomputed row weights and the
     /// factorized column-equality vectors.
@@ -122,6 +163,8 @@ impl LazyExtraRows {
     pub fn eval_sum_factorized(
         &self,
         row_point: &[F2_128],
+        col_point: &[F2_128],
+        local_col_bits: usize,
         extra_base: usize,
         extra_bits: usize,
         high_eq: F2_128,
@@ -151,29 +194,78 @@ impl LazyExtraRows {
             return None;
         }
         let bit_eq = eq_vector_tensor(&row_point[..log_width]);
-        let instance_eq = eq_vector_tensor(&row_point[log_width..extra_bits]);
         let high = high_eq;
         let mut sum = F2_128::from(0u64);
+        // The instance dot is the O(cycles) term. Both factors are equality
+        // tensors over the instance bits, so the sum has a closed form in
+        // O(log) (see `eq_dot_full` / `eq_dot_shifted_full`). The row side has
+        // one extra bit (the extra-row count is `(cycles+1)*width`), which is
+        // zero for every instance index, so it factors out as `1 + r_top`.
+        let instances_bits = col_instance_eq.len().trailing_zeros() as usize;
+        let instance_bits = extra_bits - log_width;
+        let closed = if instance_bits == instances_bits + 1 {
+            let r = &row_point[log_width..extra_bits];
+            let c = &col_point[local_col_bits..];
+            let one = F2_128::from(1u64);
+            let top = one + r[instance_bits - 1];
+            let r_lo = &r[..instance_bits - 1];
+            Some(match part {
+                1 | 0 => {
+                    // The loop covers instances `0..cycles-1`, i.e. all but the
+                    // last index of the 2^instances_bits hypercube.
+                    let full = eq_dot_full(r_lo, c);
+                    let tail = r_lo.iter().fold(one, |acc, value| acc * *value)
+                        * c.iter().fold(one, |acc, value| acc * *value);
+                    top * (full + tail)
+                }
+                _ => top * eq_dot_shifted_full(r_lo, c),
+            })
+        } else {
+            None
+        };
+        let instance_dot = match closed {
+            Some(value) => {
+                if std::env::var_os("MAGNETAR_EVAL_CHECK").is_some() {
+                    let instance_eq = eq_vector_tensor(&row_point[log_width..extra_bits]);
+                    let mut dot = F2_128::from(0u64);
+                    for instance in 0..chain_instances {
+                        let column_weight = if *part == 1 || *part == 0 {
+                            col_instance_eq[instance]
+                        } else {
+                            col_instance_eq[instance + 1]
+                        };
+                        dot = dot + instance_eq[instance] * column_weight;
+                    }
+                    if dot != value {
+                        eprintln!(
+                            "eval closed mismatch: part={} instance_bits={} instances_bits={} chain={} cycles={} width={} closed={:?} loop={:?}",
+                            part, instance_bits, instances_bits, chain_instances, cycles, width, value, dot
+                        );
+                    }
+                }
+                value
+            }
+            None => {
+                let instance_eq = eq_vector_tensor(&row_point[log_width..extra_bits]);
+                let mut dot = F2_128::from(0u64);
+                for instance in 0..chain_instances {
+                    let column_weight = if *part == 1 || *part == 0 {
+                        col_instance_eq[instance]
+                    } else {
+                        col_instance_eq[instance + 1]
+                    };
+                    dot = dot + instance_eq[instance] * column_weight;
+                }
+                dot
+            }
+        };
         match part {
             1 => {
-                let mut instance_dot = F2_128::from(0u64);
-                for instance in 0..chain_instances {
-                    instance_dot = instance_dot + instance_eq[instance] * col_instance_eq[instance];
-                }
                 let bit_sum = bit_eq.iter().copied().fold(F2_128::from(0u64), |acc, value| acc + value);
                 sum = sum + instance_dot * bit_sum * col_local_eq[*one] * high;
             }
             _ => {
                 let locals = if *part == 0 { next_pc } else { pc };
-                let mut instance_dot = F2_128::from(0u64);
-                for instance in 0..chain_instances {
-                    let column_weight = if *part == 0 {
-                        col_instance_eq[instance]
-                    } else {
-                        col_instance_eq[instance + 1]
-                    };
-                    instance_dot = instance_dot + instance_eq[instance] * column_weight;
-                }
                 let mut bit_sum = F2_128::from(0u64);
                 for bit in 0..*width {
                     bit_sum = bit_sum + bit_eq[bit] * col_local_eq[locals[bit]];
@@ -724,6 +816,8 @@ impl SharedBlockMatrix {
         if let Some(lazy) = &self.lazy_extra {
             if let Some(extra_sum) = lazy.eval_sum_factorized(
                 row_point,
+                col_point,
+                shared.local_col_bits,
                 extra_base,
                 extra_bits,
                 high_eq,
@@ -924,5 +1018,60 @@ mod tests {
             shared.eval_mle(&row_point, &col_point).unwrap(),
             explicit.eval_mle(&row_point, &col_point).unwrap()
         );
+    }
+
+    fn eq_at(point: &[F2_128], index: usize) -> F2_128 {
+        let one = F2_128::from(1u64);
+        point
+            .iter()
+            .enumerate()
+            .fold(one, |acc, (bit, value)| {
+                if (index >> bit) & 1 == 1 {
+                    acc * *value
+                } else {
+                    acc * (one + *value)
+                }
+            })
+    }
+
+    #[test]
+    fn closed_form_eq_dots_match_the_loops() {
+        let one = F2_128::from(1u64);
+        for k in 1..=8usize {
+            let mut state = 0x1234_5678_9abc_def0u64 ^ (k as u64);
+            let mut next = || {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                F2_128::from(state)
+            };
+            let r: Vec<F2_128> = (0..=k).map(|_| next()).collect();
+            let c: Vec<F2_128> = (0..k).map(|_| next()).collect();
+            let instances = 1usize << k;
+            let chain = instances - 1;
+            let top = one + r[k];
+            let r_lo = &r[..k];
+
+            let mut naive_unshifted = F2_128::from(0u64);
+            let mut naive_shifted = F2_128::from(0u64);
+            for instance in 0..chain {
+                let row = eq_at(&r, instance);
+                naive_unshifted = naive_unshifted + row * eq_at(&c, instance);
+                naive_shifted = naive_shifted + row * eq_at(&c, instance + 1);
+            }
+            let full = eq_dot_full(r_lo, &c);
+            let tail = r_lo.iter().fold(one, |acc, value| acc * *value)
+                * c.iter().fold(one, |acc, value| acc * *value);
+            assert_eq!(
+                naive_unshifted,
+                top * (full + tail),
+                "unshifted closed form mismatch at k={k}"
+            );
+            assert_eq!(
+                naive_shifted,
+                top * eq_dot_shifted_full(r_lo, &c),
+                "shifted closed form mismatch at k={k}"
+            );
+        }
     }
 }

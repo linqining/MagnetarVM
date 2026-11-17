@@ -81,6 +81,30 @@ PCS query verification (log) and the sum-check rounds (log), so the wall time is
 essentially the 2^16 number plus a few log factors — which is exactly the
 "~10 ms at 2^22" claim.
 
+## 2.1 First fix landed: closed-form instance dot (O(cycles) -> O(log))
+
+The `O(cycles)` term inside `eval_sum_factorized` is a dot product of two
+equality tensors over the instance bits. Summing `eq(r,i)·eq(c,i)` over the
+hypercube factorises per bit (`Π_j (1 + r_j + c_j)`), and the shifted variant
+(`eq(c,i+1)`) has an O(k) recursion, so the instance dot is now computed in
+O(log) instead of O(cycles) (`eq_dot_full` / `eq_dot_shifted_full` in
+`magnetar-proof/src/simd.rs`, with a unit test against the naive loops and an
+env-gated `MAGNETAR_EVAL_CHECK` cross-check on real matrices).
+
+Measured effect (trace-free + M4a + dedup):
+
+| stage | 2^18 before | 2^18 after | 2^19 before | 2^19 after |
+| --- | ---: | ---: | ---: | ---: |
+| `lockstep verify eval_mles` | 14.8 ms | **5.85 ms** | 31.8 ms | **11.0 ms** |
+| `selected lockstep bits` | 19.0 ms | **9.3 ms** | 31.8 ms | **14.4 ms** |
+| `v4 selected binding` | 23.3-24.0 ms | **13.1-13.7 ms** | 38.1 ms | **20.6-21.3 ms** |
+| total verify wall | 26.6-28.7 ms | ~17-18 ms (stage sum; the 38.5 ms sample was taken while the gate ran) | 43.1-44.2 ms | **26.0 ms (-40 %)** |
+
+The remaining growth is the equality-vector construction and the base-matrix
+evaluation inside `eval_mles_parallel` (still O(cycles) allocations), plus the
+`shout rom eval` O(program) term. The full O(log) fix is the committed
+selected-claim-columns change below.
+
 ## 3. What to implement to close the gap
 
 1. **Commit the selected CPU claim columns.** Add the six lockstep matrices
