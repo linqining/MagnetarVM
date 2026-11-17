@@ -43,6 +43,14 @@ core mosaic opening. The growth comes from two stages:
    then `lockstep_bits_evaluations(&s1[..], &s2[..], &challenges)`. Both
    materialise/evaluate matrices with `O(cycles)` rows, so the stage grows with
    the trace. At 2^18 it is 19 ms of the 27 ms total.
+   Finer attribution (`MAGNETAR_PROFILE_EVAL=1`): `lockstep verify eval_mles`
+   is **14.8 ms** of that 18.2 ms stage, and the six matrices all take the
+   `eval_mle_fast_inner` / `eval_sum_factorized` path (no fallback prints), so
+   the residual is the `O(cycles)` instance dot plus the equality-vector
+   construction inside `eval_mles_parallel`. Splitting that instance dot across
+   threads was tried and made it *worse* (14.8 -> 16.4-17.4 ms) because the six
+   matrices are already evaluated in parallel and the nested thread spawn
+   contends; the fix has to be algorithmic (below), not more threads.
 2. **`shout rom eval`** — the verifier rebuilds the Shout ROM tables from the
    public `statement.rom` and evaluates them at the challenge point; the ROM has
    one word per instruction in this benchmark, so this is `O(program)` and grows
