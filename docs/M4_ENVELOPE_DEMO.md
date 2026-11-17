@@ -1129,6 +1129,8 @@ architecture switch:
 | + M4a Access | 1,271,413 B | **11.5 ms** | 44.3 ms |
 | + M4a + dedup | 1,254,485 B | **11.7 ms** | 44.0 ms |
 | 2^17 + M4a + dedup | 1,354,281 B | 19.2 ms (wall) | 70.2 ms |
+| 2^18 + M4a + dedup | 1,503,569 B | 26.6-28.7 ms (wall) | 82.0 ms |
+| 2^19 + M4a + dedup | 1,668,163 B | 43.1-44.2 ms (wall) | 121.5 ms |
 
 All three 2^16 rows are inside the paper's 8-12 ms verify target on this host (load ~5),
 and the dedup variant keeps the smaller proof (1,254,485 B) and the halved

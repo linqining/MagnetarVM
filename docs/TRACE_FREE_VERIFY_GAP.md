@@ -28,6 +28,11 @@ between sizes is the point.
 | **v4 selected binding (total)** | ~9-10 | **15.6** | **23.3-24.0** | grows |
 | **verify wall (total)** | **11.4 ms** | **16.3-17.0 ms** | **26.6-28.7 ms** | **~1.5x per doubling** |
 
+The 2^19 row confirms the trend: `selected lockstep bits` 31.8 ms, `v4 selected
+binding` 38.1 ms, total verify 43.1-44.2 ms (proof 1,668,163 B, peak 5.93 GiB).
+Extrapolating ~1.5x per doubling puts 2^22 at roughly 140-150 ms, i.e. the
+selected-lockstep stage is the whole gap to the paper's ~10 ms.
+
 Everything that is a PCS opening or a sum-check is flat (query/path dominated,
 logarithmic in size): access twist, claim table opening, shout batch opening,
 core mosaic opening. The growth comes from two stages:
