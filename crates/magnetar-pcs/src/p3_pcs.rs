@@ -507,6 +507,59 @@ impl P3BinaryPcs {
         Ok(message)
     }
 
+    /// Whether the out-of-core message spill is enabled.
+    fn oot_enabled() -> bool {
+        std::env::var_os("MAGNETAR_OOT_PCS").is_some()
+    }
+
+    /// Spill the stacked message to a temp file and map it read-only.
+    ///
+    /// The streamed opening re-encodes the message three times (cap, fold,
+    /// query), so the message is the largest anonymous transient. Mapping it
+    /// from a file makes those pages file-backed (reclaimable) instead of
+    /// anonymous, which is the first out-of-core step; the bytes are identical,
+    /// so the proof is unchanged.
+    fn spill_message(message: &[F]) -> Result<(std::fs::File, std::path::PathBuf, *mut u8, usize), ProofError> {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(format!(
+            "magnetar-oot-{}-{}.bin",
+            std::process::id(),
+            message.len()
+        ));
+        let mut file = std::fs::File::create(&path)
+            .map_err(|error| ProofError::Pcs(format!("oot spill create: {error}")))?;
+        let mut buffer = Vec::with_capacity(1 << 20);
+        for chunk in message.chunks(1 << 16) {
+            buffer.clear();
+            for value in chunk {
+                buffer.extend_from_slice(&value.to_repr().to_le_bytes());
+            }
+            file.write_all(&buffer)
+                .map_err(|error| ProofError::Pcs(format!("oot spill write: {error}")))?;
+        }
+        file.flush()
+            .map_err(|error| ProofError::Pcs(format!("oot spill flush: {error}")))?;
+        drop(file);
+        // `File::create` opens write-only; mmap(PROT_READ) needs a read handle.
+        let file = std::fs::File::open(&path)
+            .map_err(|error| ProofError::Pcs(format!("oot spill reopen: {error}")))?;
+        let len = message.len() * core::mem::size_of::<F>();
+        let ptr = unsafe {
+            libc::mmap(
+                core::ptr::null_mut(),
+                len,
+                libc::PROT_READ,
+                libc::MAP_PRIVATE,
+                std::os::unix::io::AsRawFd::as_raw_fd(&file),
+                0,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            return Err(ProofError::Pcs("oot spill mmap failed".into()));
+        }
+        Ok((file, path, ptr as *mut u8, len))
+    }
+
     /// Streamed commit + streamed opening.
     ///
     /// Returns the same `(cap, proof)` the retained path returns: the cap comes
@@ -530,9 +583,23 @@ impl P3BinaryPcs {
         };
         let mut challenger = Self::challenger();
         backend.observe_commitment(&cap, &mut challenger);
-        let proof = backend
-            .open_at_streaming(witness, &message, 0, protocol, points, &mut challenger)
-            .map_err(|error| ProofError::Pcs(error.to_string()))?;
+        let proof = if Self::oot_enabled() {
+            let (file, path, ptr, len) = Self::spill_message(&message)?;
+            let mapped: &[F] = unsafe { core::slice::from_raw_parts(ptr as *const F, message.len()) };
+            let result = backend
+                .open_at_streaming(witness, mapped, 0, protocol, points, &mut challenger)
+                .map_err(|error| ProofError::Pcs(error.to_string()));
+            unsafe {
+                libc::munmap(ptr as *mut libc::c_void, len);
+            }
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            result?
+        } else {
+            backend
+                .open_at_streaming(witness, &message, 0, protocol, points, &mut challenger)
+                .map_err(|error| ProofError::Pcs(error.to_string()))?
+        };
         Ok((cap, proof))
     }
 

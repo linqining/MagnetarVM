@@ -10,6 +10,7 @@ tracing = "0.1"
 
 [dependencies]
 bincode.workspace = true
+libc = "0.2"
 ligerito = { path = "../../vendor/ligerito", default-features = false, features = ["std", "prover", "parallel", "hardware-accel", "transcript-sha256", "serde"] }
 ligerito-binary-fields = { path = "../../vendor/ligerito-binary-fields", default-features = false, features = ["std"] }
 p3-binary-dft = { path = "../../vendor/plonky3/binary-dft" }

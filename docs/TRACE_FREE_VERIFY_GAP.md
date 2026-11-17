@@ -284,3 +284,19 @@ computation still uses the unpacked tables, so the packed tables must be paired
 with the verifier-side ring-switch reductions (bit claims -> packed claims, and
 the M4b word-pair reduction for the trace). That wiring is the remaining work;
 the measured 70 % cell reduction is the payoff it unlocks.
+
+
+## 5. Out-of-core message spill (first step, landed)
+
+`MAGNETAR_OOT_PCS=1` spills the stacked message to a temp file and maps it
+read-only before the streamed opening (`streamed_open` in `p3_pcs.rs`), so the
+message pages are file-backed instead of anonymous. The bytes are identical, so
+the proof is byte-identical and verification still passes.
+
+Measured at 2^18 (trace-free + M4a + dedup, streamed opening, load ~6-13):
+peak footprint **3.01 -> 2.83 GiB** (-6 %); the message is only ~0.2 GiB at
+this size, so the win is small here. At 2^20/2^22 the message is ~0.84/3.35 GiB
+and the spill matters more, but the dominant transients are the codeword and
+the fold codewords (the ~6x pipeline coefficient), which still live in memory:
+the next step is to spill those too (the `m4_oot_probe` demo already shows the
+disk-backed encode/fold/query path and its 6.1x -> 3.2x coefficient).
