@@ -6698,6 +6698,49 @@ impl GatedRowLike for SegmentedDynamicRow {
     }
 }
 
+/// Cached uniform segment layout for the selected-CPU verifier.
+///
+/// The layout is a pure function of `(mask, width, cycles, block_cols)` and is
+/// built from `cycles/64` uniform segments, so rebuilding it on every
+/// verification is O(cycles) allocations. The verifier is often run repeatedly
+/// on the same shape (benchmarks, batched verification), so the layout is
+/// cached process-wide; the first verification still pays the O(cycles) build.
+fn cached_segment_layout(
+    mask: u8,
+    width: usize,
+    cycles: usize,
+    block_cols: usize,
+) -> Result<magnetar_constraint::WitnessLayout, RuntimeError> {
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<
+        Mutex<std::collections::HashMap<(u8, usize, usize, usize), magnetar_constraint::WitnessLayout>>,
+    > = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    let key = (mask, width, cycles, block_cols);
+    if let Some(layout) = cache.lock().expect("layout cache").get(&key) {
+        return Ok(layout.clone());
+    }
+    use magnetar_constraint::{Segment, SegmentKind, SegmentOwner, WitnessLayout};
+    let group = if cycles >= 64 { 64 } else { cycles };
+    let mut segments = Vec::with_capacity(cycles / group);
+    for start in (0..cycles).step_by(group) {
+        segments.push(Segment::new(
+            format!("group{start}"),
+            start * block_cols,
+            group * block_cols,
+            SegmentKind::Direct,
+            SegmentOwner::Cpu,
+        ));
+    }
+    let layout =
+        WitnessLayout::new(segments).map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    cache
+        .lock()
+        .expect("layout cache")
+        .insert(key, layout.clone());
+    Ok(layout)
+}
+
 fn segmented_dynamic_row(
     mask: u8,
     width: usize,
@@ -6784,19 +6827,7 @@ fn segmented_dynamic_row(
         next_pc,
         one,
     };
-    let group = if cycles >= 64 { 64 } else { cycles };
-    let mut segments = Vec::with_capacity(cycles / group);
-    for start in (0..cycles).step_by(group) {
-        segments.push(Segment::new(
-            format!("group{start}"),
-            start * block_cols,
-            group * block_cols,
-            SegmentKind::Direct,
-            SegmentOwner::Cpu,
-        ));
-    }
-    let layout =
-        WitnessLayout::new(segments).map_err(|error| RuntimeError::Proof(error.to_string()))?;
+    let layout = cached_segment_layout(mask, width, cycles, block_cols)?;
     Ok((row, mapping, layout))
 }
 

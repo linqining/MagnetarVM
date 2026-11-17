@@ -147,6 +147,41 @@ O(rows) terms: `selected segments row` (the `WitnessLayout` is built from
 `cycles/64` segments, O(cycles) allocations) and `selected lockstep challenges`
 (3.5 ms and growing).
 
+### 2.4 Layout cache, and the remaining structural blocker
+
+`segmented_dynamic_row` now builds its uniform `WitnessLayout` through a
+process-wide cache keyed by `(mask, width, cycles, block_cols)`, so repeated
+verifications (benchmarks, batched verification) skip the O(cycles) segment
+construction; the first verification still pays it.
+
+The remaining O(cycles) work in `v4 selected binding` is structural, not an
+implementation detail:
+
+* the selected-CPU proof carries one segment claim per `64` cycles
+  (`proof.segments`, `cycles/64` entries), so both the proof size and
+  `reconstruct_segment_claim` (inside `selected lockstep challenges`) are
+  O(cycles/64);
+* `selected lockstep bits` then evaluates the six lockstep matrices over the
+  same segment structure.
+
+At 2^22 that is 65,536 segments: ~1 MB of claims plus O(cycles) verification
+work, which is why the current projection is tens of milliseconds rather than
+the paper's ~10 ms. Closing it needs a selected-CPU proof-format change, in
+increasing order of effort:
+
+1. **larger segment group** (e.g. 2^10 instead of 64): 16x fewer segments, so
+   the layout, the claim vector and the challenge reconstruction shrink 16x;
+   the lockstep relation is unchanged (segments are power-of-two subcubes), but
+   the proof format changes and the prover's segment construction must follow;
+2. **commit the segment claims** and check them with an opening/sumcheck at the
+   challenge point instead of carrying them in the proof (O(log) verify, O(1)
+   proof growth);
+3. **one segment per opcode class** (the likely paper design): the per-cycle
+   structure moves entirely into the committed lockstep columns.
+
+(1) is the cheapest experiment and should be tried first behind the trace-free
+switch; (2) is the full fix.
+
 ## 3. What to implement to close the gap
 
 1. **Commit the selected CPU claim columns.** Add the six lockstep matrices
