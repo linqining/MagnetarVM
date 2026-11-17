@@ -129,6 +129,24 @@ segments row` 2.7 ms. The ROM commitment and the remaining selected-lockstep
 terms are the next targets; at ~1.5x per doubling the current 2^22 projection is
 ~60 ms, so those must be removed to reach the paper's ~10 ms.
 
+### 2.3 Third fix: the ROM word column is committed
+
+`prove_committed_logup_shout` now commits the public ROM word column as a fourth
+column of the committed Shout tables batch (padded to the common table arity),
+and the verifier authenticates the ROM claim with the same batched opening
+instead of rebuilding the O(rom) column. The statement constructor
+(`committed_statement_data`) commits the same column, so the statement root
+binds it; the verifier's `rom` argument is only shape-checked (the statement is
+public input and its `program_hash` is the ROM binding). The `shout rom eval`
+stage disappears and `v4 committed shout` drops from 8.1 ms to ~4.0-4.5 ms at
+2^19.
+
+Totals after this fix: 2^18 12.6 ms, 2^19 18.8 ms — the total is now bounded by
+`v4 selected binding` (18.6 ms at 2^19), so the next targets are its remaining
+O(rows) terms: `selected segments row` (the `WitnessLayout` is built from
+`cycles/64` segments, O(cycles) allocations) and `selected lockstep challenges`
+(3.5 ms and growing).
+
 ## 3. What to implement to close the gap
 
 1. **Commit the selected CPU claim columns.** Add the six lockstep matrices

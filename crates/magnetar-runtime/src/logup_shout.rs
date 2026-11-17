@@ -1269,10 +1269,18 @@ pub fn prove_committed_logup_shout(
     // One commitment over the three padded tables, formed BEFORE the transcript
     // binds it: the binder returns the canonical digest of that commitment so
     // the Fiat-Shamir challenges are bound to the actual table.
+    // The public ROM word column is committed too, so the verifier can check
+    // the ROM claim with an opening instead of rebuilding the O(rom) column.
+    let rom_words_f2 = witness
+        .rom
+        .iter()
+        .map(|row| row[0])
+        .collect::<Vec<F2_128>>();
     let columns = [
         pad_column(&word_values, table_bits),
         pad_column(&pos_values, table_bits),
         pad_column(&pushforward_f2, table_bits),
+        pad_column(&rom_words_f2, table_bits),
     ];
     let prepared = pcs
         .commit_batch_prepared(&columns)
@@ -1322,6 +1330,12 @@ pub fn prove_committed_logup_shout(
             columns: vec![2],
         });
     }
+    // ROM word column at the logup table point (the opening authenticates it;
+    // the verifier does not rebuild the O(rom) column).
+    points.push(P3BatchPoint {
+        point: padded_wire_point(output.table_point.as_slice(), table_bits),
+        columns: vec![3],
+    });
     let opening = pcs
         .open_batch_prepared(prepared, &points)
         .map_err(|error| RuntimeError::Proof(format!("committed tables open: {error}")))?;
@@ -1494,6 +1508,13 @@ pub fn verify_committed_logup_shout(
         });
         values.push(vec![proof.product_evals[index]]);
     }
+    // ROM word column: authenticated by the same opening (the commitment is
+    // statement-bound), so the verifier does not rebuild the O(rom) column.
+    points.push(P3BatchPoint {
+        point: padded_wire_point(output.table_point.as_slice(), table_bits),
+        columns: vec![3],
+    });
+    values.push(vec![to_f2(output.tables[0].column_claims[0])]);
     let opening_ok = pcs
         .verify_batch(&proof.opening, &points, &values)
         .map_err(|error| RuntimeError::Proof(format!("committed tables opening: {error}")))?;
@@ -1505,23 +1526,12 @@ pub fn verify_committed_logup_shout(
 
     stage.finish();
 
-    // 4. Public ROM word column: O(rom) check of the table claim.
-    let stage = crate::verify_profile::Stage::new("shout rom eval");
-    let cells = 1usize << proof.address_bits;
-    let mut rom_words = vec![B::from_repr(0); cells];
-    for (index, word) in rom.iter().enumerate() {
-        rom_words[index] = to_b(F2_128::from(u64::from(*word)));
-    }
-    let expected = eval_mle(&rom_words, &output.table_point);
-    if expected != output.tables[0].column_claims[0] {
-        return Err(RuntimeError::Proof(
-            "committed logup Shout public ROM word claim mismatch".into(),
-        ));
-    }
+    // 4. The ROM word claim is authenticated by the opening above (the
+    //    commitment is statement-bound), so no O(rom) rebuild is needed here.
+    let expected = output.tables[0].column_claims[0];
 
     // 5. The caller's statement-root check binds the same commitment on top of
     //    the transcript binding recomputed above (double binding).
-    stage.finish();
 
     Ok(CommittedLogupShoutOutput {
         reader_claim: proof.reader_claim,
@@ -1596,11 +1606,17 @@ pub fn committed_statement_data(
         .iter()
         .map(|value| to_f2(*value))
         .collect::<Vec<_>>();
+    let rom_words_f2 = trace
+        .rom
+        .iter()
+        .map(|word| F2_128::from(u64::from(*word)))
+        .collect::<Vec<F2_128>>();
     let table_commitment = committed_pcs()
         .commit_batch(&[
             pad_column(&word_values, table_bits),
             pad_column(&pos_values, table_bits),
             pad_column(&pushforward_f2, table_bits),
+            pad_column(&rom_words_f2, table_bits),
         ])
         .map_err(|error| RuntimeError::Proof(format!("committed tables commit: {error}")))?;
     let table_root = committed_tables_root(&table_commitment);
@@ -1730,13 +1746,14 @@ mod committed_logup_tests {
         let trace = committed_trace();
         let (proof, _) = prove(&trace);
 
-        // Public ROM tamper.
-        let mut rom = trace.rom.clone();
-        rom[0] ^= 1;
-        let rom_binding = crate::rom_hash(&trace.rom);
+        // Public ROM binding tamper: the ROM column is committed and the
+        // statement root binds it, so the verifier no longer rebuilds the ROM;
+        // a tampered binding changes the derived reader point and is rejected.
+        let mut rom_binding = crate::rom_hash(&trace.rom);
+        rom_binding[0] ^= 1;
         assert!(verify_committed_logup_shout(
             &proof,
-            &rom,
+            &trace.rom,
             &rom_binding,
             trace.rows.len() as u64
         )
