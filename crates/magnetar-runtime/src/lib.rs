@@ -4055,6 +4055,11 @@ pub fn verify_unified_trace(
     proof: &UnifiedTraceProof,
     width: usize,
 ) -> Result<(), RuntimeError> {
+    if crate::trace_free::trace_free_enabled() {
+        return Err(RuntimeError::Proof(
+            "trace-free mode: verify with verify_native_unified(statement, proof)".into(),
+        ));
+    }
     let v4 = crate::claim_table::claims_v4_enabled();
     let table_only = proof
         .claim_proof
@@ -4572,6 +4577,11 @@ pub fn verify_unified_trace_statement(
     proof: &UnifiedTraceProof,
     width: usize,
 ) -> Result<(), RuntimeError> {
+    if crate::trace_free::trace_free_enabled() {
+        return Err(RuntimeError::Proof(
+            "trace-free mode: verify with verify_native_unified(statement, proof)".into(),
+        ));
+    }
     if statement.trace_len != trace.rows.len() as u64
         || statement.initial_state != trace.initial_state
         || statement.initial_ram != trace.initial_ram
@@ -11031,3 +11041,5 @@ mod m4a_probe;
 pub(crate) mod m4a_tables;
 
 pub mod m4a_binding;
+
+pub mod trace_free;

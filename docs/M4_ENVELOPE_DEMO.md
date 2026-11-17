@@ -1099,3 +1099,38 @@ quiet window); dedup costs about +1.6 ms against the packed-Access variant and
 ~+0.2 ms against the v4 base, while the proof is 17 KB smaller than the
 non-dedup packed variant and the mosaic message is halved (§19). A quiet-window
 re-run and a 2^18 statement-only measurement are the remaining follow-ups.
+
+## 21. Trace-free proof architecture: one switch, statement-only verification
+
+The paper's verifier is statement-only (no trace, no witness rebuild). That mode
+used to require three separate opt-in switches (`MAGNETAR_CLAIM_V4`,
+`MAGNETAR_ACCESS_COLUMNS`, `MAGNETAR_LINEAR_SHOUT`). It is now one coherent
+architecture switch:
+
+* `crates/magnetar-runtime/src/trace_free.rs` — `MAGNETAR_TRACE_FREE=1` turns on
+  the whole stack: the prover emits the v4 artifacts (committed claim table,
+  committed selected CPU, committed linear Shout, committed final-RAM table, and
+  the packed address-bit commitment when dedup is on), and
+  `verify_native_unified(statement, proof, width)` is the only verifier;
+* the three individual gates (`claims_v4_enabled`, `access_columns_enabled`,
+  `linear_shout_enabled`) return true under the umbrella (the classic-logup
+  switch still wins, so an A/B can force the old wire);
+* the trace-carrying entry points (`verify_unified_trace`,
+  `verify_unified_trace_statement`) refuse to run in this mode, so a trace-free
+  proof can never be silently checked by the trace path;
+* `paper_unified_bench` prints `trace-free mode: statement-only verify (no
+  trace, no witness)` and verifies with `verify_native_unified` only.
+
+### 21.1 Baseline at 2^16 (trace-free, `MAGNETAR_VERIFY_CPU=25`)
+
+| config | proof | verify wall | verify CPU / iter |
+| --- | ---: | ---: | ---: |
+| trace-free base | 1,174,289 B | **11.4 ms** | 42.5 ms |
+| + M4a Access | 1,271,413 B | **11.5 ms** | 44.3 ms |
+| + M4a + dedup | 1,254,485 B | **11.7 ms** | 44.0 ms |
+| 2^17 + M4a + dedup | 1,354,281 B | 19.2 ms (wall) | 70.2 ms |
+
+All three 2^16 rows are inside the paper's 8-12 ms verify target on this host (load ~5),
+and the dedup variant keeps the smaller proof (1,254,485 B) and the halved
+mosaic message from §19. The next steps are the staircase: 2^17, 2^18, then the
+larger sizes, all through the same single switch.

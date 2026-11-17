@@ -43,10 +43,11 @@ pub const ACCESS_COLUMN_COUNT: usize =
 
 /// Is the M5b access-column path enabled? Default off.
 pub fn access_columns_enabled() -> bool {
-    matches!(
-        std::env::var("MAGNETAR_ACCESS_COLUMNS").ok().as_deref(),
-        Some("1" | "on" | "true" | "yes")
-    )
+    crate::trace_free::trace_free_enabled()
+        || matches!(
+            std::env::var("MAGNETAR_ACCESS_COLUMNS").ok().as_deref(),
+            Some("1" | "on" | "true" | "yes")
+        )
 }
 
 /// Domain of the O(1) access statement digest (M5b).

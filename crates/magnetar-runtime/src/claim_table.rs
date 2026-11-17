@@ -267,10 +267,11 @@ pub fn claims_v4_enabled() -> bool {
         Some("1" | "on" | "true" | "yes")
     );
     !classic
-        && matches!(
-            std::env::var("MAGNETAR_CLAIM_V4").ok().as_deref(),
-            Some("1" | "on" | "true" | "yes")
-        )
+        && (crate::trace_free::trace_free_enabled()
+            || matches!(
+                std::env::var("MAGNETAR_CLAIM_V4").ok().as_deref(),
+                Some("1" | "on" | "true" | "yes")
+            ))
 }
 
 /// Legacy row-root binding (M2/M3) escape hatch for A/B.

@@ -233,7 +233,10 @@ fn main() {
         }
     }
     let started = Instant::now();
-    if no_claim {
+    if magnetar_runtime::trace_free::trace_free_enabled() {
+        eprintln!("trace-free mode: statement-only verify (no trace, no witness)");
+        verify_native_unified(&statement, &proof, width()).unwrap();
+    } else if no_claim {
         magnetar_runtime::verify_unified_trace(&trace, &proof, width()).unwrap();
     } else {
         verify_native_unified(&statement, &proof, width()).unwrap();

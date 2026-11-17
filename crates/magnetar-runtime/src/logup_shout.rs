@@ -1111,10 +1111,14 @@ pub const PRE_M4V3_ERROR: &str =
 
 /// M4 v3 opt-in switch: use the committed-pushforward linear Shout.
 pub fn linear_shout_enabled() -> bool {
-    matches!(
-        std::env::var("MAGNETAR_LINEAR_SHOUT").ok().as_deref(),
-        Some("1" | "on" | "true" | "yes")
-    )
+    if classic_logup_enabled() {
+        return false;
+    }
+    crate::trace_free::trace_free_enabled()
+        || matches!(
+            std::env::var("MAGNETAR_LINEAR_SHOUT").ok().as_deref(),
+            Some("1" | "on" | "true" | "yes")
+        )
 }
 
 /// Force the classic trace Logup-Shout path (A/B regression switch).
