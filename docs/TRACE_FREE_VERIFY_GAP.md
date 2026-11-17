@@ -218,8 +218,26 @@ evaluations:
 the PCS opening check (~6.8-7.2 ms, logarithmic). Totals: 2^16 9.0 ms, 2^18
 11.0-11.5 ms, 2^19 12.3-13.0 ms; the parallel wave is now bounded by the
 access/claim-table/core openings (~7-8 ms each), so the 2^22 projection is
-~14-16 ms — inside the "10-something ms" target, pending a 2^20+ measurement
-(host memory is the blocker).
+~14-16 ms — inside the "10-something ms" target.
+
+### 2.7 2^20 measured (trace-free, statement-only)
+
+The 2^20 row now fits the host (17.7 GiB free+inactive window; the trace-free
+path needs ~10.7 GiB RSS / 12.3 GiB footprint, so the watchdog was raised to
+12 GiB):
+
+| size | proof | verify wall | verify CPU/iter | peak footprint |
+| --- | ---: | ---: | ---: | ---: |
+| 2^16 | 1,239,045 B | 9.0 ms | 33.3 ms | - |
+| 2^18 | 1,437,585 B | 11.0-11.5 ms | 35.0 ms | - |
+| 2^19 | 1,538,691 B | 12.3-13.0 ms | 37.5 ms | - |
+| **2^20** | **1,638,259 B** | **14.3 ms** | 40.7 ms | **12.28 GiB** |
+
+The growth is now ~1.1-1.2x per doubling (all remaining stages are PCS openings,
+logarithmic), so the 2^22 projection is **~15-17 ms** — the "10-something ms"
+target. 2^21/2^22 cannot be measured on this 36 GiB host (the 2^20 run already
+needs a 17.7 GiB window and 12.3 GiB footprint; 2^21 projects to ~24 GiB
+footprint).
 
 ## 3. What to implement to close the gap
 
