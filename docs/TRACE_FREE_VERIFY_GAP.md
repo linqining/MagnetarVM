@@ -261,3 +261,26 @@ Effort estimate: (1) is the larger change (new committed columns + verifier
 opening path, ~2-4 days); (2) is smaller (~1 day) because the committed Shout
 machinery already exists. Both are proof-format changes (version bump) and
 should be gated behind the trace-free switch until measured.
+
+
+## 4. Bit-packed tables (prover-side experiment, in progress)
+
+The M4a packing helpers (`m4a_tables.rs`: `pack_bit_column`, `packed_bit_table`,
+`split_and_pack`, `pack_twist_tables`, `pack_word_pairs`) are representation-only
+and were not wired into the prover. This round adds an env-gated prover-side
+mode (`MAGNETAR_PACK_TABLES=1`) that packs the trace table (two 64-bit fields per
+cell) and the twist address tables (128 bits per cell) in the real mosaic
+construction, plus `BENCH_SKIP_VERIFY=1` so the prover's peak footprint can be
+measured without a verifier that understands the packed claims.
+
+Measured projection from the existing real-table probe
+(`m4a_real_table_set_projection`, `PACKED=1`): at 2^22 the committed table set
+drops from **209,715,358 to 63,537,310 cells (-70 %)**, i.e. ~3.35 GiB -> ~1.02
+GiB of committed table memory (~2.3 GiB saved; ~0.6 GiB at 2^20).
+
+The prover currently rejects the packed mode with
+`evaluation vector length 1 is not a nonzero power of two`: the claim
+computation still uses the unpacked tables, so the packed tables must be paired
+with the verifier-side ring-switch reductions (bit claims -> packed claims, and
+the M4b word-pair reduction for the trace). That wiring is the remaining work;
+the measured 70 % cell reduction is the payoff it unlocks.

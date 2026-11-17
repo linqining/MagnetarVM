@@ -233,7 +233,12 @@ fn main() {
         }
     }
     let started = Instant::now();
-    if magnetar_runtime::trace_free::trace_free_enabled() {
+    if std::env::var_os("BENCH_SKIP_VERIFY").is_some() {
+        // Prover-side memory experiments (e.g. MAGNETAR_PACK_TABLES) produce a
+        // proof the current verifier cannot check yet; skip verification so the
+        // prover's peak footprint can still be measured.
+        eprintln!("bench: verification skipped (BENCH_SKIP_VERIFY)");
+    } else if magnetar_runtime::trace_free::trace_free_enabled() {
         eprintln!("trace-free mode: statement-only verify (no trace, no witness)");
         verify_native_unified(&statement, &proof, width()).unwrap();
     } else if no_claim {

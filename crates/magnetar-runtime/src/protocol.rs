@@ -2147,6 +2147,32 @@ impl<'a> UnifiedProveContext<'a> {
             None
         };
 
+        // M4a bit-packed table representation (prover-side experiment): the
+        // trace table packs two 64-bit fields per cell and the twist address
+        // tables pack 128 bits per cell. The verifier-side ring-switch wiring
+        // for these packed claims is not in place yet, so this mode is for
+        // memory measurement only (`MAGNETAR_PACK_TABLES=1`).
+        if std::env::var_os("MAGNETAR_PACK_TABLES").is_some() {
+            if let Some(table) = mosaic_tables.get_mut(trace_index) {
+                if table.columns.len() == 1 {
+                    if let Ok(packed) = crate::m4a_tables::pack_word_pairs(&table.columns[0]) {
+                        table.columns = vec![packed];
+                    }
+                }
+            }
+            let mut address_indices = vec![ram_index];
+            if !m4a_addr_dedup {
+                address_indices.push(register_index);
+            }
+            for index in address_indices {
+                if let Some(table) = mosaic_tables.get_mut(index) {
+                    if let Ok(packed) = crate::m4a_tables::packed_bit_table(&table.columns) {
+                        *table = packed;
+                    }
+                }
+            }
+        }
+
         // The gated component/shift/active tables are appended above; pick the
         // PCS profile from the complete table list. Choosing it before these
         // pushes left a width-64 trace whose largest table lands past the
