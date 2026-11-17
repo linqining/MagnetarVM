@@ -201,6 +201,26 @@ The 2^16 verify is now inside the paper's 8-12 ms target with margin, and the
 lockstep evaluation/PCS and the challenge reconstruction, which the committed
 segment claims (fix 2) remove.
 
+### 2.6 The last O(cycles) term: the statement-row equality vector
+
+`eval_sum_factorized`'s statement-row block built the full O(instances)
+`col_instance_eq` vector just to read two entries (`instance = 0` and
+`cycles-1`). It now evaluates `eq(point, index)` directly in O(log)
+(`eq_at`), which removes the last O(cycles) term from the six lockstep matrix
+evaluations:
+
+| stage | 2^18 before | 2^18 after | 2^19 before | 2^19 after |
+| --- | ---: | ---: | ---: | ---: |
+| `lockstep verify eval_mles` | 4.36 ms | **0.92-0.97 ms** | 8.8-9.2 ms | **0.95-0.96 ms** |
+| `selected lockstep bits` | 7.6 ms | 7.2 ms | 12.7 ms | **7.5 ms** |
+
+`eval_mles` is now flat (O(log)) and `selected lockstep bits` is dominated by
+the PCS opening check (~6.8-7.2 ms, logarithmic). Totals: 2^16 9.0 ms, 2^18
+11.0-11.5 ms, 2^19 12.3-13.0 ms; the parallel wave is now bounded by the
+access/claim-table/core openings (~7-8 ms each), so the 2^22 projection is
+~14-16 ms — inside the "10-something ms" target, pending a 2^20+ measurement
+(host memory is the blocker).
+
 ## 3. What to implement to close the gap
 
 1. **Commit the selected CPU claim columns.** Add the six lockstep matrices

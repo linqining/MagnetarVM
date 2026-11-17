@@ -29,6 +29,18 @@ pub enum LazyExtraRows {
     },
 }
 
+/// `eq(point, index)` in O(k) without materialising the equality vector.
+fn eq_at(point: &[F2_128], index: usize) -> F2_128 {
+    let one = F2_128::from(1u64);
+    point.iter().enumerate().fold(one, |acc, (bit, value)| {
+        if (index >> bit) & 1 == 1 {
+            acc * *value
+        } else {
+            acc * (one + *value)
+        }
+    })
+}
+
 /// `Σ_{i<2^k} eq(r, i)·eq(c, i)` in O(k).
 ///
 /// Summing the product over the hypercube factorises per bit:
@@ -276,7 +288,6 @@ impl LazyExtraRows {
             }
         }
         if let Some((initial, final_pc)) = statement {
-            let col_instance_eq = eq_vector_tensor(col_instance_point);
             let mut offset = chain_instances * width;
             for instance in [0usize, cycles.saturating_sub(1)] {
                 let pc_value = if instance == 0 { *initial } else { *final_pc };
@@ -304,7 +315,7 @@ impl LazyExtraRows {
                         + coefficient
                             * row_weight
                             * col_local_eq[local]
-                            * col_instance_eq[instance];
+                            * eq_at(col_instance_point, instance);
                     offset += 1;
                 }
             }
