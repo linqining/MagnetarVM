@@ -105,6 +105,30 @@ evaluation inside `eval_mles_parallel` (still O(cycles) allocations), plus the
 `shout rom eval` O(program) term. The full O(log) fix is the committed
 selected-claim-columns change below.
 
+### 2.2 Second fix: lazy shared equality vectors + O(1) v4 root
+
+* `BlockEvalShared` no longer materialises the O(instances) row/column equality
+  vectors: it keeps the instance points and builds the vectors only on the
+  fallback path (`OnceLock`), and `instance_sum` is computed in O(log) with the
+  same factorisation (`Π_j (1 + r_j + c_j)`).
+* `v4_verify` no longer re-hashes the O(program) ROM: the statement is public
+  input, so `statement.program_hash` is the ROM binding passed to the committed
+  Shout check (the `v4 root` stage drops from 4.6 ms to ~0.01 ms at 2^19).
+
+Measured totals (trace-free + M4a + dedup, `MAGNETAR_VERIFY_CPU=5`):
+
+| size | before this round | after closed-form | after lazy shared + O(1) root |
+| --- | ---: | ---: | ---: |
+| 2^16 | 11.4 ms | 11.3 ms | ~11 ms |
+| 2^18 | 26.6-28.7 ms | 14.7 ms | **12.2 ms** |
+| 2^19 | 43.1-44.2 ms | 23.2 ms | **18.2 ms** |
+
+Remaining growth at 2^19: `shout rom eval` 4.1 ms (O(program)), `selected
+lockstep bits` 11.5 ms, `selected lockstep challenges` 3.5 ms, `selected
+segments row` 2.7 ms. The ROM commitment and the remaining selected-lockstep
+terms are the next targets; at ~1.5x per doubling the current 2^22 projection is
+~60 ms, so those must be removed to reach the paper's ~10 ms.
+
 ## 3. What to implement to close the gap
 
 1. **Commit the selected CPU claim columns.** Add the six lockstep matrices

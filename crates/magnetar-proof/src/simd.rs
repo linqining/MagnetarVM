@@ -169,7 +169,7 @@ impl LazyExtraRows {
         extra_bits: usize,
         high_eq: F2_128,
         col_local_eq: &[F2_128],
-        col_instance_eq: &[F2_128],
+        col_instance_point: &[F2_128],
         base_cols: usize,
     ) -> Option<F2_128> {
         let LazyExtraRows::Gated {
@@ -201,7 +201,7 @@ impl LazyExtraRows {
         // O(log) (see `eq_dot_full` / `eq_dot_shifted_full`). The row side has
         // one extra bit (the extra-row count is `(cycles+1)*width`), which is
         // zero for every instance index, so it factors out as `1 + r_top`.
-        let instances_bits = col_instance_eq.len().trailing_zeros() as usize;
+        let instances_bits = col_instance_point.len();
         let instance_bits = extra_bits - log_width;
         let closed = if instance_bits == instances_bits + 1 {
             let r = &row_point[log_width..extra_bits];
@@ -227,6 +227,7 @@ impl LazyExtraRows {
             Some(value) => {
                 if std::env::var_os("MAGNETAR_EVAL_CHECK").is_some() {
                     let instance_eq = eq_vector_tensor(&row_point[log_width..extra_bits]);
+                    let col_instance_eq = eq_vector_tensor(col_instance_point);
                     let mut dot = F2_128::from(0u64);
                     for instance in 0..chain_instances {
                         let column_weight = if *part == 1 || *part == 0 {
@@ -247,6 +248,7 @@ impl LazyExtraRows {
             }
             None => {
                 let instance_eq = eq_vector_tensor(&row_point[log_width..extra_bits]);
+                let col_instance_eq = eq_vector_tensor(col_instance_point);
                 let mut dot = F2_128::from(0u64);
                 for instance in 0..chain_instances {
                     let column_weight = if *part == 1 || *part == 0 {
@@ -274,6 +276,7 @@ impl LazyExtraRows {
             }
         }
         if let Some((initial, final_pc)) = statement {
+            let col_instance_eq = eq_vector_tensor(col_instance_point);
             let mut offset = chain_instances * width;
             for instance in [0usize, cycles.saturating_sub(1)] {
                 let pc_value = if instance == 0 { *initial } else { *final_pc };
@@ -804,7 +807,6 @@ impl SharedBlockMatrix {
         let high_bits = bits(high_index, high_point.len());
         let high_eq = eq(high_point, &high_bits);
         let col_local_eq = &shared.col_local_eq;
-        let col_instance_eq = &shared.col_instance_eq;
         if profile {
             eprintln!(
                 "eval phase: prepare {:?} base {:?} extra-setup {:?}",
@@ -822,7 +824,7 @@ impl SharedBlockMatrix {
                 extra_bits,
                 high_eq,
                 col_local_eq,
-                col_instance_eq,
+                &shared.col_instance_point,
                 self.base.cols,
             ) {
                 sum = sum + extra_sum;
@@ -834,12 +836,13 @@ impl SharedBlockMatrix {
             .iter()
             .map(|weight| *weight * high_eq)
             .collect::<Vec<_>>();
+        let col_instance_eq = eq_vector_tensor(&shared.col_instance_point);
         if let Some(lazy) = &self.lazy_extra {
             sum = sum
                 + lazy.eval_sum(
                     &row_weights,
                     col_local_eq,
-                    col_instance_eq,
+                    &col_instance_eq,
                     self.base.cols,
                 );
         } else {

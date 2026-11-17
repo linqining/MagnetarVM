@@ -91,19 +91,26 @@ pub trait SpartanMatrix: Sync {
     }
 }
 
-/// Equality vectors shared by every block matrix evaluated at the same point.
+/// Equality data shared by every block matrix evaluated at the same point.
+///
+/// The instance equality vectors are O(instances) = O(cycles) entries, so they
+/// are kept as points and only materialised on demand (the closed-form fast
+/// path never needs them). `instance_sum` is computed in O(log) from the same
+/// factorisation the closed-form instance dot uses.
 pub struct BlockEvalShared {
     pub local_bits: usize,
     pub local_col_bits: usize,
     pub instance_bits: usize,
-    pub row_instance_eq: Vec<F2_128>,
-    pub col_instance_eq: Vec<F2_128>,
+    pub row_instance_point: Vec<F2_128>,
+    pub col_instance_point: Vec<F2_128>,
     pub col_local_eq: Vec<F2_128>,
     /// `Σ_i eq(row_instance, i)·eq(col_instance, i)` and the block-high weight;
     /// both depend only on the points, so every block matrix at the same point
     /// shares them.
     pub instance_sum: F2_128,
     pub block_weight: F2_128,
+    row_instance_eq: std::sync::OnceLock<Vec<F2_128>>,
+    col_instance_eq: std::sync::OnceLock<Vec<F2_128>>,
 }
 
 impl BlockEvalShared {
@@ -120,35 +127,41 @@ impl BlockEvalShared {
         {
             return None;
         }
-        // The three equality tables are independent; build them together.
-        let (row_instance_eq, col_instance_eq, col_local_eq) = std::thread::scope(|scope| {
-            let first = scope.spawn(|| {
-                eq_vector_tensor(&row_point[local_bits..local_bits + instance_bits])
-            });
-            let second = scope.spawn(|| eq_vector_tensor(&col_point[local_col_bits..]));
-            let third = scope.spawn(|| eq_vector_tensor(&col_point[..local_col_bits]));
-            (
-                first.join().expect("eq worker"),
-                second.join().expect("eq worker"),
-                third.join().expect("eq worker"),
-            )
-        });
-        let mut instance_sum = F2_128::from(0u64);
-        for instance in 0..instances {
-            instance_sum = instance_sum + row_instance_eq[instance] * col_instance_eq[instance];
-        }
+        let row_instance_point = row_point[local_bits..local_bits + instance_bits].to_vec();
+        let col_instance_point = col_point[local_col_bits..local_col_bits + instance_bits].to_vec();
+        let col_local_eq = eq_vector_tensor(&col_point[..local_col_bits]);
+        // Σ_i eq(r,i)·eq(c,i) = Π_j (1 + r_j + c_j) over the instance bits.
+        let one = F2_128::from(1u64);
+        let instance_sum = row_instance_point
+            .iter()
+            .zip(&col_instance_point)
+            .fold(one, |acc, (r, c)| acc * (one + *r + *c));
         let block_high = &row_point[local_bits + instance_bits..];
         let block_weight = eq(block_high, &vec![F2_128::from(0u64); block_high.len()]);
         Some(Self {
             local_bits,
             local_col_bits,
             instance_bits,
-            row_instance_eq,
-            col_instance_eq,
+            row_instance_point,
+            col_instance_point,
             col_local_eq,
             instance_sum,
             block_weight,
+            row_instance_eq: std::sync::OnceLock::new(),
+            col_instance_eq: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Materialise the row-instance equality vector (O(instances), fallback only).
+    pub fn row_instance_eq(&self) -> &[F2_128] {
+        self.row_instance_eq
+            .get_or_init(|| eq_vector_tensor(&self.row_instance_point))
+    }
+
+    /// Materialise the column-instance equality vector (O(instances), fallback only).
+    pub fn col_instance_eq(&self) -> &[F2_128] {
+        self.col_instance_eq
+            .get_or_init(|| eq_vector_tensor(&self.col_instance_point))
     }
 }
 

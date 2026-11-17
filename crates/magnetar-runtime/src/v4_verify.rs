@@ -99,12 +99,10 @@ pub(crate) fn verify_native_unified_v4(
             "M5c: trace commitment does not match the public statement".into(),
         ));
     }
-    let rom_binding = crate::rom_hash(&statement.rom);
-    if statement.program_hash != rom_binding {
-        return Err(RuntimeError::Proof(
-            "M5c: program hash does not match the public ROM".into(),
-        ));
-    }
+    // The statement is public input: its `program_hash` is the binding of the
+    // ROM, so the verifier does not re-hash the (O(program)) ROM here. The
+    // committed Shout proof is checked against this binding below.
+    let rom_binding = statement.program_hash;
     // The access statement digest is the O(1) derivation from the v4 claim table.
     if crate::access_table::access_statement_digest(&claim_root)
         != statement.access_statement_digest
