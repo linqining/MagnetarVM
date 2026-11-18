@@ -364,3 +364,18 @@ work is the verifier wiring: every bit claim on a packed table must be
 ring-switched to a claim on the packed table before the mosaic opening (the
 `BatchedRingSwitch` machinery exists for the Access proof; the mosaic needs the
 same reduction with the mosaic opening substituted for its own PCS opening).
+
+
+## 9. Packed plan measured in the real prover (2^18)
+
+`MAGNETAR_PACKED_MOSAIC_MEASURE=1` builds the packed plan from the real mosaic
+tables and commits it (measurement only; the proof continues on the unpacked
+path). At 2^18 with M4a dedup:
+
+- tables 11, unpacked cells **6,029,470 -> packed cells 4,208,690 (-30 %)**.
+
+The plan packs only bit-valued columns (the RAM address table and the ROM bit
+columns); the trace table is one scalar column of 8-field rows, so its word-pair
+packing (M4b) is a separate transformation and would take the reduction further
+(the probe's -65 % includes it). The verifier claim wiring is still the
+remaining step.

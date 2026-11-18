@@ -2249,6 +2249,21 @@ impl<'a> UnifiedProveContext<'a> {
             }
             eprintln!("mosaic bytes: {:.2} GiB", bytes as f64 / (1u64 << 30) as f64);
         }
+        if std::env::var_os("MAGNETAR_PACKED_MOSAIC_MEASURE").is_some() {
+            // Measurement-only: commit the packed plan and report its size, then
+            // continue with the unpacked commit so the proof stays valid.
+            let plan = magnetar_pcs::packed_mosaic::plan(&self.mosaic_tables);
+            let packed_tables: Vec<_> = plan.tables.iter().map(|table| table.table.clone()).collect();
+            let started = std::time::Instant::now();
+            let _ = self.pcs.commit_mosaic(&packed_tables);
+            eprintln!(
+                "packed mosaic measure: tables={} unpacked_cells={} packed_cells={} commit={:?}",
+                plan.tables.len(),
+                plan.unpacked_cells,
+                plan.packed_cells,
+                started.elapsed()
+            );
+        }
         if !self.cpu_columns {
             let commitment = self
                 .pcs
