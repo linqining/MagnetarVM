@@ -718,6 +718,7 @@ pub mod stream;
 pub mod virtual_spartan;
 pub use bit_pcs::{
     BatchColumnPcs, BatchedRingSwitch, BatchedRingSwitchOpening, BitPcs, DirectBitPcs,
+    RingSwitchClaims, RingSwitchClaimsProof,
     PackedBitPcs, PackedOpening, PackedTableOpening, RevealingPackedBitPcs, RingSwitchOpening,
     RingSwitchPackedBitPcs,
 };

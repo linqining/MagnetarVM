@@ -2167,7 +2167,7 @@ mod tests {
             .collect();
         let backend = P3BatchColumnPcs::new(P3BinaryPcs::with_params(100, 2, 21, 2));
         let switch = BatchedRingSwitch::new(backend);
-        let (claims, proof) = switch.open_claims(&[bits], &point).expect("open claims");
+        let (claims, _ry, proof) = switch.open_claims(&[bits], &point).expect("open claims");
         let verified = switch
             .verify_claims(&point, &claims, &proof)
             .expect("verify claims")

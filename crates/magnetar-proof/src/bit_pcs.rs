@@ -1232,7 +1232,7 @@ impl<P: BatchColumnPcs> BatchedRingSwitch<P> {
         &self,
         bit_columns: &[PackedBits],
         point: &[F2_128],
-    ) -> Result<(Vec<F2_128>, RingSwitchClaimsProof), ProofError> {
+    ) -> Result<(Vec<F2_128>, Vec<F2_128>, RingSwitchClaimsProof), ProofError> {
         if bit_columns.is_empty() {
             return Err(ProofError::DimensionMismatch);
         }
@@ -1316,6 +1316,7 @@ impl<P: BatchColumnPcs> BatchedRingSwitch<P> {
             .collect::<Vec<_>>();
         Ok((
             claims,
+            ry,
             RingSwitchClaimsProof {
                 s_hat_v: s_hat_vectors,
                 sumcheck,

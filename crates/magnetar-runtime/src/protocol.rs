@@ -344,6 +344,8 @@ pub struct ProofBundle {
     pub trace_claims: Vec<(magnetar_pcs::P3MosaicPoint, Vec<F2_128>)>,
     /// Packed-mosaic descriptor when the packed plan was committed.
     pub packed_mosaic: Option<magnetar_pcs::packed_mosaic::PackedMosaicDescriptor>,
+    /// Ring-switch proof for the packed ROM bit claims.
+    pub rom_ring_switch: Option<magnetar_proof::RingSwitchClaimsProof>,
     pub table_batches: Vec<crate::TableBatchProof>,
     pub width: usize,
     pub commitment: P3MosaicCommitment,
@@ -398,6 +400,7 @@ impl ProofBundle {
             trace_index: proof.trace_index,
             trace_claims: proof.trace_claims.clone(),
             packed_mosaic: proof.packed_mosaic.clone(),
+            rom_ring_switch: proof.rom_ring_switch.clone(),
             table_batches: proof.table_batches.clone(),
             width: proof.width,
             commitment: proof.commitment.clone(),
@@ -456,6 +459,7 @@ impl ProofBundle {
             trace_index: self.trace_index,
             trace_claims: self.trace_claims,
             packed_mosaic: self.packed_mosaic,
+            rom_ring_switch: self.rom_ring_switch,
             table_batches: self.table_batches,
             width: self.width,
             commitment: self.commitment,
@@ -1401,6 +1405,12 @@ pub(crate) struct UnifiedProveContext<'a> {
     field_tables: Vec<usize>,
     /// Packed-mosaic descriptor when the packed plan was committed.
     packed_mosaic: Option<magnetar_pcs::packed_mosaic::PackedMosaicDescriptor>,
+    /// The packed plan (prover side) when the packed path is active.
+    packed_plan: Option<magnetar_pcs::packed_mosaic::PackedMosaicPlan>,
+    /// Ring-switch proof for the packed ROM bit claims.
+    rom_ring_switch: Option<magnetar_proof::RingSwitchClaimsProof>,
+    /// The ROM table's bit columns as packed bits (prover side, packed path).
+    rom_bit_columns: Option<Vec<magnetar_proof::PackedBits>>,
 }
 
 #[allow(clippy::type_complexity)]
@@ -2243,6 +2253,9 @@ impl<'a> UnifiedProveContext<'a> {
             field_pcs_commitment: None,
             field_tables: Vec::new(),
             packed_mosaic: None,
+            packed_plan: None,
+            rom_ring_switch: None,
+            rom_bit_columns: None,
         })
     }
 
@@ -2266,7 +2279,48 @@ impl<'a> UnifiedProveContext<'a> {
             // docs/TRACE_FREE_VERIFY_GAP.md §11).
             let plan = magnetar_pcs::packed_mosaic::plan(&self.mosaic_tables);
             self.packed_mosaic = Some(plan.descriptor());
-            self.mosaic_tables = plan.tables.into_iter().map(|table| table.table).collect();
+            // Keep the ROM table's bit columns for the ring-switch (the packed
+            // table only carries the packed cells).
+            if let Some(table) = self.mosaic_tables.get(self.rom_index) {
+                let bits = table
+                    .columns
+                    .iter()
+                    .filter(|column| column.iter().all(|value| value.value() <= 1))
+                    .map(|column| {
+                        magnetar_proof::PackedBits::from_bools(
+                            &column.iter().map(|value| value.value() == 1).collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                if !bits.is_empty() {
+                    self.rom_bit_columns = Some(bits);
+                }
+            }
+            // Remap the all-scalar and all-bit table indices; mixed tables keep
+            // their claims split in `add_logup_shout_rom`.
+            let remap = |index: usize| {
+                plan.mapping.get(index).and_then(|mapping| {
+                    mapping.scalar_table.or(mapping.packed_table)
+                })
+            };
+            if let Some(index) = remap(self.trace_index) {
+                self.trace_index = index;
+            }
+            if let Some(index) = remap(self.ram_index) {
+                self.ram_index = index;
+            }
+            if let Some(index) = remap(self.register_index) {
+                self.register_index = index;
+            }
+            self.packed_plan = Some(plan);
+            self.mosaic_tables = self
+                .packed_plan
+                .as_ref()
+                .unwrap()
+                .tables
+                .iter()
+                .map(|table| table.table.clone())
+                .collect();
         }
         if std::env::var_os("MAGNETAR_PACKED_MOSAIC_MEASURE").is_some() {
             // Measurement-only: commit the packed plan and report its size, then
@@ -2669,7 +2723,10 @@ impl<'a> UnifiedProveContext<'a> {
         values: &[F2_128],
     ) -> Result<(), RuntimeError> {
         let tables = self.commitment.as_ref().map_or(0, |c| c.tables.len());
-        if tables > self.rom_index {
+        if tables <= self.rom_index {
+            return Ok(());
+        }
+        let Some(plan) = self.packed_plan.as_ref() else {
             self.points.push(magnetar_pcs::P3MosaicPoint {
                 table: self.rom_index,
                 point: point.to_vec(),
@@ -2677,6 +2734,61 @@ impl<'a> UnifiedProveContext<'a> {
                 next_columns: Vec::new(),
             });
             self.values.push(values.to_vec());
+            return Ok(());
+        };
+        let Some(mapping) = plan.mapping.get(self.rom_index) else {
+            return Ok(());
+        };
+        // Bit columns: ring-switch them to the packed table.
+        if let (Some(packed_table), Some(bit_columns)) =
+            (mapping.packed_table, self.rom_bit_columns.as_ref())
+        {
+            let backend = magnetar_pcs::P3BatchColumnPcs::new(
+                magnetar_pcs::P3BinaryPcs::with_params(100, 2, 21, 2),
+            );
+            let switch = magnetar_proof::BatchedRingSwitch::new(backend);
+            let bit_values: Vec<F2_128> = mapping
+                .bit_columns
+                .iter()
+                .map(|index| values[*index])
+                .collect();
+            let (claims, packed_point, proof) = switch
+                .open_claims(bit_columns, point)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+            if claims != bit_values {
+                return Err(RuntimeError::Proof(
+                    "packed ROM bit claims disagree with the Shout claims".into(),
+                ));
+            }
+            self.rom_ring_switch = Some(proof);
+            self.points.push(magnetar_pcs::P3MosaicPoint {
+                table: packed_table,
+                point: packed_point,
+                columns: (0..mapping.bit_columns.len()).collect(),
+                next_columns: Vec::new(),
+            });
+            self.values.push(
+                self.rom_ring_switch
+                    .as_ref()
+                    .unwrap()
+                    .packed_values
+                    .clone(),
+            );
+        }
+        // Scalar columns: keep them on the scalar table.
+        if let Some(scalar_table) = mapping.scalar_table {
+            let scalar_values: Vec<F2_128> = mapping
+                .scalar_columns
+                .iter()
+                .map(|index| values[*index])
+                .collect();
+            self.points.push(magnetar_pcs::P3MosaicPoint {
+                table: scalar_table,
+                point: point.to_vec(),
+                columns: (0..scalar_values.len()).collect(),
+                next_columns: Vec::new(),
+            });
+            self.values.push(scalar_values);
         }
         Ok(())
     }
@@ -2719,6 +2831,9 @@ impl<'a> UnifiedProveContext<'a> {
                 self.shift_router_table.as_ref().map(|(index, _)| *index),
                 self.store_router_table.as_ref().map(|(index, _)| *index),
                 packed,
+                self.packed_mosaic
+                    .as_ref()
+                    .zip(self.rom_ring_switch.as_ref()),
             )?;
             for (point, values) in links {
                 self.points.push(point);
@@ -2937,6 +3052,7 @@ impl<'a> UnifiedProveContext<'a> {
             field_pcs_commitment: self.field_pcs_commitment,
             field_tables: self.field_tables,
             packed_mosaic: self.packed_mosaic,
+            rom_ring_switch: self.rom_ring_switch,
             commitment: self
                 .commitment
                 .clone()
@@ -3418,6 +3534,10 @@ impl<'a> UnifiedVerifyContext<'a> {
                 self.proof.shift_router_index,
                 self.proof.store_router_index,
                 packed,
+                self.proof
+                    .packed_mosaic
+                    .as_ref()
+                    .zip(self.proof.rom_ring_switch.as_ref()),
             )?;
             for (point, values) in links {
                 self.points.push(point);

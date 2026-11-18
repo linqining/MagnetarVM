@@ -1270,6 +1270,9 @@ pub struct UnifiedTraceProof {
     /// Packed-mosaic descriptor when the prover committed the packed plan.
     #[serde(default)]
     pub packed_mosaic: Option<magnetar_pcs::packed_mosaic::PackedMosaicDescriptor>,
+    /// Ring-switch proof for the packed ROM bit claims.
+    #[serde(default)]
+    pub rom_ring_switch: Option<magnetar_proof::RingSwitchClaimsProof>,
     pub table_batches: Vec<TableBatchProof>,
     pub width: usize,
     pub commitment: P3MosaicCommitment,
@@ -3579,6 +3582,10 @@ pub(crate) fn shout_router_link_claims(
     shift_index: Option<usize>,
     store_index: Option<usize>,
     packed: &crate::packed_shout::PackedShoutProof,
+    packed_mosaic: Option<(
+        &magnetar_pcs::packed_mosaic::PackedMosaicDescriptor,
+        &magnetar_proof::RingSwitchClaimsProof,
+    )>,
 ) -> Result<Vec<(magnetar_pcs::P3MosaicPoint, Vec<F2_128>)>, RuntimeError> {
     let link = &packed.claims.link_evals;
     if link.len() != 12 {
@@ -3594,15 +3601,65 @@ pub(crate) fn shout_router_link_claims(
     let point = packed.claims.link_point.clone();
     let mut out = Vec::new();
     if commitment.tables.len() > rom_index {
-        out.push((
-            magnetar_pcs::P3MosaicPoint {
-                table: rom_index,
-                point: packed.claims.read_address_point.clone(),
-                columns: (0..packed.claims.column_evals.len()).collect(),
-                next_columns: Vec::new(),
-            },
-            packed.claims.column_evals.clone(),
-        ));
+        if let Some((descriptor, ring_switch)) = packed_mosaic {
+            // Packed path: the bit columns are ring-switched to the packed
+            // table; the scalar columns stay on the scalar table.
+            let mapping = descriptor.mapping.get(rom_index).ok_or_else(|| {
+                RuntimeError::Proof("packed mosaic descriptor lacks the ROM table".into())
+            })?;
+            let bit_values: Vec<F2_128> = mapping
+                .bit_columns
+                .iter()
+                .map(|index| packed.claims.column_evals[*index])
+                .collect();
+            let backend = magnetar_pcs::P3BatchColumnPcs::new(
+                magnetar_pcs::P3BinaryPcs::with_params(100, 2, 21, 2),
+            );
+            let switch = magnetar_proof::BatchedRingSwitch::new(backend);
+            let claims = switch
+                .verify_claims(&packed.claims.read_address_point, &bit_values, ring_switch)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?
+                .ok_or_else(|| {
+                    RuntimeError::Proof("packed ROM ring-switch claims rejected".into())
+                })?;
+            if let Some(table) = mapping.packed_table {
+                out.push((
+                    magnetar_pcs::P3MosaicPoint {
+                        table,
+                        point: claims.ry.clone(),
+                        columns: (0..claims.packed_values.len()).collect(),
+                        next_columns: Vec::new(),
+                    },
+                    claims.packed_values.clone(),
+                ));
+            }
+            if let Some(table) = mapping.scalar_table {
+                let scalar_values: Vec<F2_128> = mapping
+                    .scalar_columns
+                    .iter()
+                    .map(|index| packed.claims.column_evals[*index])
+                    .collect();
+                out.push((
+                    magnetar_pcs::P3MosaicPoint {
+                        table,
+                        point: packed.claims.read_address_point.clone(),
+                        columns: (0..scalar_values.len()).collect(),
+                        next_columns: Vec::new(),
+                    },
+                    scalar_values,
+                ));
+            }
+        } else {
+            out.push((
+                magnetar_pcs::P3MosaicPoint {
+                    table: rom_index,
+                    point: packed.claims.read_address_point.clone(),
+                    columns: (0..packed.claims.column_evals.len()).collect(),
+                    next_columns: Vec::new(),
+                },
+                packed.claims.column_evals.clone(),
+            ));
+        }
     }
     if let Some(index) = shift_index {
         let total = commitment.tables[index].num_columns;
@@ -3826,6 +3883,10 @@ pub(crate) fn verify_core_statement_with_access_claims(
             proof.shift_router_index,
             proof.store_router_index,
             packed,
+            proof
+                .packed_mosaic
+                .as_ref()
+                .zip(proof.rom_ring_switch.as_ref()),
         )?;
         for (point, link_values) in links {
             points.push(point);

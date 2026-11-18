@@ -431,3 +431,18 @@ With that, the packed prover fails at `witness has 65536 values, expected
 the index remapping (old table -> packed/scalar table) plus the claim split for
 mixed tables (bit columns to the packed table, scalar columns to the scalar
 table).
+
+
+## 13. ROM claim split wired (prover + verifier)
+
+The packed path now splits the ROM claim: the bit columns are ring-switched
+(`open_claims` in the prover, `verify_claims` in the verifier) to the packed
+table, and the scalar columns stay on the scalar table. The ring-switch proof
+travels in `UnifiedTraceProof.rom_ring_switch`, and the packed descriptor in
+`packed_mosaic`.
+
+With that, the packed prover reaches verification and fails at
+`core opening rejected`: the twist address-table claims are still generated for
+the unpacked address tables, so they need the same ring-switch treatment (the
+address tables are all-bit, so they pack into one packed table). That is the
+next wiring step.
