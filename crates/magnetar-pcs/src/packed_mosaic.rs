@@ -55,6 +55,36 @@ pub fn pack_bit_column(column: &[F2_128]) -> Vec<F2_128> {
         .collect()
 }
 
+/// Pack two 64-bit fields per cell (little-endian low field first).
+pub fn pack_word_pairs(values: &[F2_128]) -> Vec<F2_128> {
+    values
+        .chunks(2)
+        .map(|pair| {
+            let low = pair[0].value();
+            let high = pair.get(1).map_or(0, |value| value.value());
+            F2_128::from(low | (high << 64))
+        })
+        .collect()
+}
+
+/// Build the packed plan for a table set, packing the trace table's word pairs.
+///
+/// The trace table is one column of eight 64-bit fields per cycle; two fields
+/// fit in one 128-bit cell, so it halves. Other tables pack their bit-valued
+/// columns 128:1 as in [`plan`].
+pub fn plan_with_trace(tables: &[P3MosaicTable], trace_index: usize) -> PackedMosaicPlan {
+    let mut plan = plan(tables);
+    if let Some(table) = plan.tables.get_mut(trace_index) {
+        if table.table.columns.len() == 1 {
+            let packed = pack_word_pairs(&table.table.columns[0]);
+            plan.packed_cells -= table.table.columns[0].len();
+            plan.packed_cells += packed.len();
+            table.table.columns = vec![packed];
+        }
+    }
+    plan
+}
+
 /// Build the packed plan for a table set.
 pub fn plan(tables: &[P3MosaicTable]) -> PackedMosaicPlan {
     let mut packed_tables = Vec::with_capacity(tables.len());

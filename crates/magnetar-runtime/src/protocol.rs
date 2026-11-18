@@ -2252,7 +2252,10 @@ impl<'a> UnifiedProveContext<'a> {
         if std::env::var_os("MAGNETAR_PACKED_MOSAIC_MEASURE").is_some() {
             // Measurement-only: commit the packed plan and report its size, then
             // continue with the unpacked commit so the proof stays valid.
-            let plan = magnetar_pcs::packed_mosaic::plan(&self.mosaic_tables);
+            let plan = magnetar_pcs::packed_mosaic::plan_with_trace(
+                &self.mosaic_tables,
+                self.trace_index,
+            );
             let packed_tables: Vec<_> = plan.tables.iter().map(|table| table.table.clone()).collect();
             let started = std::time::Instant::now();
             let _ = self.pcs.commit_mosaic(&packed_tables);
