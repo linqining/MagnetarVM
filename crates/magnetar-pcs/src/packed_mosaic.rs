@@ -28,9 +28,24 @@ pub struct PackedTable {
     pub rows: usize,
 }
 
+/// Where one original table's columns went in the packed plan.
+pub struct TableMapping {
+    /// Index of the packed bit table (if the table had bit columns).
+    pub packed_table: Option<usize>,
+    /// Index of the scalar table (if the table had scalar columns).
+    pub scalar_table: Option<usize>,
+    /// Original column indices that were packed, in packed-column order.
+    pub bit_columns: Vec<usize>,
+    /// Original column indices kept as scalars, in scalar-column order.
+    pub scalar_columns: Vec<usize>,
+    /// Whether the table's single column was word-pair packed (the trace).
+    pub word_pairs: bool,
+}
+
 /// The packed plan for a mosaic table set.
 pub struct PackedMosaicPlan {
     pub tables: Vec<PackedTable>,
+    pub mapping: Vec<TableMapping>,
     pub unpacked_cells: usize,
     pub packed_cells: usize,
 }
@@ -80,6 +95,9 @@ pub fn plan_with_trace(tables: &[P3MosaicTable], trace_index: usize) -> PackedMo
             plan.packed_cells -= table.table.columns[0].len();
             plan.packed_cells += packed.len();
             table.table.columns = vec![packed];
+            if let Some(mapping) = plan.mapping.get_mut(trace_index) {
+                mapping.word_pairs = true;
+            }
         }
     }
     plan
@@ -88,6 +106,7 @@ pub fn plan_with_trace(tables: &[P3MosaicTable], trace_index: usize) -> PackedMo
 /// Build the packed plan for a table set.
 pub fn plan(tables: &[P3MosaicTable]) -> PackedMosaicPlan {
     let mut packed_tables = Vec::with_capacity(tables.len());
+    let mut mapping = Vec::with_capacity(tables.len());
     let mut unpacked_cells = 0usize;
     let mut packed_cells = 0usize;
     for table in tables {
@@ -117,18 +136,23 @@ pub fn plan(tables: &[P3MosaicTable]) -> PackedMosaicPlan {
         }
         // A mosaic table needs equally long columns, so a mixed table splits
         // into a packed bit table and a scalar table.
+        let mut packed_table = None;
+        let mut scalar_table = None;
+        let mut scalar_columns_out = Vec::new();
         if !packed_columns.is_empty() {
             packed_cells += packed_columns[0].len() * packed_columns.len();
+            packed_table = Some(packed_tables.len());
             packed_tables.push(PackedTable {
                 table: P3MosaicTable {
                     columns: packed_columns,
                 },
-                bit_columns,
+                bit_columns: bit_columns.clone(),
                 rows,
             });
         }
         if !scalar_columns.is_empty() {
             packed_cells += rows * scalar_columns.len();
+            scalar_table = Some(packed_tables.len());
             packed_tables.push(PackedTable {
                 table: P3MosaicTable {
                     columns: scalar_columns,
@@ -136,10 +160,24 @@ pub fn plan(tables: &[P3MosaicTable]) -> PackedMosaicPlan {
                 bit_columns: Vec::new(),
                 rows,
             });
+            // Recover the original scalar column indices in order.
+            for (index, column) in table.columns.iter().enumerate() {
+                if !bit_columns.contains(&index) {
+                    scalar_columns_out.push(index);
+                }
+            }
         }
+        mapping.push(TableMapping {
+            packed_table,
+            scalar_table,
+            bit_columns,
+            scalar_columns: scalar_columns_out,
+            word_pairs: false,
+        });
     }
     PackedMosaicPlan {
         tables: packed_tables,
+        mapping,
         unpacked_cells,
         packed_cells,
     }
@@ -161,10 +199,18 @@ mod tests {
         };
         let plan = plan(&[table]);
         assert_eq!(plan.unpacked_cells, rows * 2);
-        // 256 bits -> 2 packed cells, plus 256 scalar cells.
+        // 256 bits -> 2 packed cells, plus 256 scalar cells, in two tables.
         assert_eq!(plan.packed_cells, 2 + rows);
+        assert_eq!(plan.tables.len(), 2);
         assert_eq!(plan.tables[0].bit_columns, vec![0]);
-        assert_eq!(plan.tables[0].table.columns.len(), 2);
+        assert_eq!(plan.tables[0].table.columns.len(), 1);
         assert_eq!(plan.tables[0].table.columns[0].len(), 2);
+        assert_eq!(plan.tables[1].table.columns.len(), 1);
+        assert_eq!(plan.tables[1].table.columns[0].len(), rows);
+        let mapping = &plan.mapping[0];
+        assert_eq!(mapping.packed_table, Some(0));
+        assert_eq!(mapping.scalar_table, Some(1));
+        assert_eq!(mapping.bit_columns, vec![0]);
+        assert_eq!(mapping.scalar_columns, vec![1]);
     }
 }
