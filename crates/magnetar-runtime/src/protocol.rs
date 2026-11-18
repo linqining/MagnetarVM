@@ -342,6 +342,8 @@ pub struct ProofBundle {
     pub store_router_index: Option<usize>,
     pub trace_index: usize,
     pub trace_claims: Vec<(magnetar_pcs::P3MosaicPoint, Vec<F2_128>)>,
+    /// Packed-mosaic descriptor when the packed plan was committed.
+    pub packed_mosaic: Option<magnetar_pcs::packed_mosaic::PackedMosaicDescriptor>,
     pub table_batches: Vec<crate::TableBatchProof>,
     pub width: usize,
     pub commitment: P3MosaicCommitment,
@@ -395,6 +397,7 @@ impl ProofBundle {
             store_router_index: proof.store_router_index,
             trace_index: proof.trace_index,
             trace_claims: proof.trace_claims.clone(),
+            packed_mosaic: proof.packed_mosaic.clone(),
             table_batches: proof.table_batches.clone(),
             width: proof.width,
             commitment: proof.commitment.clone(),
@@ -452,6 +455,7 @@ impl ProofBundle {
             store_router_index: self.store_router_index,
             trace_index: self.trace_index,
             trace_claims: self.trace_claims,
+            packed_mosaic: self.packed_mosaic,
             table_batches: self.table_batches,
             width: self.width,
             commitment: self.commitment,
@@ -1395,6 +1399,8 @@ pub(crate) struct UnifiedProveContext<'a> {
     field_opening: Option<magnetar_pcs::P3MosaicOpening>,
     field_pcs_commitment: Option<P3MosaicCommitment>,
     field_tables: Vec<usize>,
+    /// Packed-mosaic descriptor when the packed plan was committed.
+    packed_mosaic: Option<magnetar_pcs::packed_mosaic::PackedMosaicDescriptor>,
 }
 
 #[allow(clippy::type_complexity)]
@@ -2236,6 +2242,7 @@ impl<'a> UnifiedProveContext<'a> {
             field_opening: None,
             field_pcs_commitment: None,
             field_tables: Vec::new(),
+            packed_mosaic: None,
         })
     }
 
@@ -2254,10 +2261,11 @@ impl<'a> UnifiedProveContext<'a> {
             // unpacked tables. The claim wiring (ring-switch -> mosaic opening)
             // is not in place yet, so this is expected to fail at the opening;
             // it identifies the exact wiring points.
-            let plan = magnetar_pcs::packed_mosaic::plan_with_trace(
-                &self.mosaic_tables,
-                self.trace_index,
-            );
+            // The proof path packs only the bit-valued tables: the trace
+            // word-pair packing is not evaluation-preserving (see
+            // docs/TRACE_FREE_VERIFY_GAP.md §11).
+            let plan = magnetar_pcs::packed_mosaic::plan(&self.mosaic_tables);
+            self.packed_mosaic = Some(plan.descriptor());
             self.mosaic_tables = plan.tables.into_iter().map(|table| table.table).collect();
         }
         if std::env::var_os("MAGNETAR_PACKED_MOSAIC_MEASURE").is_some() {
@@ -2928,6 +2936,7 @@ impl<'a> UnifiedProveContext<'a> {
             field_opening: self.field_opening,
             field_pcs_commitment: self.field_pcs_commitment,
             field_tables: self.field_tables,
+            packed_mosaic: self.packed_mosaic,
             commitment: self
                 .commitment
                 .clone()

@@ -415,3 +415,19 @@ bit-valued tables (twist address tables, ROM bit columns), where the bit-level
 ring-switch applies, and keep the trace table unpacked. The word-pair packing
 stays a memory-measurement option (`plan_with_trace`), not a proof-path
 transformation.
+
+
+## 12. Packed descriptor in the proof; index remapping is the next blocker
+
+The packed plan's serializable descriptor (`PackedMosaicDescriptor`: table
+shapes + per-table mapping) is now carried in the proof
+(`UnifiedTraceProof.packed_mosaic`, serde-defaulted) and stored by the prover
+when `MAGNETAR_PACKED_MOSAIC=1` commits the packed plan. The proof path uses
+`plan` (bit tables only; the trace stays unpacked, §11).
+
+With that, the packed prover fails at `witness has 65536 values, expected
+524288`: splitting mixed tables shifts the table indices, so the context's
+`trace_index`/`rom_index`/... still point at the old positions. The next step is
+the index remapping (old table -> packed/scalar table) plus the claim split for
+mixed tables (bit columns to the packed table, scalar columns to the scalar
+table).

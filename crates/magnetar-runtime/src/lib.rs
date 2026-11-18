@@ -1267,6 +1267,9 @@ pub struct UnifiedTraceProof {
     pub store_router_index: Option<usize>,
     pub trace_index: usize,
     pub trace_claims: Vec<(magnetar_pcs::P3MosaicPoint, Vec<F2_128>)>,
+    /// Packed-mosaic descriptor when the prover committed the packed plan.
+    #[serde(default)]
+    pub packed_mosaic: Option<magnetar_pcs::packed_mosaic::PackedMosaicDescriptor>,
     pub table_batches: Vec<TableBatchProof>,
     pub width: usize,
     pub commitment: P3MosaicCommitment,

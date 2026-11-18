@@ -183,6 +183,62 @@ pub fn plan(tables: &[P3MosaicTable]) -> PackedMosaicPlan {
     }
 }
 
+/// Serializable shape of one packed table.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PackedTableShape {
+    pub num_variables: usize,
+    pub num_columns: usize,
+}
+
+/// Serializable mapping of one original table into the packed plan.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TableMappingDescriptor {
+    pub packed_table: Option<usize>,
+    pub scalar_table: Option<usize>,
+    pub bit_columns: Vec<usize>,
+    pub scalar_columns: Vec<usize>,
+    pub word_pairs: bool,
+}
+
+/// Serializable descriptor of the packed plan, carried by the proof so the
+/// verifier can map claims without the table values.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PackedMosaicDescriptor {
+    pub tables: Vec<PackedTableShape>,
+    pub mapping: Vec<TableMappingDescriptor>,
+}
+
+impl PackedMosaicPlan {
+    /// The serializable descriptor of this plan.
+    pub fn descriptor(&self) -> PackedMosaicDescriptor {
+        PackedMosaicDescriptor {
+            tables: self
+                .tables
+                .iter()
+                .map(|table| PackedTableShape {
+                    num_variables: table
+                        .table
+                        .columns
+                        .first()
+                        .map_or(0, |column| column.len().trailing_zeros() as usize),
+                    num_columns: table.table.columns.len(),
+                })
+                .collect(),
+            mapping: self
+                .mapping
+                .iter()
+                .map(|mapping| TableMappingDescriptor {
+                    packed_table: mapping.packed_table,
+                    scalar_table: mapping.scalar_table,
+                    bit_columns: mapping.bit_columns.clone(),
+                    scalar_columns: mapping.scalar_columns.clone(),
+                    word_pairs: mapping.word_pairs,
+                })
+                .collect(),
+        }
+    }
+}
+
 /// A claim on an original table, mapped into the packed plan.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MappedClaim {
