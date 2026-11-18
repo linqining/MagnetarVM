@@ -397,3 +397,21 @@ tables. Two findings:
   packed table must be ring-switched (`open_claims`/`verify_claims`) to a claim
   on the packed table, lifted to the mosaic point, and finished with
   `finish_claims` after the mosaic opening.
+
+
+## 11. Trace word-pair packing is not evaluation-preserving
+
+The trace table's word-pair packing (two 64-bit fields per 128-bit cell) is
+F2-linear on the bit pattern, but the multilinear extension does not commute
+with concatenation: the trace claims live on `log2(8C)` variables and the packed
+table on `log2(4C)`, and no point of the packed table reproduces the trace
+evaluation (the existing test
+`trace_word_pair_packing_is_not_evaluation_preserving` pins this). So the trace
+claim cannot be reduced to the packed table without a new argument (the M4b
+work).
+
+Consequence for the packed-mosaic redesign: the proof path should pack only the
+bit-valued tables (twist address tables, ROM bit columns), where the bit-level
+ring-switch applies, and keep the trace table unpacked. The word-pair packing
+stays a memory-measurement option (`plan_with_trace`), not a proof-path
+transformation.
