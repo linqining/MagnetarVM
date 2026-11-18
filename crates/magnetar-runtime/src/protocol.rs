@@ -346,6 +346,8 @@ pub struct ProofBundle {
     pub packed_mosaic: Option<magnetar_pcs::packed_mosaic::PackedMosaicDescriptor>,
     /// Ring-switch proof for the packed ROM bit claims.
     pub rom_ring_switch: Option<magnetar_proof::RingSwitchClaimsProof>,
+    /// Ring-switch proof for the packed address bit claims.
+    pub address_ring_switch: Option<magnetar_proof::RingSwitchClaimsProof>,
     pub table_batches: Vec<crate::TableBatchProof>,
     pub width: usize,
     pub commitment: P3MosaicCommitment,
@@ -401,6 +403,7 @@ impl ProofBundle {
             trace_claims: proof.trace_claims.clone(),
             packed_mosaic: proof.packed_mosaic.clone(),
             rom_ring_switch: proof.rom_ring_switch.clone(),
+            address_ring_switch: proof.address_ring_switch.clone(),
             table_batches: proof.table_batches.clone(),
             width: proof.width,
             commitment: proof.commitment.clone(),
@@ -460,6 +463,7 @@ impl ProofBundle {
             trace_claims: self.trace_claims,
             packed_mosaic: self.packed_mosaic,
             rom_ring_switch: self.rom_ring_switch,
+            address_ring_switch: self.address_ring_switch,
             table_batches: self.table_batches,
             width: self.width,
             commitment: self.commitment,
@@ -1411,6 +1415,10 @@ pub(crate) struct UnifiedProveContext<'a> {
     rom_ring_switch: Option<magnetar_proof::RingSwitchClaimsProof>,
     /// The ROM table's bit columns as packed bits (prover side, packed path).
     rom_bit_columns: Option<Vec<magnetar_proof::PackedBits>>,
+    /// The RAM address table's bit columns as packed bits (packed path).
+    address_bit_columns: Option<Vec<magnetar_proof::PackedBits>>,
+    /// Ring-switch proof for the packed address bit claims.
+    address_ring_switch: Option<magnetar_proof::RingSwitchClaimsProof>,
 }
 
 #[allow(clippy::type_complexity)]
@@ -2256,6 +2264,8 @@ impl<'a> UnifiedProveContext<'a> {
             packed_plan: None,
             rom_ring_switch: None,
             rom_bit_columns: None,
+            address_bit_columns: None,
+            address_ring_switch: None,
         })
     }
 
@@ -2306,11 +2316,22 @@ impl<'a> UnifiedProveContext<'a> {
             if let Some(index) = remap(self.trace_index) {
                 self.trace_index = index;
             }
-            if let Some(index) = remap(self.ram_index) {
-                self.ram_index = index;
-            }
-            if let Some(index) = remap(self.register_index) {
-                self.register_index = index;
+            // The RAM address table's bit columns are needed for the
+            // ring-switch; the twist claims are remapped after generation.
+            if let Some(table) = self.mosaic_tables.get(self.ram_index) {
+                let bits = table
+                    .columns
+                    .iter()
+                    .filter(|column| column.iter().all(|value| value.value() <= 1))
+                    .map(|column| {
+                        magnetar_proof::PackedBits::from_bools(
+                            &column.iter().map(|value| value.value() == 1).collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                if !bits.is_empty() {
+                    self.address_bit_columns = Some(bits);
+                }
             }
             self.packed_plan = Some(plan);
             self.mosaic_tables = self
@@ -2383,6 +2404,88 @@ impl<'a> UnifiedProveContext<'a> {
         Ok(())
     }
 
+    /// Remap the twist claims into the packed plan: all-bit tables are
+    /// ring-switched to their packed table, all-scalar tables keep their claims
+    /// on the scalar table.
+    fn remap_packed_claims(
+        &mut self,
+        points: Vec<magnetar_pcs::P3MosaicPoint>,
+        values: Vec<Vec<F2_128>>,
+    ) -> Result<(Vec<magnetar_pcs::P3MosaicPoint>, Vec<Vec<F2_128>>), RuntimeError> {
+        let Some(plan) = self.packed_plan.as_ref() else {
+            return Ok((points, values));
+        };
+        let mut out_points = Vec::with_capacity(points.len());
+        let mut out_values = Vec::with_capacity(values.len());
+        // Group the address claims by point so one ring-switch covers them.
+        let mut address_groups: Vec<(Vec<F2_128>, Vec<usize>, Vec<F2_128>)> = Vec::new();
+        for (point, values) in points.into_iter().zip(values) {
+            let Some(mapping) = plan.mapping.get(point.table) else {
+                continue;
+            };
+            if mapping.word_pairs {
+                out_points.push(point);
+                out_values.push(values);
+                continue;
+            }
+            if mapping.packed_table.is_some() && mapping.scalar_table.is_none() {
+                if point.table == self.ram_index {
+                    if let Some(group) = address_groups
+                        .iter_mut()
+                        .find(|(group_point, _, _)| *group_point == point.point)
+                    {
+                        group.1.extend(point.columns.iter().copied());
+                        group.2.extend(values.iter().copied());
+                    } else {
+                        address_groups.push((point.point.clone(), point.columns.clone(), values.clone()));
+                    }
+                    continue;
+                }
+            }
+            if let Some(table) = mapping.scalar_table {
+                out_points.push(magnetar_pcs::P3MosaicPoint {
+                    table,
+                    point: point.point,
+                    columns: point.columns,
+                    next_columns: point.next_columns,
+                });
+                out_values.push(values);
+            }
+        }
+        // Ring-switch each address group to the packed table.
+        if let Some(bits) = self.address_bit_columns.as_ref() {
+            let backend = magnetar_pcs::P3BatchColumnPcs::new(
+                magnetar_pcs::P3BinaryPcs::with_params(100, 2, 21, 2),
+            );
+            let switch = magnetar_proof::BatchedRingSwitch::new(backend);
+            for (point, columns, values) in address_groups {
+                let (claims, ry, proof) = switch
+                    .open_claims(bits, &point)
+                    .map_err(|error| RuntimeError::Proof(error.to_string()))?;
+                let expected: Vec<F2_128> = columns.iter().map(|index| values[*index]).collect();
+                if claims != expected {
+                    return Err(RuntimeError::Proof(
+                        "packed address claims disagree with the twist claims".into(),
+                    ));
+                }
+                self.address_ring_switch = Some(proof.clone());
+                let packed_table = plan
+                    .mapping
+                    .get(self.ram_index)
+                    .and_then(|mapping| mapping.packed_table)
+                    .ok_or_else(|| RuntimeError::Proof("packed address table missing".into()))?;
+                out_points.push(magnetar_pcs::P3MosaicPoint {
+                    table: packed_table,
+                    point: ry,
+                    columns: (0..proof.packed_values.len()).collect(),
+                    next_columns: Vec::new(),
+                });
+                out_values.push(proof.packed_values.clone());
+            }
+        }
+        Ok((out_points, out_values))
+    }
+
     pub(crate) fn prove_access(&mut self) -> Result<(), RuntimeError> {
         let commitment = self
             .commitment
@@ -2432,6 +2535,7 @@ impl<'a> UnifiedProveContext<'a> {
             }
         };
         self.access = Some(access);
+        let (points, values) = self.remap_packed_claims(points, values)?;
         self.points = points;
         self.values = values;
         self.register_claims = Some(register_claims);
@@ -3053,6 +3157,7 @@ impl<'a> UnifiedProveContext<'a> {
             field_tables: self.field_tables,
             packed_mosaic: self.packed_mosaic,
             rom_ring_switch: self.rom_ring_switch,
+            address_ring_switch: self.address_ring_switch,
             commitment: self
                 .commitment
                 .clone()

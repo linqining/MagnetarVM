@@ -1273,6 +1273,9 @@ pub struct UnifiedTraceProof {
     /// Ring-switch proof for the packed ROM bit claims.
     #[serde(default)]
     pub rom_ring_switch: Option<magnetar_proof::RingSwitchClaimsProof>,
+    /// Ring-switch proof for the packed address bit claims.
+    #[serde(default)]
+    pub address_ring_switch: Option<magnetar_proof::RingSwitchClaimsProof>,
     pub table_batches: Vec<TableBatchProof>,
     pub width: usize,
     pub commitment: P3MosaicCommitment,
@@ -3576,6 +3579,75 @@ pub(crate) fn verify_table_batch_claims(
     Ok(())
 }
 
+/// Remap the twist claims into the packed plan on the verifier side.
+fn remap_packed_claims_verifier(
+    descriptor: &magnetar_pcs::packed_mosaic::PackedMosaicDescriptor,
+    ring_switch: &magnetar_proof::RingSwitchClaimsProof,
+    ram_index: usize,
+    points: Vec<magnetar_pcs::P3MosaicPoint>,
+    values: Vec<Vec<F2_128>>,
+) -> Result<(Vec<magnetar_pcs::P3MosaicPoint>, Vec<Vec<F2_128>>), RuntimeError> {
+    let mut out_points = Vec::with_capacity(points.len());
+    let mut out_values = Vec::with_capacity(values.len());
+    let mut address_groups: Vec<(Vec<F2_128>, Vec<usize>, Vec<F2_128>)> = Vec::new();
+    for (point, values) in points.into_iter().zip(values) {
+        let Some(mapping) = descriptor.mapping.get(point.table) else {
+            continue;
+        };
+        if mapping.word_pairs {
+            out_points.push(point);
+            out_values.push(values);
+            continue;
+        }
+        if mapping.packed_table.is_some() && mapping.scalar_table.is_none() && point.table == ram_index
+        {
+            if let Some(group) = address_groups
+                .iter_mut()
+                .find(|(group_point, _, _)| *group_point == point.point)
+            {
+                group.1.extend(point.columns.iter().copied());
+                group.2.extend(values.iter().copied());
+            } else {
+                address_groups.push((point.point.clone(), point.columns.clone(), values.clone()));
+            }
+            continue;
+        }
+        if let Some(table) = mapping.scalar_table {
+            out_points.push(magnetar_pcs::P3MosaicPoint {
+                table,
+                point: point.point,
+                columns: point.columns,
+                next_columns: point.next_columns,
+            });
+            out_values.push(values);
+        }
+    }
+    let backend = magnetar_pcs::P3BatchColumnPcs::new(
+        magnetar_pcs::P3BinaryPcs::with_params(100, 2, 21, 2),
+    );
+    let switch = magnetar_proof::BatchedRingSwitch::new(backend);
+    for (point, columns, values) in address_groups {
+        let expected: Vec<F2_128> = columns.iter().map(|index| values[*index]).collect();
+        let claims = switch
+            .verify_claims(&point, &expected, ring_switch)
+            .map_err(|error| RuntimeError::Proof(error.to_string()))?
+            .ok_or_else(|| RuntimeError::Proof("packed address ring-switch rejected".into()))?;
+        let packed_table = descriptor
+            .mapping
+            .get(ram_index)
+            .and_then(|mapping| mapping.packed_table)
+            .ok_or_else(|| RuntimeError::Proof("packed address table missing".into()))?;
+        out_points.push(magnetar_pcs::P3MosaicPoint {
+            table: packed_table,
+            point: claims.ry.clone(),
+            columns: (0..claims.packed_values.len()).collect(),
+            next_columns: Vec::new(),
+        });
+        out_values.push(claims.packed_values.clone());
+    }
+    Ok((out_points, out_values))
+}
+
 pub(crate) fn shout_router_link_claims(
     commitment: &P3MosaicCommitment,
     rom_index: usize,
@@ -3774,6 +3846,19 @@ pub(crate) fn verify_core_statement_with_access_claims(
     let (mut points, mut values) = ram_claims;
     points.extend(register_claims.0);
     values.extend(register_claims.1);
+    if let (Some(descriptor), Some(ring_switch)) =
+        (&proof.packed_mosaic, &proof.address_ring_switch)
+    {
+        let (remapped_points, remapped_values) = remap_packed_claims_verifier(
+            descriptor,
+            ring_switch,
+            proof.ram_index,
+            points,
+            values,
+        )?;
+        points = remapped_points;
+        values = remapped_values;
+    }
     if let (Some(cpu_ry), Some(cpu_value)) = (ry, cpu_value) {
         points.push(magnetar_pcs::P3MosaicPoint {
             table: 0,

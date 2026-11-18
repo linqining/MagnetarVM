@@ -446,3 +446,19 @@ With that, the packed prover reaches verification and fails at
 the unpacked address tables, so they need the same ring-switch treatment (the
 address tables are all-bit, so they pack into one packed table). That is the
 next wiring step.
+
+
+## 14. Address claims ring-switch wired (prover + verifier)
+
+The packed path now remaps the twist claims: the RAM address table's bit claims
+are grouped by point and ring-switched (`open_claims` in the prover,
+`verify_claims` in the verifier) to the packed address table, the scalar tables
+keep their claims on the scalar tables, and the ring-switch proof travels in
+`UnifiedTraceProof.address_ring_switch`.
+
+The packed prover now fails at `point has 5 coordinates, expected 16`: a claim
+whose point is over the address dimension (5) is being checked against a table
+with 16 variables (the address table). The likely culprit is the initial/final
+table claims (point `rk`, length `address_bits`) or the address claim point
+length; the claim remapping needs to keep those on their own tables. The normal
+path is unaffected (proof 1,239,048 B, verify 10.9 ms).
