@@ -321,3 +321,29 @@ At 2^18 the peak is dominated by the context/allocator, so the codeword spill
 shows no measurable change there; the win grows with the codeword size (2^22
 projects to several GiB). The remaining transients are the folded round
 codewords and the context tables.
+
+
+## 7. Context-table bit-packing via ring-switch dedup: measured, not a win
+
+The next step was to pack the context tables (trace/twist/Shout) by extending the
+M4a statement-level dedup to the RAM address table: drop it from the mosaic,
+commit its packed bits in the RAM Access proof, ring-switch its claims, and bind
+the RAM bits commitment into the statement root (the register dedup pattern).
+
+Implemented and verified at 2^16 (proof 1,239,045 B, verify passes), but at 2^20
+it is a regression:
+
+| 2^20 (OOT codeword on) | peak footprint | peak RSS | verify |
+| --- | ---: | ---: | ---: |
+| register dedup only (current) | **9.93 GiB** | **5.55 GiB** | 14.8-16.7 ms |
+| + RAM address dedup | 11.38 GiB | 9.28 GiB | 41.1 ms |
+
+The second Access proof's packed-bit commitment and ring-switch transients cost
+more than the ~192 MiB the dropped RAM address table saves, and the extra
+ring-switch verification doubles the wall time. Reverted.
+
+Conclusion: per-table ring-switch dedup does not pay off for the context tables.
+The remaining structural option is a packed-mosaic PCS (ring-switch for every
+bit-valued table in one commitment), which is a larger redesign with uncertain
+payoff; the cheaper remaining wins are releasing the trace/witness after table
+construction and allocator pressure relief.
