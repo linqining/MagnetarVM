@@ -2249,6 +2249,17 @@ impl<'a> UnifiedProveContext<'a> {
             }
             eprintln!("mosaic bytes: {:.2} GiB", bytes as f64 / (1u64 << 30) as f64);
         }
+        if std::env::var_os("MAGNETAR_PACKED_MOSAIC").is_some() {
+            // Packed-mosaic experiment: commit the packed plan instead of the
+            // unpacked tables. The claim wiring (ring-switch -> mosaic opening)
+            // is not in place yet, so this is expected to fail at the opening;
+            // it identifies the exact wiring points.
+            let plan = magnetar_pcs::packed_mosaic::plan_with_trace(
+                &self.mosaic_tables,
+                self.trace_index,
+            );
+            self.mosaic_tables = plan.tables.into_iter().map(|table| table.table).collect();
+        }
         if std::env::var_os("MAGNETAR_PACKED_MOSAIC_MEASURE").is_some() {
             // Measurement-only: commit the packed plan and report its size, then
             // continue with the unpacked commit so the proof stays valid.

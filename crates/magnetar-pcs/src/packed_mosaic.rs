@@ -104,6 +104,17 @@ pub fn plan(tables: &[P3MosaicTable]) -> PackedMosaicPlan {
                 scalar_columns.push(column.clone());
             }
         }
+        // The PCS needs at least two cells per column, so tiny bit tables stay
+        // unpacked.
+        if !packed_columns.is_empty() && packed_columns[0].len() < 2 {
+            for (index, column) in table.columns.iter().enumerate() {
+                if bit_columns.contains(&index) {
+                    scalar_columns.push(column.clone());
+                }
+            }
+            bit_columns.clear();
+            packed_columns.clear();
+        }
         if !packed_columns.is_empty() {
             packed_cells += packed_columns[0].len() * packed_columns.len();
         }

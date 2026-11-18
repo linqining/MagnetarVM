@@ -378,3 +378,18 @@ path). At 2^18 with M4a dedup:
   cell): **3,160,114 cells (-47.6 %)**.
 
 The verifier claim wiring is still the remaining step.
+
+
+## 10. Packed commit switch: the exact wiring point
+
+`MAGNETAR_PACKED_MOSAIC=1` now commits the packed plan instead of the unpacked
+tables. Two findings:
+
+- tiny bit tables (packed length < 2 cells) must stay unpacked, because the PCS
+  needs at least two cells per column;
+- with that fixed, the prover fails at `vector lengths do not match` in the
+  opening: the mosaic claims (points/values) are still generated for the
+  unpacked tables. That is exactly the claim-wiring point: every bit claim on a
+  packed table must be ring-switched (`open_claims`/`verify_claims`) to a claim
+  on the packed table, lifted to the mosaic point, and finished with
+  `finish_claims` after the mosaic opening.
