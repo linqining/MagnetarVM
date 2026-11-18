@@ -183,9 +183,122 @@ pub fn plan(tables: &[P3MosaicTable]) -> PackedMosaicPlan {
     }
 }
 
+/// A claim on an original table, mapped into the packed plan.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MappedClaim {
+    /// A scalar claim: verify directly against the scalar table.
+    Scalar {
+        table: usize,
+        point: Vec<F2_128>,
+        columns: Vec<usize>,
+        values: Vec<F2_128>,
+    },
+    /// Bit claims at one point: ring-switch them to the packed table.
+    Bits {
+        table: usize,
+        point: Vec<F2_128>,
+        columns: Vec<usize>,
+        values: Vec<F2_128>,
+    },
+    /// The trace word-pair claim: needs the word-pair reduction.
+    WordPairs {
+        table: usize,
+        point: Vec<F2_128>,
+        value: F2_128,
+    },
+}
+
+/// Map a claim on an original table into the packed plan.
+///
+/// Scalar columns map directly to the scalar table; bit columns at the same
+/// point are grouped into one [`MappedClaim::Bits`] for the ring-switch; the
+/// trace table's column becomes [`MappedClaim::WordPairs`].
+pub fn map_claim(
+    plan: &PackedMosaicPlan,
+    old_table: usize,
+    point: &[F2_128],
+    columns: &[usize],
+    values: &[F2_128],
+) -> Vec<MappedClaim> {
+    let Some(mapping) = plan.mapping.get(old_table) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut bits = Vec::new();
+    let mut bit_values = Vec::new();
+    let mut scalars = Vec::new();
+    let mut scalar_values = Vec::new();
+    for (column, value) in columns.iter().zip(values) {
+        if mapping.word_pairs {
+            if let Some(table) = mapping.packed_table {
+                out.push(MappedClaim::WordPairs {
+                    table,
+                    point: point.to_vec(),
+                    value: *value,
+                });
+            }
+            continue;
+        }
+        if let Some(position) = mapping.bit_columns.iter().position(|index| index == column) {
+            bits.push(position);
+            bit_values.push(*value);
+        } else if let Some(position) = mapping
+            .scalar_columns
+            .iter()
+            .position(|index| index == column)
+        {
+            scalars.push(position);
+            scalar_values.push(*value);
+        }
+    }
+    if let (Some(table), false) = (mapping.packed_table, bits.is_empty()) {
+        out.push(MappedClaim::Bits {
+            table,
+            point: point.to_vec(),
+            columns: bits,
+            values: bit_values,
+        });
+    }
+    if let (Some(table), false) = (mapping.scalar_table, scalars.is_empty()) {
+        out.push(MappedClaim::Scalar {
+            table,
+            point: point.to_vec(),
+            columns: scalars,
+            values: scalar_values,
+        });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claims_map_to_the_packed_and_scalar_tables() {
+        let rows = 256usize;
+        let bits: Vec<F2_128> = (0..rows)
+            .map(|index| F2_128::from(((index * 7 + 3) % 2) as u64))
+            .collect();
+        let scalars: Vec<F2_128> = (0..rows).map(|index| F2_128::from(index as u64)).collect();
+        let table = P3MosaicTable {
+            columns: vec![bits, scalars],
+        };
+        let plan = plan(&[table]);
+        let point = vec![F2_128::from(1u64); 8];
+        let mapped = map_claim(&plan, 0, &point, &[0, 1], &[F2_128::from(1u64), F2_128::from(9u64)]);
+        assert_eq!(mapped.len(), 2);
+        assert!(matches!(
+            &mapped[0],
+            MappedClaim::Bits { table: 0, columns, values, .. }
+                if columns == &vec![0] && values == &vec![F2_128::from(1u64)]
+        ));
+        assert!(matches!(
+            &mapped[1],
+            MappedClaim::Scalar { table: 1, columns, values, .. }
+                if columns == &vec![0] && values == &vec![F2_128::from(9u64)]
+        ));
+    }
 
     #[test]
     fn packing_is_lossless_and_shrinks_bit_tables() {
