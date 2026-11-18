@@ -347,3 +347,20 @@ The remaining structural option is a packed-mosaic PCS (ring-switch for every
 bit-valued table in one commitment), which is a larger redesign with uncertain
 payoff; the cheaper remaining wins are releasing the trace/witness after table
 construction and allocator pressure relief.
+
+
+## 8. Packed-mosaic measurement (2^18, real table set)
+
+`m4a_pcs_peak` (`LOG=18`, `PACKED=0/1`) commits and streamed-opens the real
+table set with the packed plan:
+
+| 2^18 | tables | cells | stacked vars | message | peak RSS | footprint |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| unpacked | 12 | 9,175,198 | 24 | 256 MiB | 2,099 MiB | 2,091 MiB |
+| **packed** | 13 | **3,184,798 (-65 %)** | 22 | **64 MiB (-75 %)** | **851 MiB (-59 %)** | **798 MiB (-62 %)** |
+
+So the packed mosaic is a real ~60 % memory win on the PCS side. The remaining
+work is the verifier wiring: every bit claim on a packed table must be
+ring-switched to a claim on the packed table before the mosaic opening (the
+`BatchedRingSwitch` machinery exists for the Access proof; the mosaic needs the
+same reduction with the mosaic opening substituted for its own PCS opening).
