@@ -1221,6 +1221,204 @@ impl<P: BatchColumnPcs> BatchedRingSwitch<P> {
     pub fn commitment_bytes(&self, commitment: &P::Commitment) -> Vec<u8> {
         self.pcs.commitment_bytes(commitment)
     }
+
+    /// Prove the ring-switch claims without opening the packed columns.
+    ///
+    /// The packed columns are committed by the caller's own commitment (the
+    /// mosaic), so the caller verifies `packed_values` at `ry` with its own
+    /// opening and then calls [`Self::finish_claims`]. The transcript is
+    /// domain-separated from [`Self::open`] and does not absorb a commitment.
+    pub fn open_claims(
+        &self,
+        bit_columns: &[PackedBits],
+        point: &[F2_128],
+    ) -> Result<(Vec<F2_128>, RingSwitchClaimsProof), ProofError> {
+        if bit_columns.is_empty() {
+            return Err(ProofError::DimensionMismatch);
+        }
+        let high_bits = point.len().checked_sub(7).unwrap_or(0);
+        if high_bits == 0 {
+            return Err(ProofError::Pcs("ring-switch point size mismatch".into()));
+        }
+        let packed_columns: Vec<Vec<F2_128>> = bit_columns
+            .iter()
+            .map(rs_pack_bits)
+            .collect::<Result<Vec<_>, _>>()?;
+        if packed_columns
+            .iter()
+            .any(|packed| packed.len() != 1usize << high_bits)
+        {
+            return Err(ProofError::Pcs("ring-switch point size mismatch".into()));
+        }
+        let prefix = &point[..7];
+        let suffix = &point[7..];
+        let eq_suffix = rs_eq_vector(suffix);
+        let mut s_hat_vectors = Vec::with_capacity(packed_columns.len());
+        let mut claims = Vec::with_capacity(packed_columns.len());
+        for packed in &packed_columns {
+            let mut s_hat_v = vec![F2_128::from(0u64); 128];
+            for (high, &weight) in eq_suffix.iter().enumerate() {
+                let mut set = packed[high].value();
+                while set != 0 {
+                    let bit = set.trailing_zeros() as usize;
+                    s_hat_v[bit] = s_hat_v[bit] + weight;
+                    set &= set - 1;
+                }
+            }
+            claims.push(rs_evaluate(&s_hat_v, prefix));
+            s_hat_vectors.push(s_hat_v);
+        }
+        let mut transcript =
+            magnetar_transcript::Sha256Transcript::new("magnetar-ring-switch-batch-v2");
+        for value in point {
+            transcript.absorb("point", &value.value().to_le_bytes());
+        }
+        for s_hat_v in &s_hat_vectors {
+            for value in s_hat_v {
+                transcript.absorb("s-hat-v", &value.value().to_le_bytes());
+            }
+        }
+        let weights = (0..packed_columns.len())
+            .map(|_| rs_challenge_field(&mut transcript, "column-weight"))
+            .collect::<Vec<_>>();
+        let r_double = (0..7)
+            .map(|_| rs_challenge_field(&mut transcript, "row-batch"))
+            .collect::<Vec<_>>();
+        let eq_double = rs_eq_vector(&r_double);
+        let mut sumcheck_claim = F2_128::from(0u64);
+        for (s_hat_v, weight) in s_hat_vectors.iter().zip(&weights) {
+            let s_hat_u = rs_transpose128(s_hat_v);
+            let inner = s_hat_u
+                .iter()
+                .zip(&eq_double)
+                .fold(F2_128::from(0u64), |sum, (a, b)| sum + *a * *b);
+            sumcheck_claim = sumcheck_claim + *weight * inner;
+        }
+        let a_values = rs_eval_rs_eq_table(suffix, &eq_double);
+        let left_refs: Vec<&[F2_128]> = packed_columns.iter().map(Vec::as_slice).collect();
+        let right_refs: Vec<&[F2_128]> = (0..packed_columns.len())
+            .map(|_| a_values.as_slice())
+            .collect();
+        let (sumcheck, ry, _) = crate::prove_product2_batched(
+            &left_refs,
+            &right_refs,
+            &weights,
+            |round, values| rs_sumcheck_challenge(&mut transcript, round, values),
+        )?;
+        if sumcheck.claimed_sum != sumcheck_claim {
+            return Err(ProofError::Pcs(
+                "ring-switch sumcheck claim mismatch".into(),
+            ));
+        }
+        let packed_values = packed_columns
+            .iter()
+            .map(|packed| rs_evaluate(packed, &ry))
+            .collect::<Vec<_>>();
+        Ok((
+            claims,
+            RingSwitchClaimsProof {
+                s_hat_v: s_hat_vectors,
+                sumcheck,
+                packed_values,
+            },
+        ))
+    }
+
+    /// Verify the ring-switch sumcheck and return the packed claims.
+    ///
+    /// The caller checks `packed_values` at `ry` against its own commitment
+    /// (the mosaic opening) and then calls [`Self::finish_claims`].
+    pub fn verify_claims(
+        &self,
+        point: &[F2_128],
+        values: &[F2_128],
+        proof: &RingSwitchClaimsProof,
+    ) -> Result<Option<RingSwitchClaims>, ProofError> {
+        let high_bits = point.len().checked_sub(7).unwrap_or(0);
+        if high_bits == 0
+            || proof.s_hat_v.len() != values.len()
+            || proof.packed_values.len() != values.len()
+        {
+            return Ok(None);
+        }
+        let prefix = &point[..7];
+        let suffix = &point[7..];
+        for (s_hat_v, value) in proof.s_hat_v.iter().zip(values) {
+            if s_hat_v.len() != 128 || rs_evaluate(s_hat_v, prefix) != *value {
+                return Ok(None);
+            }
+        }
+        let mut transcript =
+            magnetar_transcript::Sha256Transcript::new("magnetar-ring-switch-batch-v2");
+        for value in point {
+            transcript.absorb("point", &value.value().to_le_bytes());
+        }
+        for s_hat_v in &proof.s_hat_v {
+            for value in s_hat_v {
+                transcript.absorb("s-hat-v", &value.value().to_le_bytes());
+            }
+        }
+        let weights = (0..proof.s_hat_v.len())
+            .map(|_| rs_challenge_field(&mut transcript, "column-weight"))
+            .collect::<Vec<_>>();
+        let r_double = (0..7)
+            .map(|_| rs_challenge_field(&mut transcript, "row-batch"))
+            .collect::<Vec<_>>();
+        let eq_double = rs_eq_vector(&r_double);
+        let mut sumcheck_claim = F2_128::from(0u64);
+        for (s_hat_v, weight) in proof.s_hat_v.iter().zip(&weights) {
+            let s_hat_u = rs_transpose128(s_hat_v);
+            let inner = s_hat_u
+                .iter()
+                .zip(&eq_double)
+                .fold(F2_128::from(0u64), |sum, (a, b)| sum + *a * *b);
+            sumcheck_claim = sumcheck_claim + *weight * inner;
+        }
+        if proof.sumcheck.claimed_sum != sumcheck_claim {
+            return Ok(None);
+        }
+        let (ry, product) =
+            crate::verify_rounds(&proof.sumcheck, high_bits, 2, |round, values| {
+                rs_sumcheck_challenge(&mut transcript, round, values)
+            })?;
+        let a_at = rs_eval_rs_eq(suffix, &ry, &eq_double);
+        Ok(Some(RingSwitchClaims {
+            ry,
+            packed_values: proof.packed_values.clone(),
+            weights,
+            product,
+            a_at,
+        }))
+    }
+
+    /// Finish the ring-switch check after the caller verified the packed values.
+    pub fn finish_claims(&self, claims: &RingSwitchClaims) -> bool {
+        let weighted = claims
+            .packed_values
+            .iter()
+            .zip(&claims.weights)
+            .fold(F2_128::from(0u64), |sum, (value, weight)| {
+                sum + *value * *weight
+            });
+        claims.product == weighted * claims.a_at
+    }
+}
+
+/// Ring-switch claims proof without the packed-column PCS opening.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RingSwitchClaimsProof {
+    pub s_hat_v: Vec<Vec<F2_128>>,
+    pub sumcheck: crate::SumcheckProof<F2_128>,
+    pub packed_values: Vec<F2_128>,
+}
+
+/// The packed claims a verifier derives from a [`RingSwitchClaimsProof`].
+pub struct RingSwitchClaims {
+    pub ry: Vec<F2_128>,
+    pub packed_values: Vec<F2_128>,
+    pub weights: Vec<F2_128>,
+    pub product: F2_128,
+    pub a_at: F2_128,
 }
 
 impl<P: Pcs> BitPcs for RingSwitchPackedBitPcs<P> {

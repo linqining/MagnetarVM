@@ -2155,6 +2155,33 @@ mod tests {
     }
 }
 
+
+    #[test]
+    fn ring_switch_claims_round_trip_without_pcs_opening() {
+        use magnetar_proof::{BatchedRingSwitch, PackedBits};
+        let bits = PackedBits::from_bools(
+            &(0..(1usize << 12)).map(|index| index % 5 == 0).collect::<Vec<_>>(),
+        );
+        let point: Vec<F2_128> = (0..12)
+            .map(|bit| F2_128::from((bit * 7 + 3) as u64))
+            .collect();
+        let backend = P3BatchColumnPcs::new(P3BinaryPcs::with_params(100, 2, 21, 2));
+        let switch = BatchedRingSwitch::new(backend);
+        let (claims, proof) = switch.open_claims(&[bits], &point).expect("open claims");
+        let verified = switch
+            .verify_claims(&point, &claims, &proof)
+            .expect("verify claims")
+            .expect("claims accepted");
+        assert!(switch.finish_claims(&verified));
+        // A tampered packed value is rejected by the final check.
+        let mut tampered = proof.clone();
+        tampered.packed_values[0] = tampered.packed_values[0] + F2_128::from(1u64);
+        let verified = switch
+            .verify_claims(&point, &claims, &tampered)
+            .expect("verify claims")
+            .expect("claims accepted");
+        assert!(!switch.finish_claims(&verified));
+    }
 #[cfg(test)]
 mod batched_ring_switch_tests {
     use super::{P3BatchColumnPcs, P3BinaryPcs};
