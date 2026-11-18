@@ -1,0 +1,118 @@
+//! Packed-mosaic plan: bit-valued table columns packed 128 bits per cell.
+//!
+//! The mosaic commits every table column as one field element per row, so a
+//! bit-valued column (the twist address tables, the ROM bit columns) spends
+//! 128 bits of commitment per bit. This module builds the packed plan: each
+//! table's bit-valued columns are packed 128:1 into one packed table, the
+//! scalar columns stay as they are, and the plan records the mapping the
+//! verifier needs to ring-switch a bit claim to a claim on the packed table.
+//!
+//! The plan is representation-only; wiring it into the prover/verifier is the
+//! packed-mosaic redesign (the verifier must ring-switch every bit claim before
+//! the mosaic opening).
+
+use magnetar_constraint::F2_128;
+
+use crate::P3MosaicTable;
+
+/// Bits stored in one packed cell.
+pub const PACK: usize = 128;
+
+/// One table after packing.
+pub struct PackedTable {
+    /// The packed table (bit columns packed, scalar columns unchanged).
+    pub table: P3MosaicTable,
+    /// Original column indices that were packed, in packed-column order.
+    pub bit_columns: Vec<usize>,
+    /// Original row count (the packed columns have `rows.div_ceil(PACK)` cells).
+    pub rows: usize,
+}
+
+/// The packed plan for a mosaic table set.
+pub struct PackedMosaicPlan {
+    pub tables: Vec<PackedTable>,
+    pub unpacked_cells: usize,
+    pub packed_cells: usize,
+}
+
+fn is_bit_column(column: &[F2_128]) -> bool {
+    column.iter().all(|value| value.value() <= 1)
+}
+
+/// Pack one bit column 128 bits per cell (lowest bit first).
+pub fn pack_bit_column(column: &[F2_128]) -> Vec<F2_128> {
+    column
+        .chunks(PACK)
+        .map(|chunk| {
+            let mut word: u128 = 0;
+            for (index, value) in chunk.iter().enumerate() {
+                if value.value() & 1 == 1 {
+                    word |= 1u128 << index;
+                }
+            }
+            F2_128::from(word)
+        })
+        .collect()
+}
+
+/// Build the packed plan for a table set.
+pub fn plan(tables: &[P3MosaicTable]) -> PackedMosaicPlan {
+    let mut packed_tables = Vec::with_capacity(tables.len());
+    let mut unpacked_cells = 0usize;
+    let mut packed_cells = 0usize;
+    for table in tables {
+        let rows = table.columns.first().map_or(0, |column| column.len());
+        unpacked_cells += rows * table.columns.len();
+        let mut bit_columns = Vec::new();
+        let mut packed_columns = Vec::new();
+        let mut scalar_columns = Vec::new();
+        for (index, column) in table.columns.iter().enumerate() {
+            if is_bit_column(column) {
+                bit_columns.push(index);
+                packed_columns.push(pack_bit_column(column));
+            } else {
+                scalar_columns.push(column.clone());
+            }
+        }
+        if !packed_columns.is_empty() {
+            packed_cells += packed_columns[0].len() * packed_columns.len();
+        }
+        packed_cells += rows * scalar_columns.len();
+        let mut columns = packed_columns;
+        columns.extend(scalar_columns);
+        packed_tables.push(PackedTable {
+            table: P3MosaicTable { columns },
+            bit_columns,
+            rows,
+        });
+    }
+    PackedMosaicPlan {
+        tables: packed_tables,
+        unpacked_cells,
+        packed_cells,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn packing_is_lossless_and_shrinks_bit_tables() {
+        let rows = 256usize;
+        let bits: Vec<F2_128> = (0..rows)
+            .map(|index| F2_128::from(((index * 7 + 3) % 2) as u64))
+            .collect();
+        let scalars: Vec<F2_128> = (0..rows).map(|index| F2_128::from(index as u64)).collect();
+        let table = P3MosaicTable {
+            columns: vec![bits.clone(), scalars.clone()],
+        };
+        let plan = plan(&[table]);
+        assert_eq!(plan.unpacked_cells, rows * 2);
+        // 256 bits -> 2 packed cells, plus 256 scalar cells.
+        assert_eq!(plan.packed_cells, 2 + rows);
+        assert_eq!(plan.tables[0].bit_columns, vec![0]);
+        assert_eq!(plan.tables[0].table.columns.len(), 2);
+        assert_eq!(plan.tables[0].table.columns[0].len(), 2);
+    }
+}

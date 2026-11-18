@@ -8,6 +8,7 @@
 pub mod bn254;
 pub mod f2;
 pub mod mosaic;
+pub mod packed_mosaic;
 pub mod reveal_pcs;
 pub use bn254::{
     Bn254Kzg, Bn254KzgBatchOpening, Bn254KzgCommitment, Bn254KzgError, Bn254KzgOpening,
