@@ -375,9 +375,13 @@ path). At 2^18 with M4a dedup:
 - tables 11, unpacked cells **6,029,470 -> packed cells 4,208,690 (-30 %)** with
   bit-column packing only;
 - with the trace word-pair packing (`plan_with_trace`, two 64-bit fields per
-  cell): **3,160,114 cells (-47.6 %)**.
+  cell): **3,160,114 cells (-47.6 %)** — but that count kept mixed tables as one
+  table with unequal column lengths, which the mosaic rejects;
+- after splitting mixed tables into a packed bit table and a scalar table (the
+  valid layout): **4,077,726 cells (-32.4 %)**.
 
-The verifier claim wiring is still the remaining step.
+The verifier claim wiring is still the remaining step; the split also means the
+claim wiring must map old table indices to the new packed/scalar pair.
 
 
 ## 10. Packed commit switch: the exact wiring point

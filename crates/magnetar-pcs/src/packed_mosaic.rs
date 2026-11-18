@@ -115,17 +115,28 @@ pub fn plan(tables: &[P3MosaicTable]) -> PackedMosaicPlan {
             bit_columns.clear();
             packed_columns.clear();
         }
+        // A mosaic table needs equally long columns, so a mixed table splits
+        // into a packed bit table and a scalar table.
         if !packed_columns.is_empty() {
             packed_cells += packed_columns[0].len() * packed_columns.len();
+            packed_tables.push(PackedTable {
+                table: P3MosaicTable {
+                    columns: packed_columns,
+                },
+                bit_columns,
+                rows,
+            });
         }
-        packed_cells += rows * scalar_columns.len();
-        let mut columns = packed_columns;
-        columns.extend(scalar_columns);
-        packed_tables.push(PackedTable {
-            table: P3MosaicTable { columns },
-            bit_columns,
-            rows,
-        });
+        if !scalar_columns.is_empty() {
+            packed_cells += rows * scalar_columns.len();
+            packed_tables.push(PackedTable {
+                table: P3MosaicTable {
+                    columns: scalar_columns,
+                },
+                bit_columns: Vec::new(),
+                rows,
+            });
+        }
     }
     PackedMosaicPlan {
         tables: packed_tables,
