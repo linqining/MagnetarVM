@@ -3844,8 +3844,6 @@ pub(crate) fn verify_core_statement_with_access_claims(
     stage.finish();
     let stage = crate::verify_profile::Stage::new("core aux claims");
     let (mut points, mut values) = ram_claims;
-    points.extend(register_claims.0);
-    values.extend(register_claims.1);
     if let (Some(descriptor), Some(ring_switch)) =
         (&proof.packed_mosaic, &proof.address_ring_switch)
     {
@@ -3859,6 +3857,8 @@ pub(crate) fn verify_core_statement_with_access_claims(
         points = remapped_points;
         values = remapped_values;
     }
+    points.extend(register_claims.0);
+    values.extend(register_claims.1);
     if let (Some(cpu_ry), Some(cpu_value)) = (ry, cpu_value) {
         points.push(magnetar_pcs::P3MosaicPoint {
             table: 0,

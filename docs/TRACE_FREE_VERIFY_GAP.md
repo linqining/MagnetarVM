@@ -509,3 +509,15 @@ With that, the packed prover completes and the verifier runs, failing at
 `core opening rejected`: the verifier's claim set still differs from the
 prover's somewhere (the packed claim points/values or the register remap on the
 verifier side). The normal path is unaffected.
+
+
+## 19. Packed path: prover/verifier claim indices differ by one
+
+Comparing the prover's and verifier's opening claims shows the same values at
+different table indices: the prover's claims are at tables 7,8,9,10 while the
+verifier's are at 6,7,8,9 (a consistent +1 shift). The prover's indices are
+correct for the packed plan (the `z` table is at 0, so the ROM scalar table is
+at 7), which means the verifier's ROM claim path is not using the packed split
+(the `packed_mosaic`/`rom_ring_switch` zip is likely `None` there, or the claim
+comes from a different path). The verifier now remaps only the RAM claims and
+then extends with the register claims.
