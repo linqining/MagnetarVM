@@ -531,3 +531,13 @@ ROM claim still lands on table 6 while the prover's is on table 7 (the packed
 plan puts the ROM scalar table at 7 because the `z` table is at 0), so the
 verifier's `rom_index`/descriptor mapping is off by one relative to the prover's
 for this claim path.
+
+
+## 21. Packed path: verifier remap applied to the final claim set
+
+The verifier now remaps the final claim set (after the trace/router/register
+claims are added) through the packed descriptor, with the address ring-switch
+optional (the tiny address table stays unpacked). The verifier's claims now
+match the prover's for tables 7-10; the trace claims (table 11) are still
+missing from the core claim set, so the opening is rejected. The next step is to
+include the trace claims in the remapped set.

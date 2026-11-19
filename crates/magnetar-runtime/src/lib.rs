@@ -3632,9 +3632,9 @@ pub(crate) fn verify_table_batch_claims(
 }
 
 /// Remap the twist claims into the packed plan on the verifier side.
-fn remap_packed_claims_verifier(
+pub(crate) fn remap_packed_claims_verifier(
     descriptor: &magnetar_pcs::packed_mosaic::PackedMosaicDescriptor,
-    ring_switch: &magnetar_proof::RingSwitchClaimsProof,
+    ring_switch: Option<&magnetar_proof::RingSwitchClaimsProof>,
     ram_index: usize,
     points: Vec<magnetar_pcs::P3MosaicPoint>,
     values: Vec<Vec<F2_128>>,
@@ -3679,6 +3679,11 @@ fn remap_packed_claims_verifier(
     );
     let switch = magnetar_proof::BatchedRingSwitch::new(backend);
     for (point, columns, values) in address_groups {
+        let Some(ring_switch) = ring_switch else {
+            return Err(RuntimeError::Proof(
+                "packed address claims need the address ring-switch proof".into(),
+            ));
+        };
         let expected: Vec<F2_128> = columns.iter().map(|index| values[*index]).collect();
         let claims = switch
             .verify_claims(&point, &expected, ring_switch)
@@ -3896,19 +3901,6 @@ pub(crate) fn verify_core_statement_with_access_claims(
     stage.finish();
     let stage = crate::verify_profile::Stage::new("core aux claims");
     let (mut points, mut values) = ram_claims;
-    if let (Some(descriptor), Some(ring_switch)) =
-        (&proof.packed_mosaic, &proof.address_ring_switch)
-    {
-        let (remapped_points, remapped_values) = remap_packed_claims_verifier(
-            descriptor,
-            ring_switch,
-            proof.ram_index,
-            points,
-            values,
-        )?;
-        points = remapped_points;
-        values = remapped_values;
-    }
     points.extend(register_claims.0);
     values.extend(register_claims.1);
     if let (Some(cpu_ry), Some(cpu_value)) = (ry, cpu_value) {
@@ -4076,6 +4068,17 @@ pub(crate) fn verify_core_statement_with_access_claims(
                 values.push(width);
             }
         }
+    }
+    if let Some(descriptor) = &proof.packed_mosaic {
+        let (remapped_points, remapped_values) = remap_packed_claims_verifier(
+            descriptor,
+            proof.address_ring_switch.as_ref(),
+            proof.ram_index,
+            points,
+            values,
+        )?;
+        points = remapped_points;
+        values = remapped_values;
     }
     stage.finish();
     let stage = crate::verify_profile::Stage::new("core claim sort/merge");

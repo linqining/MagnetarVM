@@ -3850,6 +3850,17 @@ impl<'a> UnifiedVerifyContext<'a> {
                 return Err(RuntimeError::Proof("unexpected field opening".into()));
             }
         } else if let Some(opening) = &self.proof.opening {
+            if let Some(descriptor) = &self.proof.packed_mosaic {
+                let (points, values) = crate::remap_packed_claims_verifier(
+                    descriptor,
+                    self.proof.address_ring_switch.as_ref(),
+                    self.proof.ram_index,
+                    std::mem::take(&mut self.points),
+                    std::mem::take(&mut self.values),
+                )?;
+                self.points = points;
+                self.values = values;
+            }
             if !opening_pcs_for_commitment(&opening.commitment)
                 .verify_mosaic(opening, &self.points, &self.values)
                 .map_err(|error| RuntimeError::Proof(error.to_string()))?
