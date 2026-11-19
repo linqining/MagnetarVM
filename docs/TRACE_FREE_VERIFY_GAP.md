@@ -572,3 +572,13 @@ or point does not match the committed table's columns. The table-8 claim is the
 register initial/final claim (2 columns) while the committed table 8 is the
 store router (also 2 columns, same shape), so the claim's table index is off by
 one for the register initial table under packing.
+
+
+## 25. Packed path: register endpoints are swapped relative to the table columns
+
+`proof.endpoints` for the register Access proof are `[0, 312061...]` while the
+committed register initial table's columns `[initial, final]` evaluate to
+`[312061..., 0]` at `rk`: the endpoints are swapped relative to the table
+columns, so the register Initial/Final claims do not match the committed table.
+The next step is to align the endpoints with the table columns (swap the
+Initial/Final claim values or the table columns).
