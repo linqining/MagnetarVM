@@ -2694,15 +2694,67 @@ pub fn logup_shout_router_link_claims(
     let point = logup.link_point.clone();
     let mut out = Vec::new();
     if proof.commitment.tables.len() > proof.rom_index {
-        out.push((
-            magnetar_pcs::P3MosaicPoint {
-                table: proof.rom_index,
-                point: logup.rom_point.clone(),
-                columns: (0..logup.rom_claims.len()).collect(),
-                next_columns: Vec::new(),
-            },
-            logup.rom_claims.clone(),
-        ));
+        if let (Some(descriptor), Some(ring_switch)) =
+            (&proof.packed_mosaic, &proof.rom_ring_switch)
+        {
+            // Packed path: split the ROM claim into the packed bit table and
+            // the scalar table.
+            let mapping = descriptor.mapping.get(proof.rom_index).ok_or_else(|| {
+                RuntimeError::Proof("packed mosaic descriptor lacks the ROM table".into())
+            })?;
+            let bit_values: Vec<F2_128> = mapping
+                .bit_columns
+                .iter()
+                .map(|index| logup.rom_claims[*index])
+                .collect();
+            let backend = magnetar_pcs::P3BatchColumnPcs::new(
+                magnetar_pcs::P3BinaryPcs::with_params(100, 2, 21, 2),
+            );
+            let switch = magnetar_proof::BatchedRingSwitch::new(backend);
+            let claims = switch
+                .verify_claims(&logup.rom_point, &bit_values, ring_switch)
+                .map_err(|error| RuntimeError::Proof(error.to_string()))?
+                .ok_or_else(|| {
+                    RuntimeError::Proof("packed ROM ring-switch claims rejected".into())
+                })?;
+            if let Some(table) = mapping.packed_table {
+                out.push((
+                    magnetar_pcs::P3MosaicPoint {
+                        table,
+                        point: claims.ry.clone(),
+                        columns: (0..claims.packed_values.len()).collect(),
+                        next_columns: Vec::new(),
+                    },
+                    claims.packed_values.clone(),
+                ));
+            }
+            if let Some(table) = mapping.scalar_table {
+                let scalar_values: Vec<F2_128> = mapping
+                    .scalar_columns
+                    .iter()
+                    .map(|index| logup.rom_claims[*index])
+                    .collect();
+                out.push((
+                    magnetar_pcs::P3MosaicPoint {
+                        table,
+                        point: logup.rom_point.clone(),
+                        columns: (0..scalar_values.len()).collect(),
+                        next_columns: Vec::new(),
+                    },
+                    scalar_values,
+                ));
+            }
+        } else {
+            out.push((
+                magnetar_pcs::P3MosaicPoint {
+                    table: proof.rom_index,
+                    point: logup.rom_point.clone(),
+                    columns: (0..logup.rom_claims.len()).collect(),
+                    next_columns: Vec::new(),
+                },
+                logup.rom_claims.clone(),
+            ));
+        }
     }
     if let Some(index) = proof.shift_router_index {
         let total = proof.commitment.tables[index].num_columns;

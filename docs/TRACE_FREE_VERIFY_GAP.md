@@ -521,3 +521,13 @@ at 7), which means the verifier's ROM claim path is not using the packed split
 (the `packed_mosaic`/`rom_ring_switch` zip is likely `None` there, or the claim
 comes from a different path). The verifier now remaps only the RAM claims and
 then extends with the register claims.
+
+
+## 20. Packed path: committed-Shout ROM split added; verifier ROM index still off by one
+
+`logup_shout_router_link_claims` now splits the ROM claim through the ring-switch
+when the packed descriptor and ROM ring-switch proof are present. The verifier's
+ROM claim still lands on table 6 while the prover's is on table 7 (the packed
+plan puts the ROM scalar table at 7 because the `z` table is at 0), so the
+verifier's `rom_index`/descriptor mapping is off by one relative to the prover's
+for this claim path.
