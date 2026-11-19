@@ -562,3 +562,13 @@ and verifier's claims are identical (same point, same values), so the committed
 table's evaluation differs from the claim. The store router table is all-scalar
 and unchanged by the plan, so the mismatch is likely the claim's point/table
 pairing under packing.
+
+
+## 24. Packed path: table 8 mismatch is a column-order/point issue
+
+The `verify_mosaic` mismatch at table 8 shows expected `[0, 0xeac4...]` against
+observed `[312061..., 0]`: the values are rotated, so the claim's column order
+or point does not match the committed table's columns. The table-8 claim is the
+register initial/final claim (2 columns) while the committed table 8 is the
+store router (also 2 columns, same shape), so the claim's table index is off by
+one for the register initial table under packing.
