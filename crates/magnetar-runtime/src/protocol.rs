@@ -2287,7 +2287,22 @@ impl<'a> UnifiedProveContext<'a> {
             // The proof path packs only the bit-valued tables: the trace
             // word-pair packing is not evaluation-preserving (see
             // docs/TRACE_FREE_VERIFY_GAP.md §11).
-            let plan = magnetar_pcs::packed_mosaic::plan(&self.mosaic_tables);
+            // The CPU witness table and the gated tables keep their claims on
+            // the unpacked layout until their ring-switch is wired.
+            let mut excluded = vec![0usize];
+            if let Some(index) = self.component_index {
+                excluded.push(index);
+            }
+            if let Some(index) = self.shift_index {
+                excluded.push(index);
+            }
+            if let Some(index) = self.active_index {
+                excluded.push(index);
+            }
+            let plan = magnetar_pcs::packed_mosaic::plan_with_exclusions(
+                &self.mosaic_tables,
+                &excluded,
+            );
             self.packed_mosaic = Some(plan.descriptor());
             // Keep the ROM table's bit columns for the ring-switch (the packed
             // table only carries the packed cells).

@@ -82,6 +82,40 @@ pub fn pack_word_pairs(values: &[F2_128]) -> Vec<F2_128> {
         .collect()
 }
 
+/// Build the packed plan, keeping the `excluded` tables unpacked.
+///
+/// The CPU witness table and the gated tables carry claims whose reductions are
+/// not wired yet, so they stay unpacked until their ring-switch is in place.
+pub fn plan_with_exclusions(tables: &[P3MosaicTable], excluded: &[usize]) -> PackedMosaicPlan {
+    let mut plan = plan(tables);
+    for &index in excluded {
+        if let Some(mapping) = plan.mapping.get_mut(index) {
+            if mapping.packed_table.is_some() {
+                // Rebuild the table as all-scalar: the original columns are not
+                // kept by the plan, so fall back to the unpacked table.
+                if let Some(original) = tables.get(index) {
+                    let rows = original.columns.first().map_or(0, |column| column.len());
+                    let scalar_table = mapping.scalar_table;
+                    let packed_table = mapping.packed_table.take();
+                    if let Some(packed) = packed_table {
+                        // Replace the packed table with the original columns.
+                        if let Some(table) = plan.tables.get_mut(packed) {
+                            table.table = original.clone();
+                            table.bit_columns.clear();
+                        }
+                        plan.packed_cells += rows * original.columns.len();
+                        plan.packed_cells -= rows * original.columns.len().div_ceil(PACK).max(1);
+                    }
+                    mapping.bit_columns.clear();
+                    mapping.scalar_columns = (0..original.columns.len()).collect();
+                    let _ = scalar_table;
+                }
+            }
+        }
+    }
+    plan
+}
+
 /// Build the packed plan for a table set, packing the trace table's word pairs.
 ///
 /// The trace table is one column of eight 64-bit fields per cycle; two fields

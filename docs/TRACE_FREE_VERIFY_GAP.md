@@ -462,3 +462,17 @@ with 16 variables (the address table). The likely culprit is the initial/final
 table claims (point `rk`, length `address_bits`) or the address claim point
 length; the claim remapping needs to keep those on their own tables. The normal
 path is unaffected (proof 1,239,048 B, verify 10.9 ms).
+
+
+## 15. Packed path: exclusions and the selected-table opening blocker
+
+`plan_with_exclusions` keeps the CPU witness table and the gated tables
+unpacked (their reductions are not wired yet), and the packed commit switch
+uses it. The packed prover now fails in the *selected small-table* opening path
+(`prove_opening`'s `batch_claims` branch): `Mle::eval` gets a 5-coordinate point
+for a 16-variable table, because the selected path derives `row_bits` from the
+packed table's column length while the mosaic batch point comes from the packed
+mosaic. The selected path needs the packed-table shape handling (or the packed
+tables must be excluded from the selected path).
+
+The normal path is unaffected; main is pushed.
