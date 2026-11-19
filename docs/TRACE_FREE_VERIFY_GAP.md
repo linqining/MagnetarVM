@@ -476,3 +476,15 @@ mosaic. The selected path needs the packed-table shape handling (or the packed
 tables must be excluded from the selected path).
 
 The normal path is unaffected; main is pushed.
+
+
+## 16. Packed path: selected-table path disabled; commitment/table shape mismatch remains
+
+The packed path now disables the selected small-table opening (it derives its row
+point from the unpacked shape) and keeps the CPU/gated tables unpacked. The
+opening claims themselves are consistent with the packed table shapes, but the
+mosaic opening still rejects with `point has 5 coordinates, expected 16`: a
+5-coordinate claim (the initial table) is checked against a 16-variable table,
+so the commitment's table shapes and the packed `mosaic_tables` disagree
+somewhere (likely the field/e5 opening path or the commitment built before the
+packing). The normal path is unaffected; main is pushed.

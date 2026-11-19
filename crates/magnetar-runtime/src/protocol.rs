@@ -2969,7 +2969,13 @@ impl<'a> UnifiedProveContext<'a> {
         for (point, _) in &pairs {
             counts[point.table] += 1;
         }
-        let selected = counts
+        let selected = if self.packed_plan.is_some() {
+            // The selected small-table path derives its row point from the
+            // unpacked table shape; the packed path uses the regular mosaic
+            // opening for every table.
+            std::collections::HashSet::new()
+        } else {
+            counts
             .iter()
             .enumerate()
             .filter(|(index, count)| {
@@ -2980,7 +2986,8 @@ impl<'a> UnifiedProveContext<'a> {
                 }
             })
             .map(|(index, _)| index)
-            .collect::<std::collections::HashSet<_>>();
+            .collect::<std::collections::HashSet<_>>()
+        };
         let mut pairs = crate::merge_point_claims(pairs, &selected);
         pairs.sort_by_key(|(point, _)| crate::point_sort_key(point));
         if selected.is_empty() {
