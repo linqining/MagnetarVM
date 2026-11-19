@@ -2384,6 +2384,10 @@ impl<'a> UnifiedProveContext<'a> {
                 .iter()
                 .map(|table| table.table.clone())
                 .collect();
+            // The packed table shapes change the PCS profile; re-derive it so
+            // the opening uses the same profile the verifier derives from the
+            // commitment.
+            self.pcs = opening_pcs(&self.mosaic_tables);
         }
         if std::env::var_os("MAGNETAR_PACKED_MOSAIC_MEASURE").is_some() {
             // Measurement-only: commit the packed plan and report its size, then

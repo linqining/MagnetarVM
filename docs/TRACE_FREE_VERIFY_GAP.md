@@ -550,3 +550,15 @@ plan (the trace claim is generated with the remapped index), so the verifier's
 claim set matches the prover's (14 claims, tables 0-4, 7-11). The opening is
 still rejected, so the remaining mismatch is at the PCS level (commitment table
 shapes or the opening's point set), not the claim list.
+
+
+## 23. Packed path: PCS profile re-derived; value mismatch at the store router table
+
+The packed commit switch now re-derives the PCS profile from the packed table
+shapes (the profile chosen from the unpacked tables differed from the one the
+verifier derives from the commitment). The opening now reaches the value check
+and fails at table 8 (the store router, 2 columns, 5 variables): the prover's
+and verifier's claims are identical (same point, same values), so the committed
+table's evaluation differs from the claim. The store router table is all-scalar
+and unchanged by the plan, so the mismatch is likely the claim's point/table
+pairing under packing.
