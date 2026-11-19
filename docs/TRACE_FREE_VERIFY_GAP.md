@@ -499,3 +499,13 @@ store router claims swapped relative to the packed table order: the store claim
 variables) and vice versa. The next step is to align the router claim table
 indices with the packed plan (the old order and the plan's order differ for the
 two router tables).
+
+
+## 18. Packed path reaches verification: register claims remapped
+
+The register twist claims are now remapped through the packed plan too (they were
+added to the opening without remapping, which swapped the inc/initial claims).
+With that, the packed prover completes and the verifier runs, failing at
+`core opening rejected`: the verifier's claim set still differs from the
+prover's somewhere (the packed claim points/values or the register remap on the
+verifier side). The normal path is unaffected.

@@ -2589,7 +2589,9 @@ impl<'a> UnifiedProveContext<'a> {
         let (points, values) = self.remap_packed_claims(points, values)?;
         self.points = points;
         self.values = values;
-        self.register_claims = Some(register_claims);
+        let (register_points, register_values) =
+            self.remap_packed_claims(register_claims.0, register_claims.1)?;
+        self.register_claims = Some((register_points, register_values));
         // Memory route (d): Access is the only consumer of the twist witnesses
         // (and, on the quadratic path, their batch tables); the mosaic tables
         // own the committed copies the Opening needs. Dropping them before the
