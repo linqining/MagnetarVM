@@ -488,3 +488,14 @@ mosaic opening still rejects with `point has 5 coordinates, expected 16`: a
 so the commitment's table shapes and the packed `mosaic_tables` disagree
 somewhere (likely the field/e5 opening path or the commitment built before the
 packing). The normal path is unaffected; main is pushed.
+
+
+## 17. Packed path: router indices remapped; shift/store claims are swapped
+
+The packed commit switch now remaps the router and gated table indices (the ROM
+split shifts every later table by one). The opening claims show the shift and
+store router claims swapped relative to the packed table order: the store claim
+(2 columns, 5-coordinate point) lands on the shift router table (1 column, 16
+variables) and vice versa. The next step is to align the router claim table
+indices with the packed plan (the old order and the plan's order differ for the
+two router tables).

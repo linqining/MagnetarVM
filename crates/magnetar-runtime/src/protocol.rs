@@ -2331,6 +2331,33 @@ impl<'a> UnifiedProveContext<'a> {
             if let Some(index) = remap(self.trace_index) {
                 self.trace_index = index;
             }
+            // The ROM split shifts every later table by one, so the router and
+            // gated table indices must be remapped too.
+            if let Some((index, table)) = self.shift_router_table.take() {
+                if let Some(new) = remap(index) {
+                    self.shift_router_table = Some((new, table));
+                }
+            }
+            if let Some((index, table)) = self.store_router_table.take() {
+                if let Some(new) = remap(index) {
+                    self.store_router_table = Some((new, table));
+                }
+            }
+            if let Some(index) = self.component_index {
+                if let Some(new) = remap(index) {
+                    self.component_index = Some(new);
+                }
+            }
+            if let Some(index) = self.shift_index {
+                if let Some(new) = remap(index) {
+                    self.shift_index = Some(new);
+                }
+            }
+            if let Some(index) = self.active_index {
+                if let Some(new) = remap(index) {
+                    self.active_index = Some(new);
+                }
+            }
             // The RAM address table's bit columns are needed for the
             // ring-switch; the twist claims are remapped after generation.
             if let Some(table) = self.mosaic_tables.get(self.ram_index) {
@@ -2375,6 +2402,15 @@ impl<'a> UnifiedProveContext<'a> {
                 plan.packed_cells,
                 started.elapsed()
             );
+        }
+        if std::env::var_os("MAGNETAR_PACKED_DEBUG").is_some() {
+            for (index, table) in self.mosaic_tables.iter().enumerate() {
+                eprintln!(
+                    "commit table[{index}]: cols={} rows={}",
+                    table.columns.len(),
+                    table.columns.first().map_or(0, |column| column.len())
+                );
+            }
         }
         if !self.cpu_columns {
             let commitment = self
