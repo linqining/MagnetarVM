@@ -3644,6 +3644,10 @@ pub(crate) fn remap_packed_claims_verifier(
     let mut address_groups: Vec<(Vec<F2_128>, Vec<usize>, Vec<F2_128>)> = Vec::new();
     for (point, values) in points.into_iter().zip(values) {
         let Some(mapping) = descriptor.mapping.get(point.table) else {
+            // The claim already names a packed-plan table (e.g. the trace
+            // claim, which is generated with the remapped index).
+            out_points.push(point);
+            out_values.push(values);
             continue;
         };
         if mapping.word_pairs {

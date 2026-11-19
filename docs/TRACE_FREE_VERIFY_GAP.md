@@ -541,3 +541,12 @@ optional (the tiny address table stays unpacked). The verifier's claims now
 match the prover's for tables 7-10; the trace claims (table 11) are still
 missing from the core claim set, so the opening is rejected. The next step is to
 include the trace claims in the remapped set.
+
+
+## 22. Packed path: trace claims kept in the remap; opening still rejected
+
+The verifier's remap now keeps claims whose table index is already in the packed
+plan (the trace claim is generated with the remapped index), so the verifier's
+claim set matches the prover's (14 claims, tables 0-4, 7-11). The opening is
+still rejected, so the remaining mismatch is at the PCS level (commitment table
+shapes or the opening's point set), not the claim list.
